@@ -44,6 +44,7 @@
 		A10000000000000000000033 /* RelayProfile.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RelayProfile.swift; sourceTree = "<group>"; };
 		A10000000000000000000034 /* SecureValueStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SecureValueStore.swift; sourceTree = "<group>"; };
 		A10000000000000000000035 /* RelayConfigurationStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RelayConfigurationStore.swift; sourceTree = "<group>"; };
+		A10000000000000000000036 /* HermesRelayIOS.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = HermesRelayIOS.entitlements; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -77,6 +78,7 @@
 			isa = PBXGroup;
 			children = (
 				A10000000000000000000021 /* HermesRelayIOSApp.swift */,
+				A10000000000000000000036 /* HermesRelayIOS.entitlements */,
 				A10000000000000000000064 /* Models */,
 				A10000000000000000000065 /* Services */,
 				A10000000000000000000066 /* ViewModels */,
@@ -297,6 +299,7 @@
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 1;
 				DEVELOPMENT_TEAM = 37CAHGRH45;
+				CODE_SIGN_ENTITLEMENTS = HermesRelayIOS/HermesRelayIOS.entitlements;
 				ENABLE_APP_SANDBOX = YES;
 				ENABLE_HARDENED_RUNTIME = YES;
 				ENABLE_TESTABILITY = YES;
@@ -304,6 +307,8 @@
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_KEY_CFBundleDisplayName = "Hermes Relay";
 				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.productivity";
+				INFOPLIST_KEY_NSMicrophoneUsageDescription = "Hermes uses the microphone for push-to-talk voice turns.";
+				INFOPLIST_KEY_NSSpeechRecognitionUsageDescription = "Hermes uses speech recognition to turn a voice turn into text.";
 				IPHONEOS_DEPLOYMENT_TARGET = 26.0;
 				MACOSX_DEPLOYMENT_TARGET = 26.0;
 				MARKETING_VERSION = 0.1.0;
@@ -328,12 +333,15 @@
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 1;
 				DEVELOPMENT_TEAM = 37CAHGRH45;
+				CODE_SIGN_ENTITLEMENTS = HermesRelayIOS/HermesRelayIOS.entitlements;
 				ENABLE_APP_SANDBOX = YES;
 				ENABLE_HARDENED_RUNTIME = YES;
 				ENABLE_OUTGOING_NETWORK_CONNECTIONS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_KEY_CFBundleDisplayName = "Hermes Relay";
 				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.productivity";
+				INFOPLIST_KEY_NSMicrophoneUsageDescription = "Hermes uses the microphone for push-to-talk voice turns.";
+				INFOPLIST_KEY_NSSpeechRecognitionUsageDescription = "Hermes uses speech recognition to turn a voice turn into text.";
 				IPHONEOS_DEPLOYMENT_TARGET = 26.0;
 				MACOSX_DEPLOYMENT_TARGET = 26.0;
 				MARKETING_VERSION = 0.1.0;
