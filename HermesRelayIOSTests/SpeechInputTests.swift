@@ -8,7 +8,7 @@ final class SpeechInputTests: XCTestCase {
         let stream = try await input.start()
         input.emit(SpeechRecognitionUpdate(text: "Hel", isFinal: false))
         input.emit(SpeechRecognitionUpdate(text: "Hello", isFinal: true))
-        input.finish()
+        await input.finish()
 
         let updates = try await collect(stream)
         XCTAssertEqual(
@@ -119,6 +119,11 @@ private final class FakeSpeechInput: SpeechInput, @unchecked Sendable {
 
     func cancel() async {
         continuation?.finish(throwing: SpeechInputError.cancelled)
+        continuation = nil
+    }
+
+    func finish() async {
+        continuation?.finish()
         continuation = nil
     }
 

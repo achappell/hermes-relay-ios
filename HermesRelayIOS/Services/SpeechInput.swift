@@ -33,5 +33,6 @@ protocol SpeechInput: Sendable {
     func authorization() async -> SpeechAuthorization
     func requestAuthorization() async -> SpeechAuthorization
     func start() async throws -> AsyncThrowingStream<SpeechRecognitionUpdate, Error>
+    func finish() async
     func cancel() async
 }

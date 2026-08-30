@@ -75,28 +75,37 @@ final class ConversationStore {
         await sendTurn(text: text)
     }
 
-    func sendTurn(text: String) async {
+    @discardableResult
+    func sendTurn(
+        text: String,
+        eventHandler: (@MainActor @Sendable (HermesEvent) async -> Void)? = nil
+    ) async -> Bool {
         let text = text.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !text.isEmpty else { return }
+        guard !text.isEmpty else { return false }
         guard connectionState.isConnected else {
             transientError = "Connect to the Hermes relay before sending."
-            return
+            return false
         }
         guard !isSending else {
             transientError = "A Hermes turn is already in progress."
-            return
+            return false
         }
 
         isSending = true
         activeAssistantID = nil
         activityText = nil
         messages.append(TranscriptMessage(role: .user, text: text))
+        var didComplete = false
 
         do {
             let events = await client.sendTurn(text: text)
             for try await event in events {
                 apply(event)
+                if let eventHandler {
+                    await eventHandler(event)
+                }
             }
+            didComplete = true
         } catch {
             let message = error.localizedDescription
             transientError = message
@@ -104,6 +113,7 @@ final class ConversationStore {
         }
         isSending = false
         activeAssistantID = nil
+        return didComplete
     }
 
     func clearTransientError() {

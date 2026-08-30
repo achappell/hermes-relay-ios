@@ -3,9 +3,20 @@ import SwiftUI
 @MainActor
 struct ContentView: View {
     @State private var store: ConversationStore
+    @State private var voiceCoordinator: VoiceSessionCoordinator
 
-    init(store: ConversationStore = ConversationStore()) {
+    init(
+        store: ConversationStore = ConversationStore(),
+        voiceCoordinator: VoiceSessionCoordinator? = nil
+    ) {
         _store = State(initialValue: store)
+        _voiceCoordinator = State(
+            initialValue: voiceCoordinator ?? VoiceSessionCoordinator(
+                store: store,
+                input: AppleSpeechInput(),
+                output: RecoveringAudioOutput(liveOutput: AppleAudioOutput())
+            )
+        )
     }
 
     private var canSend: Bool {
@@ -19,6 +30,7 @@ struct ContentView: View {
             VStack(spacing: 0) {
                 connectionBanner
                 transcript
+                voiceInterface
                 composer
             }
             .navigationTitle("Hermes Relay")
@@ -127,6 +139,23 @@ struct ContentView: View {
         }
         .padding()
         .background(.bar)
+    }
+
+    private var voiceInterface: some View {
+        VStack(spacing: 8) {
+            VoiceStatusView(state: voiceCoordinator.state)
+            if !voiceCoordinator.provisionalText.isEmpty {
+                Text(voiceCoordinator.provisionalText)
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .lineLimit(3)
+            }
+            VoiceControl(coordinator: voiceCoordinator)
+        }
+        .padding(.horizontal)
+        .padding(.top, 10)
+        .padding(.bottom, 4)
     }
 }
 

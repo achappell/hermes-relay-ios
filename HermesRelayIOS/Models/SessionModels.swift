@@ -24,6 +24,59 @@ enum ConnectionState: Equatable, Sendable {
     }
 }
 
+enum VoiceState: Equatable, Sendable {
+    case idle
+    case listening
+    case transcribing
+    case thinking
+    case speaking
+    case buffering
+    case interrupted
+    case failed(String)
+
+    var label: String {
+        switch self {
+        case .idle:
+            return "Ready"
+        case .listening:
+            return "Listening"
+        case .transcribing:
+            return "Transcribing"
+        case .thinking:
+            return "Thinking"
+        case .speaking:
+            return "Speaking"
+        case .buffering:
+            return "Buffering"
+        case .interrupted:
+            return "Interrupted"
+        case .failed(let message):
+            return message
+        }
+    }
+
+    var systemImage: String {
+        switch self {
+        case .idle:
+            return "mic"
+        case .listening:
+            return "mic.fill"
+        case .transcribing:
+            return "waveform"
+        case .thinking:
+            return "ellipsis"
+        case .speaking:
+            return "speaker.wave.2.fill"
+        case .buffering:
+            return "arrow.down.circle"
+        case .interrupted:
+            return "pause.circle"
+        case .failed:
+            return "exclamationmark.triangle"
+        }
+    }
+}
+
 struct SessionMetadata: Equatable, Sendable {
     let sessionID: String
     let model: String?

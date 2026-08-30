@@ -92,6 +92,15 @@ actor AppleSpeechInput: SpeechInput {
         stopResources()
     }
 
+    func finish() async {
+        guard activeContinuation != nil else { return }
+        audioEngine.inputNode.removeTap(onBus: 0)
+        if audioEngine.isRunning {
+            audioEngine.stop()
+        }
+        recognitionRequest?.endAudio()
+    }
+
     private func handleRecognition(text: String?, isFinal: Bool, didFail: Bool) {
         guard let continuation = activeContinuation else { return }
         if didFail {
