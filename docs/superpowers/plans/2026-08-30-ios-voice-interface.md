@@ -37,6 +37,7 @@
 - Modify: README.md:24-71
 - Modify: docs/architecture.md:29-57
 - Modify: docs/workflow.md:34-55
+- Modify: docs/plans/2026-08-30-ios-01-foundation-plan.md:1-76
 - Modify: docs/plans/2026-08-30-ios-01-foundation-testing-plan.md:1-30
 
 **Interfaces:**
@@ -52,7 +53,7 @@ Replace the old iOS-17-only statements with:
     - iOS 26 or newer for the iOS target
     - macOS 26 or newer for the macOS target
 
-State that the target intentionally includes iphoneos, iphonesimulator, and macosx, while the first hardware voice validation is iOS.
+State that the target intentionally includes iphoneos, iphonesimulator, and macosx, while the first hardware voice validation is iOS. Update the active IOS-01 foundation plan’s toolchain and follow-up slice list at the same time.
 
 - [ ] Step 2: Make validation destination-specific.
 
@@ -78,10 +79,10 @@ Run:
 
     git diff --check
     git diff -- AGENTS.md README.md docs/architecture.md docs/workflow.md docs/plans/2026-08-30-ios-01-foundation-testing-plan.md
-    git add AGENTS.md README.md docs/architecture.md docs/workflow.md docs/plans/2026-08-30-ios-01-foundation-testing-plan.md
+    git add AGENTS.md README.md docs/architecture.md docs/workflow.md docs/plans/2026-08-30-ios-01-foundation-plan.md docs/plans/2026-08-30-ios-01-foundation-testing-plan.md
     git commit -m "docs: align iOS voice platform matrix"
 
-Expected: no whitespace errors; only the five documentation files are committed. Do not stage the existing user-owned HermesRelayIOS.xcodeproj/project.pbxproj change unless it is part of a later capability task.
+Expected: no whitespace errors; only the six documentation files are committed. Do not stage the existing user-owned HermesRelayIOS.xcodeproj/project.pbxproj change unless it is part of a later capability task.
 
 ---
 
