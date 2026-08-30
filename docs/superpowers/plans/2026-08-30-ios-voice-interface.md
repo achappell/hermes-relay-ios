@@ -395,8 +395,10 @@ Expected: all fake-socket tests pass. Commit:
 
     var sessionMetadata: SessionMetadata?
     var isSending: Bool
+    var activityText: String?
 
     func connect() async
+    func loadConfiguredClient() async
     func sendTurn(text: String) async
     func sendDraft() async
 

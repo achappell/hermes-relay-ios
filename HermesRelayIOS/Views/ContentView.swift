@@ -2,10 +2,15 @@ import SwiftUI
 
 @MainActor
 struct ContentView: View {
-    @State private var store = ConversationStore()
+    @State private var store: ConversationStore
+
+    init(store: ConversationStore = ConversationStore()) {
+        _store = State(initialValue: store)
+    }
 
     private var canSend: Bool {
         store.connectionState.isConnected
+            && !store.isSending
             && !store.draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
     }
 
@@ -17,6 +22,9 @@ struct ContentView: View {
                 composer
             }
             .navigationTitle("Hermes Relay")
+            .task {
+                await store.loadConfiguredClient()
+            }
             .toolbar {
                 #if os(iOS)
                 ToolbarItem(placement: .topBarTrailing) {
@@ -59,7 +67,7 @@ struct ContentView: View {
                     ContentUnavailableView(
                         "Conversation shell ready",
                         systemImage: "waveform.and.person.filled",
-                        description: Text("Relay transport, profiles, and audio are separate follow-up slices.")
+                        description: Text("Connect a configured Hermes relay to stream a text turn.")
                     )
                     .padding(.top, 72)
                 } else {
@@ -76,6 +84,16 @@ struct ContentView: View {
 
     private var composer: some View {
         VStack(spacing: 8) {
+            if let activityText = store.activityText {
+                HStack(spacing: 8) {
+                    ProgressView()
+                    Text(activityText)
+                        .font(.footnote)
+                    Spacer()
+                }
+                .foregroundStyle(.secondary)
+            }
+
             if let transientError = store.transientError {
                 HStack(alignment: .top, spacing: 8) {
                     Image(systemName: "info.circle")
