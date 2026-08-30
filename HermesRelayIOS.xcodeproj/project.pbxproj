@@ -16,6 +16,9 @@
 		A10000000000000000000017 /* HermesRelayIOSTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000000000000000000031 /* HermesRelayIOSTests.swift */; };
 		A10000000000000000000018 /* RelayConfigurationTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000000000000000000032 /* RelayConfigurationTests.swift */; };
 		A1000000000000000000001C /* HermesEventNormalizerTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000000000000000000037 /* HermesEventNormalizerTests.swift */; };
+		A1000000000000000000001E /* URLSessionHermesSessionClientTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000000000000000000039 /* URLSessionHermesSessionClientTests.swift */; };
+		A1000000000000000000001F /* WebSocketConnection.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1000000000000000000003A /* WebSocketConnection.swift */; };
+		A1000000000000000000002A /* URLSessionHermesSessionClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1000000000000000000003B /* URLSessionHermesSessionClient.swift */; };
 		A10000000000000000000019 /* RelayProfile.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000000000000000000033 /* RelayProfile.swift */; };
 		A1000000000000000000001A /* SecureValueStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000000000000000000034 /* SecureValueStore.swift */; };
 		A1000000000000000000001B /* RelayConfigurationStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000000000000000000035 /* RelayConfigurationStore.swift */; };
@@ -49,6 +52,9 @@
 		A10000000000000000000036 /* HermesRelayIOS.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = HermesRelayIOS.entitlements; sourceTree = "<group>"; };
 		A10000000000000000000037 /* HermesEventNormalizerTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HermesEventNormalizerTests.swift; sourceTree = "<group>"; };
 		A10000000000000000000038 /* HermesEventNormalizer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HermesEventNormalizer.swift; sourceTree = "<group>"; };
+		A10000000000000000000039 /* URLSessionHermesSessionClientTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = URLSessionHermesSessionClientTests.swift; sourceTree = "<group>"; };
+		A1000000000000000000003A /* WebSocketConnection.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WebSocketConnection.swift; sourceTree = "<group>"; };
+		A1000000000000000000003B /* URLSessionHermesSessionClient.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = URLSessionHermesSessionClient.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -97,6 +103,7 @@
 				A10000000000000000000031 /* HermesRelayIOSTests.swift */,
 				A10000000000000000000032 /* RelayConfigurationTests.swift */,
 				A10000000000000000000037 /* HermesEventNormalizerTests.swift */,
+				A10000000000000000000039 /* URLSessionHermesSessionClientTests.swift */,
 			);
 			path = HermesRelayIOSTests;
 			sourceTree = "<group>";
@@ -124,6 +131,8 @@
 			children = (
 				A10000000000000000000023 /* HermesSessionClient.swift */,
 				A10000000000000000000038 /* HermesEventNormalizer.swift */,
+				A1000000000000000000003A /* WebSocketConnection.swift */,
+				A1000000000000000000003B /* URLSessionHermesSessionClient.swift */,
 				A10000000000000000000034 /* SecureValueStore.swift */,
 				A10000000000000000000035 /* RelayConfigurationStore.swift */,
 			);
@@ -254,6 +263,8 @@
 				A1000000000000000000001A /* SecureValueStore.swift in Sources */,
 				A1000000000000000000001B /* RelayConfigurationStore.swift in Sources */,
 				A1000000000000000000001D /* HermesEventNormalizer.swift in Sources */,
+				A1000000000000000000001F /* WebSocketConnection.swift in Sources */,
+				A1000000000000000000002A /* URLSessionHermesSessionClient.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -264,6 +275,7 @@
 				A10000000000000000000017 /* HermesRelayIOSTests.swift in Sources */,
 				A10000000000000000000018 /* RelayConfigurationTests.swift in Sources */,
 				A1000000000000000000001C /* HermesEventNormalizerTests.swift in Sources */,
+				A1000000000000000000001E /* URLSessionHermesSessionClientTests.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

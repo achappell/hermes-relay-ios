@@ -42,7 +42,8 @@ final class ConversationStore {
         messages.append(TranscriptMessage(role: .user, text: text))
 
         do {
-            for try await event in client.sendTurn(text: text) {
+            let events = await client.sendTurn(text: text)
+            for try await event in events {
                 apply(event)
             }
         } catch {

@@ -2,7 +2,7 @@ import Foundation
 
 protocol HermesSessionClient: Sendable {
     func connect() async throws -> SessionMetadata
-    func sendTurn(text: String) -> AsyncThrowingStream<HermesEvent, Error>
+    func sendTurn(text: String) async -> AsyncThrowingStream<HermesEvent, Error>
     func disconnect() async
 }
 
@@ -18,7 +18,7 @@ struct UnavailableHermesSessionClient: HermesSessionClient {
         throw RelayUnavailableError()
     }
 
-    func sendTurn(text: String) -> AsyncThrowingStream<HermesEvent, Error> {
+    func sendTurn(text: String) async -> AsyncThrowingStream<HermesEvent, Error> {
         AsyncThrowingStream { continuation in
             continuation.finish(throwing: RelayUnavailableError())
         }

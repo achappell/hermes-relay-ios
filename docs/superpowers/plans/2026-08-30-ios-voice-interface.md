@@ -302,6 +302,7 @@ Expected: all normalizer tests pass. Commit:
 - Modify: HermesRelayIOS/Services/HermesSessionClient.swift:1-31
 - Create: HermesRelayIOS/Services/WebSocketConnection.swift
 - Create: HermesRelayIOS/Services/URLSessionHermesSessionClient.swift
+- Modify: HermesRelayIOS/ViewModels/ConversationStore.swift:33-52
 - Modify: HermesRelayIOS.xcodeproj/project.pbxproj
 - Test: HermesRelayIOSTests/URLSessionHermesSessionClientTests.swift
 
