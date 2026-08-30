@@ -223,6 +223,7 @@ Then commit:
 **Files:**
 - Modify: HermesRelayIOS/Models/SessionModels.swift:1-61
 - Create: HermesRelayIOS/Services/HermesEventNormalizer.swift
+- Modify: HermesRelayIOS/ViewModels/ConversationStore.swift:59-78
 - Modify: HermesRelayIOS.xcodeproj/project.pbxproj
 - Test: HermesRelayIOSTests/HermesEventNormalizerTests.swift
 
@@ -281,6 +282,8 @@ Port the sibling TUI’s append/replace behavior: cumulative previews emit only 
 - [ ] Step 4: Implement activity, audio, error, and completion normalization.
 
 Accept both top-level and nested payload fields. Defaults for audio_start are sample rate 24000, one channel, and sample width 2. Return multiple events when a terminal frame needs both a text update and a completion event. Unknown JSON kinds become .unknown(type:) without retaining the raw payload.
+
+Update the existing store switch to consume the expanded event enum without parsing raw transport data; audio and unknown events remain transport/coordinator concerns.
 
 - [ ] Step 5: Run the focused tests and commit.
 

@@ -29,6 +29,12 @@ struct SessionMetadata: Equatable, Sendable {
     let model: String?
 }
 
+struct AudioFormat: Equatable, Sendable {
+    let sampleRate: Int
+    let channels: Int
+    let sampleWidth: Int
+}
+
 enum TranscriptRole: String, Equatable, Sendable {
     case user
     case assistant
@@ -49,9 +55,16 @@ struct TranscriptMessage: Identifiable, Equatable, Sendable {
 }
 
 enum HermesEvent: Equatable, Sendable {
+    case messageStart
     case textDelta(String)
-    case status(String)
-    case messageComplete
+    case textReplace(String)
+    case thinkingDelta(String)
+    case status(text: String, kind: String?)
+    case audioStart(AudioFormat)
+    case audioChunk(Data)
+    case audioEnd
+    case messageComplete(text: String, reasoning: String, failureReason: String)
+    case turnComplete(turnID: String)
     case error(String)
-    case turnComplete
+    case unknown(type: String)
 }

@@ -15,9 +15,11 @@
 		A10000000000000000000016 /* MessageBubble.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000000000000000000026 /* MessageBubble.swift */; };
 		A10000000000000000000017 /* HermesRelayIOSTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000000000000000000031 /* HermesRelayIOSTests.swift */; };
 		A10000000000000000000018 /* RelayConfigurationTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000000000000000000032 /* RelayConfigurationTests.swift */; };
+		A1000000000000000000001C /* HermesEventNormalizerTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000000000000000000037 /* HermesEventNormalizerTests.swift */; };
 		A10000000000000000000019 /* RelayProfile.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000000000000000000033 /* RelayProfile.swift */; };
 		A1000000000000000000001A /* SecureValueStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000000000000000000034 /* SecureValueStore.swift */; };
 		A1000000000000000000001B /* RelayConfigurationStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000000000000000000035 /* RelayConfigurationStore.swift */; };
+		A1000000000000000000001D /* HermesEventNormalizer.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000000000000000000038 /* HermesEventNormalizer.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -45,6 +47,8 @@
 		A10000000000000000000034 /* SecureValueStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SecureValueStore.swift; sourceTree = "<group>"; };
 		A10000000000000000000035 /* RelayConfigurationStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RelayConfigurationStore.swift; sourceTree = "<group>"; };
 		A10000000000000000000036 /* HermesRelayIOS.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = HermesRelayIOS.entitlements; sourceTree = "<group>"; };
+		A10000000000000000000037 /* HermesEventNormalizerTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HermesEventNormalizerTests.swift; sourceTree = "<group>"; };
+		A10000000000000000000038 /* HermesEventNormalizer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HermesEventNormalizer.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -92,6 +96,7 @@
 			children = (
 				A10000000000000000000031 /* HermesRelayIOSTests.swift */,
 				A10000000000000000000032 /* RelayConfigurationTests.swift */,
+				A10000000000000000000037 /* HermesEventNormalizerTests.swift */,
 			);
 			path = HermesRelayIOSTests;
 			sourceTree = "<group>";
@@ -118,6 +123,7 @@
 			isa = PBXGroup;
 			children = (
 				A10000000000000000000023 /* HermesSessionClient.swift */,
+				A10000000000000000000038 /* HermesEventNormalizer.swift */,
 				A10000000000000000000034 /* SecureValueStore.swift */,
 				A10000000000000000000035 /* RelayConfigurationStore.swift */,
 			);
@@ -247,6 +253,7 @@
 				A10000000000000000000019 /* RelayProfile.swift in Sources */,
 				A1000000000000000000001A /* SecureValueStore.swift in Sources */,
 				A1000000000000000000001B /* RelayConfigurationStore.swift in Sources */,
+				A1000000000000000000001D /* HermesEventNormalizer.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -256,6 +263,7 @@
 			files = (
 				A10000000000000000000017 /* HermesRelayIOSTests.swift in Sources */,
 				A10000000000000000000018 /* RelayConfigurationTests.swift in Sources */,
+				A1000000000000000000001C /* HermesEventNormalizerTests.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

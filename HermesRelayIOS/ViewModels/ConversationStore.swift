@@ -58,15 +58,25 @@ final class ConversationStore {
 
     private func apply(_ event: HermesEvent) {
         switch event {
+        case .messageStart:
+            messages.append(TranscriptMessage(role: .assistant, text: ""))
         case .textDelta(let text):
             if let index = messages.lastIndex(where: { $0.role == .assistant }) {
                 messages[index].text += text
             } else {
                 messages.append(TranscriptMessage(role: .assistant, text: text))
             }
-        case .status(let text):
+        case .textReplace(let text):
+            if let index = messages.lastIndex(where: { $0.role == .assistant }) {
+                messages[index].text = text
+            } else {
+                messages.append(TranscriptMessage(role: .assistant, text: text))
+            }
+        case .thinkingDelta:
+            break
+        case .status(let text, _):
             transientError = text
-        case .messageComplete, .turnComplete:
+        case .audioStart, .audioChunk, .audioEnd, .messageComplete, .turnComplete, .unknown:
             break
         case .error(let text):
             transientError = text
