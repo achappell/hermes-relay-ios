@@ -1,0 +1,21 @@
+.DS_Store
+
+# Xcode user and build state
+DerivedData/
+build/
+xcuserdata/
+*.xcuserstate
+
+# Swift Package Manager state
+.build/
+Package.resolved
+
+# Local credentials and signing material
+.env
+*.p12
+*.mobileprovision
+Secrets.xcconfig
+
+# Local audio captures
+Recordings/
+Audio/
