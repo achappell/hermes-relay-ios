@@ -20,6 +20,9 @@
 		A1000000000000000000001F /* WebSocketConnection.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1000000000000000000003A /* WebSocketConnection.swift */; };
 		A1000000000000000000002A /* URLSessionHermesSessionClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1000000000000000000003B /* URLSessionHermesSessionClient.swift */; };
 		A1000000000000000000002B /* ConversationStoreTransportTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1000000000000000000003C /* ConversationStoreTransportTests.swift */; };
+		A1000000000000000000002C /* SpeechInputTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1000000000000000000003D /* SpeechInputTests.swift */; };
+		A1000000000000000000002D /* SpeechInput.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1000000000000000000003E /* SpeechInput.swift */; };
+		A1000000000000000000002E /* AppleSpeechInput.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1000000000000000000003F /* AppleSpeechInput.swift */; };
 		A10000000000000000000019 /* RelayProfile.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000000000000000000033 /* RelayProfile.swift */; };
 		A1000000000000000000001A /* SecureValueStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000000000000000000034 /* SecureValueStore.swift */; };
 		A1000000000000000000001B /* RelayConfigurationStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000000000000000000035 /* RelayConfigurationStore.swift */; };
@@ -57,6 +60,9 @@
 		A1000000000000000000003A /* WebSocketConnection.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WebSocketConnection.swift; sourceTree = "<group>"; };
 		A1000000000000000000003B /* URLSessionHermesSessionClient.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = URLSessionHermesSessionClient.swift; sourceTree = "<group>"; };
 		A1000000000000000000003C /* ConversationStoreTransportTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ConversationStoreTransportTests.swift; sourceTree = "<group>"; };
+		A1000000000000000000003D /* SpeechInputTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SpeechInputTests.swift; sourceTree = "<group>"; };
+		A1000000000000000000003E /* SpeechInput.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SpeechInput.swift; sourceTree = "<group>"; };
+		A1000000000000000000003F /* AppleSpeechInput.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppleSpeechInput.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -107,6 +113,7 @@
 				A10000000000000000000037 /* HermesEventNormalizerTests.swift */,
 				A10000000000000000000039 /* URLSessionHermesSessionClientTests.swift */,
 				A1000000000000000000003C /* ConversationStoreTransportTests.swift */,
+				A1000000000000000000003D /* SpeechInputTests.swift */,
 			);
 			path = HermesRelayIOSTests;
 			sourceTree = "<group>";
@@ -136,6 +143,8 @@
 				A10000000000000000000038 /* HermesEventNormalizer.swift */,
 				A1000000000000000000003A /* WebSocketConnection.swift */,
 				A1000000000000000000003B /* URLSessionHermesSessionClient.swift */,
+				A1000000000000000000003E /* SpeechInput.swift */,
+				A1000000000000000000003F /* AppleSpeechInput.swift */,
 				A10000000000000000000034 /* SecureValueStore.swift */,
 				A10000000000000000000035 /* RelayConfigurationStore.swift */,
 			);
@@ -268,6 +277,8 @@
 				A1000000000000000000001D /* HermesEventNormalizer.swift in Sources */,
 				A1000000000000000000001F /* WebSocketConnection.swift in Sources */,
 				A1000000000000000000002A /* URLSessionHermesSessionClient.swift in Sources */,
+				A1000000000000000000002D /* SpeechInput.swift in Sources */,
+				A1000000000000000000002E /* AppleSpeechInput.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -280,6 +291,7 @@
 				A1000000000000000000001C /* HermesEventNormalizerTests.swift in Sources */,
 				A1000000000000000000001E /* URLSessionHermesSessionClientTests.swift in Sources */,
 				A1000000000000000000002B /* ConversationStoreTransportTests.swift in Sources */,
+				A1000000000000000000002C /* SpeechInputTests.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
