@@ -6,7 +6,7 @@
 
 **Architecture:** Keep SwiftUI presentation and main-actor conversation state above a typed `HermesSessionClient` protocol. Start with an explicit unavailable client so the app can be launched and tested without pretending that live relay support exists; add the WebSocket transport, secure profiles, and audio as separate vertical slices.
 
-**Tech Stack:** Swift 6.3, Xcode 26.6, SwiftUI, Observation, XCTest, iOS 17 minimum.
+**Tech Stack:** Swift 6.3, Xcode 26.6, SwiftUI, Observation, XCTest, iOS 26 and macOS 26 targets.
 
 ---
 
@@ -57,7 +57,7 @@
 2. Test that an unavailable store keeps the draft instead of silently dropping it.
 3. Test connection-state labels and transcript-role values.
 4. Run the focused XCTest target.
-5. Run the simulator build and test commands from `README.md`.
+5. Run the iOS simulator and macOS build commands from `README.md`.
 
 ### Task 4: Finish the slice
 
@@ -72,5 +72,8 @@
 
 - `IOS-02`: Keychain-backed profile/token setup and explicit configuration state.
 - `IOS-03`: WebSocket hello/hello_ack and one typed text turn with streamed events.
-- `IOS-04`: Microphone capture, cancellation, and signed PCM playback.
-- `IOS-05`: Session browser and transcript hydration after relay support exists.
+- `VOICE-04`: Push-to-talk microphone capture and local transcription.
+- `VOICE-05`: Signed PCM playback and WAV fallback.
+- `VOICE-06`: Voice lifecycle coordination and status surface.
+- `IOS-07`: Recovery and local conversation continuity.
+- `SESSION-01`: Session browser and transcript hydration after relay support exists.

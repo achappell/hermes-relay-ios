@@ -5,11 +5,11 @@
 ```text
 SwiftUI views
     ↓ user intent / observed state
-ConversationStore (@MainActor)
-    ↓ typed HermesSessionClient events
-HermesSessionClient transport seam
-    ↓ hello / turn frames
-Hermes voice-session WebSocket
+ConversationStore + VoiceSessionCoordinator (@MainActor)
+    ├── SpeechInput / AudioOutput platform adapters
+    └── HermesSessionClient transport seam
+            ↓ hello / turn frames
+        Hermes voice-session WebSocket
 ```
 
 The first repository commit stops at the transport seam. The UI can render a
@@ -39,6 +39,14 @@ store without a network connection.
   reconnect policy, one-reader enforcement, and protocol diagnostics.
 - Views and the store must not parse raw protocol frames.
 
+### Platform capabilities
+
+- Keychain-backed profile/token storage is shared across iOS and macOS.
+- Microphone permission, speech recognition, audio routing, and sandbox
+  entitlements are implemented by platform adapters.
+- Signed 16-bit PCM playback and WAV fallback remain behind the shared
+  `AudioOutput` protocol.
+
 ### Later local capabilities
 
 - Keychain-backed profile/token storage.
@@ -49,9 +57,10 @@ store without a network connection.
 
 ## Concurrency rule
 
-The store is main-actor isolated. Transport work and audio I/O must stay off
-the main actor, delivering typed events back to the store. There must be one
-reader for a WebSocket; do not add independent `receive` loops for UI features.
+The store is main-actor isolated. Transport work, speech recognition, and audio
+I/O must stay off the main actor, delivering typed events back to the store.
+There must be one reader for a WebSocket; do not add independent `receive`
+loops for UI features.
 
 ## Error rule
 

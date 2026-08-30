@@ -1,7 +1,8 @@
 # Hermes Relay iOS
 
-Native SwiftUI client foundation for Hermes voice sessions. This is its own
-repository, intentionally separate from the Python/Textual
+Native SwiftUI client foundation for Hermes voice sessions, with intentional
+iOS and macOS targets. This is its own repository, intentionally separate from
+the Python/Textual
 [`hermes-relay-tui`](../hermes-relay-tui) client.
 
 ## Current state
@@ -25,7 +26,8 @@ about those boundaries while the relay contract is being connected.
 
 - macOS with Xcode 26.6 or newer
 - Swift 6.3 or newer
-- iOS 17 or newer for the initial target
+- iOS 26 or newer for the iOS target
+- macOS 26 or newer for the macOS target
 - An Hermes voice-session endpoint and bearer token for future live testing
 
 No live endpoint or token is required to build the foundation or run unit
@@ -37,9 +39,9 @@ tests.
 open HermesRelayIOS.xcodeproj
 ```
 
-Select the `HermesRelayIOS` scheme and an iPhone simulator. The initial shell
-will build and launch without a relay; tapping Connect displays the explicit
-not-yet-wired transport state.
+Select the `HermesRelayIOS` scheme and either an iPhone simulator or `My Mac`.
+The initial shell will build and launch without a relay; tapping Connect
+displays the explicit not-yet-wired transport state.
 
 ## Command-line validation
 
@@ -68,6 +70,20 @@ xcodebuild \
 
 If the named simulator is unavailable, choose an installed iPhone simulator
 in Xcode and use its name in the command.
+
+Build the macOS target explicitly:
+
+```bash
+xcodebuild \
+  -project HermesRelayIOS.xcodeproj \
+  -scheme HermesRelayIOS \
+  -destination 'platform=macOS,arch=arm64' \
+  CODE_SIGNING_ALLOWED=NO \
+  build
+```
+
+When a destination is omitted, Xcode may select macOS because the application
+intentionally supports `iphoneos`, `iphonesimulator`, and `macosx`.
 
 ## Hermes protocol facts
 

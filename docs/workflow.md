@@ -1,4 +1,4 @@
-# iOS Workflow
+# iOS/macOS Workflow
 
 ## Board flow
 
@@ -30,9 +30,10 @@ failure before adding session browsing or media polish.
 2. Add or update a focused XCTest before changing behavior.
 3. Run the focused test to establish the failure or boundary.
 4. Implement the smallest test-backed change.
-5. Build and test the simulator target.
-6. Run the manual smoke plan and record evidence on the board item.
-7. Commit one coherent slice with a conventional commit message.
+5. Build and test the iOS simulator target.
+6. Build the macOS target.
+7. Run the manual smoke plan and record evidence on the board item.
+8. Commit one coherent slice with a conventional commit message.
 
 ## Validation ladder
 
@@ -42,6 +43,8 @@ Focused XCTest
 Simulator build
     ↓
 Simulator XCTest
+    ↓
+macOS build
     ↓
 Manual smoke test
     ↓

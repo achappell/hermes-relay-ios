@@ -1,9 +1,9 @@
 # Codex Profile
 
-This repository is the native iOS client for Hermes voice sessions. It is a
-separate product repository from `hermes-relay-tui`; keep the two repositories
-independently buildable and do not copy terminal-specific UI assumptions into
-the mobile app.
+This repository is the native SwiftUI client for Hermes voice sessions, with
+intentional iOS and macOS targets. It is a separate product repository from
+`hermes-relay-tui`; keep the two repositories independently buildable and do
+not copy terminal-specific UI assumptions into the Apple client.
 
 ## Task management
 
@@ -23,10 +23,10 @@ slice into a grab bag.
 
 ## Product boundary
 
-The iOS app owns presentation, local conversation state, secure credential
-storage, microphone permission, audio playback, and transport lifecycle. Hermes
-owns sessions, model routing, generation, speech generation, and the voice
-session protocol.
+The iOS/macOS app owns presentation, local conversation state, secure
+credential storage, microphone permission, audio playback, and transport
+lifecycle. Hermes owns sessions, model routing, generation, speech generation,
+and the voice-session protocol.
 
 The current protocol facts come from the sibling TUI:
 
@@ -51,15 +51,15 @@ The current protocol facts come from the sibling TUI:
 ## Development
 
 Use the repository's Xcode project and the supported local toolchain. The
-baseline is Swift 6.3 with Xcode 26.6 and iOS 17 as the minimum deployment
-target.
+baseline is Swift 6.3 with Xcode 26.6, iOS 26, and macOS 26 deployment targets.
 
 Before handing off a change:
 
 1. Run the focused XCTest target.
 2. Build and test the iOS simulator target with `xcodebuild`.
-3. Run the manual smoke plan for the current slice.
-4. Review the diff for credentials, audio captures, generated build files, and
+3. Build the macOS target with `xcodebuild`.
+4. Run the manual smoke plan for the current slice.
+5. Review the diff for credentials, audio captures, generated build files, and
    unrelated repository edits.
 
 Tests should use fake clients and deterministic events. Do not require a live
