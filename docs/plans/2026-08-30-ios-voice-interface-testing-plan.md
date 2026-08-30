@@ -60,26 +60,31 @@ device/OS used.
 
 1. Launch with no local profile or token. Confirm Connect remains disconnected
    and shows configuration guidance rather than a connected state.
-2. Provision the relay endpoint locally and the bearer token in Keychain. Keep
-   both values out of screenshots and logs. Confirm connection reaches Connected
-   only after Hermes sends `hello_ack`.
-3. Grant microphone and speech-recognition permissions. Press and hold Voice
+2. Tap the gear button to open Configure Relay. Enter the relay endpoint, client
+   ID, device ID, display name, and bearer token. Keep the token out of
+   screenshots and logs. Save, return to the conversation, and confirm
+   connection reaches Connected only after Hermes sends `hello_ack`.
+3. Reopen Configure Relay. Confirm the profile fields are populated, the token
+   is represented only by the stored-token indicator, and leaving the token field
+   blank preserves the existing token. Remove the token and confirm the profile
+   remains while Connect reports that a token is missing.
+4. Grant microphone and speech-recognition permissions. Press and hold Voice
    control. Confirm `Ready → Listening → Transcribing` and provisional text
    appear outside the committed transcript.
-4. Release after a non-empty recognition. Confirm exactly one user turn, one
+5. Release after a non-empty recognition. Confirm exactly one user turn, one
    streamed assistant boundary, and `Thinking → Buffering/Speaking → Ready`.
    Confirm the response audio is heard when the device speaker route is valid.
-5. Start a later capture, then use Cancel. Confirm no turn is submitted, the
+6. Start a later capture, then use Cancel. Confirm no turn is submitted, the
    provisional text is cleared, and any existing draft remains unchanged.
-6. Deny microphone or speech permission. Confirm the failure names the local
+7. Deny microphone or speech permission. Confirm the failure names the local
    permission and directs the user to Settings; it must not look like a relay
    failure.
-7. Exercise an unavailable or interrupted speaker route. Confirm response text
+8. Exercise an unavailable or interrupted speaker route. Confirm response text
    remains visible and the UI reports playback failure or fallback recovery.
-8. Drop the network during a turn. Confirm the connection is not shown as
+9. Drop the network during a turn. Confirm the connection is not shown as
    connected, the local turn is marked unconfirmed, reconnect does not replay
    it, and a later explicitly submitted turn can complete.
-9. Review diagnostics and artifacts. Confirm no prompt, response, token, raw
+10. Review diagnostics and artifacts. Confirm no prompt, response, token, raw
    frame, microphone audio, or PCM content was logged or captured.
 
 ## macOS validation
@@ -104,8 +109,9 @@ xcodebuild -project HermesRelayIOS.xcodeproj -scheme HermesRelayIOS \
   | rg 'MACOSX_DEPLOYMENT_TARGET|SUPPORTED_PLATFORMS|CODE_SIGN_ENTITLEMENTS|ENABLE_APP_SANDBOX|com.apple.security.network.client'
 ```
 
-Launch the app once with no profile/token and confirm the shared shell remains
-honest about unavailable relay configuration. macOS compile and sandbox checks
+Launch the app once and use Configure Relay to enter a local test profile. Then
+confirm the shared shell remains honest about unavailable relay configuration
+when the token is removed. macOS compile and sandbox checks
 do not substitute for iOS microphone, permission, speaker-route, or device
 network testing.
 

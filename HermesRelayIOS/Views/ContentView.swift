@@ -4,10 +4,13 @@ import SwiftUI
 struct ContentView: View {
     @State private var store: ConversationStore
     @State private var voiceCoordinator: VoiceSessionCoordinator
+    @State private var showingConfiguration = false
+    private let configurationStore: RelayConfigurationStore?
 
     init(
         store: ConversationStore = ConversationStore(),
-        voiceCoordinator: VoiceSessionCoordinator? = nil
+        voiceCoordinator: VoiceSessionCoordinator? = nil,
+        configurationStore: RelayConfigurationStore? = nil
     ) {
         _store = State(initialValue: store)
         _voiceCoordinator = State(
@@ -17,6 +20,7 @@ struct ContentView: View {
                 output: RecoveringAudioOutput(liveOutput: AppleAudioOutput())
             )
         )
+        self.configurationStore = configurationStore
     }
 
     private var canSend: Bool {
@@ -40,14 +44,39 @@ struct ContentView: View {
             .toolbar {
                 #if os(iOS)
                 ToolbarItem(placement: .topBarTrailing) {
+                    configureButton
+                }
+                ToolbarItem(placement: .topBarTrailing) {
                     connectButton
                 }
                 #else
+                ToolbarItem {
+                    configureButton
+                }
                 ToolbarItem {
                     connectButton
                 }
                 #endif
             }
+        }
+        .sheet(isPresented: $showingConfiguration) {
+            if let configurationStore {
+                RelayConfigurationView(configurationStore: configurationStore) {
+                    await store.loadConfiguredClient()
+                }
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var configureButton: some View {
+        if configurationStore != nil {
+            Button {
+                showingConfiguration = true
+            } label: {
+                Image(systemName: "gearshape")
+            }
+            .accessibilityLabel("Configure relay")
         }
     }
 
@@ -161,4 +190,172 @@ struct ContentView: View {
 
 #Preview {
     ContentView()
+}
+
+@MainActor
+struct RelayConfigurationView: View {
+    let configurationStore: RelayConfigurationStore
+    let onSaved: @MainActor () async -> Void
+
+    @Environment(\.dismiss) private var dismiss
+    @State private var draft = RelayConfigurationDraft()
+    @State private var isLoading = false
+    @State private var isSaving = false
+    @State private var errorMessage: String?
+    @State private var statusMessage: String?
+    @State private var didLoad = false
+
+    init(
+        configurationStore: RelayConfigurationStore,
+        onSaved: @escaping @MainActor () async -> Void = {}
+    ) {
+        self.configurationStore = configurationStore
+        self.onSaved = onSaved
+    }
+
+    var body: some View {
+        NavigationStack {
+            Form {
+                Section {
+                    TextField("Endpoint", text: $draft.endpoint)
+                        .autocorrectionDisabled()
+                    TextField("Client ID", text: $draft.clientID)
+                        .autocorrectionDisabled()
+                    TextField("Device ID", text: $draft.deviceID)
+                        .autocorrectionDisabled()
+                    TextField("Display name", text: $draft.displayName)
+                } header: {
+                    Text("Relay")
+                } footer: {
+                    Text("Use a ws:// or wss:// WebSocket endpoint.")
+                }
+
+                Section {
+                    SecureField("Bearer token", text: $draft.token)
+                        .autocorrectionDisabled()
+                    if draft.hasStoredToken {
+                        Label(
+                            "A token is stored securely. Leave this blank to keep it.",
+                            systemImage: "checkmark.shield"
+                        )
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                    } else {
+                        Text("The token is stored in Keychain and is never written to the profile file.")
+                            .font(.footnote)
+                            .foregroundStyle(.secondary)
+                    }
+                } header: {
+                    Text("Credentials")
+                }
+
+                if let errorMessage {
+                    Section {
+                        Label(errorMessage, systemImage: "exclamationmark.triangle")
+                            .foregroundStyle(.red)
+                    }
+                }
+
+                if let statusMessage {
+                    Section {
+                        Label(statusMessage, systemImage: "checkmark.circle")
+                            .foregroundStyle(.secondary)
+                    }
+                }
+
+                Section {
+                    Button("Save configuration") {
+                        Task { await save() }
+                    }
+                    .disabled(isLoading || isSaving)
+
+                    if draft.hasStoredToken {
+                        Button("Remove stored token", role: .destructive) {
+                            Task { await removeToken() }
+                        }
+                        .disabled(isLoading || isSaving)
+                    }
+                }
+            }
+            .navigationTitle("Configure Relay")
+            #if os(iOS)
+            .navigationBarTitleDisplayMode(.inline)
+            #endif
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Done") {
+                        dismiss()
+                    }
+                }
+            }
+            .overlay {
+                if isLoading {
+                    ProgressView("Loading configuration…")
+                        .padding()
+                        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 12))
+                }
+            }
+            .task {
+                await load()
+            }
+        }
+    }
+
+    private func load() async {
+        guard !didLoad else { return }
+        isLoading = true
+        errorMessage = nil
+
+        do {
+            let profile = try await configurationStore.loadProfile()
+            let token = try await configurationStore.loadToken()
+            draft = RelayConfigurationDraft(profile: profile, hasStoredToken: token != nil)
+            didLoad = true
+        } catch {
+            errorMessage = error.localizedDescription
+        }
+
+        isLoading = false
+    }
+
+    private func save() async {
+        isSaving = true
+        errorMessage = nil
+        statusMessage = nil
+
+        do {
+            let profile = try draft.makeProfile()
+            let existingToken = try await configurationStore.loadToken()
+            let token = try draft.tokenToSave(existingToken: existingToken)
+
+            try await configurationStore.saveProfile(profile)
+            if !draft.token.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                try await configurationStore.saveToken(token)
+            }
+            draft.hasStoredToken = true
+            await onSaved()
+            dismiss()
+        } catch {
+            errorMessage = error.localizedDescription
+        }
+
+        isSaving = false
+    }
+
+    private func removeToken() async {
+        isSaving = true
+        errorMessage = nil
+        statusMessage = nil
+
+        do {
+            try await configurationStore.deleteToken()
+            draft.hasStoredToken = false
+            statusMessage = "The stored relay token was removed."
+            await onSaved()
+        } catch {
+            errorMessage = error.localizedDescription
+        }
+
+        isSaving = false
+    }
 }

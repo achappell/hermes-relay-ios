@@ -65,3 +65,72 @@ actor RelayConfigurationStore {
         try secureStore.delete(service: Self.keychainService, account: Self.tokenAccount)
     }
 }
+
+enum RelayConfigurationFormError: LocalizedError, Equatable, Sendable {
+    case endpointRequired
+    case invalidEndpoint
+    case tokenRequired
+
+    var errorDescription: String? {
+        switch self {
+        case .endpointRequired:
+            return "Enter the Hermes relay endpoint."
+        case .invalidEndpoint:
+            return "Enter a valid relay endpoint using ws:// or wss://."
+        case .tokenRequired:
+            return "Enter a relay token before saving."
+        }
+    }
+}
+
+struct RelayConfigurationDraft: Equatable, Sendable {
+    var endpoint: String
+    var clientID: String
+    var deviceID: String
+    var displayName: String
+    var token: String
+    var hasStoredToken: Bool
+
+    init(profile: RelayProfile? = nil, hasStoredToken: Bool = false) {
+        endpoint = profile?.endpoint.absoluteString ?? ""
+        clientID = profile?.clientID ?? ""
+        deviceID = profile?.deviceID ?? ""
+        displayName = profile?.displayName ?? ""
+        token = ""
+        self.hasStoredToken = hasStoredToken
+    }
+
+    func makeProfile() throws -> RelayProfile {
+        let endpointText = endpoint.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !endpointText.isEmpty else {
+            throw RelayConfigurationFormError.endpointRequired
+        }
+        guard let endpointURL = URL(string: endpointText) else {
+            throw RelayConfigurationFormError.invalidEndpoint
+        }
+
+        do {
+            return try RelayProfile(
+                endpoint: endpointURL,
+                clientID: clientID.trimmingCharacters(in: .whitespacesAndNewlines),
+                deviceID: deviceID.trimmingCharacters(in: .whitespacesAndNewlines),
+                displayName: displayName.trimmingCharacters(in: .whitespacesAndNewlines)
+            )
+        } catch let error as RelayProfileError {
+            throw error
+        } catch {
+            throw RelayConfigurationFormError.invalidEndpoint
+        }
+    }
+
+    func tokenToSave(existingToken: String?) throws -> String {
+        let enteredToken = token.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !enteredToken.isEmpty {
+            return enteredToken
+        }
+        guard let existingToken, !existingToken.isEmpty else {
+            throw RelayConfigurationFormError.tokenRequired
+        }
+        return existingToken
+    }
+}

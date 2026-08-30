@@ -11,6 +11,8 @@ The current voice slice provides:
 
 - A SwiftUI conversation shell with connection, voice-state, and transcript
   surfaces.
+- An in-app Configure Relay screen for endpoint and client metadata, with
+  bearer-token entry backed by Keychain.
 - Keychain-backed bearer-token storage and an application-support relay profile.
 - A protocol-v1 WebSocket transport gated on `hello_ack`, with normalized text,
   activity, audio, error, and completion events.
@@ -40,8 +42,11 @@ open HermesRelayIOS.xcodeproj
 ```
 
 Select the `HermesRelayIOS` scheme and either an iPhone simulator or `My Mac`.
-Without a locally stored profile and Keychain token, Connect displays an
-actionable configuration message and never claims a relay connection.
+Tap the gear button to open Configure Relay. Enter the `ws://` or `wss://`
+endpoint, client ID, device ID, display name, and bearer token, then choose
+Save configuration. The token is stored in Keychain; the other fields are
+stored in the application-support profile. When no configuration exists,
+Connect displays an actionable message and never claims a relay connection.
 
 ## Command-line validation
 

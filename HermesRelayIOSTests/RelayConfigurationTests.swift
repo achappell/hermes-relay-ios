@@ -89,6 +89,63 @@ final class RelayConfigurationTests: XCTestCase {
         }
     }
 
+    func testConfigurationDraftLoadsProfileFieldsWithoutLoadingTheToken() throws {
+        let profile = try RelayProfile(
+            endpoint: URL(string: "wss://relay.example.test/session")!,
+            clientID: "hermes-ios",
+            deviceID: "device-123",
+            displayName: "Amanda's iPhone"
+        )
+
+        let draft = RelayConfigurationDraft(profile: profile, hasStoredToken: true)
+
+        XCTAssertEqual(draft.endpoint, "wss://relay.example.test/session")
+        XCTAssertEqual(draft.clientID, "hermes-ios")
+        XCTAssertEqual(draft.deviceID, "device-123")
+        XCTAssertEqual(draft.displayName, "Amanda's iPhone")
+        XCTAssertTrue(draft.hasStoredToken)
+        XCTAssertTrue(draft.token.isEmpty)
+    }
+
+    func testConfigurationDraftBuildsTrimmedProfileAndToken() throws {
+        var draft = RelayConfigurationDraft()
+        draft.endpoint = "  wss://relay.example.test/session  "
+        draft.clientID = "  hermes-ios "
+        draft.deviceID = " device-123 "
+        draft.displayName = " Amanda's iPhone "
+        draft.token = " token-value "
+
+        let profile = try draft.makeProfile()
+
+        XCTAssertEqual(profile.endpoint.absoluteString, "wss://relay.example.test/session")
+        XCTAssertEqual(profile.clientID, "hermes-ios")
+        XCTAssertEqual(profile.deviceID, "device-123")
+        XCTAssertEqual(profile.displayName, "Amanda's iPhone")
+        XCTAssertEqual(try draft.tokenToSave(existingToken: nil), "token-value")
+    }
+
+    func testConfigurationDraftKeepsStoredTokenWhenInputIsBlank() throws {
+        let draft = RelayConfigurationDraft(hasStoredToken: true)
+
+        XCTAssertEqual(try draft.tokenToSave(existingToken: "stored-token"), "stored-token")
+    }
+
+    func testConfigurationDraftRequiresTokenWhenNoTokenIsStored() {
+        let draft = RelayConfigurationDraft()
+
+        XCTAssertThrowsError(try draft.tokenToSave(existingToken: nil)) { error in
+            XCTAssertEqual(error as? RelayConfigurationFormError, .tokenRequired)
+        }
+    }
+
+    func testConfigurationDraftRejectsAnEmptyEndpoint() {
+        let draft = RelayConfigurationDraft()
+
+        XCTAssertThrowsError(try draft.makeProfile()) { error in
+            XCTAssertEqual(error as? RelayConfigurationFormError, .endpointRequired)
+        }
+    }
+
     private func temporaryProfileURL() -> URL {
         FileManager.default.temporaryDirectory
             .appendingPathComponent("HermesRelayIOS-\(UUID().uuidString)")

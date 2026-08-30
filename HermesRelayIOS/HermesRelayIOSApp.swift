@@ -4,6 +4,7 @@ import SwiftUI
 @main
 struct HermesRelayIOSApp: App {
     @State private var store: ConversationStore
+    private let configuration: RelayConfigurationStore
 
     init() {
         let applicationSupport = FileManager.default.urls(
@@ -24,11 +25,12 @@ struct HermesRelayIOSApp: App {
                 persistence: persistence
             )
         )
+        self.configuration = configuration
     }
 
     var body: some Scene {
         WindowGroup {
-            ContentView(store: store)
+            ContentView(store: store, configurationStore: configuration)
                 .task {
                     await store.loadPersistedConversation()
                 }
