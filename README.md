@@ -7,20 +7,20 @@ the Python/Textual
 
 ## Current state
 
-The first slice provides:
+The current voice slice provides:
 
-- A small SwiftUI conversation shell with a calm connection state surface.
-- Typed transcript models and a composer.
-- A transport protocol seam for Hermes `hello`, streamed turns, text events,
-  errors, and completion.
-- An explicit unavailable-relay client so the shell never pretends that an
-  unimplemented transport is connected.
-- XCTest coverage for the protocol boundary and unavailable state.
-- Repository workflow, architecture notes, and a manual foundation smoke plan.
-
-The live WebSocket transport, Keychain profile setup, microphone capture, and
-audio playback are intentionally follow-up slices. The app should be honest
-about those boundaries while the relay contract is being connected.
+- A SwiftUI conversation shell with connection, voice-state, and transcript
+  surfaces.
+- Keychain-backed bearer-token storage and an application-support relay profile.
+- A protocol-v1 WebSocket transport gated on `hello_ack`, with normalized text,
+  activity, audio, error, and completion events.
+- Push-to-talk local transcription with permission and cancellation handling.
+- Signed 16-bit PCM playback with temporary WAV recovery when live playback
+  fails.
+- Local transcript/draft persistence and an explicit unconfirmed-turn marker;
+  reconnect never silently replays a turn.
+- Deterministic XCTest coverage for transport, speech, audio, coordination, and
+  recovery boundaries.
 
 ## Requirements
 
@@ -40,8 +40,8 @@ open HermesRelayIOS.xcodeproj
 ```
 
 Select the `HermesRelayIOS` scheme and either an iPhone simulator or `My Mac`.
-The initial shell will build and launch without a relay; tapping Connect
-displays the explicit not-yet-wired transport state.
+Without a locally stored profile and Keychain token, Connect displays an
+actionable configuration message and never claims a relay connection.
 
 ## Command-line validation
 
@@ -97,6 +97,9 @@ channel. The iOS client should preserve these boundaries:
    events into typed app events.
 5. Keep WebSocket reading in one transport task and deliver events to the
    main-actor store.
+6. Capture and transcribe locally; do not upload microphone bytes to Hermes.
+7. Play only the declared signed 16-bit PCM stream and preserve visible text
+   if playback fails.
 
 The existing relay is text-capable but does not currently expose a complete
 iOS-specific upload or control contract. Do not silently drop attachments or

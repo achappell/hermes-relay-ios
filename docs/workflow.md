@@ -35,6 +35,11 @@ failure before adding session browsing or media polish.
 7. Run the manual smoke plan and record evidence on the board item.
 8. Commit one coherent slice with a conventional commit message.
 
+For the voice path, the manual plan is
+[`docs/plans/2026-08-30-ios-voice-interface-testing-plan.md`](plans/2026-08-30-ios-voice-interface-testing-plan.md).
+It is the authority for device-only microphone, speaker-route, permission, and
+network-loss checks.
+
 ## Validation ladder
 
 ```text
@@ -54,6 +59,11 @@ Board evidence and merge
 Unit tests use fake session clients. Live testing is reserved for the manual
 plan and must use a token supplied through secure local configuration; never
 put a token in source, test fixtures, screenshots, or logs.
+
+Voice-specific evidence records state transitions, turn counts, error wording,
+and build/test destinations. It does not record prompts, responses, bearer
+tokens, raw WebSocket frames, microphone captures, PCM bytes, or screenshots
+containing private content.
 
 ## Commit boundaries
 
