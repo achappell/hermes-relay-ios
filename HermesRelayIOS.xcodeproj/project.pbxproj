@@ -65,6 +65,7 @@
 		A10000000000000000000034 /* SecureValueStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SecureValueStore.swift; sourceTree = "<group>"; };
 		A10000000000000000000035 /* RelayConfigurationStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RelayConfigurationStore.swift; sourceTree = "<group>"; };
 		A10000000000000000000036 /* HermesRelayIOS.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = HermesRelayIOS.entitlements; sourceTree = "<group>"; };
+		A1000000000000000000009D /* Development-Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Development-Info.plist; sourceTree = "<group>"; };
 		A10000000000000000000037 /* HermesEventNormalizerTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HermesEventNormalizerTests.swift; sourceTree = "<group>"; };
 		A10000000000000000000038 /* HermesEventNormalizer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HermesEventNormalizer.swift; sourceTree = "<group>"; };
 		A10000000000000000000039 /* URLSessionHermesSessionClientTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = URLSessionHermesSessionClientTests.swift; sourceTree = "<group>"; };
@@ -118,6 +119,7 @@
 			isa = PBXGroup;
 			children = (
 				A10000000000000000000021 /* HermesRelayIOSApp.swift */,
+				A1000000000000000000009D /* Development-Info.plist */,
 				A10000000000000000000036 /* HermesRelayIOS.entitlements */,
 				A10000000000000000000064 /* Models */,
 				A10000000000000000000065 /* Services */,
@@ -387,8 +389,9 @@
 				ENABLE_HARDENED_RUNTIME = YES;
 				ENABLE_OUTGOING_NETWORK_CONNECTIONS = YES;
 				ENABLE_TESTABILITY = YES;
-				GENERATE_INFOPLIST_FILE = YES;
+				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_KEY_CFBundleDisplayName = "Hermes Relay";
+				INFOPLIST_FILE = HermesRelayIOS/Development-Info.plist;
 				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.productivity";
 				INFOPLIST_KEY_NSMicrophoneUsageDescription = "Hermes uses the microphone for push-to-talk voice turns.";
 				INFOPLIST_KEY_NSSpeechRecognitionUsageDescription = "Hermes uses speech recognition to turn a voice turn into text.";

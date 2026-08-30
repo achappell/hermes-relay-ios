@@ -1,5 +1,9 @@
 import Foundation
 
+#if os(iOS)
+import UIKit
+#endif
+
 enum RelayConfigurationError: LocalizedError, Equatable, Sendable {
     case emptyToken
     case invalidTokenEncoding
@@ -83,6 +87,60 @@ enum RelayConfigurationFormError: LocalizedError, Equatable, Sendable {
     }
 }
 
+struct RelayDeviceIdentity: Equatable, Sendable {
+    let deviceName: String
+
+    init(deviceName: String) {
+        let trimmedName = deviceName.trimmingCharacters(in: .whitespacesAndNewlines)
+        self.deviceName = trimmedName.isEmpty ? "Apple device" : trimmedName
+    }
+
+    var clientID: String {
+        "hermes-\(Self.platformIdentifier)-\(slug)"
+    }
+
+    var deviceID: String {
+        slug
+    }
+
+    var displayName: String {
+        deviceName
+    }
+
+    @MainActor
+    static func current() -> Self {
+        #if os(iOS)
+        Self(deviceName: UIDevice.current.name)
+        #elseif os(macOS)
+        Self(deviceName: Host.current().localizedName ?? "Mac")
+        #else
+        Self(deviceName: "Apple device")
+        #endif
+    }
+
+    private static var platformIdentifier: String {
+        #if os(iOS)
+        "ios"
+        #elseif os(macOS)
+        "mac"
+        #else
+        "apple"
+        #endif
+    }
+
+    private var slug: String {
+        let normalizedName = deviceName.folding(
+            options: [.diacriticInsensitive, .caseInsensitive],
+            locale: Locale(identifier: "en_US_POSIX")
+        )
+        let separated = normalizedName.unicodeScalars.map { scalar in
+            CharacterSet.alphanumerics.contains(scalar) ? String(scalar) : "-"
+        }.joined()
+        let collapsed = separated.split(separator: "-").joined(separator: "-")
+        return collapsed.isEmpty ? "device" : collapsed
+    }
+}
+
 struct RelayConfigurationDraft: Equatable, Sendable {
     var endpoint: String
     var clientID: String
@@ -91,11 +149,15 @@ struct RelayConfigurationDraft: Equatable, Sendable {
     var token: String
     var hasStoredToken: Bool
 
-    init(profile: RelayProfile? = nil, hasStoredToken: Bool = false) {
+    init(
+        profile: RelayProfile? = nil,
+        hasStoredToken: Bool = false,
+        identity: RelayDeviceIdentity = RelayDeviceIdentity(deviceName: "Apple device")
+    ) {
         endpoint = profile?.endpoint.absoluteString ?? ""
-        clientID = profile?.clientID ?? ""
-        deviceID = profile?.deviceID ?? ""
-        displayName = profile?.displayName ?? ""
+        clientID = profile?.clientID ?? identity.clientID
+        deviceID = profile?.deviceID ?? identity.deviceID
+        displayName = profile?.displayName ?? identity.displayName
         token = ""
         self.hasStoredToken = hasStoredToken
     }

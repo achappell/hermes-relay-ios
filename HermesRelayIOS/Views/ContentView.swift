@@ -322,7 +322,7 @@ struct RelayConfigurationView: View {
     let onSaved: @MainActor () async -> Void
 
     @Environment(\.dismiss) private var dismiss
-    @State private var draft = RelayConfigurationDraft()
+    @State private var draft: RelayConfigurationDraft
     @State private var isLoading = false
     @State private var isSaving = false
     @State private var errorMessage: String?
@@ -335,6 +335,7 @@ struct RelayConfigurationView: View {
     ) {
         self.configurationStore = configurationStore
         self.onSaved = onSaved
+        _draft = State(initialValue: RelayConfigurationDraft(identity: .current()))
     }
 
     var body: some View {
@@ -363,7 +364,10 @@ struct RelayConfigurationView: View {
                 } header: {
                     Text("Relay")
                 } footer: {
-                    Text("Use a ws:// or wss:// WebSocket endpoint.")
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text("Use a ws:// or wss:// WebSocket endpoint.")
+                        Text("Client and device IDs start from this device’s name and remain editable.")
+                    }
                 }
 
                 Section {
@@ -449,7 +453,11 @@ struct RelayConfigurationView: View {
         do {
             let profile = try await configurationStore.loadProfile()
             let token = try await configurationStore.loadToken()
-            draft = RelayConfigurationDraft(profile: profile, hasStoredToken: token != nil)
+            draft = RelayConfigurationDraft(
+                profile: profile,
+                hasStoredToken: token != nil,
+                identity: .current()
+            )
             didLoad = true
         } catch {
             errorMessage = error.localizedDescription

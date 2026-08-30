@@ -107,6 +107,16 @@ final class RelayConfigurationTests: XCTestCase {
         XCTAssertTrue(draft.token.isEmpty)
     }
 
+    func testConfigurationDraftUsesEditableDeviceIdentityDefaults() {
+        let draft = RelayConfigurationDraft(
+            identity: RelayDeviceIdentity(deviceName: "Amanda’s iPhone")
+        )
+
+        XCTAssertEqual(draft.clientID, "hermes-ios-amanda-s-iphone")
+        XCTAssertEqual(draft.deviceID, "amanda-s-iphone")
+        XCTAssertEqual(draft.displayName, "Amanda’s iPhone")
+    }
+
     func testConfigurationDraftBuildsTrimmedProfileAndToken() throws {
         var draft = RelayConfigurationDraft()
         draft.endpoint = "  wss://relay.example.test/session  "
