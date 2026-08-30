@@ -14,26 +14,36 @@ struct VoiceControl: View {
     }
 
     var body: some View {
-        VStack(spacing: 8) {
-            ZStack {
-                Circle()
-                    .fill(isCapturing ? Color.accentColor : Color.secondary.opacity(0.18))
-                    .frame(width: 64, height: 64)
-                Image(systemName: coordinator.state.systemImage)
-                    .font(.title2)
-                    .foregroundStyle(isCapturing ? .white : .primary)
+        HStack(spacing: 12) {
+            VStack(alignment: .leading, spacing: 2) {
+                Text(isCapturing ? "Release to send" : "Hold to speak")
+                    .font(.subheadline.weight(.semibold))
+                Text(coordinator.state.label)
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
             }
-            .contentShape(Circle())
-            .gesture(pressAndHoldGesture)
-            .accessibilityLabel("Voice control, \(coordinator.state.label.lowercased())")
-            .accessibilityHint("Press and hold to speak. Release to send.")
+
+            Spacer(minLength: 8)
 
             if isCapturing {
                 Button("Cancel") {
                     Task { await coordinator.cancelCapture() }
                 }
-                .font(.footnote)
+                .font(.footnote.weight(.medium))
+                .relayGlassButtonStyle()
             }
+
+            ZStack {
+                Image(systemName: coordinator.state.systemImage)
+                    .font(.headline)
+                    .foregroundStyle(isCapturing ? .white : .primary)
+            }
+            .frame(width: 52, height: 52)
+            .contentShape(Circle())
+            .gesture(pressAndHoldGesture)
+            .accessibilityLabel("Voice control, \(coordinator.state.label.lowercased())")
+            .accessibilityHint("Press and hold to speak. Release to send.")
+            .relayCircleGlass(tint: isCapturing ? .accentColor : nil, interactive: true)
         }
     }
 
