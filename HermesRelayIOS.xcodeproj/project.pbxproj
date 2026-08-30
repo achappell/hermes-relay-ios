@@ -23,6 +23,10 @@
 		A1000000000000000000002C /* SpeechInputTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1000000000000000000003D /* SpeechInputTests.swift */; };
 		A1000000000000000000002D /* SpeechInput.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1000000000000000000003E /* SpeechInput.swift */; };
 		A1000000000000000000002E /* AppleSpeechInput.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1000000000000000000003F /* AppleSpeechInput.swift */; };
+		A10000000000000000000087 /* AudioOutputTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1000000000000000000008B /* AudioOutputTests.swift */; };
+		A10000000000000000000088 /* AudioOutput.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1000000000000000000008C /* AudioOutput.swift */; };
+		A10000000000000000000089 /* AppleAudioOutput.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1000000000000000000008D /* AppleAudioOutput.swift */; };
+		A1000000000000000000008A /* WAVFallbackWriter.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1000000000000000000008E /* WAVFallbackWriter.swift */; };
 		A10000000000000000000019 /* RelayProfile.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000000000000000000033 /* RelayProfile.swift */; };
 		A1000000000000000000001A /* SecureValueStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000000000000000000034 /* SecureValueStore.swift */; };
 		A1000000000000000000001B /* RelayConfigurationStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000000000000000000035 /* RelayConfigurationStore.swift */; };
@@ -63,6 +67,10 @@
 		A1000000000000000000003D /* SpeechInputTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SpeechInputTests.swift; sourceTree = "<group>"; };
 		A1000000000000000000003E /* SpeechInput.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SpeechInput.swift; sourceTree = "<group>"; };
 		A1000000000000000000003F /* AppleSpeechInput.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppleSpeechInput.swift; sourceTree = "<group>"; };
+		A1000000000000000000008B /* AudioOutputTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AudioOutputTests.swift; sourceTree = "<group>"; };
+		A1000000000000000000008C /* AudioOutput.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AudioOutput.swift; sourceTree = "<group>"; };
+		A1000000000000000000008D /* AppleAudioOutput.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppleAudioOutput.swift; sourceTree = "<group>"; };
+		A1000000000000000000008E /* WAVFallbackWriter.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WAVFallbackWriter.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -114,6 +122,7 @@
 				A10000000000000000000039 /* URLSessionHermesSessionClientTests.swift */,
 				A1000000000000000000003C /* ConversationStoreTransportTests.swift */,
 				A1000000000000000000003D /* SpeechInputTests.swift */,
+				A1000000000000000000008B /* AudioOutputTests.swift */,
 			);
 			path = HermesRelayIOSTests;
 			sourceTree = "<group>";
@@ -145,6 +154,9 @@
 				A1000000000000000000003B /* URLSessionHermesSessionClient.swift */,
 				A1000000000000000000003E /* SpeechInput.swift */,
 				A1000000000000000000003F /* AppleSpeechInput.swift */,
+				A1000000000000000000008C /* AudioOutput.swift */,
+				A1000000000000000000008D /* AppleAudioOutput.swift */,
+				A1000000000000000000008E /* WAVFallbackWriter.swift */,
 				A10000000000000000000034 /* SecureValueStore.swift */,
 				A10000000000000000000035 /* RelayConfigurationStore.swift */,
 			);
@@ -279,6 +291,9 @@
 				A1000000000000000000002A /* URLSessionHermesSessionClient.swift in Sources */,
 				A1000000000000000000002D /* SpeechInput.swift in Sources */,
 				A1000000000000000000002E /* AppleSpeechInput.swift in Sources */,
+				A10000000000000000000088 /* AudioOutput.swift in Sources */,
+				A10000000000000000000089 /* AppleAudioOutput.swift in Sources */,
+				A1000000000000000000008A /* WAVFallbackWriter.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -292,6 +307,7 @@
 				A1000000000000000000001E /* URLSessionHermesSessionClientTests.swift in Sources */,
 				A1000000000000000000002B /* ConversationStoreTransportTests.swift in Sources */,
 				A1000000000000000000002C /* SpeechInputTests.swift in Sources */,
+				A10000000000000000000087 /* AudioOutputTests.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
