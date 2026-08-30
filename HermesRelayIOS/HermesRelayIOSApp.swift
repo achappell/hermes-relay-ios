@@ -10,18 +10,28 @@ struct HermesRelayIOSApp: App {
             for: .applicationSupportDirectory,
             in: .userDomainMask
         ).first ?? FileManager.default.temporaryDirectory
+        let appDirectory = applicationSupport.appendingPathComponent("HermesRelayIOS")
         let configuration = RelayConfigurationStore(
             secureStore: KeychainSecureValueStore(),
-            profileURL: applicationSupport
-                .appendingPathComponent("HermesRelayIOS")
-                .appendingPathComponent("profile.json")
+            profileURL: appDirectory.appendingPathComponent("profile.json")
         )
-        _store = State(initialValue: ConversationStore(configurationStore: configuration))
+        let persistence = JSONConversationPersistence(
+            fileURL: appDirectory.appendingPathComponent("conversation.json")
+        )
+        _store = State(
+            initialValue: ConversationStore(
+                configurationStore: configuration,
+                persistence: persistence
+            )
+        )
     }
 
     var body: some Scene {
         WindowGroup {
             ContentView(store: store)
+                .task {
+                    await store.loadPersistedConversation()
+                }
         }
     }
 }

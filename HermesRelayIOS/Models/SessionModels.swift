@@ -88,14 +88,14 @@ struct AudioFormat: Equatable, Sendable {
     let sampleWidth: Int
 }
 
-enum TranscriptRole: String, Equatable, Sendable {
+enum TranscriptRole: String, Codable, Equatable, Sendable {
     case user
     case assistant
     case system
     case error
 }
 
-struct TranscriptMessage: Identifiable, Equatable, Sendable {
+struct TranscriptMessage: Codable, Identifiable, Equatable, Sendable {
     let id: UUID
     let role: TranscriptRole
     var text: String

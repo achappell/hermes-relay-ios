@@ -31,6 +31,9 @@
 		A10000000000000000000090 /* VoiceSessionCoordinator.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000000000000000000094 /* VoiceSessionCoordinator.swift */; };
 		A10000000000000000000091 /* VoiceStatusView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000000000000000000095 /* VoiceStatusView.swift */; };
 		A10000000000000000000092 /* VoiceControl.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000000000000000000096 /* VoiceControl.swift */; };
+		A10000000000000000000097 /* ConversationPersistenceTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1000000000000000000009A /* ConversationPersistenceTests.swift */; };
+		A10000000000000000000098 /* RecoveryTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1000000000000000000009B /* RecoveryTests.swift */; };
+		A10000000000000000000099 /* ConversationPersistence.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1000000000000000000009C /* ConversationPersistence.swift */; };
 		A10000000000000000000019 /* RelayProfile.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000000000000000000033 /* RelayProfile.swift */; };
 		A1000000000000000000001A /* SecureValueStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000000000000000000034 /* SecureValueStore.swift */; };
 		A1000000000000000000001B /* RelayConfigurationStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000000000000000000035 /* RelayConfigurationStore.swift */; };
@@ -79,6 +82,9 @@
 		A10000000000000000000094 /* VoiceSessionCoordinator.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VoiceSessionCoordinator.swift; sourceTree = "<group>"; };
 		A10000000000000000000095 /* VoiceStatusView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VoiceStatusView.swift; sourceTree = "<group>"; };
 		A10000000000000000000096 /* VoiceControl.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VoiceControl.swift; sourceTree = "<group>"; };
+		A1000000000000000000009A /* ConversationPersistenceTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ConversationPersistenceTests.swift; sourceTree = "<group>"; };
+		A1000000000000000000009B /* RecoveryTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RecoveryTests.swift; sourceTree = "<group>"; };
+		A1000000000000000000009C /* ConversationPersistence.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ConversationPersistence.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -132,6 +138,8 @@
 				A1000000000000000000003D /* SpeechInputTests.swift */,
 				A1000000000000000000008B /* AudioOutputTests.swift */,
 				A10000000000000000000093 /* VoiceSessionCoordinatorTests.swift */,
+				A1000000000000000000009A /* ConversationPersistenceTests.swift */,
+				A1000000000000000000009B /* RecoveryTests.swift */,
 			);
 			path = HermesRelayIOSTests;
 			sourceTree = "<group>";
@@ -168,6 +176,7 @@
 				A1000000000000000000008E /* WAVFallbackWriter.swift */,
 				A10000000000000000000034 /* SecureValueStore.swift */,
 				A10000000000000000000035 /* RelayConfigurationStore.swift */,
+				A1000000000000000000009C /* ConversationPersistence.swift */,
 			);
 			path = Services;
 			sourceTree = "<group>";
@@ -309,6 +318,7 @@
 				A10000000000000000000090 /* VoiceSessionCoordinator.swift in Sources */,
 				A10000000000000000000091 /* VoiceStatusView.swift in Sources */,
 				A10000000000000000000092 /* VoiceControl.swift in Sources */,
+				A10000000000000000000099 /* ConversationPersistence.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -324,6 +334,8 @@
 				A1000000000000000000002C /* SpeechInputTests.swift in Sources */,
 				A10000000000000000000087 /* AudioOutputTests.swift in Sources */,
 				A1000000000000000000008F /* VoiceSessionCoordinatorTests.swift in Sources */,
+				A10000000000000000000097 /* ConversationPersistenceTests.swift in Sources */,
+				A10000000000000000000098 /* RecoveryTests.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
