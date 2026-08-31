@@ -81,6 +81,24 @@ final class HermesEventNormalizerTests: XCTestCase {
         XCTAssertEqual(chunk, .audioChunk(Data([0, 1, 2, 3])))
     }
 
+    func testAudioFileFramesRemainTypedUntilTheFileEnds() throws {
+        var normalizer = HermesEventNormalizer()
+
+        let start = try normalizer.normalizeJSON(
+            json(["type": "audio_file_start", "content_type": "audio/wav"]),
+            turnID: "turn-1"
+        )
+        let chunk = normalizer.normalizeBinary(Data([0, 1, 2, 3]), audioFileActive: true)
+        let end = try normalizer.normalizeJSON(
+            json(["type": "audio_file_end"]),
+            turnID: "turn-1"
+        )
+
+        XCTAssertEqual(start, [.audioFileStart(contentType: "audio/wav")])
+        XCTAssertEqual(chunk, .audioFileChunk(Data([0, 1, 2, 3])))
+        XCTAssertEqual(end, [.audioFileEnd])
+    }
+
     func testErrorStopsWithTheServerMessageOrFallback() throws {
         var normalizer = HermesEventNormalizer()
 

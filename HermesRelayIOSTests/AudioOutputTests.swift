@@ -99,6 +99,19 @@ final class AudioOutputTests: XCTestCase {
         XCTAssertEqual(Data(wav[44...]), pcm)
     }
 
+    func testWAVDecoderExtractsDeclaredFormatAndPCM() throws {
+        let writer = WAVFallbackWriter()
+        let format = AudioFormat(sampleRate: 24_000, channels: 1, sampleWidth: 2)
+        let pcm = Data([0x01, 0x02, 0x03, 0x04])
+        let url = try writer.write(pcm: pcm, format: format)
+        defer { try? FileManager.default.removeItem(at: url) }
+
+        let decoded = try WAVAudioDecoder().decode(Data(contentsOf: url))
+
+        XCTAssertEqual(decoded.format, format)
+        XCTAssertEqual(decoded.pcm, pcm)
+    }
+
     func testWAVFallbackRejectsUnsupportedSampleWidth() {
         let writer = WAVFallbackWriter()
         let format = AudioFormat(sampleRate: 24_000, channels: 1, sampleWidth: 4)

@@ -44,3 +44,105 @@ struct WAVFallbackWriter: Sendable {
         data.append(UInt8((value >> 24) & 0xff))
     }
 }
+
+enum WAVAudioDecodingError: LocalizedError, Equatable, Sendable {
+    case invalidFile
+    case unsupportedFormat
+
+    var errorDescription: String? {
+        switch self {
+        case .invalidFile:
+            return "Hermes returned an invalid WAV audio file."
+        case .unsupportedFormat:
+            return "Hermes returned an unsupported WAV audio format."
+        }
+    }
+}
+
+struct DecodedWAVAudio: Equatable, Sendable {
+    let pcm: Data
+    let format: AudioFormat
+}
+
+struct WAVAudioDecoder: Sendable {
+    func decode(_ wav: Data) throws -> DecodedWAVAudio {
+        guard wav.count >= 12,
+              chunkID(in: wav, offset: 0) == "RIFF",
+              chunkID(in: wav, offset: 8) == "WAVE" else {
+            throw WAVAudioDecodingError.invalidFile
+        }
+
+        var cursor = 12
+        var format: AudioFormat?
+        var pcm: Data?
+
+        while cursor <= wav.count - 8 {
+            let chunkSize = Int(readUInt32(from: wav, offset: cursor + 4))
+            let payloadStart = cursor + 8
+            guard chunkSize <= wav.count - payloadStart else {
+                throw WAVAudioDecodingError.invalidFile
+            }
+            let payloadEnd = payloadStart + chunkSize
+
+            switch chunkID(in: wav, offset: cursor) {
+            case "fmt ":
+                guard chunkSize >= 16 else {
+                    throw WAVAudioDecodingError.invalidFile
+                }
+                guard readUInt16(from: wav, offset: payloadStart) == 1 else {
+                    throw WAVAudioDecodingError.unsupportedFormat
+                }
+                let channels = Int(readUInt16(from: wav, offset: payloadStart + 2))
+                let sampleRate = Int(readUInt32(from: wav, offset: payloadStart + 4))
+                let blockAlign = Int(readUInt16(from: wav, offset: payloadStart + 12))
+                let bitsPerSample = Int(readUInt16(from: wav, offset: payloadStart + 14))
+                let sampleWidth = bitsPerSample / 8
+                guard channels > 0,
+                      sampleRate > 0,
+                      bitsPerSample == 16,
+                      sampleWidth == 2,
+                      blockAlign == channels * sampleWidth else {
+                    throw WAVAudioDecodingError.unsupportedFormat
+                }
+                format = AudioFormat(
+                    sampleRate: sampleRate,
+                    channels: channels,
+                    sampleWidth: sampleWidth
+                )
+            case "data":
+                pcm = Data(wav[payloadStart..<payloadEnd])
+            default:
+                break
+            }
+
+            let paddedEnd = payloadEnd + chunkSize % 2
+            guard paddedEnd <= wav.count else {
+                throw WAVAudioDecodingError.invalidFile
+            }
+            cursor = paddedEnd
+        }
+
+        guard let format, let pcm else {
+            throw WAVAudioDecodingError.invalidFile
+        }
+        guard pcm.count % (format.channels * format.sampleWidth) == 0 else {
+            throw WAVAudioDecodingError.invalidFile
+        }
+        return DecodedWAVAudio(pcm: pcm, format: format)
+    }
+
+    private func chunkID(in data: Data, offset: Int) -> String {
+        String(decoding: data[offset..<(offset + 4)], as: UTF8.self)
+    }
+
+    private func readUInt16(from data: Data, offset: Int) -> UInt16 {
+        UInt16(data[offset]) | UInt16(data[offset + 1]) << 8
+    }
+
+    private func readUInt32(from data: Data, offset: Int) -> UInt32 {
+        UInt32(data[offset])
+            | UInt32(data[offset + 1]) << 8
+            | UInt32(data[offset + 2]) << 16
+            | UInt32(data[offset + 3]) << 24
+    }
+}

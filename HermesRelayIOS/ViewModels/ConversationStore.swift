@@ -87,14 +87,18 @@ final class ConversationStore {
         }
     }
 
-    func sendDraft() async {
+    @discardableResult
+    func sendDraft(
+        eventHandler: (@MainActor @Sendable (HermesEvent) async -> Void)? = nil
+    ) async -> Bool {
         let text = draft.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !text.isEmpty else { return }
-        let completed = await sendTurn(text: text)
+        guard !text.isEmpty else { return false }
+        let completed = await sendTurn(text: text, eventHandler: eventHandler)
         if completed, draft.trimmingCharacters(in: .whitespacesAndNewlines) == text {
             draft = ""
             await persistConversation()
         }
+        return completed
     }
 
     @discardableResult
@@ -183,7 +187,8 @@ final class ConversationStore {
             activityText = text
         case .status(let text, _):
             activityText = text
-        case .audioStart, .audioChunk, .audioEnd, .unknown:
+        case .audioStart, .audioChunk, .audioEnd,
+             .audioFileStart, .audioFileChunk, .audioFileEnd, .unknown:
             break
         case .messageComplete(_, _, let failureReason):
             if !failureReason.isEmpty {

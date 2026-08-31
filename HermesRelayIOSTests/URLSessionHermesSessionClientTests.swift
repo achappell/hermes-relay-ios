@@ -108,6 +108,30 @@ final class URLSessionHermesSessionClientTests: XCTestCase {
         await client.disconnect()
     }
 
+    func testWAVFileFramesDoNotBecomeUnexpectedBinaryAudio() async throws {
+        let socket = FakeWebSocketConnection()
+        socket.enqueue(.text(json(["type": "hello_ack"])))
+        let client = try makeClient(socket: socket)
+        _ = try await client.connect()
+
+        let stream = await client.sendTurn(text: "/voice tts")
+        socket.enqueue(.text(json(["type": "audio_file_start", "content_type": "audio/wav"])))
+        socket.enqueue(.binary(Data([0, 1, 2, 3])))
+        socket.enqueue(.text(json(["type": "audio_file_end"])))
+        socket.enqueue(.text(json(["type": "turn_end"])))
+
+        let events = try await collect(stream)
+
+        XCTAssertEqual(events, [
+            .audioFileStart(contentType: "audio/wav"),
+            .audioFileChunk(Data([0, 1, 2, 3])),
+            .audioFileEnd,
+            .turnComplete(turnID: try XCTUnwrap(socket.sentTexts.last?.jsonObject()["turn_id"] as? String)),
+        ])
+
+        await client.disconnect()
+    }
+
     func testServerErrorFinishesTheTurnWithAnActionableError() async throws {
         let socket = FakeWebSocketConnection()
         socket.enqueue(.text(json(["type": "hello_ack"])))

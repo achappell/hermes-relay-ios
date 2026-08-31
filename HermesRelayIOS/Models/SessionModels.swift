@@ -116,6 +116,9 @@ enum HermesEvent: Equatable, Sendable {
     case audioStart(AudioFormat)
     case audioChunk(Data)
     case audioEnd
+    case audioFileStart(contentType: String)
+    case audioFileChunk(Data)
+    case audioFileEnd
     case messageComplete(text: String, reasoning: String, failureReason: String)
     case turnComplete(turnID: String)
     case error(String)

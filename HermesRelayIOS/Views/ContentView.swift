@@ -242,7 +242,7 @@ struct ContentView: View {
     private func sendDraftIfPossible() {
         guard canSend else { return }
         Task {
-            await store.sendDraft()
+            await voiceCoordinator.sendDraft()
         }
     }
 }

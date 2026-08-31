@@ -5,7 +5,9 @@ actor AppleAudioOutput: AudioOutput {
     private let engine = AVAudioEngine()
     private let playerNode = AVAudioPlayerNode()
     private var audioFormat: AVAudioFormat?
+    private var pcmResponseBuffer = Data()
     private var isAcceptingAudio = false
+    private var playbackStarted = false
 
     init() {
         engine.attach(playerNode)
@@ -34,8 +36,8 @@ actor AppleAudioOutput: AudioOutput {
             engine.connect(playerNode, to: engine.mainMixerNode, format: avFormat)
             engine.prepare()
             try engine.start()
-            playerNode.play()
             audioFormat = avFormat
+            pcmResponseBuffer.removeAll(keepingCapacity: true)
             isAcceptingAudio = true
         } catch {
             stopResources()
@@ -54,9 +56,37 @@ actor AppleAudioOutput: AudioOutput {
         }
         guard !pcm.isEmpty else { return }
 
+        pcmResponseBuffer.append(pcm)
+    }
+
+    func finish() async {
+        if let audioFormat,
+           let bytesPerFrame = Int(exactly: audioFormat.streamDescription.pointee.mBytesPerFrame),
+           !pcmResponseBuffer.isEmpty {
+            let pcmToSchedule = pcmResponseBuffer
+            pcmResponseBuffer.removeAll(keepingCapacity: true)
+            try? schedule(pcmToSchedule, format: audioFormat, bytesPerFrame: bytesPerFrame)
+        }
+        isAcceptingAudio = false
+    }
+
+    func stop() async {
+        stopResources()
+    }
+
+    private func schedule(
+        _ pcm: Data,
+        format: AVAudioFormat?,
+        bytesPerFrame: Int
+    ) throws {
+        guard let format else { throw AudioOutputError.notStarted }
+        guard !pcm.isEmpty, pcm.count % bytesPerFrame == 0 else {
+            throw AudioOutputError.outputFailed
+        }
+
         let frameCapacity = AVAudioFrameCount(pcm.count / bytesPerFrame)
         guard let buffer = AVAudioPCMBuffer(
-            pcmFormat: audioFormat,
+            pcmFormat: format,
             frameCapacity: frameCapacity
         ) else {
             throw AudioOutputError.outputFailed
@@ -70,19 +100,20 @@ actor AppleAudioOutput: AudioOutput {
             guard let source = bytes.baseAddress else { return }
             memcpy(destination, source, pcm.count)
         }
-        await playerNode.scheduleBuffer(buffer)
+        playerNode.scheduleBuffer(buffer, completionHandler: nil)
+        startPlaybackIfNeeded()
     }
 
-    func finish() async {
-        isAcceptingAudio = false
-    }
-
-    func stop() async {
-        stopResources()
+    private func startPlaybackIfNeeded() {
+        guard !playbackStarted else { return }
+        playerNode.play()
+        playbackStarted = true
     }
 
     private func stopResources() {
         isAcceptingAudio = false
+        pcmResponseBuffer.removeAll(keepingCapacity: false)
+        playbackStarted = false
         playerNode.stop()
         engine.stop()
         engine.disconnectNodeOutput(playerNode)

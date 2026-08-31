@@ -100,6 +100,16 @@ struct HermesEventNormalizer: Sendable {
             ]
         case "audio_end":
             return [.audioEnd]
+        case "audio_file_start":
+            return [
+                .audioFileStart(
+                    contentType: stringValue(for: "content_type", in: payload)
+                        ?? stringValue(for: "content_type", in: object)
+                        ?? "audio/wav"
+                )
+            ]
+        case "audio_file_end":
+            return [.audioFileEnd]
         case "error":
             let message = stringValue(for: "error", in: payload)
                 ?? stringValue(for: "message", in: payload)
@@ -121,8 +131,7 @@ struct HermesEventNormalizer: Sendable {
     }
 
     func normalizeBinary(_ data: Data, audioFileActive: Bool) -> HermesEvent {
-        _ = audioFileActive
-        return .audioChunk(data)
+        audioFileActive ? .audioFileChunk(data) : .audioChunk(data)
     }
 
     private mutating func normalizePreview(_ preview: String, replace: Bool) -> [HermesEvent] {

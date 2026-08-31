@@ -15,6 +15,7 @@ final class VoiceSessionCoordinator {
     private var captureTask: Task<Void, Never>?
     private var responseTask: Task<Void, Never>?
     private var playbackFailed = false
+    private var audioFileBuffer = Data()
 
     init(
         store: ConversationStore,
@@ -100,6 +101,18 @@ final class VoiceSessionCoordinator {
         }
     }
 
+    func sendDraft() async {
+        guard captureTask == nil, responseTask == nil else { return }
+        guard !store.draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
+
+        playbackFailed = false
+        responseTask = Task { [weak self] in
+            await self?.submitDraft()
+        }
+        await responseTask?.value
+        responseTask = nil
+    }
+
     private func consumeRecognition(
         _ stream: AsyncThrowingStream<SpeechRecognitionUpdate, Error>
     ) async {
@@ -143,6 +156,7 @@ final class VoiceSessionCoordinator {
             }
         case .audioStart(let format):
             guard !playbackFailed else { return }
+            audioFileBuffer.removeAll(keepingCapacity: false)
             state = .buffering
             do {
                 try await output.start(format: format)
@@ -163,6 +177,25 @@ final class VoiceSessionCoordinator {
         case .audioEnd:
             guard !playbackFailed else { return }
             await output.finish()
+        case .audioFileStart:
+            guard !playbackFailed else { return }
+            audioFileBuffer.removeAll(keepingCapacity: true)
+            state = .buffering
+        case .audioFileChunk(let fileData):
+            guard !playbackFailed else { return }
+            audioFileBuffer.append(fileData)
+        case .audioFileEnd:
+            guard !playbackFailed else { return }
+            do {
+                let decoded = try WAVAudioDecoder().decode(audioFileBuffer)
+                audioFileBuffer.removeAll(keepingCapacity: false)
+                try await output.start(format: decoded.format)
+                try await output.append(decoded.pcm)
+                await output.finish()
+                state = .speaking
+            } catch {
+                await handlePlaybackFailure()
+            }
         case .turnComplete:
             state = isFailed ? state : .idle
         case .error(let message):
@@ -172,8 +205,21 @@ final class VoiceSessionCoordinator {
         }
     }
 
+    private func submitDraft() async {
+        state = .thinking
+        let completed = await store.sendDraft { [weak self] event in
+            await self?.handle(event)
+        }
+        if !completed, !isFailed {
+            state = .failed(store.transientError ?? "The text turn could not be completed.")
+        } else if completed, !isFailed, state != .interrupted {
+            state = .idle
+        }
+    }
+
     private func handlePlaybackFailure() async {
         playbackFailed = true
+        audioFileBuffer.removeAll(keepingCapacity: false)
         await output.stop()
         state = .failed("Audio playback failed. The response text is still available.")
     }

@@ -37,6 +37,7 @@ actor URLSessionHermesSessionClient: HermesSessionClient {
     private var activeTurnID: String?
     private var activeContinuation: AsyncThrowingStream<HermesEvent, Error>.Continuation?
     private var audioStarted = false
+    private var audioFileStarted = false
     private var normalizer = HermesEventNormalizer()
 
     init(profile: RelayProfile, token: String, socketFactory: any WebSocketConnectionFactory) {
@@ -89,6 +90,7 @@ actor URLSessionHermesSessionClient: HermesSessionClient {
         activeTurnID = turnID
         activeContinuation = continuation
         audioStarted = false
+        audioFileStarted = false
         normalizer = HermesEventNormalizer()
         continuation.onTermination = { [weak self] _ in
             Task {
@@ -148,11 +150,13 @@ actor URLSessionHermesSessionClient: HermesSessionClient {
                 case .text(let text):
                     try handleTextFrame(text)
                 case .binary(let data):
-                    guard activeContinuation != nil, audioStarted else {
+                    guard activeContinuation != nil, audioStarted || audioFileStarted else {
                         finishActiveTurn(throwing: RelaySessionError.unexpectedBinaryFrame)
                         return
                     }
-                    activeContinuation?.yield(normalizer.normalizeBinary(data, audioFileActive: false))
+                    activeContinuation?.yield(
+                        normalizer.normalizeBinary(data, audioFileActive: audioFileStarted)
+                    )
                 }
             } catch is CancellationError {
                 return
@@ -169,10 +173,18 @@ actor URLSessionHermesSessionClient: HermesSessionClient {
         for event in events {
             switch event {
             case .audioStart:
+                audioFileStarted = false
                 audioStarted = true
                 activeContinuation?.yield(event)
             case .audioEnd:
                 audioStarted = false
+                activeContinuation?.yield(event)
+            case .audioFileStart:
+                audioStarted = false
+                audioFileStarted = true
+                activeContinuation?.yield(event)
+            case .audioFileEnd:
+                audioFileStarted = false
                 activeContinuation?.yield(event)
             case .error:
                 activeContinuation?.yield(event)
@@ -203,6 +215,7 @@ actor URLSessionHermesSessionClient: HermesSessionClient {
         activeContinuation = nil
         activeTurnID = nil
         audioStarted = false
+        audioFileStarted = false
     }
 
     private func helloJSON(sessionID: String) throws -> String {
