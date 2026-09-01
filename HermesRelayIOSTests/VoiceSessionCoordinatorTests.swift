@@ -305,6 +305,38 @@ final class VoiceSessionCoordinatorTests: XCTestCase {
     }
 
     @MainActor
+    func testAudioDiagnosticsExposeContentSafeStreamPhases() async {
+        let input = CoordinatorSpeechInput(finalUpdate: SpeechRecognitionUpdate(text: "Speak", isFinal: true))
+        let diagnostics = RecordingAudioPlaybackDiagnostics()
+        let format = AudioFormat(sampleRate: 24_000, channels: 1, sampleWidth: 2)
+        let client = CoordinatorHermesSessionClient(events: [
+            .messageStart,
+            .textDelta("Visible response"),
+            .audioStart(format),
+            .audioChunk(Data([0, 1, 2, 3])),
+            .audioEnd,
+            .turnComplete(turnID: "turn-1"),
+        ])
+        let store = await connectedStore(client)
+        let coordinator = VoiceSessionCoordinator(
+            store: store,
+            input: input,
+            output: CoordinatorAudioOutput(),
+            diagnostics: diagnostics
+        )
+
+        await coordinator.beginCapture()
+        await coordinator.endCaptureAndSend()
+
+        let events = await diagnostics.events()
+        XCTAssertEqual(events, [
+            .streamStarted(format: format),
+            .chunkReceived(bytes: 4),
+            .streamEnded(bytes: 4),
+        ])
+    }
+
+    @MainActor
     func testTypedDraftSendsSlashCommandAndPlaysWAVResponse() async throws {
         let writer = WAVFallbackWriter()
         let format = AudioFormat(sampleRate: 24_000, channels: 1, sampleWidth: 2)
@@ -590,6 +622,18 @@ private actor CoordinatorAudioOutput: AudioOutput {
 
     func operations() -> [Operation] {
         recordedOperations
+    }
+}
+
+private actor RecordingAudioPlaybackDiagnostics: AudioPlaybackDiagnostics {
+    private var recordedEvents: [AudioPlaybackDiagnostic] = []
+
+    func record(_ event: AudioPlaybackDiagnostic) async {
+        recordedEvents.append(event)
+    }
+
+    func events() -> [AudioPlaybackDiagnostic] {
+        recordedEvents
     }
 }
 

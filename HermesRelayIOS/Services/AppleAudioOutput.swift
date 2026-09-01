@@ -4,12 +4,16 @@ import Foundation
 actor AppleAudioOutput: AudioOutput {
     private let engine = AVAudioEngine()
     private let playerNode = AVAudioPlayerNode()
+    private let diagnostics: any AudioPlaybackDiagnostics
     private var audioFormat: AVAudioFormat?
-    private var pcmResponseBuffer = Data()
+    private var pcmFrameAccumulator: PCMFrameAccumulator?
     private var isAcceptingAudio = false
     private var playbackStarted = false
 
-    init() {
+    init(
+        diagnostics: any AudioPlaybackDiagnostics = NoopAudioPlaybackDiagnostics()
+    ) {
+        self.diagnostics = diagnostics
         engine.attach(playerNode)
     }
 
@@ -37,7 +41,9 @@ actor AppleAudioOutput: AudioOutput {
             engine.prepare()
             try engine.start()
             audioFormat = avFormat
-            pcmResponseBuffer.removeAll(keepingCapacity: true)
+            pcmFrameAccumulator = PCMFrameAccumulator(
+                bytesPerFrame: format.channels * format.sampleWidth
+            )
             isAcceptingAudio = true
         } catch {
             stopResources()
@@ -51,27 +57,34 @@ actor AppleAudioOutput: AudioOutput {
         }
 
         let bytesPerFrame = Int(audioFormat.streamDescription.pointee.mBytesPerFrame)
-        guard bytesPerFrame > 0, pcm.count % bytesPerFrame == 0 else {
+        guard bytesPerFrame > 0 else {
             throw AudioOutputError.outputFailed
         }
         guard !pcm.isEmpty else { return }
 
-        pcmResponseBuffer.append(pcm)
+        guard let pcmFrameAccumulator else {
+            throw AudioOutputError.notStarted
+        }
+        var accumulator = pcmFrameAccumulator
+        if let completePCM = try accumulator.append(pcm) {
+            let wasPlaybackStarted = playbackStarted
+            try schedule(completePCM, format: audioFormat, bytesPerFrame: bytesPerFrame)
+            await diagnostics.record(.chunkScheduled(bytes: completePCM.count))
+            if !wasPlaybackStarted {
+                await diagnostics.record(.firstAudioScheduled(bytes: completePCM.count))
+            }
+        }
+        self.pcmFrameAccumulator = accumulator
     }
 
     func finish() async throws {
-        if let audioFormat,
-           let bytesPerFrame = Int(exactly: audioFormat.streamDescription.pointee.mBytesPerFrame),
-           !pcmResponseBuffer.isEmpty {
-            let pcmToSchedule = pcmResponseBuffer
-            pcmResponseBuffer.removeAll(keepingCapacity: true)
-            do {
-                try schedule(pcmToSchedule, format: audioFormat, bytesPerFrame: bytesPerFrame)
-            } catch {
-                stopResources()
-                throw error
-            }
+        do {
+            try pcmFrameAccumulator?.finish()
+        } catch {
+            stopResources()
+            throw error
         }
+        pcmFrameAccumulator = nil
         isAcceptingAudio = false
     }
 
@@ -117,7 +130,7 @@ actor AppleAudioOutput: AudioOutput {
 
     private func stopResources() {
         isAcceptingAudio = false
-        pcmResponseBuffer.removeAll(keepingCapacity: false)
+        pcmFrameAccumulator = nil
         playbackStarted = false
         playerNode.stop()
         engine.stop()

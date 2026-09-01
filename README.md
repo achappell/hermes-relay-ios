@@ -17,8 +17,10 @@ The current voice slice provides:
 - A protocol-v1 WebSocket transport gated on `hello_ack`, with normalized text,
   activity, audio, error, and completion events.
 - Push-to-talk local transcription with permission and cancellation handling.
-- Signed 16-bit PCM playback with temporary WAV recovery when live playback
-  fails.
+- Incremental signed 16-bit PCM playback with temporary WAV recovery when live
+  playback fails.
+- Opt-in, content-safe playback diagnostics for comparing stream arrival with
+  first-buffer scheduling.
 - Local transcript/draft persistence and an explicit unconfirmed-turn marker;
   reconnect never silently replays a turn.
 - Deterministic XCTest coverage for transport, speech, audio, coordination, and
@@ -47,6 +49,24 @@ endpoint, client ID, device ID, display name, and bearer token, then choose
 Save configuration. The token is stored in Keychain; the other fields are
 stored in the application-support profile. When no configuration exists,
 Connect displays an actionable message and never claims a relay connection.
+
+To inspect playback timing in a Debug build, add
+`--hermes-audio-debug` under the scheme's **Arguments Passed On Launch**. The
+diagnostics record stream format, PCM byte counts, buffer scheduling, and
+playback failures; they never record prompts, responses, tokens, raw frames, or
+audio contents. For a booted iOS Simulator, view them with:
+
+```bash
+xcrun simctl spawn booted log stream \
+  --info \
+  --debug \
+  --predicate 'subsystem == "com.achappell.HermesRelayIOS" && category == "audio-playback"'
+```
+
+The useful sequence is `audio chunk received` → `audio chunk scheduled` →
+`audio first buffer scheduled`. If the first two appear while the relay is
+still streaming, playback has started incrementally rather than waiting for
+`audio_end`.
 
 ## Command-line validation
 

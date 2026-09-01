@@ -11,6 +11,30 @@ final class AudioOutputTests: XCTestCase {
         )
     }
 
+    func testPCMFrameAccumulatorReleasesCompleteFramesBeforeStreamEnds() throws {
+        var accumulator = PCMFrameAccumulator(bytesPerFrame: 4)
+
+        XCTAssertNil(try accumulator.append(Data([0, 1])))
+        XCTAssertEqual(
+            try accumulator.append(Data([2, 3, 4])),
+            Data([0, 1, 2, 3])
+        )
+        XCTAssertEqual(
+            try accumulator.append(Data([5, 6, 7])),
+            Data([4, 5, 6, 7])
+        )
+        XCTAssertNoThrow(try accumulator.finish())
+    }
+
+    func testPCMFrameAccumulatorRejectsPartialFinalFrame() throws {
+        var accumulator = PCMFrameAccumulator(bytesPerFrame: 4)
+
+        XCTAssertNil(try accumulator.append(Data([0, 1])))
+        XCTAssertThrowsError(try accumulator.finish()) { error in
+            XCTAssertEqual(error as? AudioOutputError, .outputFailed)
+        }
+    }
+
     func testFakeOutputPreservesChunkOrder() async throws {
         let output = RecordingAudioOutput()
         let format = AudioFormat(sampleRate: 24_000, channels: 1, sampleWidth: 2)

@@ -18,13 +18,19 @@ struct ContentView: View {
         configurationStore: RelayConfigurationStore? = nil
     ) {
         _store = State(initialValue: store)
-        _voiceCoordinator = State(
-            initialValue: voiceCoordinator ?? VoiceSessionCoordinator(
+        if let voiceCoordinator {
+            _voiceCoordinator = State(initialValue: voiceCoordinator)
+        } else {
+            let diagnostics = AudioPlaybackDiagnosticsFactory.make()
+            _voiceCoordinator = State(initialValue: VoiceSessionCoordinator(
                 store: store,
                 input: AppleSpeechInput(),
-                output: RecoveringAudioOutput(liveOutput: AppleAudioOutput())
-            )
-        )
+                output: RecoveringAudioOutput(
+                    liveOutput: AppleAudioOutput(diagnostics: diagnostics)
+                ),
+                diagnostics: diagnostics
+            ))
+        }
         self.configurationStore = configurationStore
     }
 
