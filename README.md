@@ -97,16 +97,18 @@ Pull requests and pushes to `main` run the Xcode build and XCTest checks on the
 macOS targets, and retains the XCTest result bundles for failed-run diagnosis.
 
 Releases use Release Please and conventional commits. A push to `main` opens or
-updates the release PR; merging that PR creates a `vX.Y.Z` tag and GitHub release.
-The tag workflow reruns the macOS tests, builds the macOS and iOS Simulator apps,
-and uploads unsigned archives with SHA-256 checksums. These are internal
-development artifacts: physical iPhone distribution requires a future Apple
-signing/TestFlight workflow.
+updates the release PR; merging that PR creates a `vX.Y.Z` tag and GitHub release,
+then invokes the packaging workflow directly. The same workflow also accepts tag
+pushes and manual dispatch for reruns. It reruns the macOS tests, builds the macOS
+and iOS Simulator apps, and uploads unsigned archives with SHA-256 checksums.
+These are internal development artifacts: physical iPhone distribution requires
+a future Apple signing/TestFlight workflow.
 
 The release version is kept in `version.txt` and mirrored in the Xcode project.
 Do not put signing certificates, provisioning profiles, bearer tokens, or
 Keychain values in Actions. A `RELEASE_PLEASE_TOKEN` repository secret is
-optional; the workflow falls back to the repository's `GITHUB_TOKEN`.
+optional; the workflow falls back to the repository's `GITHUB_TOKEN` and still
+packages a newly created release in the same workflow run.
 
 ## Hermes protocol facts
 
