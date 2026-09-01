@@ -271,6 +271,7 @@ private final class FakeWebSocketConnectionFactory: WebSocketConnectionFactory, 
 }
 
 private final class FakeWebSocketConnection: WebSocketConnection, @unchecked Sendable {
+    private let stateLock = NSLock()
     private var queuedFrames: [WebSocketFrame] = []
     private var pendingReceives: [CheckedContinuation<WebSocketFrame, Error>] = []
     private var nextReceiveError: Error?
@@ -282,47 +283,77 @@ private final class FakeWebSocketConnection: WebSocketConnection, @unchecked Sen
         if let sendDelayNanoseconds {
             try await Task.sleep(nanoseconds: sendDelayNanoseconds)
         }
-        sentTexts.append(text)
+        appendSentText(text)
     }
 
     func receive() async throws -> WebSocketFrame {
-        if let nextReceiveError {
-            self.nextReceiveError = nil
-            throw nextReceiveError
-        }
-        if !queuedFrames.isEmpty {
-            return queuedFrames.removeFirst()
-        }
-        return try await withCheckedThrowingContinuation { continuation in
-            pendingReceives.append(continuation)
+        try await withCheckedThrowingContinuation { continuation in
+            receive(using: continuation)
         }
     }
 
     func close() async {
-        closeCalled = true
-        let continuations = pendingReceives
-        pendingReceives.removeAll()
+        let continuations = closeState()
         for continuation in continuations {
             continuation.resume(throwing: RelaySessionError.disconnected)
         }
     }
 
     func enqueue(_ frame: WebSocketFrame) {
-        if let continuation = pendingReceives.first {
-            pendingReceives.removeFirst()
-            continuation.resume(returning: frame)
-        } else {
+        stateLock.lock()
+        guard !pendingReceives.isEmpty else {
             queuedFrames.append(frame)
+            stateLock.unlock()
+            return
         }
+        let continuation = pendingReceives.removeFirst()
+        stateLock.unlock()
+        continuation.resume(returning: frame)
     }
 
     func failNextReceive(with error: Error = RelaySessionError.disconnected) {
-        if let continuation = pendingReceives.first {
-            pendingReceives.removeFirst()
-            continuation.resume(throwing: error)
-        } else {
+        stateLock.lock()
+        guard !pendingReceives.isEmpty else {
             nextReceiveError = error
+            stateLock.unlock()
+            return
         }
+        let continuation = pendingReceives.removeFirst()
+        stateLock.unlock()
+        continuation.resume(throwing: error)
+    }
+
+    private func appendSentText(_ text: String) {
+        stateLock.lock()
+        sentTexts.append(text)
+        stateLock.unlock()
+    }
+
+    private func receive(using continuation: CheckedContinuation<WebSocketFrame, Error>) {
+        stateLock.lock()
+        if let nextReceiveError {
+            self.nextReceiveError = nil
+            stateLock.unlock()
+            continuation.resume(throwing: nextReceiveError)
+            return
+        }
+        if !queuedFrames.isEmpty {
+            let frame = queuedFrames.removeFirst()
+            stateLock.unlock()
+            continuation.resume(returning: frame)
+            return
+        }
+        pendingReceives.append(continuation)
+        stateLock.unlock()
+    }
+
+    private func closeState() -> [CheckedContinuation<WebSocketFrame, Error>] {
+        stateLock.lock()
+        closeCalled = true
+        let continuations = pendingReceives
+        pendingReceives.removeAll()
+        stateLock.unlock()
+        return continuations
     }
 }
 
