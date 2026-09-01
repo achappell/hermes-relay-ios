@@ -62,7 +62,10 @@ final class ConversationStore {
             client = URLSessionHermesSessionClient(
                 profile: profile,
                 token: token,
-                socketFactory: socketFactory
+                socketFactory: socketFactory,
+                onTransportDisconnected: { @MainActor [weak self] in
+                    self?.transportDidDisconnect()
+                }
             )
             transientError = nil
         } catch {
@@ -144,6 +147,16 @@ final class ConversationStore {
             }
         } catch {
             let message = error.localizedDescription
+            if case RelaySessionError.disconnected = error {
+                connectionState = .disconnected
+                sessionMetadata = nil
+            } else if case RelaySessionError.connectionTimedOut = error {
+                connectionState = .disconnected
+                sessionMetadata = nil
+            } else if case RelaySessionError.notConnected = error {
+                connectionState = .disconnected
+                sessionMetadata = nil
+            }
             transientError = message
             messages.append(TranscriptMessage(role: .error, text: message))
             unconfirmedTurnText = text
@@ -159,6 +172,11 @@ final class ConversationStore {
 
     func clearTransientError() {
         transientError = nil
+    }
+
+    private func transportDidDisconnect() {
+        connectionState = .disconnected
+        sessionMetadata = nil
     }
 
     private func apply(_ event: HermesEvent) {

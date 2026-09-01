@@ -102,6 +102,22 @@ final class ConversationStoreTransportTests: XCTestCase {
         XCTAssertEqual(store.messages.last?.role, .error)
         XCTAssertFalse(store.isSending)
     }
+
+    @MainActor
+    func testDisconnectedTurnClearsTheStaleConnectedState() async {
+        let client = FakeHermesSessionClient()
+        client.connectResult = .success(SessionMetadata(sessionID: "session-1", model: nil))
+        client.sendError = RelaySessionError.disconnected
+        let store = ConversationStore(client: client)
+        await store.connect()
+
+        let completed = await store.sendTurn(text: "hello")
+
+        XCTAssertFalse(completed)
+        XCTAssertEqual(store.connectionState, .disconnected)
+        XCTAssertNil(store.sessionMetadata)
+        XCTAssertFalse(store.isSending)
+    }
 }
 
 private enum FakeClientError: LocalizedError, Sendable {
@@ -117,6 +133,7 @@ private final class FakeHermesSessionClient: HermesSessionClient, @unchecked Sen
         SessionMetadata(sessionID: "session-1", model: nil)
     )
     var eventsByText: [String: [HermesEvent]] = [:]
+    var sendError: Error?
     private(set) var sentTurns: [String] = []
 
     func connect() async throws -> SessionMetadata {
@@ -125,6 +142,11 @@ private final class FakeHermesSessionClient: HermesSessionClient, @unchecked Sen
 
     func sendTurn(text: String) async -> AsyncThrowingStream<HermesEvent, Error> {
         sentTurns.append(text)
+        if let sendError {
+            return AsyncThrowingStream { continuation in
+                continuation.finish(throwing: sendError)
+            }
+        }
         let events = eventsByText[text] ?? [.turnComplete(turnID: "turn-1")]
         return AsyncThrowingStream { continuation in
             for event in events {

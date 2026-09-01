@@ -1,4 +1,5 @@
 import Foundation
+import Network
 
 enum RelaySessionError: LocalizedError, Equatable, Sendable {
     case helloAckMissing
@@ -6,6 +7,7 @@ enum RelaySessionError: LocalizedError, Equatable, Sendable {
     case turnAlreadyActive
     case unexpectedBinaryFrame
     case unsupportedFrame
+    case connectionTimedOut
     case disconnected
 
     var errorDescription: String? {
@@ -20,6 +22,8 @@ enum RelaySessionError: LocalizedError, Equatable, Sendable {
             return "The Hermes relay sent audio before describing its format."
         case .unsupportedFrame:
             return "The Hermes relay sent an unsupported WebSocket frame."
+        case .connectionTimedOut:
+            return "The Hermes relay connection timed out."
         case .disconnected:
             return "The Hermes relay connection was closed."
         }
@@ -30,9 +34,13 @@ actor URLSessionHermesSessionClient: HermesSessionClient {
     private let profile: RelayProfile
     private let token: String
     private let socketFactory: any WebSocketConnectionFactory
+    private let sendTimeoutNanoseconds: UInt64
+    private let onTransportDisconnected: (@MainActor @Sendable () -> Void)?
 
     private var socket: (any WebSocketConnection)?
     private var readerTask: Task<Void, Never>?
+    private var pathMonitor: NWPathMonitor?
+    private var transportGeneration = 0
     private var sessionID: String?
     private var activeTurnID: String?
     private var activeContinuation: AsyncThrowingStream<HermesEvent, Error>.Continuation?
@@ -40,10 +48,18 @@ actor URLSessionHermesSessionClient: HermesSessionClient {
     private var audioFileStarted = false
     private var normalizer = HermesEventNormalizer()
 
-    init(profile: RelayProfile, token: String, socketFactory: any WebSocketConnectionFactory) {
+    init(
+        profile: RelayProfile,
+        token: String,
+        socketFactory: any WebSocketConnectionFactory,
+        sendTimeoutNanoseconds: UInt64 = 10_000_000_000,
+        onTransportDisconnected: (@MainActor @Sendable () -> Void)? = nil
+    ) {
         self.profile = profile
         self.token = token
         self.socketFactory = socketFactory
+        self.sendTimeoutNanoseconds = sendTimeoutNanoseconds
+        self.onTransportDisconnected = onTransportDisconnected
     }
 
     func connect() async throws -> SessionMetadata {
@@ -64,8 +80,11 @@ actor URLSessionHermesSessionClient: HermesSessionClient {
 
             socket = connection
             sessionID = newSessionID
+            transportGeneration += 1
+            let generation = transportGeneration
+            startPathMonitoring()
             readerTask = Task { [weak self] in
-                await self?.receiveLoop()
+                await self?.receiveLoop(generation: generation)
             }
             return metadata
         } catch {
@@ -92,6 +111,7 @@ actor URLSessionHermesSessionClient: HermesSessionClient {
         audioStarted = false
         audioFileStarted = false
         normalizer = HermesEventNormalizer()
+        let generation = transportGeneration
         continuation.onTermination = { [weak self] _ in
             Task {
                 await self?.cancelLocalTurn(turnID: turnID)
@@ -99,17 +119,18 @@ actor URLSessionHermesSessionClient: HermesSessionClient {
         }
 
         do {
-            try await socket.send(text: turnJSON(turnID: turnID, sessionID: sessionID, text: text))
+            let message = try turnJSON(turnID: turnID, sessionID: sessionID, text: text)
+            try await send(message: message, on: socket)
         } catch {
-            finishActiveTurn(throwing: error)
+            await failTransport(error, generation: generation)
         }
         return stream
     }
 
     func disconnect() async {
         let connection = socket
-        socket = nil
-        sessionID = nil
+        markTransportDisconnected()
+        stopPathMonitoring()
         readerTask?.cancel()
         readerTask = nil
         finishActiveTurn(throwing: RelaySessionError.disconnected)
@@ -140,9 +161,9 @@ actor URLSessionHermesSessionClient: HermesSessionClient {
         }
     }
 
-    private func receiveLoop() async {
+    private func receiveLoop(generation: Int) async {
         while !Task.isCancelled {
-            guard let socket else { return }
+            guard generation == transportGeneration, let socket else { return }
 
             do {
                 let frame = try await socket.receive()
@@ -151,7 +172,7 @@ actor URLSessionHermesSessionClient: HermesSessionClient {
                     try handleTextFrame(text)
                 case .binary(let data):
                     guard activeContinuation != nil, audioStarted || audioFileStarted else {
-                        finishActiveTurn(throwing: RelaySessionError.unexpectedBinaryFrame)
+                        await failTransport(RelaySessionError.unexpectedBinaryFrame, generation: generation)
                         return
                     }
                     activeContinuation?.yield(
@@ -161,7 +182,7 @@ actor URLSessionHermesSessionClient: HermesSessionClient {
             } catch is CancellationError {
                 return
             } catch {
-                finishActiveTurn(throwing: RelaySessionError.disconnected)
+                await failTransport(RelaySessionError.disconnected, generation: generation)
                 return
             }
         }
@@ -203,6 +224,69 @@ actor URLSessionHermesSessionClient: HermesSessionClient {
     private func cancelLocalTurn(turnID: String) {
         guard activeTurnID == turnID else { return }
         finishActiveTurn(throwing: RelaySessionError.disconnected)
+    }
+
+    private func send(message: String, on socket: any WebSocketConnection) async throws {
+        try await withThrowingTaskGroup(of: Void.self) { group in
+            group.addTask {
+                try await socket.send(text: message)
+            }
+            group.addTask {
+                try await Task.sleep(nanoseconds: self.sendTimeoutNanoseconds)
+                throw RelaySessionError.connectionTimedOut
+            }
+
+            defer { group.cancelAll() }
+            try await group.next()
+        }
+    }
+
+    private func failTransport(_ error: Error, generation: Int? = nil) async {
+        if let generation, generation != transportGeneration {
+            return
+        }
+        let connection = socket
+        markTransportDisconnected()
+        stopPathMonitoring()
+        readerTask?.cancel()
+        readerTask = nil
+        finishActiveTurn(throwing: error)
+        if connection != nil {
+            await onTransportDisconnected?()
+        }
+        await connection?.close()
+    }
+
+    private func startPathMonitoring() {
+        guard pathMonitor == nil else { return }
+
+        let monitor = NWPathMonitor()
+        monitor.pathUpdateHandler = { [weak self] path in
+            guard path.status == .unsatisfied else { return }
+            Task { [weak self] in
+                await self?.networkBecameUnavailable()
+            }
+        }
+        pathMonitor = monitor
+        monitor.start(queue: DispatchQueue(label: "HermesRelayIOS.network-path"))
+    }
+
+    private func stopPathMonitoring() {
+        pathMonitor?.cancel()
+        pathMonitor = nil
+    }
+
+    private func networkBecameUnavailable() async {
+        guard socket != nil else { return }
+        await failTransport(RelaySessionError.disconnected)
+    }
+
+    private func markTransportDisconnected() {
+        transportGeneration += 1
+        socket = nil
+        sessionID = nil
+        audioStarted = false
+        audioFileStarted = false
     }
 
     private func finishActiveTurn(throwing error: Error? = nil) {

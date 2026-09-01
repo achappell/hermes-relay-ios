@@ -37,14 +37,18 @@ private final class URLSessionWebSocketConnection: WebSocketConnection, @uncheck
     }
 
     func send(text: String) async throws {
-        try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
-            task.send(.string(text)) { error in
-                if let error {
-                    continuation.resume(throwing: error)
-                } else {
-                    continuation.resume()
+        try await withTaskCancellationHandler {
+            try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
+                task.send(.string(text)) { error in
+                    if let error {
+                        continuation.resume(throwing: error)
+                    } else {
+                        continuation.resume()
+                    }
                 }
             }
+        } onCancel: {
+            task.cancel(with: .goingAway, reason: nil)
         }
     }
 

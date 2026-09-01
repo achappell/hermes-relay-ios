@@ -165,9 +165,56 @@ final class URLSessionHermesSessionClientTests: XCTestCase {
         }
     }
 
+    func testReceiveFailureClearsTheSessionSoTheNextConnectOpensANewSocket() async throws {
+        let firstSocket = FakeWebSocketConnection()
+        firstSocket.enqueue(.text(json(["type": "hello_ack"])))
+        let secondSocket = FakeWebSocketConnection()
+        secondSocket.enqueue(.text(json(["type": "hello_ack"])))
+        let factory = FakeWebSocketConnectionFactory(sockets: [firstSocket, secondSocket])
+        let client = try makeClient(factory: factory)
+
+        _ = try await client.connect()
+        let stream = await client.sendTurn(text: "connection failure")
+        firstSocket.failNextReceive()
+
+        do {
+            _ = try await collect(stream)
+            XCTFail("A receive failure must finish the active stream")
+        } catch let error as RelaySessionError {
+            XCTAssertEqual(error, .disconnected)
+        }
+
+        _ = try await client.connect()
+
+        XCTAssertEqual(factory.openCount, 2)
+        XCTAssertTrue(firstSocket.closeCalled)
+        await client.disconnect()
+    }
+
+    func testSendTimeoutClearsTheSessionAndFinishesTheActiveStream() async throws {
+        let socket = FakeWebSocketConnection()
+        socket.enqueue(.text(json(["type": "hello_ack"])))
+        socket.sendDelayNanoseconds = 100_000_000
+        let client = try makeClient(socket: socket, sendTimeoutNanoseconds: 1_000_000)
+        _ = try await client.connect()
+
+        let stream = await client.sendTurn(text: "network unavailable")
+
+        do {
+            _ = try await collect(stream)
+            XCTFail("A send timeout must finish the active stream")
+        } catch let error as RelaySessionError {
+            XCTAssertEqual(error, .connectionTimedOut)
+        }
+
+        XCTAssertTrue(socket.closeCalled)
+        await client.disconnect()
+    }
+
     private func makeClient(
         socket: FakeWebSocketConnection? = nil,
-        factory: FakeWebSocketConnectionFactory? = nil
+        factory: FakeWebSocketConnectionFactory? = nil,
+        sendTimeoutNanoseconds: UInt64 = 10_000_000_000
     ) throws -> URLSessionHermesSessionClient {
         let profile = try RelayProfile(
             endpoint: URL(string: "wss://relay.example.test/session")!,
@@ -184,7 +231,8 @@ final class URLSessionHermesSessionClientTests: XCTestCase {
         return URLSessionHermesSessionClient(
             profile: profile,
             token: "test-token",
-            socketFactory: selectedFactory
+            socketFactory: selectedFactory,
+            sendTimeoutNanoseconds: sendTimeoutNanoseconds
         )
     }
 
@@ -203,30 +251,45 @@ final class URLSessionHermesSessionClientTests: XCTestCase {
 }
 
 private final class FakeWebSocketConnectionFactory: WebSocketConnectionFactory, @unchecked Sendable {
-    let socket: FakeWebSocketConnection
+    private var sockets: [FakeWebSocketConnection]
     var lastRequest: URLRequest?
+    private(set) var openCount = 0
 
     init(socket: FakeWebSocketConnection) {
-        self.socket = socket
+        self.sockets = [socket]
+    }
+
+    init(sockets: [FakeWebSocketConnection]) {
+        self.sockets = sockets
     }
 
     func open(urlRequest: URLRequest) async throws -> any WebSocketConnection {
+        openCount += 1
         lastRequest = urlRequest
-        return socket
+        return sockets.removeFirst()
     }
 }
 
 private final class FakeWebSocketConnection: WebSocketConnection, @unchecked Sendable {
     private var queuedFrames: [WebSocketFrame] = []
     private var pendingReceives: [CheckedContinuation<WebSocketFrame, Error>] = []
+    private var nextReceiveError: Error?
+    var sendDelayNanoseconds: UInt64?
     private(set) var sentTexts: [String] = []
     private(set) var closeCalled = false
 
     func send(text: String) async throws {
+        if let sendDelayNanoseconds {
+            try await Task.sleep(nanoseconds: sendDelayNanoseconds)
+        }
         sentTexts.append(text)
     }
 
     func receive() async throws -> WebSocketFrame {
+        if let nextReceiveError {
+            self.nextReceiveError = nil
+            throw nextReceiveError
+        }
         if !queuedFrames.isEmpty {
             return queuedFrames.removeFirst()
         }
@@ -250,6 +313,15 @@ private final class FakeWebSocketConnection: WebSocketConnection, @unchecked Sen
             continuation.resume(returning: frame)
         } else {
             queuedFrames.append(frame)
+        }
+    }
+
+    func failNextReceive(with error: Error = RelaySessionError.disconnected) {
+        if let continuation = pendingReceives.first {
+            pendingReceives.removeFirst()
+            continuation.resume(throwing: error)
+        } else {
+            nextReceiveError = error
         }
     }
 }
