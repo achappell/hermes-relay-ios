@@ -59,13 +59,18 @@ actor AppleAudioOutput: AudioOutput {
         pcmResponseBuffer.append(pcm)
     }
 
-    func finish() async {
+    func finish() async throws {
         if let audioFormat,
            let bytesPerFrame = Int(exactly: audioFormat.streamDescription.pointee.mBytesPerFrame),
            !pcmResponseBuffer.isEmpty {
             let pcmToSchedule = pcmResponseBuffer
             pcmResponseBuffer.removeAll(keepingCapacity: true)
-            try? schedule(pcmToSchedule, format: audioFormat, bytesPerFrame: bytesPerFrame)
+            do {
+                try schedule(pcmToSchedule, format: audioFormat, bytesPerFrame: bytesPerFrame)
+            } catch {
+                stopResources()
+                throw error
+            }
         }
         isAcceptingAudio = false
     }

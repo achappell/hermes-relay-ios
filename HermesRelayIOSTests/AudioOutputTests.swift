@@ -75,6 +75,29 @@ final class AudioOutputTests: XCTestCase {
         }
     }
 
+    func testRecoveringOutputWritesBufferedPCMWhenLiveOutputFailsOnFinish() async throws {
+        let liveOutput = FinishFailingAudioOutput()
+        let output = RecoveringAudioOutput(liveOutput: liveOutput)
+        let format = AudioFormat(sampleRate: 24_000, channels: 1, sampleWidth: 2)
+        try await output.start(format: format)
+        try await output.append(Data([0x01, 0x02]))
+
+        do {
+            try await output.finish()
+            XCTFail("A finish-time playback failure must reach the caller")
+        } catch let error as AudioOutputError {
+            XCTAssertEqual(error, .outputFailed)
+        }
+
+        let fallbackURL = await output.fallbackURL()
+        XCTAssertNotNil(fallbackURL)
+        if let fallbackURL {
+            defer { try? FileManager.default.removeItem(at: fallbackURL) }
+            let wav = try Data(contentsOf: fallbackURL)
+            XCTAssertEqual(Data(wav[44...]), Data([0x01, 0x02]))
+        }
+    }
+
     func testWAVFallbackContainsDeclaredFrameValues() throws {
         let writer = WAVFallbackWriter()
         let format = AudioFormat(sampleRate: 24_000, channels: 2, sampleWidth: 2)
@@ -176,4 +199,18 @@ private actor RecordingAudioOutput: AudioOutput {
     func recordedChunks() -> [Data] { chunks }
     func operations() -> [Operation] { recordedOperations }
     func isActive() -> Bool { active }
+}
+
+private actor FinishFailingAudioOutput: AudioOutput {
+    func start(format: AudioFormat) async throws {
+        try PCMFormatValidator.validate(format)
+    }
+
+    func append(_ pcm: Data) async throws {}
+
+    func finish() async throws {
+        throw AudioOutputError.outputFailed
+    }
+
+    func stop() async {}
 }

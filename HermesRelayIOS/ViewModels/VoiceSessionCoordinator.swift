@@ -298,7 +298,11 @@ final class VoiceSessionCoordinator {
             }
         case .audioEnd:
             guard !playbackFailed else { return }
-            await output.finish()
+            do {
+                try await output.finish()
+            } catch {
+                await handlePlaybackFailure()
+            }
         case .audioFileStart:
             guard !playbackFailed else { return }
             audioFileBuffer.removeAll(keepingCapacity: true)
@@ -313,7 +317,7 @@ final class VoiceSessionCoordinator {
                 audioFileBuffer.removeAll(keepingCapacity: false)
                 try await output.start(format: decoded.format)
                 try await output.append(decoded.pcm)
-                await output.finish()
+                try await output.finish()
                 state = .speaking
             } catch {
                 await handlePlaybackFailure()
