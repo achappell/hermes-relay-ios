@@ -18,6 +18,7 @@ final class VoiceSessionCoordinator {
     private var responseTask: Task<Void, Never>?
     private var playbackFailed = false
     private var audioFileBuffer = Data()
+    private var captureFailureMessage: String?
 
     init(
         store: ConversationStore,
@@ -36,24 +37,36 @@ final class VoiceSessionCoordinator {
             guard let self else { return false }
             return self.captureTask == nil && self.responseTask == nil
         }
-        guard canStart, let startTask = await captureStartGate.begin(input: input) else { return }
+        guard canStart, let startRequest = await captureStartGate.begin(input: input) else { return }
 
-        let result = await startTask.value
+        let result = await startRequest.task.value
+        guard await captureStartGate.isCurrent(startRequest.id) else { return }
         await MainActor.run { [weak self] in
             self?.applyCaptureStart(result)
         }
-        await captureStartGate.clear()
+        await captureStartGate.clear(id: startRequest.id)
     }
 
     func endCaptureAndSend() async {
-        if let result = await captureStartGate.result() {
+        if let pendingStart = await captureStartGate.result(),
+           await captureStartGate.isCurrent(pendingStart.id) {
+            let result = pendingStart.result
             applyCaptureStart(result)
+            await captureStartGate.clear(id: pendingStart.id)
         }
         guard let captureTask else { return }
         state = .transcribing
         requestInputFinish()
         await waitForRecognitionCompletion(captureTask)
         self.captureTask = nil
+
+        if let captureFailureMessage {
+            provisionalText = ""
+            finalText = nil
+            state = .failed(captureFailureMessage)
+            self.captureFailureMessage = nil
+            return
+        }
 
         let text = (finalText ?? provisionalText)
             .trimmingCharacters(in: .whitespacesAndNewlines)
@@ -86,6 +99,7 @@ final class VoiceSessionCoordinator {
         if case .failed = state {
             state = .idle
         }
+        captureFailureMessage = nil
 
         switch result {
         case .started(let stream):
@@ -106,16 +120,31 @@ final class VoiceSessionCoordinator {
     }
 
     fileprivate nonisolated static func startInput(_ input: any SpeechInput) async -> CaptureStartResult {
+        if Task.isCancelled {
+            return .failed(.input(.cancelled))
+        }
+
         var authorization = await input.authorization()
+        if Task.isCancelled {
+            return .failed(.input(.cancelled))
+        }
         if authorization == .notDetermined {
             authorization = await input.requestAuthorization()
+            if Task.isCancelled {
+                return .failed(.input(.cancelled))
+            }
         }
         guard authorization == .authorized else {
             return .failed(.permission(authorization))
         }
 
         do {
-            return .started(try await input.start())
+            let stream = try await input.start()
+            if Task.isCancelled {
+                await input.cancel()
+                return .failed(.input(.cancelled))
+            }
+            return .started(stream)
         } catch let error as SpeechInputError {
             return .failed(.input(error))
         } catch {
@@ -146,13 +175,20 @@ final class VoiceSessionCoordinator {
         if !didComplete {
             completionTask.cancel()
             captureTask.cancel()
-            Task {
-                await input.cancel()
-            }
+            await input.cancel()
         }
     }
 
     func cancelCapture() async {
+        if await captureStartGate.cancel() {
+            await input.cancel()
+            provisionalText = ""
+            finalText = nil
+            captureFailureMessage = nil
+            state = .idle
+            return
+        }
+
         guard let captureTask else { return }
         await input.cancel()
         captureTask.cancel()
@@ -160,6 +196,7 @@ final class VoiceSessionCoordinator {
         self.captureTask = nil
         provisionalText = ""
         finalText = nil
+        captureFailureMessage = nil
         state = .idle
     }
 
@@ -206,12 +243,16 @@ final class VoiceSessionCoordinator {
             if error != .cancelled {
                 let message = error.localizedDescription
                 await MainActor.run { [weak self] in
+                    self?.captureTask = nil
+                    self?.captureFailureMessage = message
                     self?.state = .failed(message)
                 }
             }
         } catch {
             let message = error.localizedDescription
             await MainActor.run { [weak self] in
+                self?.captureTask = nil
+                self?.captureFailureMessage = message
                 self?.state = .failed(message)
             }
         }
@@ -312,8 +353,10 @@ final class VoiceSessionCoordinator {
 
     private func permissionMessage(for authorization: SpeechAuthorization) -> String {
         switch authorization {
-        case .denied:
+        case .microphoneDenied:
             return "Microphone access is denied. Allow microphone and speech recognition access in Settings."
+        case .speechDenied:
+            return "Speech recognition access is denied. Allow speech recognition access in Settings."
         case .restricted:
             return "Speech recognition is restricted on this device. Check Screen Time or device management settings."
         case .notDetermined:
@@ -334,25 +377,45 @@ private enum CaptureStartResult: Sendable {
     case failed(CaptureStartFailure)
 }
 
-private actor CaptureStartGate {
-    private var startTask: Task<CaptureStartResult, Never>?
+private struct CaptureStartRequest: Sendable {
+    let id: UInt64
+    let task: Task<CaptureStartResult, Never>
+}
 
-    func begin(input: any SpeechInput) -> Task<CaptureStartResult, Never>? {
-        guard startTask == nil else { return nil }
+private actor CaptureStartGate {
+    private var nextID: UInt64 = 0
+    private var activeRequest: CaptureStartRequest?
+
+    func begin(input: any SpeechInput) -> CaptureStartRequest? {
+        guard activeRequest == nil else { return nil }
+        nextID &+= 1
         let task = Task.detached(priority: .userInitiated) {
             await VoiceSessionCoordinator.startInput(input)
         }
-        startTask = task
-        return task
+        let request = CaptureStartRequest(id: nextID, task: task)
+        activeRequest = request
+        return request
     }
 
-    func result() async -> CaptureStartResult? {
-        guard let startTask else { return nil }
-        return await startTask.value
+    func result() async -> (id: UInt64, result: CaptureStartResult)? {
+        guard let activeRequest else { return nil }
+        return (activeRequest.id, await activeRequest.task.value)
     }
 
-    func clear() {
-        startTask = nil
+    func isCurrent(_ id: UInt64) -> Bool {
+        activeRequest?.id == id
+    }
+
+    func clear(id: UInt64) {
+        guard activeRequest?.id == id else { return }
+        activeRequest = nil
+    }
+
+    func cancel() -> Bool {
+        guard let activeRequest else { return false }
+        activeRequest.task.cancel()
+        self.activeRequest = nil
+        return true
     }
 }
 
