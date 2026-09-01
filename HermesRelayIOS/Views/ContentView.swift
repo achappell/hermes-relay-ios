@@ -105,44 +105,65 @@ struct ContentView: View {
                 .font(.subheadline.weight(.medium))
             Spacer()
         }
-        .padding(.horizontal)
-        .padding(.vertical, 10)
-        .frame(maxWidth: .infinity)
-        .overlay(alignment: .bottom) {
-            Divider()
-        }
-        .relayGlass(cornerRadius: 0)
+        .padding(.horizontal, 14)
+        .padding(.vertical, 9)
+        .frame(maxWidth: 760)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .relayGlass(cornerRadius: 18)
+        .padding(.horizontal, 12)
+        .padding(.vertical, 8)
     }
 
     private var transcript: some View {
         ScrollView {
-            LazyVStack(alignment: .leading, spacing: 12) {
-                if store.messages.isEmpty {
-                    VStack(spacing: 12) {
-                        Image(systemName: "waveform.and.person.filled")
-                            .font(.largeTitle)
-                        Text("Conversation shell ready")
-                            .font(.headline)
-                        Text("Connect a configured Hermes relay to stream a text turn.")
-                            .font(.subheadline)
-                            .multilineTextAlignment(.center)
-                    }
-                    .foregroundStyle(.secondary)
-                    .frame(maxWidth: .infinity, minHeight: 220)
-                    .padding(.top, 48)
-                } else {
-                    ForEach(store.messages) { message in
-                        MessageBubble(message: message)
-                    }
+            if #available(iOS 26.0, macOS 26.0, *) {
+                GlassEffectContainer(spacing: 12) {
+                    transcriptContent
                 }
+            } else {
+                transcriptContent
             }
-            .padding(.horizontal, 16)
-            .padding(.vertical, 12)
-            .frame(maxWidth: 760)
-            .frame(maxWidth: .infinity)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .background(Color.secondary.opacity(0.06))
+        .background {
+            LinearGradient(
+                colors: [
+                    Color.accentColor.opacity(0.06),
+                    Color.clear,
+                    Color.secondary.opacity(0.08),
+                ],
+                startPoint: .topLeading,
+                endPoint: .bottomTrailing
+            )
+        }
+    }
+
+    @ViewBuilder
+    private var transcriptContent: some View {
+        LazyVStack(alignment: .leading, spacing: 12) {
+            if store.messages.isEmpty {
+                VStack(spacing: 12) {
+                    Image(systemName: "waveform.and.person.filled")
+                        .font(.largeTitle)
+                    Text("Conversation shell ready")
+                        .font(.headline)
+                    Text("Connect a configured Hermes relay to stream a text turn.")
+                        .font(.subheadline)
+                        .multilineTextAlignment(.center)
+                }
+                .foregroundStyle(.secondary)
+                .frame(maxWidth: .infinity, minHeight: 220)
+                .padding(.top, 48)
+            } else {
+                ForEach(store.messages) { message in
+                    MessageBubble(message: message)
+                }
+            }
+        }
+        .padding(.horizontal, 16)
+        .padding(.vertical, 12)
+        .frame(maxWidth: 760)
+        .frame(maxWidth: .infinity)
     }
 
     private var composer: some View {
@@ -185,7 +206,7 @@ struct ContentView: View {
                     .padding(.horizontal, 12)
                     .padding(.vertical, 9)
                     .onSubmit(sendDraftIfPossible)
-                    .relayGlass(cornerRadius: 18)
+                    .relayGlass(cornerRadius: 18, interactive: true)
 
                 Button(action: sendDraftIfPossible) {
                     Image(systemName: "arrow.up")
@@ -224,6 +245,10 @@ struct ContentView: View {
             GlassEffectContainer(spacing: 12) {
                 bottomControls
             }
+            .frame(maxWidth: 760)
+            .frame(maxWidth: .infinity)
+            .padding(.horizontal, 12)
+            .padding(.vertical, 8)
         } else {
             bottomControls
                 .background(.bar)
@@ -435,8 +460,8 @@ struct RelayConfigurationView: View {
             .overlay {
                 if isLoading {
                     ProgressView("Loading configuration…")
-                        .padding()
-                        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 12))
+                        .padding(20)
+                        .relayGlass(cornerRadius: 20)
                 }
             }
             .task {

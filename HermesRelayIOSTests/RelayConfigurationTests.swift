@@ -112,7 +112,13 @@ final class RelayConfigurationTests: XCTestCase {
             identity: RelayDeviceIdentity(deviceName: "Amanda’s iPhone")
         )
 
+        #if os(iOS)
         XCTAssertEqual(draft.clientID, "hermes-ios-amanda-s-iphone")
+        #elseif os(macOS)
+        XCTAssertEqual(draft.clientID, "hermes-mac-amanda-s-iphone")
+        #else
+        XCTAssertEqual(draft.clientID, "hermes-apple-amanda-s-iphone")
+        #endif
         XCTAssertEqual(draft.deviceID, "amanda-s-iphone")
         XCTAssertEqual(draft.displayName, "Amanda’s iPhone")
     }
