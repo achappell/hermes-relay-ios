@@ -7,13 +7,16 @@ import UIKit
 enum RelayConfigurationError: LocalizedError, Equatable, Sendable {
     case emptyToken
     case invalidTokenEncoding
+    case invalidProfile
 
     var errorDescription: String? {
         switch self {
         case .emptyToken:
             return "The relay token cannot be empty."
         case .invalidTokenEncoding:
-            return "The stored relay token is not valid UTF-8."
+            return "The stored relay token is invalid. Replace it in Configure Relay."
+        case .invalidProfile:
+            return "The saved relay profile is invalid. Open Configure Relay and save it again."
         }
     }
 }
@@ -35,8 +38,14 @@ actor RelayConfigurationStore {
             return nil
         }
 
-        let data = try Data(contentsOf: profileURL)
-        return try JSONDecoder().decode(RelayProfile.self, from: data)
+        do {
+            let data = try Data(contentsOf: profileURL)
+            return try JSONDecoder().decode(RelayProfile.self, from: data)
+        } catch is DecodingError {
+            throw RelayConfigurationError.invalidProfile
+        } catch is RelayProfileError {
+            throw RelayConfigurationError.invalidProfile
+        }
     }
 
     func saveProfile(_ profile: RelayProfile) async throws {
@@ -53,13 +62,18 @@ actor RelayConfigurationStore {
         guard let token = String(data: data, encoding: .utf8) else {
             throw RelayConfigurationError.invalidTokenEncoding
         }
-        return token
+        let normalizedToken = token.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !normalizedToken.isEmpty else {
+            throw RelayConfigurationError.emptyToken
+        }
+        return normalizedToken
     }
 
     func saveToken(_ token: String) async throws {
-        guard !token.isEmpty else { throw RelayConfigurationError.emptyToken }
+        let normalizedToken = token.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !normalizedToken.isEmpty else { throw RelayConfigurationError.emptyToken }
         try secureStore.write(
-            Data(token.utf8),
+            Data(normalizedToken.utf8),
             service: Self.keychainService,
             account: Self.tokenAccount
         )

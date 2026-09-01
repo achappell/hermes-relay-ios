@@ -3,6 +3,7 @@ import Foundation
 enum RelayProfileError: LocalizedError, Equatable, Sendable {
     case unsupportedEndpointScheme
     case invalidEndpoint
+    case endpointContainsCredentials
     case emptyClientID
     case emptyDeviceID
     case emptyDisplayName
@@ -13,6 +14,8 @@ enum RelayProfileError: LocalizedError, Equatable, Sendable {
             return "The relay endpoint must use ws or wss."
         case .invalidEndpoint:
             return "The relay endpoint must include a host."
+        case .endpointContainsCredentials:
+            return "The relay endpoint must not contain credentials; store the bearer token separately."
         case .emptyClientID:
             return "The relay client ID cannot be empty."
         case .emptyDeviceID:
@@ -41,20 +44,28 @@ struct RelayProfile: Codable, Equatable, Sendable {
         guard endpoint.host != nil else {
             throw RelayProfileError.invalidEndpoint
         }
-        guard !clientID.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+        guard endpoint.user == nil, endpoint.password == nil else {
+            throw RelayProfileError.endpointContainsCredentials
+        }
+
+        let normalizedClientID = clientID.trimmingCharacters(in: .whitespacesAndNewlines)
+        let normalizedDeviceID = deviceID.trimmingCharacters(in: .whitespacesAndNewlines)
+        let normalizedDisplayName = displayName.trimmingCharacters(in: .whitespacesAndNewlines)
+
+        guard !normalizedClientID.isEmpty else {
             throw RelayProfileError.emptyClientID
         }
-        guard !deviceID.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+        guard !normalizedDeviceID.isEmpty else {
             throw RelayProfileError.emptyDeviceID
         }
-        guard !displayName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+        guard !normalizedDisplayName.isEmpty else {
             throw RelayProfileError.emptyDisplayName
         }
 
         self.endpoint = endpoint
-        self.clientID = clientID
-        self.deviceID = deviceID
-        self.displayName = displayName
+        self.clientID = normalizedClientID
+        self.deviceID = normalizedDeviceID
+        self.displayName = normalizedDisplayName
     }
 
     private enum CodingKeys: String, CodingKey {
