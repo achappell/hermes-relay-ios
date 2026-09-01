@@ -201,6 +201,7 @@ struct ContentView: View {
                 TextField("Message Hermes…", text: $store.draft, axis: .vertical)
                     .focused($focusedField, equals: .composer)
                     .textFieldStyle(.plain)
+                    .foregroundStyle(.primary)
                     .lineLimit(1...3)
                     .submitLabel(.send)
                     .padding(.horizontal, 12)
@@ -244,16 +245,30 @@ struct ContentView: View {
     @ViewBuilder
     private var bottomSurface: some View {
         if #available(iOS 26.0, macOS 26.0, *) {
-            GlassEffectContainer(spacing: 12) {
-                bottomControls
+            HStack {
+                GlassEffectContainer(spacing: 12) {
+                    bottomControls
+                }
+                .padding(.vertical, 10)
+                .frame(maxWidth: 760)
+                .background {
+                    RoundedRectangle(cornerRadius: 28, style: .continuous)
+                        .fill(.clear)
+                        .glassEffect(.regular, in: .rect(cornerRadius: 28))
+                }
             }
-            .frame(maxWidth: 760)
             .frame(maxWidth: .infinity)
             .padding(.horizontal, 12)
             .padding(.vertical, 8)
         } else {
-            bottomControls
-                .background(.bar)
+            HStack {
+                bottomControls
+                    .frame(maxWidth: 760)
+            }
+            .frame(maxWidth: .infinity)
+            .padding(.horizontal, 12)
+            .padding(.vertical, 8)
+            .background(.bar, in: RoundedRectangle(cornerRadius: 28, style: .continuous))
         }
     }
 
