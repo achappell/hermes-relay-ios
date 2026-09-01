@@ -14,6 +14,26 @@ final class RelayConfigurationTests: XCTestCase {
         XCTAssertNil(profile)
     }
 
+    func testMalformedProfileIsReportedAsInvalidConfiguration() async throws {
+        let profileURL = temporaryProfileURL()
+        try FileManager.default.createDirectory(
+            at: profileURL.deletingLastPathComponent(),
+            withIntermediateDirectories: true
+        )
+        try Data("{ not a relay profile }".utf8).write(to: profileURL, options: .atomic)
+        let store = RelayConfigurationStore(
+            secureStore: FakeSecureValueStore(),
+            profileURL: profileURL
+        )
+
+        do {
+            _ = try await store.loadProfile()
+            XCTFail("Malformed profile data must be rejected")
+        } catch let error as RelayConfigurationError {
+            XCTAssertEqual(error, .invalidProfile)
+        }
+    }
+
     func testSavingAndLoadingProfileDoesNotRequireTheToken() async throws {
         let secureStore = FakeSecureValueStore()
         let store = RelayConfigurationStore(
@@ -53,6 +73,36 @@ final class RelayConfigurationTests: XCTestCase {
         XCTAssertEqual(secureStore.values["com.achappell.HermesRelayIOS.profile/default-token"], Data("token-value".utf8))
     }
 
+    func testWhitespaceOnlyTokenIsRejected() async throws {
+        let store = RelayConfigurationStore(
+            secureStore: FakeSecureValueStore(),
+            profileURL: temporaryProfileURL()
+        )
+
+        do {
+            try await store.saveToken("  \n\t ")
+            XCTFail("Whitespace-only tokens must not be stored")
+        } catch let error as RelayConfigurationError {
+            XCTAssertEqual(error, .emptyToken)
+        }
+    }
+
+    func testEmptyStoredTokenIsRejected() async throws {
+        let secureStore = FakeSecureValueStore()
+        secureStore.values["com.achappell.HermesRelayIOS.profile/default-token"] = Data("  ".utf8)
+        let store = RelayConfigurationStore(
+            secureStore: secureStore,
+            profileURL: temporaryProfileURL()
+        )
+
+        do {
+            _ = try await store.loadToken()
+            XCTFail("An empty stored token must not be treated as configured")
+        } catch let error as RelayConfigurationError {
+            XCTAssertEqual(error, .emptyToken)
+        }
+    }
+
     func testDeletingTokenLeavesTheProfileIntact() async throws {
         let store = RelayConfigurationStore(
             secureStore: FakeSecureValueStore(),
@@ -86,6 +136,19 @@ final class RelayConfigurationTests: XCTestCase {
             )
         ) { error in
             XCTAssertEqual(error as? RelayProfileError, .unsupportedEndpointScheme)
+        }
+    }
+
+    func testEndpointCredentialsAreRejectedBeforeProfileStorage() {
+        XCTAssertThrowsError(
+            try RelayProfile(
+                endpoint: URL(string: "wss://user:password@relay.example.test/session")!,
+                clientID: "hermes-ios",
+                deviceID: "device-123",
+                displayName: "Test iPhone"
+            )
+        ) { error in
+            XCTAssertEqual(error as? RelayProfileError, .endpointContainsCredentials)
         }
     }
 
