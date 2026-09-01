@@ -1,0 +1,100 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  PROJECT: HermesRelayIOS.xcodeproj
+  SCHEME: HermesRelayIOS
+
+jobs:
+  validate:
+    name: Build and test
+    runs-on: macos-26
+    timeout-minutes: 30
+
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Show Xcode toolchain
+        run: |
+          set -euo pipefail
+          xcode-select -p
+          xcodebuild -version
+
+      - name: Build iOS Simulator target
+        run: |
+          xcodebuild \
+            -project "$PROJECT" \
+            -scheme "$SCHEME" \
+            -sdk iphonesimulator \
+            -destination 'generic/platform=iOS Simulator' \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGN_IDENTITY="" \
+            -derivedDataPath "$RUNNER_TEMP/hermes-relay-ios-simulator" \
+            build
+
+      - name: Test iOS Simulator target
+        run: |
+          set -euo pipefail
+          simulator_id="$(xcrun simctl list devices available | awk -F '[()]' '/iPhone/ { print $2; exit }')"
+          test -n "$simulator_id" || {
+            echo "No available iPhone Simulator device was found."
+            exit 1
+          }
+          xcodebuild \
+            -project "$PROJECT" \
+            -scheme "$SCHEME" \
+            -destination "platform=iOS Simulator,id=$simulator_id" \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGN_IDENTITY="" \
+            -derivedDataPath "$RUNNER_TEMP/hermes-relay-ios-simulator-tests" \
+            -resultBundlePath "$RUNNER_TEMP/hermes-relay-ios-simulator-tests.xcresult" \
+            test
+
+      - name: Build macOS target
+        run: |
+          xcodebuild \
+            -project "$PROJECT" \
+            -scheme "$SCHEME" \
+            -destination 'generic/platform=macOS' \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGN_IDENTITY="" \
+            -derivedDataPath "$RUNNER_TEMP/hermes-relay-macos" \
+            build
+
+      - name: Test macOS target
+        run: |
+          xcodebuild \
+            -project "$PROJECT" \
+            -scheme "$SCHEME" \
+            -destination 'platform=macOS' \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGN_IDENTITY="" \
+            -derivedDataPath "$RUNNER_TEMP/hermes-relay-macos-tests" \
+            -resultBundlePath "$RUNNER_TEMP/hermes-relay-macos-tests.xcresult" \
+            test
+
+      - name: Upload XCTest result bundles
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: xcode-test-results-${{ github.run_id }}
+          path: |
+            ${{ runner.temp }}/hermes-relay-ios-simulator-tests.xcresult
+            ${{ runner.temp }}/hermes-relay-macos-tests.xcresult
+          if-no-files-found: warn
+          retention-days: 14

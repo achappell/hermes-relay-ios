@@ -1,0 +1,106 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Existing release tag to package (for example, v0.1.0)"
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  package:
+    name: Build unsigned app archives
+    runs-on: macos-26
+    timeout-minutes: 30
+    env:
+      RELEASE_TAG: ${{ inputs.tag || github.ref_name }}
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          ref: ${{ inputs.tag || github.ref }}
+          persist-credentials: false
+
+      - name: Show Xcode toolchain
+        run: xcodebuild -version
+
+      - name: Verify release version
+        run: |
+          set -euo pipefail
+          version="${RELEASE_TAG#v}"
+          test "$version" = "$(tr -d '[:space:]' < version.txt)"
+          grep -q "MARKETING_VERSION = ${version}; // x-release-please-version" HermesRelayIOS.xcodeproj/project.pbxproj
+
+      - name: Run macOS XCTest suite
+        run: |
+          xcodebuild \
+            -project HermesRelayIOS.xcodeproj \
+            -scheme HermesRelayIOS \
+            -destination 'platform=macOS' \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGN_IDENTITY="" \
+            -derivedDataPath "$RUNNER_TEMP/hermes-relay-release-tests" \
+            test
+
+      - name: Build macOS app
+        run: |
+          xcodebuild \
+            -project HermesRelayIOS.xcodeproj \
+            -scheme HermesRelayIOS \
+            -configuration Release \
+            -destination 'generic/platform=macOS' \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGN_IDENTITY="" \
+            -derivedDataPath "$RUNNER_TEMP/hermes-relay-release-macos" \
+            build
+
+      - name: Build iOS Simulator app
+        run: |
+          xcodebuild \
+            -project HermesRelayIOS.xcodeproj \
+            -scheme HermesRelayIOS \
+            -configuration Release \
+            -sdk iphonesimulator \
+            -destination 'generic/platform=iOS Simulator' \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGN_IDENTITY="" \
+            -derivedDataPath "$RUNNER_TEMP/hermes-relay-release-ios-simulator" \
+            build
+
+      - name: Package and checksum archives
+        run: |
+          set -euo pipefail
+          version="${RELEASE_TAG#v}"
+          mkdir -p dist
+          ditto -c -k --sequesterRsrc --keepParent \
+            "$RUNNER_TEMP/hermes-relay-release-macos/Build/Products/Release/HermesRelayIOS.app" \
+            "dist/HermesRelayIOS-${version}-macOS-unsigned.zip"
+          ditto -c -k --sequesterRsrc --keepParent \
+            "$RUNNER_TEMP/hermes-relay-release-ios-simulator/Build/Products/Release-iphonesimulator/HermesRelayIOS.app" \
+            "dist/HermesRelayIOS-${version}-iOS-Simulator.zip"
+          shasum -a 256 dist/*.zip > dist/SHA256SUMS.txt
+
+      - name: Ensure the GitHub release exists
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release view "$RELEASE_TAG" >/dev/null 2>&1 || \
+            gh release create "$RELEASE_TAG" \
+              --verify-tag \
+              --title "$RELEASE_TAG" \
+              --generate-notes \
+              --notes "The attached macOS and iOS Simulator archives are unsigned internal builds. Physical iPhone distribution requires Apple signing and is not provided by this release workflow."
+
+      - name: Upload release archives
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: gh release upload "$RELEASE_TAG" dist/*.zip dist/SHA256SUMS.txt --clobber

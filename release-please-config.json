@@ -1,0 +1,35 @@
+{
+  "$schema": "https://raw.githubusercontent.com/googleapis/release-please/main/schemas/config.json",
+  "packages": {
+    ".": {
+      "release-type": "simple",
+      "package-name": "hermes-relay-ios",
+      "changelog-type": "github",
+      "include-component-in-tag": false,
+      "bump-minor-pre-major": true,
+      "bump-patch-for-minor-pre-major": false,
+      "draft": false,
+      "prerelease": false,
+      "extra-files": [
+        {
+          "type": "generic",
+          "path": "HermesRelayIOS.xcodeproj/project.pbxproj"
+        }
+      ],
+      "changelog-sections": [
+        {"type": "feat", "section": "Features"},
+        {"type": "fix", "section": "Bug Fixes"},
+        {"type": "perf", "section": "Performance Improvements"},
+        {"type": "docs", "section": "Documentation"},
+        {"type": "deps", "section": "Dependencies"},
+        {"type": "revert", "section": "Reverts"},
+        {"type": "style", "section": "Styles", "hidden": true},
+        {"type": "chore", "section": "Miscellaneous Chores", "hidden": true},
+        {"type": "refactor", "section": "Code Refactoring", "hidden": true},
+        {"type": "test", "section": "Tests", "hidden": true},
+        {"type": "build", "section": "Build System", "hidden": true},
+        {"type": "ci", "section": "Continuous Integration", "hidden": true}
+      ]
+    }
+  }
+}
