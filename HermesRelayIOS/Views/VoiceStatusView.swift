@@ -9,11 +9,18 @@ struct VoiceStatusView: View {
                 .frame(width: 20)
             Text(state.label)
                 .font(.footnote.weight(.medium))
+                .lineLimit(2)
             Spacer()
         }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 8)
+        .frame(maxWidth: .infinity, alignment: .leading)
         .foregroundStyle(stateColor)
+        .relayGlass(cornerRadius: 16)
+        .animation(.easeInOut(duration: 0.2), value: state)
         .accessibilityElement(children: .combine)
         .accessibilityLabel("Voice status, \(state.label)")
+        .accessibilityIdentifier("voice-status-indicator")
     }
 
     private var stateColor: Color {

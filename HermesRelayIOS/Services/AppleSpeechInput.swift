@@ -9,9 +9,11 @@ actor AppleSpeechInput: SpeechInput {
     private var recognitionTask: SFSpeechRecognitionTask?
     private var recognitionRequest: SFSpeechAudioBufferRecognitionRequest?
     private var activeContinuation: AsyncThrowingStream<SpeechRecognitionUpdate, Error>.Continuation?
+    private let finalResultGraceNanoseconds: UInt64
 
-    init(locale: Locale = Locale(identifier: "en-US")) {
+    init(locale: Locale = Locale(identifier: "en-US"), finalResultGraceNanoseconds: UInt64 = 1_000_000_000) {
         recognizer = SFSpeechRecognizer(locale: locale)
+        self.finalResultGraceNanoseconds = finalResultGraceNanoseconds
     }
 
     func authorization() async -> SpeechAuthorization {
@@ -99,6 +101,17 @@ actor AppleSpeechInput: SpeechInput {
             audioEngine.stop()
         }
         recognitionRequest?.endAudio()
+        recognitionTask?.finish()
+
+        // Give the recognizer a brief window to deliver its final, most accurate
+        // result. If it doesn't, terminate the stream so the coordinator isn't
+        // left waiting out its full recognition timeout.
+        try? await Task.sleep(nanoseconds: finalResultGraceNanoseconds)
+        if activeContinuation != nil {
+            activeContinuation?.finish()
+            activeContinuation = nil
+            stopResources()
+        }
     }
 
     private func handleRecognition(text: String?, isFinal: Bool, didFail: Bool) {

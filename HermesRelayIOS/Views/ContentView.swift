@@ -225,6 +225,8 @@ struct ContentView: View {
 
     private var voiceInterface: some View {
         VStack(spacing: 8) {
+            VoiceStatusView(state: voiceCoordinator.state)
+
             if !voiceCoordinator.provisionalText.isEmpty {
                 Text(voiceCoordinator.provisionalText)
                     .font(.callout)
