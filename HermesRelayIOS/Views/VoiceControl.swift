@@ -15,7 +15,7 @@ struct VoiceControl: View {
     var body: some View {
         HStack(spacing: 12) {
             VStack(alignment: .leading, spacing: 2) {
-                Text(isCapturing ? "Tap to send" : "Tap to speak")
+                Text(isCapturing ? "Tap to stop" : "Tap to record")
                     .font(.subheadline.weight(.semibold))
             }
 
@@ -33,11 +33,6 @@ struct VoiceControl: View {
             RecordButton(coordinator: coordinator)
             .frame(width: 52, height: 52)
             .relayCircleGlass(tint: isCapturing ? .accentColor : nil, interactive: false)
-            .accessibilityElement(children: .ignore)
-            .accessibilityLabel("Voice control")
-            .accessibilityValue(isCapturing ? "Tap to send" : "Tap to speak")
-            .accessibilityHint("Tap to start recording. Tap again to send.")
-            .accessibilityAddTraits(.isButton)
         }
     }
 
@@ -69,13 +64,15 @@ struct VoiceControl: View {
             }
             .buttonStyle(.plain)
             .disabled(isActionInFlight)
+            .accessibilityLabel("Voice control")
+            .accessibilityValue(isCapturing ? "Recording. Tap to stop." : "Ready. Tap to record.")
+            .accessibilityHint(isCapturing ? "Tap to stop recording and send." : "Tap to start recording.")
         }
 
         private func toggleCapture() {
             guard !isActionInFlight else { return }
-
-            let shouldEndCapture = isCapturing
             isActionInFlight = true
+            let shouldEndCapture = isCapturing
             Task { @MainActor in
                 if shouldEndCapture {
                     await coordinator.endCaptureAndSend()

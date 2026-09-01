@@ -1,4 +1,5 @@
 import Foundation
+import Speech
 import XCTest
 @testable import HermesRelayIOS
 
@@ -21,7 +22,7 @@ final class SpeechInputTests: XCTestCase {
     }
 
     func testDeniedPermissionPreventsCapture() async {
-        let input = FakeSpeechInput(authorization: .denied)
+        let input = FakeSpeechInput(authorization: .microphoneDenied)
 
         do {
             _ = try await input.start()
@@ -70,6 +71,23 @@ final class SpeechInputTests: XCTestCase {
 
         XCTAssertEqual(updates, [SpeechRecognitionUpdate(text: "Draft", isFinal: false)])
         XCTAssertFalse(updates.contains(where: \.isFinal))
+    }
+
+    func testPermissionResolverDistinguishesSpeechAndMicrophoneDenial() {
+        XCTAssertEqual(
+            AppleSpeechInput.resolveAuthorization(
+                speech: .denied,
+                microphone: .authorized
+            ),
+            .speechDenied
+        )
+        XCTAssertEqual(
+            AppleSpeechInput.resolveAuthorization(
+                speech: .authorized,
+                microphone: .microphoneDenied
+            ),
+            .microphoneDenied
+        )
     }
 
     private func collect(

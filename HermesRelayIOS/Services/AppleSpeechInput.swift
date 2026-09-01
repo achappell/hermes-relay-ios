@@ -36,7 +36,7 @@ actor AppleSpeechInput: SpeechInput {
         }
         return combinedAuthorization(
             speech: speechStatus,
-            microphone: microphoneGranted ? .authorized : .denied
+            microphone: microphoneGranted ? .authorized : .microphoneDenied
         )
     }
 
@@ -150,7 +150,7 @@ actor AppleSpeechInput: SpeechInput {
         #endif
     }
 
-    private func combinedAuthorization(
+    static func resolveAuthorization(
         speech: SFSpeechRecognizerAuthorizationStatus,
         microphone: SpeechAuthorization
     ) -> SpeechAuthorization {
@@ -158,14 +158,21 @@ actor AppleSpeechInput: SpeechInput {
         case .restricted:
             return .restricted
         case .denied:
-            return .denied
+            return .speechDenied
         case .notDetermined:
             return .notDetermined
         case .authorized:
             return microphone
         @unknown default:
-            return .denied
+            return .speechDenied
         }
+    }
+
+    private func combinedAuthorization(
+        speech: SFSpeechRecognizerAuthorizationStatus,
+        microphone: SpeechAuthorization
+    ) -> SpeechAuthorization {
+        Self.resolveAuthorization(speech: speech, microphone: microphone)
     }
 
     private func microphoneAuthorization() -> SpeechAuthorization {
@@ -175,9 +182,9 @@ actor AppleSpeechInput: SpeechInput {
         case .undetermined:
             return .notDetermined
         case .denied:
-            return .denied
+            return .microphoneDenied
         @unknown default:
-            return .denied
+            return .microphoneDenied
         }
     }
 }

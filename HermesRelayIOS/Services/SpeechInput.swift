@@ -2,7 +2,8 @@ import Foundation
 
 enum SpeechAuthorization: Equatable, Sendable {
     case authorized
-    case denied
+    case microphoneDenied
+    case speechDenied
     case restricted
     case notDetermined
 }
