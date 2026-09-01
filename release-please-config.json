@@ -4,6 +4,7 @@
     ".": {
       "release-type": "simple",
       "package-name": "hermes-relay-ios",
+      "initial-version": "0.1.0",
       "changelog-type": "github",
       "include-component-in-tag": false,
       "bump-minor-pre-major": true,
