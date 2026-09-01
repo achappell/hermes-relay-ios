@@ -8,11 +8,11 @@ protocol HermesSessionClient: Sendable {
 
 struct RelayUnavailableError: LocalizedError, Equatable, Sendable {
     var errorDescription: String? {
-        "The Hermes relay client is not wired yet."
+        "Configure a Hermes relay before connecting."
     }
 }
 
-/// Safe foundation behavior until the WebSocket transport is implemented.
+/// Explicit fallback for previews and stores without a configured relay.
 struct UnavailableHermesSessionClient: HermesSessionClient {
     func connect() async throws -> SessionMetadata {
         throw RelayUnavailableError()

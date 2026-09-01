@@ -181,6 +181,9 @@ actor URLSessionHermesSessionClient: HermesSessionClient {
                 }
             } catch is CancellationError {
                 return
+            } catch let error as HermesEventNormalizationError {
+                await failTransport(error, generation: generation)
+                return
             } catch {
                 await failTransport(RelaySessionError.disconnected, generation: generation)
                 return

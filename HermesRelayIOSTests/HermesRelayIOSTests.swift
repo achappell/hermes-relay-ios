@@ -2,12 +2,12 @@ import XCTest
 @testable import HermesRelayIOS
 
 final class HermesRelayIOSTests: XCTestCase {
-    func testUnavailableClientExplainsMissingRelayWiring() async {
+    func testUnavailableClientExplainsMissingRelayConfiguration() async {
         do {
             _ = try await UnavailableHermesSessionClient().connect()
             XCTFail("The foundation client must not claim a connection")
         } catch let error as RelayUnavailableError {
-            XCTAssertEqual(error.errorDescription, "The Hermes relay client is not wired yet.")
+            XCTAssertEqual(error.errorDescription, "Configure a Hermes relay before connecting.")
         } catch {
             XCTFail("Unexpected error: \(error)")
         }

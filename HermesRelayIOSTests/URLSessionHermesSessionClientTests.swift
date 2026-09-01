@@ -147,6 +147,46 @@ final class URLSessionHermesSessionClientTests: XCTestCase {
         await client.disconnect()
     }
 
+    func testMalformedJSONFinishesTheTurnWithAContentSafeNormalizationError() async throws {
+        let socket = FakeWebSocketConnection()
+        socket.enqueue(.text(json(["type": "hello_ack"])))
+        let client = try makeClient(socket: socket)
+        _ = try await client.connect()
+
+        let stream = await client.sendTurn(text: "malformed")
+        socket.enqueue(.text("not-json"))
+
+        do {
+            _ = try await collect(stream)
+            XCTFail("Malformed JSON must finish the active stream with an error")
+        } catch let error as HermesEventNormalizationError {
+            XCTAssertEqual(error, .invalidJSON)
+        }
+
+        XCTAssertTrue(socket.closeCalled)
+        await client.disconnect()
+    }
+
+    func testNonObjectJSONFinishesTheTurnWithAContentSafeNormalizationError() async throws {
+        let socket = FakeWebSocketConnection()
+        socket.enqueue(.text(json(["type": "hello_ack"])))
+        let client = try makeClient(socket: socket)
+        _ = try await client.connect()
+
+        let stream = await client.sendTurn(text: "array frame")
+        socket.enqueue(.text("[]"))
+
+        do {
+            _ = try await collect(stream)
+            XCTFail("Non-object JSON must finish the active stream with an error")
+        } catch let error as HermesEventNormalizationError {
+            XCTAssertEqual(error, .nonObjectJSON)
+        }
+
+        XCTAssertTrue(socket.closeCalled)
+        await client.disconnect()
+    }
+
     func testDisconnectClosesTheSocketAndCancelsTheSingleReader() async throws {
         let socket = FakeWebSocketConnection()
         socket.enqueue(.text(json(["type": "hello_ack"])))
