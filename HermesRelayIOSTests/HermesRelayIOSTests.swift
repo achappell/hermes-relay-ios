@@ -31,4 +31,22 @@ final class HermesRelayIOSTests: XCTestCase {
         XCTAssertEqual(ConnectionState.connected.label, "Connected")
         XCTAssertEqual(ConnectionState.failed("offline").label, "Unavailable")
     }
+
+    func testVoiceStatesExposeStableStatusPresentation() {
+        let expected: [(VoiceState, String, String)] = [
+            (.idle, "Ready", "mic"),
+            (.listening, "Listening", "mic.fill"),
+            (.transcribing, "Transcribing", "waveform"),
+            (.thinking, "Thinking", "ellipsis"),
+            (.speaking, "Speaking", "speaker.wave.2.fill"),
+            (.buffering, "Buffering", "arrow.down.circle"),
+            (.interrupted, "Interrupted", "pause.circle"),
+            (.failed("Audio playback failed."), "Audio playback failed.", "exclamationmark.triangle"),
+        ]
+
+        for (state, label, systemImage) in expected {
+            XCTAssertEqual(state.label, label)
+            XCTAssertEqual(state.systemImage, systemImage)
+        }
+    }
 }

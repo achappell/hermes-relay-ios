@@ -5,8 +5,10 @@ import Observation
 @Observable
 final class VoiceSessionCoordinator {
     private let store: ConversationStore
-    private let input: any SpeechInput
+    nonisolated private let input: any SpeechInput
     private let output: any AudioOutput
+    private let recognitionFinishTimeoutNanoseconds: UInt64
+    nonisolated private let captureStartGate = CaptureStartGate()
 
     private(set) var state: VoiceState = .idle
     private(set) var provisionalText = ""
@@ -20,46 +22,37 @@ final class VoiceSessionCoordinator {
     init(
         store: ConversationStore,
         input: any SpeechInput,
-        output: any AudioOutput
+        output: any AudioOutput,
+        recognitionFinishTimeoutNanoseconds: UInt64 = 2_000_000_000
     ) {
         self.store = store
         self.input = input
         self.output = output
+        self.recognitionFinishTimeoutNanoseconds = recognitionFinishTimeoutNanoseconds
     }
 
-    func beginCapture() async {
-        guard captureTask == nil, responseTask == nil else { return }
-        if case .failed = state {
-            state = .idle
+    nonisolated func beginCapture() async {
+        let canStart = await MainActor.run { [weak self] in
+            guard let self else { return false }
+            return self.captureTask == nil && self.responseTask == nil
         }
+        guard canStart, let startTask = await captureStartGate.begin(input: input) else { return }
 
-        var authorization = await input.authorization()
-        if authorization == .notDetermined {
-            authorization = await input.requestAuthorization()
+        let result = await startTask.value
+        await MainActor.run { [weak self] in
+            self?.applyCaptureStart(result)
         }
-        guard authorization == .authorized else {
-            state = .failed(permissionMessage(for: authorization))
-            return
-        }
-
-        do {
-            let stream = try await input.start()
-            provisionalText = ""
-            finalText = nil
-            state = .listening
-            captureTask = Task { [weak self] in
-                await self?.consumeRecognition(stream)
-            }
-        } catch {
-            state = .failed(error.localizedDescription)
-        }
+        await captureStartGate.clear()
     }
 
     func endCaptureAndSend() async {
+        if let result = await captureStartGate.result() {
+            applyCaptureStart(result)
+        }
         guard let captureTask else { return }
         state = .transcribing
-        await input.finish()
-        await captureTask.value
+        requestInputFinish()
+        await waitForRecognitionCompletion(captureTask)
         self.captureTask = nil
 
         let text = (finalText ?? provisionalText)
@@ -78,6 +71,85 @@ final class VoiceSessionCoordinator {
         }
         await responseTask?.value
         responseTask = nil
+    }
+
+    private func requestInputFinish() {
+        let input = self.input
+
+        Task.detached(priority: .userInitiated) {
+            await input.finish()
+        }
+    }
+
+    private func applyCaptureStart(_ result: CaptureStartResult) {
+        guard captureTask == nil, responseTask == nil else { return }
+        if case .failed = state {
+            state = .idle
+        }
+
+        switch result {
+        case .started(let stream):
+            provisionalText = ""
+            finalText = nil
+            state = .listening
+            captureTask = Task.detached(priority: .userInitiated) { [weak self] in
+                await self?.consumeRecognition(stream)
+            }
+        case .failed(let failure):
+            switch failure {
+            case .permission(let authorization):
+                state = .failed(permissionMessage(for: authorization))
+            case .input(let error):
+                state = .failed(error.localizedDescription)
+            }
+        }
+    }
+
+    fileprivate nonisolated static func startInput(_ input: any SpeechInput) async -> CaptureStartResult {
+        var authorization = await input.authorization()
+        if authorization == .notDetermined {
+            authorization = await input.requestAuthorization()
+        }
+        guard authorization == .authorized else {
+            return .failed(.permission(authorization))
+        }
+
+        do {
+            return .started(try await input.start())
+        } catch let error as SpeechInputError {
+            return .failed(.input(error))
+        } catch {
+            return .failed(.input(.captureFailed))
+        }
+    }
+
+    private func waitForRecognitionCompletion(_ captureTask: Task<Void, Never>) async {
+        let input = self.input
+        let timeoutNanoseconds = recognitionFinishTimeoutNanoseconds
+
+        let gate = CompletionGate()
+        let completionTask = Task {
+            await captureTask.value
+            await gate.resolve(true)
+        }
+        let timeoutTask = Task {
+            do {
+                try await Task.sleep(nanoseconds: timeoutNanoseconds)
+                await gate.resolve(false)
+            } catch {
+                // The recognition task completed first.
+            }
+        }
+
+        let didComplete = await gate.wait()
+        timeoutTask.cancel()
+        if !didComplete {
+            completionTask.cancel()
+            captureTask.cancel()
+            Task {
+                await input.cancel()
+            }
+        }
     }
 
     func cancelCapture() async {
@@ -113,26 +185,35 @@ final class VoiceSessionCoordinator {
         responseTask = nil
     }
 
-    private func consumeRecognition(
+    private nonisolated func consumeRecognition(
         _ stream: AsyncThrowingStream<SpeechRecognitionUpdate, Error>
     ) async {
         do {
             for try await update in stream {
                 guard !Task.isCancelled else { return }
-                provisionalText = update.text
-                if update.isFinal {
-                    finalText = update.text
-                }
-                if state == .listening {
-                    state = .transcribing
+                await MainActor.run { [weak self] in
+                    guard let self else { return }
+                    self.provisionalText = update.text
+                    if update.isFinal {
+                        self.finalText = update.text
+                    }
+                    if self.state == .listening {
+                        self.state = .transcribing
+                    }
                 }
             }
         } catch let error as SpeechInputError {
             if error != .cancelled {
-                state = .failed(error.localizedDescription)
+                let message = error.localizedDescription
+                await MainActor.run { [weak self] in
+                    self?.state = .failed(message)
+                }
             }
         } catch {
-            state = .failed(error.localizedDescription)
+            let message = error.localizedDescription
+            await MainActor.run { [weak self] in
+                self?.state = .failed(message)
+            }
         }
     }
 
@@ -240,5 +321,58 @@ final class VoiceSessionCoordinator {
         case .authorized:
             return ""
         }
+    }
+}
+
+private enum CaptureStartFailure: Sendable {
+    case permission(SpeechAuthorization)
+    case input(SpeechInputError)
+}
+
+private enum CaptureStartResult: Sendable {
+    case started(AsyncThrowingStream<SpeechRecognitionUpdate, Error>)
+    case failed(CaptureStartFailure)
+}
+
+private actor CaptureStartGate {
+    private var startTask: Task<CaptureStartResult, Never>?
+
+    func begin(input: any SpeechInput) -> Task<CaptureStartResult, Never>? {
+        guard startTask == nil else { return nil }
+        let task = Task.detached(priority: .userInitiated) {
+            await VoiceSessionCoordinator.startInput(input)
+        }
+        startTask = task
+        return task
+    }
+
+    func result() async -> CaptureStartResult? {
+        guard let startTask else { return nil }
+        return await startTask.value
+    }
+
+    func clear() {
+        startTask = nil
+    }
+}
+
+private actor CompletionGate {
+    private var result: Bool?
+    private var waiter: CheckedContinuation<Bool, Never>?
+
+    func wait() async -> Bool {
+        if let result {
+            return result
+        }
+        return await withCheckedContinuation { continuation in
+            waiter = continuation
+        }
+    }
+
+    func resolve(_ result: Bool) {
+        guard self.result == nil else { return }
+        self.result = result
+        waiter?.resume(returning: result)
+        waiter = nil
     }
 }
