@@ -279,6 +279,32 @@ final class VoiceSessionCoordinatorTests: XCTestCase {
     }
 
     @MainActor
+    func testFinishPlaybackFailureKeepsAssistantTextVisible() async {
+        let input = CoordinatorSpeechInput(finalUpdate: SpeechRecognitionUpdate(text: "Speak", isFinal: true))
+        let output = CoordinatorAudioOutput(finishError: .outputFailed)
+        let client = CoordinatorHermesSessionClient(events: [
+            .messageStart,
+            .textDelta("Visible response"),
+            .audioStart(AudioFormat(sampleRate: 24_000, channels: 1, sampleWidth: 2)),
+            .audioChunk(Data([0, 1])),
+            .audioEnd,
+            .turnComplete(turnID: "turn-1"),
+        ])
+        let store = await connectedStore(client)
+        let coordinator = VoiceSessionCoordinator(store: store, input: input, output: output)
+
+        await coordinator.beginCapture()
+        await coordinator.endCaptureAndSend()
+
+        XCTAssertEqual(store.messages.last?.role, .assistant)
+        XCTAssertEqual(store.messages.last?.text, "Visible response")
+        XCTAssertEqual(
+            coordinator.state,
+            .failed("Audio playback failed. The response text is still available.")
+        )
+    }
+
+    @MainActor
     func testTypedDraftSendsSlashCommandAndPlaysWAVResponse() async throws {
         let writer = WAVFallbackWriter()
         let format = AudioFormat(sampleRate: 24_000, channels: 1, sampleWidth: 2)
@@ -533,10 +559,15 @@ private actor CoordinatorAudioOutput: AudioOutput {
     }
 
     private let appendError: AudioOutputError?
+    private let finishError: AudioOutputError?
     private var recordedOperations: [Operation] = []
 
-    init(appendError: AudioOutputError? = nil) {
+    init(
+        appendError: AudioOutputError? = nil,
+        finishError: AudioOutputError? = nil
+    ) {
         self.appendError = appendError
+        self.finishError = finishError
     }
 
     func start(format: AudioFormat) async throws {
@@ -548,7 +579,8 @@ private actor CoordinatorAudioOutput: AudioOutput {
         recordedOperations.append(.append)
     }
 
-    func finish() async {
+    func finish() async throws {
+        if let finishError { throw finishError }
         recordedOperations.append(.finish)
     }
 

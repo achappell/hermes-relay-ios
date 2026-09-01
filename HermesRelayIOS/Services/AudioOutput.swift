@@ -30,7 +30,7 @@ enum PCMFormatValidator {
 protocol AudioOutput: Sendable {
     func start(format: AudioFormat) async throws
     func append(_ pcm: Data) async throws
-    func finish() async
+    func finish() async throws
     func stop() async
 }
 
@@ -73,8 +73,19 @@ actor RecoveringAudioOutput: AudioOutput {
         }
     }
 
-    func finish() async {
-        await liveOutput.finish()
+    func finish() async throws {
+        do {
+            try await liveOutput.finish()
+        } catch {
+            await liveOutput.stop()
+            if let format {
+                lastFallbackURL = try? fallbackWriter.write(pcm: bufferedPCM, format: format)
+            }
+            self.format = nil
+            bufferedPCM.removeAll(keepingCapacity: false)
+            throw error
+        }
+
         format = nil
         bufferedPCM.removeAll(keepingCapacity: false)
     }
