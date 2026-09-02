@@ -118,6 +118,175 @@ final class ConversationStoreTransportTests: XCTestCase {
         XCTAssertNil(store.sessionMetadata)
         XCTAssertFalse(store.isSending)
     }
+
+    @MainActor
+    func testAutoConnectUsesStoredConfigurationOnlyOnce() async throws {
+        let profileURL = temporaryProfileURL()
+        defer { try? FileManager.default.removeItem(at: profileURL.deletingLastPathComponent()) }
+
+        let configuration = RelayConfigurationStore(
+            secureStore: AutoConnectSecureValueStore(),
+            profileURL: profileURL
+        )
+        let profile = try RelayProfile(
+            endpoint: URL(string: "wss://relay.example.test/session")!,
+            clientID: "hermes-ios",
+            deviceID: "device-123",
+            displayName: "Test iPhone"
+        )
+        try await configuration.saveProfile(profile)
+        try await configuration.saveToken("test-token")
+
+        let socket = AutoConnectWebSocketConnection()
+        let factory = AutoConnectWebSocketConnectionFactory(socket: socket)
+        let store = ConversationStore(
+            configurationStore: configuration,
+            socketFactory: factory
+        )
+
+        let firstAttempt = Task { @MainActor in
+            await store.autoConnectIfNeeded()
+        }
+        let secondAttempt = Task { @MainActor in
+            await store.autoConnectIfNeeded()
+        }
+        await firstAttempt.value
+        await secondAttempt.value
+
+        XCTAssertEqual(factory.openCount, 1)
+        XCTAssertEqual(store.connectionState, .connected)
+        XCTAssertEqual(socket.sentTexts.count, 1)
+
+        await socket.close()
+    }
+
+    @MainActor
+    func testAutoConnectDoesNotAttemptWithoutAStoredProfile() async throws {
+        let profileURL = temporaryProfileURL()
+        defer { try? FileManager.default.removeItem(at: profileURL.deletingLastPathComponent()) }
+
+        let configuration = RelayConfigurationStore(
+            secureStore: AutoConnectSecureValueStore(),
+            profileURL: profileURL
+        )
+        let factory = AutoConnectWebSocketConnectionFactory(socket: AutoConnectWebSocketConnection())
+        let store = ConversationStore(
+            configurationStore: configuration,
+            socketFactory: factory
+        )
+
+        await store.autoConnectIfNeeded()
+
+        XCTAssertEqual(factory.openCount, 0)
+        XCTAssertEqual(store.connectionState, .disconnected)
+        XCTAssertEqual(store.transientError, "Configure a Hermes relay profile before connecting.")
+    }
+
+    @MainActor
+    func testAutoConnectDoesNotAttemptWithAMalformedProfile() async throws {
+        let profileURL = temporaryProfileURL()
+        defer { try? FileManager.default.removeItem(at: profileURL.deletingLastPathComponent()) }
+        try FileManager.default.createDirectory(
+            at: profileURL.deletingLastPathComponent(),
+            withIntermediateDirectories: true
+        )
+        try Data("not-json".utf8).write(to: profileURL)
+
+        let configuration = RelayConfigurationStore(
+            secureStore: AutoConnectSecureValueStore(),
+            profileURL: profileURL
+        )
+        let factory = AutoConnectWebSocketConnectionFactory(socket: AutoConnectWebSocketConnection())
+        let store = ConversationStore(
+            configurationStore: configuration,
+            socketFactory: factory
+        )
+
+        await store.autoConnectIfNeeded()
+
+        XCTAssertEqual(factory.openCount, 0)
+        XCTAssertEqual(store.connectionState, .disconnected)
+        XCTAssertEqual(
+            store.transientError,
+            "The saved relay profile is invalid. Open Configure Relay and save it again."
+        )
+    }
+
+    @MainActor
+    func testAutoConnectDoesNotAttemptWithoutAStoredToken() async throws {
+        let profileURL = temporaryProfileURL()
+        defer { try? FileManager.default.removeItem(at: profileURL.deletingLastPathComponent()) }
+
+        let configuration = RelayConfigurationStore(
+            secureStore: AutoConnectSecureValueStore(),
+            profileURL: profileURL
+        )
+        let profile = try RelayProfile(
+            endpoint: URL(string: "wss://relay.example.test/session")!,
+            clientID: "hermes-ios",
+            deviceID: "device-123",
+            displayName: "Test iPhone"
+        )
+        try await configuration.saveProfile(profile)
+
+        let factory = AutoConnectWebSocketConnectionFactory(socket: AutoConnectWebSocketConnection())
+        let store = ConversationStore(
+            configurationStore: configuration,
+            socketFactory: factory
+        )
+
+        await store.autoConnectIfNeeded()
+
+        XCTAssertEqual(factory.openCount, 0)
+        XCTAssertEqual(store.connectionState, .disconnected)
+        XCTAssertEqual(store.transientError, "Add a Hermes relay token before connecting.")
+    }
+
+    @MainActor
+    func testAutoConnectFailureExposesRetryableConnectionState() async throws {
+        let profileURL = temporaryProfileURL()
+        defer { try? FileManager.default.removeItem(at: profileURL.deletingLastPathComponent()) }
+
+        let configuration = RelayConfigurationStore(
+            secureStore: AutoConnectSecureValueStore(),
+            profileURL: profileURL
+        )
+        let profile = try RelayProfile(
+            endpoint: URL(string: "wss://relay.example.test/session")!,
+            clientID: "hermes-ios",
+            deviceID: "device-123",
+            displayName: "Test iPhone"
+        )
+        try await configuration.saveProfile(profile)
+        try await configuration.saveToken("test-token")
+
+        let socket = AutoConnectWebSocketConnection(frames: [
+            .text("{\"type\":\"status\",\"text\":\"not an ack\"}")
+        ])
+        let factory = AutoConnectWebSocketConnectionFactory(socket: socket)
+        let store = ConversationStore(
+            configurationStore: configuration,
+            socketFactory: factory
+        )
+
+        await store.autoConnectIfNeeded()
+
+        XCTAssertEqual(factory.openCount, 1)
+        XCTAssertEqual(
+            store.connectionState,
+            .failed("The Hermes relay did not acknowledge the session.")
+        )
+        XCTAssertEqual(
+            store.transientError,
+            "The Hermes relay did not acknowledge the session."
+        )
+    }
+
+    private func temporaryProfileURL() -> URL {
+        FileManager.default.temporaryDirectory
+            .appendingPathComponent("HermesRelayIOS-AutoConnect-\(UUID().uuidString)")
+            .appendingPathComponent("profile.json")
+    }
 }
 
 private enum FakeClientError: LocalizedError, Sendable {
@@ -157,4 +326,88 @@ private final class FakeHermesSessionClient: HermesSessionClient, @unchecked Sen
     }
 
     func disconnect() async {}
+}
+
+private final class AutoConnectSecureValueStore: SecureValueStore, @unchecked Sendable {
+    private var values: [String: Data] = [:]
+
+    func read(service: String, account: String) throws -> Data? {
+        values["\(service)/\(account)"]
+    }
+
+    func write(_ value: Data, service: String, account: String) throws {
+        values["\(service)/\(account)"] = value
+    }
+
+    func delete(service: String, account: String) throws {
+        values.removeValue(forKey: "\(service)/\(account)")
+    }
+}
+
+private final class AutoConnectWebSocketConnectionFactory: WebSocketConnectionFactory, @unchecked Sendable {
+    let socket: AutoConnectWebSocketConnection
+    private(set) var openCount = 0
+
+    init(socket: AutoConnectWebSocketConnection) {
+        self.socket = socket
+    }
+
+    func open(urlRequest: URLRequest) async throws -> any WebSocketConnection {
+        openCount += 1
+        return socket
+    }
+}
+
+private final class AutoConnectWebSocketConnection: WebSocketConnection, @unchecked Sendable {
+    private let stateLock = NSLock()
+    private var queuedFrames: [WebSocketFrame]
+    private var pendingReceive: CheckedContinuation<WebSocketFrame, Error>?
+    private(set) var sentTexts: [String] = []
+
+    init(frames: [WebSocketFrame] = [
+        .text("{\"type\":\"hello_ack\",\"model\":\"test-model\"}")
+    ]) {
+        queuedFrames = frames
+    }
+
+    func send(text: String) async throws {
+        appendSentText(text)
+    }
+
+    func receive() async throws -> WebSocketFrame {
+        try await withCheckedThrowingContinuation { continuation in
+            receive(using: continuation)
+        }
+    }
+
+    func close() async {
+        let continuation = removePendingReceive()
+        continuation?.resume(throwing: RelaySessionError.disconnected)
+    }
+
+    private func appendSentText(_ text: String) {
+        stateLock.lock()
+        sentTexts.append(text)
+        stateLock.unlock()
+    }
+
+    private func receive(using continuation: CheckedContinuation<WebSocketFrame, Error>) {
+        stateLock.lock()
+        if !queuedFrames.isEmpty {
+            let frame = queuedFrames.removeFirst()
+            stateLock.unlock()
+            continuation.resume(returning: frame)
+        } else {
+            pendingReceive = continuation
+            stateLock.unlock()
+        }
+    }
+
+    private func removePendingReceive() -> CheckedContinuation<WebSocketFrame, Error>? {
+        stateLock.lock()
+        let continuation = pendingReceive
+        pendingReceive = nil
+        stateLock.unlock()
+        return continuation
+    }
 }

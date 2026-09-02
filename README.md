@@ -14,6 +14,9 @@ The current voice slice provides:
 - An in-app Configure Relay screen for endpoint and client metadata, with
   bearer-token entry backed by Keychain.
 - Keychain-backed bearer-token storage and an application-support relay profile.
+- One guarded automatic connection attempt on launch or foreground activation
+  when a valid profile and token are already stored, with explicit setup and
+  retry states.
 - A protocol-v1 WebSocket transport gated on `hello_ack`, with normalized text,
   activity, audio, error, and completion events.
 - Push-to-talk local transcription with permission and cancellation handling.
@@ -48,7 +51,10 @@ Tap the gear button to open Configure Relay. Enter the `ws://` or `wss://`
 endpoint, client ID, device ID, display name, and bearer token, then choose
 Save configuration. The token is stored in Keychain; the other fields are
 stored in the application-support profile. When no configuration exists,
-Connect displays an actionable message and never claims a relay connection.
+the app stays disconnected and displays setup guidance. When a valid profile
+and token already exist, the app attempts one connection on launch or
+foreground activation; a failed attempt remains visible and can be retried
+with the Connect/Retry button.
 
 To inspect playback timing in a Debug build, add
 `--hermes-audio-debug` under the scheme's **Arguments Passed On Launch**. The

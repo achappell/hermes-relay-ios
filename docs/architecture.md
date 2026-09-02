@@ -24,6 +24,9 @@ store without a network connection.
 - `Views/` owns SwiftUI layout and interaction.
 - `ViewModels/ConversationStore.swift` owns main-actor conversation state and
   turns typed client events into transcript records.
+- The app loads local conversation state before asking the store to make one
+  guarded automatic connection attempt. Foreground activation calls the same
+  idempotent entry point, so lifecycle changes cannot create connection loops.
 
 ### Domain
 

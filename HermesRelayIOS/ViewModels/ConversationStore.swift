@@ -20,6 +20,7 @@ final class ConversationStore {
 
     private var activeAssistantID: UUID?
     private var turnCompleted = false
+    private var didAttemptAutomaticConnection = false
 
     init(
         client: any HermesSessionClient = UnavailableHermesSessionClient(),
@@ -47,17 +48,18 @@ final class ConversationStore {
         }
     }
 
-    func loadConfiguredClient() async {
-        guard let configurationStore else { return }
+    @discardableResult
+    func loadConfiguredClient() async -> Bool {
+        guard let configurationStore else { return false }
 
         do {
             guard let profile = try await configurationStore.loadProfile() else {
                 transientError = "Configure a Hermes relay profile before connecting."
-                return
+                return false
             }
             guard let token = try await configurationStore.loadToken() else {
                 transientError = "Add a Hermes relay token before connecting."
-                return
+                return false
             }
             client = URLSessionHermesSessionClient(
                 profile: profile,
@@ -68,9 +70,18 @@ final class ConversationStore {
                 }
             )
             transientError = nil
+            return true
         } catch {
             transientError = error.localizedDescription
+            return false
         }
+    }
+
+    func autoConnectIfNeeded() async {
+        guard !didAttemptAutomaticConnection else { return }
+        didAttemptAutomaticConnection = true
+        guard await loadConfiguredClient() else { return }
+        await connect()
     }
 
     func connect() async {
