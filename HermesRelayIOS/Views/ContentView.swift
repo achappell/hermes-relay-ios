@@ -1,9 +1,23 @@
 import SwiftUI
 
+struct TranscriptScrollState: Equatable {
+    private var didScrollToInitialTail = false
+
+    mutating func targetID(for messages: [TranscriptMessage]) -> UUID? {
+        guard !didScrollToInitialTail, let latestMessageID = messages.last?.id else {
+            return nil
+        }
+
+        didScrollToInitialTail = true
+        return latestMessageID
+    }
+}
+
 @MainActor
 struct ContentView: View {
     @State private var store: ConversationStore
     @State private var voiceCoordinator: VoiceSessionCoordinator
+    @State private var transcriptScrollState = TranscriptScrollState()
     @State private var showingConfiguration = false
     @FocusState private var focusedField: FocusField?
     private let configurationStore: RelayConfigurationStore?
@@ -121,26 +135,39 @@ struct ContentView: View {
     }
 
     private var transcript: some View {
-        ScrollView {
-            if #available(iOS 26.0, macOS 26.0, *) {
-                GlassEffectContainer(spacing: 12) {
+        ScrollViewReader { proxy in
+            ScrollView {
+                if #available(iOS 26.0, macOS 26.0, *) {
+                    GlassEffectContainer(spacing: 12) {
+                        transcriptContent
+                    }
+                } else {
                     transcriptContent
                 }
-            } else {
-                transcriptContent
             }
-        }
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .background {
-            LinearGradient(
-                colors: [
-                    Color.accentColor.opacity(0.06),
-                    Color.clear,
-                    Color.secondary.opacity(0.08),
-                ],
-                startPoint: .topLeading,
-                endPoint: .bottomTrailing
-            )
+            .task(id: store.messages.last?.id) {
+                guard !Task.isCancelled else { return }
+                await Task.yield()
+                guard !Task.isCancelled,
+                      let targetID = transcriptScrollState.targetID(for: store.messages)
+                else { return }
+
+                withAnimation(.easeOut(duration: 0.2)) {
+                    proxy.scrollTo(targetID, anchor: .bottom)
+                }
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .background {
+                LinearGradient(
+                    colors: [
+                        Color.accentColor.opacity(0.06),
+                        Color.clear,
+                        Color.secondary.opacity(0.08),
+                    ],
+                    startPoint: .topLeading,
+                    endPoint: .bottomTrailing
+                )
+            }
         }
     }
 

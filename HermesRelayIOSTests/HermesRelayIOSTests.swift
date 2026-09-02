@@ -49,4 +49,15 @@ final class HermesRelayIOSTests: XCTestCase {
             XCTAssertEqual(state.systemImage, systemImage)
         }
     }
+
+    func testInitialTranscriptScrollTargetsTheLatestMessageOnlyOnce() {
+        var state = TranscriptScrollState()
+        let first = TranscriptMessage(role: .user, text: "First")
+        let latest = TranscriptMessage(role: .assistant, text: "Latest")
+        let newer = TranscriptMessage(role: .user, text: "Newer")
+
+        XCTAssertNil(state.targetID(for: []))
+        XCTAssertEqual(state.targetID(for: [first, latest]), latest.id)
+        XCTAssertNil(state.targetID(for: [first, latest, newer]))
+    }
 }
