@@ -11,13 +11,63 @@ final class AudioOutputTests: XCTestCase {
         )
     }
 
+    func testPCMFrameAccumulatorReleasesCompleteFramesBeforeStreamEnds() throws {
+        var accumulator = PCMFrameAccumulator(bytesPerFrame: 4)
+
+        XCTAssertNil(try accumulator.append(Data([0, 1])))
+        XCTAssertEqual(
+            try accumulator.append(Data([2, 3, 4])),
+            Data([0, 1, 2, 3])
+        )
+        XCTAssertEqual(
+            try accumulator.append(Data([5, 6, 7])),
+            Data([4, 5, 6, 7])
+        )
+        XCTAssertNoThrow(try accumulator.finish())
+    }
+
+    func testPCMFrameAccumulatorRejectsPartialFinalFrame() throws {
+        var accumulator = PCMFrameAccumulator(bytesPerFrame: 4)
+
+        XCTAssertNil(try accumulator.append(Data([0, 1])))
+        XCTAssertThrowsError(try accumulator.finish()) { error in
+            XCTAssertEqual(error as? AudioOutputError, .outputFailed)
+        }
+    }
+
+    func testPlaybackDrainWaitsForScheduledBuffers() async {
+        let drain = AudioPlaybackDrain()
+        let flag = PlaybackCompletionFlag()
+        await drain.scheduleBuffer()
+        await drain.scheduleBuffer()
+
+        let waitTask = Task {
+            await drain.waitForCompletion()
+            await flag.markCompleted()
+        }
+        try? await Task.sleep(nanoseconds: 10_000_000)
+
+        let completedBeforeBufferConsumed = await flag.isCompleted()
+        XCTAssertFalse(completedBeforeBufferConsumed)
+
+        await drain.bufferDidComplete()
+        let completedBeforeFinalBufferConsumed = await flag.isCompleted()
+        XCTAssertFalse(completedBeforeFinalBufferConsumed)
+
+        await drain.bufferDidComplete()
+        await waitTask.value
+
+        let completedAfterBufferConsumed = await flag.isCompleted()
+        XCTAssertTrue(completedAfterBufferConsumed)
+    }
+
     func testFakeOutputPreservesChunkOrder() async throws {
         let output = RecordingAudioOutput()
         let format = AudioFormat(sampleRate: 24_000, channels: 1, sampleWidth: 2)
 
         try await output.start(format: format)
-        try await output.append(Data([0, 1]))
-        try await output.append(Data([2, 3]))
+        _ = try await output.append(Data([0, 1]))
+        _ = try await output.append(Data([2, 3]))
         await output.finish()
 
         let chunks = await output.recordedChunks()
@@ -46,7 +96,7 @@ final class AudioOutputTests: XCTestCase {
         try await output.start(format: format)
 
         do {
-            try await output.append(Data([0, 1]))
+            _ = try await output.append(Data([0, 1]))
             XCTFail("A playback failure must reach the caller")
         } catch let error as AudioOutputError {
             XCTAssertEqual(error, .outputFailed)
@@ -60,7 +110,7 @@ final class AudioOutputTests: XCTestCase {
         try await output.start(format: format)
 
         do {
-            try await output.append(Data([0x01, 0x02]))
+            _ = try await output.append(Data([0x01, 0x02]))
             XCTFail("The configured live output must fail")
         } catch let error as AudioOutputError {
             XCTAssertEqual(error, .outputFailed)
@@ -80,7 +130,7 @@ final class AudioOutputTests: XCTestCase {
         let output = RecoveringAudioOutput(liveOutput: liveOutput)
         let format = AudioFormat(sampleRate: 24_000, channels: 1, sampleWidth: 2)
         try await output.start(format: format)
-        try await output.append(Data([0x01, 0x02]))
+        _ = try await output.append(Data([0x01, 0x02]))
 
         do {
             try await output.finish()
@@ -179,11 +229,12 @@ private actor RecordingAudioOutput: AudioOutput {
         recordedOperations.append(.start(format))
     }
 
-    func append(_ pcm: Data) async throws {
+    func append(_ pcm: Data) async throws -> AudioPlaybackReadiness {
         if let appendError { throw appendError }
         guard active else { throw AudioOutputError.notStarted }
         chunks.append(pcm)
         recordedOperations.append(.append)
+        return .ready
     }
 
     func finish() async {
@@ -206,11 +257,23 @@ private actor FinishFailingAudioOutput: AudioOutput {
         try PCMFormatValidator.validate(format)
     }
 
-    func append(_ pcm: Data) async throws {}
+    func append(_ pcm: Data) async throws -> AudioPlaybackReadiness { .ready }
 
     func finish() async throws {
         throw AudioOutputError.outputFailed
     }
 
     func stop() async {}
+}
+
+private actor PlaybackCompletionFlag {
+    private var completed = false
+
+    func markCompleted() {
+        completed = true
+    }
+
+    func isCompleted() -> Bool {
+        completed
+    }
 }
