@@ -19,6 +19,7 @@ struct ContentView: View {
     @State private var voiceCoordinator: VoiceSessionCoordinator
     @State private var transcriptScrollState = TranscriptScrollState()
     @State private var showingConfiguration = false
+    @Environment(\.scenePhase) private var scenePhase
     @FocusState private var focusedField: FocusField?
     private let configurationStore: RelayConfigurationStore?
 
@@ -65,8 +66,9 @@ struct ContentView: View {
             }
             .scrollDismissesKeyboard(.interactively)
             .navigationTitle("Hermes Relay")
-            .task {
-                await store.loadConfiguredClient()
+            .onChange(of: scenePhase) { _, newPhase in
+                guard newPhase == .active else { return }
+                Task { await store.autoConnectIfNeeded() }
             }
             .toolbar {
                 #if os(iOS)
@@ -109,11 +111,22 @@ struct ContentView: View {
     }
 
     private var connectButton: some View {
-        Button(store.connectionState.isConnected ? "Connected" : "Connect") {
+        Button(connectButtonTitle) {
             Task { await store.connect() }
         }
         .disabled(store.connectionState == .connecting)
         .relayGlassProminentButtonStyle()
+    }
+
+    private var connectButtonTitle: String {
+        switch store.connectionState {
+        case .connected:
+            return "Connected"
+        case .failed:
+            return "Retry"
+        case .disconnected, .connecting:
+            return "Connect"
+        }
     }
 
     private var connectionBanner: some View {

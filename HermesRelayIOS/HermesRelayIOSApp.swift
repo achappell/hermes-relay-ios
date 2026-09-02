@@ -33,6 +33,7 @@ struct HermesRelayIOSApp: App {
             ContentView(store: store, configurationStore: configuration)
                 .task {
                     await store.loadPersistedConversation()
+                    await store.autoConnectIfNeeded()
                 }
         }
     }

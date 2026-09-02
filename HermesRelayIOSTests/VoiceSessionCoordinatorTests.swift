@@ -397,6 +397,42 @@ final class VoiceSessionCoordinatorTests: XCTestCase {
     }
 
     @MainActor
+    func testInterruptStopsPlaybackReconnectsAndBeginsNewCapture() async {
+        let input = CoordinatorSpeechInput(
+            finalUpdate: SpeechRecognitionUpdate(text: "Interrupt me", isFinal: true)
+        )
+        let output = CoordinatorAudioOutput()
+        let client = InterruptibleCoordinatorHermesSessionClient()
+        let store = ConversationStore(client: client)
+        await store.connect()
+        let coordinator = VoiceSessionCoordinator(store: store, input: input, output: output)
+
+        await coordinator.beginCapture()
+        let responseTask = Task { @MainActor in
+            await coordinator.endCaptureAndSend()
+        }
+        await output.waitUntilAppendRequested()
+
+        XCTAssertEqual(coordinator.state, .speaking)
+
+        await coordinator.interruptAndBeginCapture()
+
+        let disconnectCount = await client.disconnectCount
+        let connectCount = await client.connectCount
+        let sentTurns = await client.sentTurns
+        let operations = await output.operations()
+        XCTAssertEqual(disconnectCount, 1)
+        XCTAssertEqual(connectCount, 2)
+        XCTAssertEqual(sentTurns, ["Interrupt me"])
+        XCTAssertTrue(operations.contains(.stop))
+        XCTAssertEqual(coordinator.state, .listening)
+        XCTAssertEqual(store.connectionState, .connected)
+
+        await coordinator.cancelCapture()
+        await responseTask.value
+    }
+
+    @MainActor
     func testTypedDraftSendsSlashCommandAndPlaysWAVResponse() async throws {
         let writer = WAVFallbackWriter()
         let format = AudioFormat(sampleRate: 24_000, channels: 1, sampleWidth: 2)
@@ -656,6 +692,8 @@ private actor CoordinatorAudioOutput: AudioOutput {
     private let waitsForFinish: Bool
     private var finishRequested = false
     private var finishRequestWaiters: [CheckedContinuation<Void, Never>] = []
+    private var appendRequested = false
+    private var appendRequestWaiters: [CheckedContinuation<Void, Never>] = []
     private var finishWaiter: CheckedContinuation<Void, Never>?
     private var recordedOperations: [Operation] = []
 
@@ -678,6 +716,11 @@ private actor CoordinatorAudioOutput: AudioOutput {
     func append(_ pcm: Data) async throws -> AudioPlaybackReadiness {
         if let appendError { throw appendError }
         recordedOperations.append(.append)
+        appendRequested = true
+        for waiter in appendRequestWaiters {
+            waiter.resume()
+        }
+        appendRequestWaiters.removeAll()
         return appendReadiness
     }
 
@@ -707,6 +750,13 @@ private actor CoordinatorAudioOutput: AudioOutput {
         if finishRequested { return }
         await withCheckedContinuation { continuation in
             finishRequestWaiters.append(continuation)
+        }
+    }
+
+    func waitUntilAppendRequested() async {
+        if appendRequested { return }
+        await withCheckedContinuation { continuation in
+            appendRequestWaiters.append(continuation)
         }
     }
 
@@ -753,6 +803,49 @@ private final class CoordinatorHermesSessionClient: HermesSessionClient, @unchec
     }
 
     func disconnect() async {}
+}
+
+private actor InterruptibleCoordinatorHermesSessionClient: HermesSessionClient {
+    private(set) var connectCount = 0
+    private(set) var disconnectCount = 0
+    private(set) var sentTurns: [String] = []
+    private var turnContinuation: AsyncThrowingStream<HermesEvent, Error>.Continuation?
+    private var turnStarted = false
+    private var turnStartWaiters: [CheckedContinuation<Void, Never>] = []
+
+    func connect() async throws -> SessionMetadata {
+        connectCount += 1
+        return SessionMetadata(sessionID: "session-\(connectCount)", model: nil)
+    }
+
+    func sendTurn(text: String) async -> AsyncThrowingStream<HermesEvent, Error> {
+        sentTurns.append(text)
+        let (stream, continuation) = AsyncThrowingStream<HermesEvent, Error>.makeStream()
+        turnContinuation = continuation
+        turnStarted = true
+        turnStartWaiters.forEach { $0.resume() }
+        turnStartWaiters.removeAll()
+        continuation.yield(.messageStart)
+        continuation.yield(
+            .audioStart(AudioFormat(sampleRate: 24_000, channels: 1, sampleWidth: 2))
+        )
+        continuation.yield(.audioChunk(Data([0, 1, 2, 3])))
+        return stream
+    }
+
+    func disconnect() async {
+        disconnectCount += 1
+        turnContinuation?.yield(.textDelta("late response"))
+        turnContinuation?.finish(throwing: RelaySessionError.disconnected)
+        turnContinuation = nil
+    }
+
+    func waitUntilTurnStarted() async {
+        if turnStarted { return }
+        await withCheckedContinuation { continuation in
+            turnStartWaiters.append(continuation)
+        }
+    }
 }
 
 private enum CoordinatorClientError: LocalizedError, Sendable {

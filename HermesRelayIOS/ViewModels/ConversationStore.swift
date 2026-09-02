@@ -20,6 +20,12 @@ final class ConversationStore {
 
     private var activeAssistantID: UUID?
     private var turnCompleted = false
+    private var didAttemptAutomaticConnection = false
+    // A closed stream can still deliver already-buffered events. Generation
+    // invalidation keeps an interrupted turn from contaminating the next one.
+    private var nextTurnGeneration: UInt64 = 0
+    private var activeTurnGeneration: UInt64?
+    private var interruptedTurnGeneration: UInt64?
 
     init(
         client: any HermesSessionClient = UnavailableHermesSessionClient(),
@@ -47,17 +53,18 @@ final class ConversationStore {
         }
     }
 
-    func loadConfiguredClient() async {
-        guard let configurationStore else { return }
+    @discardableResult
+    func loadConfiguredClient() async -> Bool {
+        guard let configurationStore else { return false }
 
         do {
             guard let profile = try await configurationStore.loadProfile() else {
                 transientError = "Configure a Hermes relay profile before connecting."
-                return
+                return false
             }
             guard let token = try await configurationStore.loadToken() else {
                 transientError = "Add a Hermes relay token before connecting."
-                return
+                return false
             }
             client = URLSessionHermesSessionClient(
                 profile: profile,
@@ -68,9 +75,18 @@ final class ConversationStore {
                 }
             )
             transientError = nil
+            return true
         } catch {
             transientError = error.localizedDescription
+            return false
         }
+    }
+
+    func autoConnectIfNeeded() async {
+        guard !didAttemptAutomaticConnection else { return }
+        didAttemptAutomaticConnection = true
+        guard await loadConfiguredClient() else { return }
+        await connect()
     }
 
     func connect() async {
@@ -130,44 +146,75 @@ final class ConversationStore {
         transientError = nil
         turnCompleted = false
         unconfirmedTurnText = nil
+        nextTurnGeneration &+= 1
+        let turnGeneration = nextTurnGeneration
+        activeTurnGeneration = turnGeneration
         messages.append(TranscriptMessage(role: .user, text: text))
         var didComplete = false
 
         do {
             let events = await client.sendTurn(text: text)
             for try await event in events {
+                guard activeTurnGeneration == turnGeneration else { break }
                 apply(event)
                 if let eventHandler {
                     await eventHandler(event)
                 }
             }
-            didComplete = turnCompleted
-            if !didComplete {
-                unconfirmedTurnText = text
-            }
         } catch {
-            let message = error.localizedDescription
-            if case RelaySessionError.disconnected = error {
-                connectionState = .disconnected
-                sessionMetadata = nil
-            } else if case RelaySessionError.connectionTimedOut = error {
-                connectionState = .disconnected
-                sessionMetadata = nil
-            } else if case RelaySessionError.notConnected = error {
-                connectionState = .disconnected
-                sessionMetadata = nil
+            if interruptedTurnGeneration != turnGeneration {
+                activeTurnGeneration = nil
+                interruptedTurnGeneration = nil
+                let message = error.localizedDescription
+                if case RelaySessionError.disconnected = error {
+                    connectionState = .disconnected
+                    sessionMetadata = nil
+                } else if case RelaySessionError.connectionTimedOut = error {
+                    connectionState = .disconnected
+                    sessionMetadata = nil
+                } else if case RelaySessionError.notConnected = error {
+                    connectionState = .disconnected
+                    sessionMetadata = nil
+                }
+                transientError = message
+                messages.append(TranscriptMessage(role: .error, text: message))
+                unconfirmedTurnText = text
+                if draft.isEmpty {
+                    draft = text
+                }
             }
-            transientError = message
-            messages.append(TranscriptMessage(role: .error, text: message))
+        }
+        let wasInterrupted = interruptedTurnGeneration == turnGeneration
+        interruptedTurnGeneration = nil
+        activeTurnGeneration = nil
+        if wasInterrupted {
+            isSending = false
+            activeAssistantID = nil
+            await persistConversation()
+            return false
+        }
+        didComplete = turnCompleted
+        if !didComplete {
             unconfirmedTurnText = text
-            if draft.isEmpty {
-                draft = text
-            }
         }
         isSending = false
         activeAssistantID = nil
         await persistConversation()
         return didComplete
+    }
+
+    @discardableResult
+    func interruptActiveTurn() async -> Bool {
+        guard isSending, let turnGeneration = activeTurnGeneration else { return false }
+
+        interruptedTurnGeneration = turnGeneration
+        activeTurnGeneration = nil
+        await client.disconnect()
+        connectionState = .disconnected
+        sessionMetadata = nil
+        activityText = nil
+        await connect()
+        return connectionState.isConnected
     }
 
     func clearTransientError() {
