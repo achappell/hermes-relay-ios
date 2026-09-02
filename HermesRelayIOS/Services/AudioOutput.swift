@@ -57,12 +57,48 @@ struct PCMFrameAccumulator: Sendable {
     }
 }
 
+enum AudioPlaybackReadiness: Equatable, Sendable {
+    case buffering
+    case ready
+}
+
+actor AudioPlaybackDrain {
+    private var scheduledBufferCount = 0
+    private var completionWaiter: CheckedContinuation<Void, Never>?
+
+    func scheduleBuffer() {
+        scheduledBufferCount += 1
+    }
+
+    func waitForCompletion() async {
+        guard scheduledBufferCount > 0 else { return }
+        await withCheckedContinuation { continuation in
+            completionWaiter = continuation
+        }
+    }
+
+    func bufferDidComplete() {
+        guard scheduledBufferCount > 0 else { return }
+        scheduledBufferCount -= 1
+        guard scheduledBufferCount == 0, let completionWaiter else { return }
+        self.completionWaiter = nil
+        completionWaiter.resume()
+    }
+
+    func reset() {
+        scheduledBufferCount = 0
+        completionWaiter?.resume()
+        completionWaiter = nil
+    }
+}
+
 enum AudioPlaybackDiagnostic: Equatable, Sendable {
     case streamStarted(format: AudioFormat)
     case chunkReceived(bytes: Int)
     case chunkScheduled(bytes: Int)
     case firstAudioScheduled(bytes: Int)
     case streamEnded(bytes: Int)
+    case playbackCompleted(bytes: Int)
     case playbackFailed
 }
 
@@ -94,6 +130,8 @@ struct OSLogAudioPlaybackDiagnostics: AudioPlaybackDiagnostics, Sendable {
             logger.debug("audio first buffer scheduled bytes=\(bytes, privacy: .public)")
         case .streamEnded(let bytes):
             logger.debug("audio stream ended bytes=\(bytes, privacy: .public)")
+        case .playbackCompleted(let bytes):
+            logger.debug("audio playback completed bytes=\(bytes, privacy: .public)")
         case .playbackFailed:
             logger.error("audio playback failed")
         }
@@ -115,7 +153,7 @@ enum AudioPlaybackDiagnosticsFactory {
 
 protocol AudioOutput: Sendable {
     func start(format: AudioFormat) async throws
-    func append(_ pcm: Data) async throws
+    func append(_ pcm: Data) async throws -> AudioPlaybackReadiness
     func finish() async throws
     func stop() async
 }
@@ -144,12 +182,12 @@ actor RecoveringAudioOutput: AudioOutput {
         try await liveOutput.start(format: format)
     }
 
-    func append(_ pcm: Data) async throws {
+    func append(_ pcm: Data) async throws -> AudioPlaybackReadiness {
         guard format != nil else { throw AudioOutputError.notStarted }
         bufferedPCM.append(pcm)
 
         do {
-            try await liveOutput.append(pcm)
+            return try await liveOutput.append(pcm)
         } catch {
             await liveOutput.stop()
             if let format {

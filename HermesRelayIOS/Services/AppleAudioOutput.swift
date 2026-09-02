@@ -5,8 +5,10 @@ actor AppleAudioOutput: AudioOutput {
     private let engine = AVAudioEngine()
     private let playerNode = AVAudioPlayerNode()
     private let diagnostics: any AudioPlaybackDiagnostics
+    private let playbackDrain = AudioPlaybackDrain()
     private var audioFormat: AVAudioFormat?
     private var pcmFrameAccumulator: PCMFrameAccumulator?
+    private var scheduledAudioBytes = 0
     private var isAcceptingAudio = false
     private var playbackStarted = false
 
@@ -19,7 +21,7 @@ actor AppleAudioOutput: AudioOutput {
 
     func start(format: AudioFormat) async throws {
         try PCMFormatValidator.validate(format)
-        stopResources()
+        await stopResources()
 
         guard let avFormat = AVAudioFormat(
             commonFormat: .pcmFormatInt16,
@@ -46,12 +48,12 @@ actor AppleAudioOutput: AudioOutput {
             )
             isAcceptingAudio = true
         } catch {
-            stopResources()
+            await stopResources()
             throw AudioOutputError.outputFailed
         }
     }
 
-    func append(_ pcm: Data) async throws {
+    func append(_ pcm: Data) async throws -> AudioPlaybackReadiness {
         guard isAcceptingAudio, let audioFormat else {
             throw AudioOutputError.notStarted
         }
@@ -60,43 +62,50 @@ actor AppleAudioOutput: AudioOutput {
         guard bytesPerFrame > 0 else {
             throw AudioOutputError.outputFailed
         }
-        guard !pcm.isEmpty else { return }
+        guard !pcm.isEmpty else { return .buffering }
 
         guard let pcmFrameAccumulator else {
             throw AudioOutputError.notStarted
         }
         var accumulator = pcmFrameAccumulator
+        var readiness: AudioPlaybackReadiness = .buffering
         if let completePCM = try accumulator.append(pcm) {
             let wasPlaybackStarted = playbackStarted
-            try schedule(completePCM, format: audioFormat, bytesPerFrame: bytesPerFrame)
+            try await schedule(completePCM, format: audioFormat, bytesPerFrame: bytesPerFrame)
+            readiness = .ready
             await diagnostics.record(.chunkScheduled(bytes: completePCM.count))
             if !wasPlaybackStarted {
                 await diagnostics.record(.firstAudioScheduled(bytes: completePCM.count))
             }
         }
         self.pcmFrameAccumulator = accumulator
+        return readiness
     }
 
     func finish() async throws {
         do {
             try pcmFrameAccumulator?.finish()
         } catch {
-            stopResources()
+            await stopResources()
             throw error
         }
         pcmFrameAccumulator = nil
         isAcceptingAudio = false
+        await playbackDrain.waitForCompletion()
+        if scheduledAudioBytes > 0 {
+            await diagnostics.record(.playbackCompleted(bytes: scheduledAudioBytes))
+        }
     }
 
     func stop() async {
-        stopResources()
+        await stopResources()
     }
 
     private func schedule(
         _ pcm: Data,
         format: AVAudioFormat?,
         bytesPerFrame: Int
-    ) throws {
+    ) async throws {
         guard let format else { throw AudioOutputError.notStarted }
         guard !pcm.isEmpty, pcm.count % bytesPerFrame == 0 else {
             throw AudioOutputError.outputFailed
@@ -118,7 +127,16 @@ actor AppleAudioOutput: AudioOutput {
             guard let source = bytes.baseAddress else { return }
             memcpy(destination, source, pcm.count)
         }
-        playerNode.scheduleBuffer(buffer, completionHandler: nil)
+        await playbackDrain.scheduleBuffer()
+        scheduledAudioBytes += pcm.count
+        playerNode.scheduleBuffer(
+            buffer,
+            completionCallbackType: .dataPlayedBack
+        ) { [weak self] _ in
+            Task {
+                await self?.playbackDrain.bufferDidComplete()
+            }
+        }
         startPlaybackIfNeeded()
     }
 
@@ -128,9 +146,11 @@ actor AppleAudioOutput: AudioOutput {
         playbackStarted = true
     }
 
-    private func stopResources() {
+    private func stopResources() async {
         isAcceptingAudio = false
         pcmFrameAccumulator = nil
+        scheduledAudioBytes = 0
+        await playbackDrain.reset()
         playbackStarted = false
         playerNode.stop()
         engine.stop()

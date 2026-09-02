@@ -18,6 +18,7 @@ final class VoiceSessionCoordinator {
     private var captureTask: Task<Void, Never>?
     private var responseTask: Task<Void, Never>?
     private var playbackFailed = false
+    private var audioStreamActive = false
     private var audioFileBuffer = Data()
     private var streamedAudioBytes = 0
     private var captureFailureMessage: String?
@@ -269,7 +270,7 @@ final class VoiceSessionCoordinator {
         }
         if !completed, !isFailed {
             state = .failed(store.transientError ?? "The voice turn could not be completed.")
-        } else if completed, !isFailed, state != .interrupted {
+        } else if completed, !isFailed, state != .interrupted, !audioStreamActive {
             state = .idle
         }
     }
@@ -283,6 +284,7 @@ final class VoiceSessionCoordinator {
         case .audioStart(let format):
             guard !playbackFailed else { return }
             audioFileBuffer.removeAll(keepingCapacity: false)
+            audioStreamActive = true
             streamedAudioBytes = 0
             await diagnostics.record(.streamStarted(format: format))
             state = .buffering
@@ -291,16 +293,15 @@ final class VoiceSessionCoordinator {
             } catch {
                 await handlePlaybackFailure()
             }
-            if !playbackFailed {
-                state = .speaking
-            }
         case .audioChunk(let pcm):
             guard !playbackFailed else { return }
             streamedAudioBytes += pcm.count
             await diagnostics.record(.chunkReceived(bytes: pcm.count))
             do {
-                try await output.append(pcm)
-                state = .speaking
+                let readiness = try await output.append(pcm)
+                if readiness == .ready {
+                    state = .speaking
+                }
             } catch {
                 await handlePlaybackFailure()
             }
@@ -309,6 +310,8 @@ final class VoiceSessionCoordinator {
             await diagnostics.record(.streamEnded(bytes: streamedAudioBytes))
             do {
                 try await output.finish()
+                audioStreamActive = false
+                state = .idle
             } catch {
                 await handlePlaybackFailure()
             }
@@ -325,14 +328,19 @@ final class VoiceSessionCoordinator {
                 let decoded = try WAVAudioDecoder().decode(audioFileBuffer)
                 audioFileBuffer.removeAll(keepingCapacity: false)
                 try await output.start(format: decoded.format)
-                try await output.append(decoded.pcm)
+                let readiness = try await output.append(decoded.pcm)
+                if readiness == .ready {
+                    state = .speaking
+                }
                 try await output.finish()
-                state = .speaking
+                state = .idle
             } catch {
                 await handlePlaybackFailure()
             }
         case .turnComplete:
-            state = isFailed ? state : .idle
+            if !isFailed, !audioStreamActive {
+                state = .idle
+            }
         case .error(let message):
             state = .failed(message)
         case .messageStart, .textDelta, .textReplace, .messageComplete, .unknown:
@@ -354,6 +362,7 @@ final class VoiceSessionCoordinator {
 
     private func handlePlaybackFailure() async {
         playbackFailed = true
+        audioStreamActive = false
         audioFileBuffer.removeAll(keepingCapacity: false)
         await diagnostics.record(.playbackFailed)
         await output.stop()

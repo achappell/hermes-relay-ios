@@ -337,6 +337,66 @@ final class VoiceSessionCoordinatorTests: XCTestCase {
     }
 
     @MainActor
+    func testCoordinatorStaysBufferingUntilAudioOutputReportsReadiness() async {
+        let input = CoordinatorSpeechInput(finalUpdate: SpeechRecognitionUpdate(text: "Speak", isFinal: true))
+        let output = CoordinatorAudioOutput(
+            appendReadiness: .buffering,
+            waitsForFinish: true
+        )
+        let client = CoordinatorHermesSessionClient(events: [
+            .messageStart,
+            .audioStart(AudioFormat(sampleRate: 24_000, channels: 1, sampleWidth: 2)),
+            .audioChunk(Data([0, 1, 2, 3])),
+            .audioEnd,
+            .turnComplete(turnID: "turn-1"),
+        ])
+        let store = await connectedStore(client)
+        let coordinator = VoiceSessionCoordinator(store: store, input: input, output: output)
+
+        await coordinator.beginCapture()
+        let responseTask = Task { @MainActor in
+            await coordinator.endCaptureAndSend()
+        }
+        await output.waitUntilFinishRequested()
+
+        XCTAssertEqual(coordinator.state, .buffering)
+
+        await output.allowFinish()
+        await responseTask.value
+        XCTAssertEqual(coordinator.state, .idle)
+    }
+
+    @MainActor
+    func testCoordinatorReportsSpeakingAfterFirstAudioBufferIsReady() async {
+        let input = CoordinatorSpeechInput(finalUpdate: SpeechRecognitionUpdate(text: "Speak", isFinal: true))
+        let output = CoordinatorAudioOutput(
+            appendReadiness: .ready,
+            waitsForFinish: true
+        )
+        let client = CoordinatorHermesSessionClient(events: [
+            .messageStart,
+            .audioStart(AudioFormat(sampleRate: 24_000, channels: 1, sampleWidth: 2)),
+            .audioChunk(Data([0, 1, 2, 3])),
+            .audioEnd,
+            .turnComplete(turnID: "turn-1"),
+        ])
+        let store = await connectedStore(client)
+        let coordinator = VoiceSessionCoordinator(store: store, input: input, output: output)
+
+        await coordinator.beginCapture()
+        let responseTask = Task { @MainActor in
+            await coordinator.endCaptureAndSend()
+        }
+        await output.waitUntilFinishRequested()
+
+        XCTAssertEqual(coordinator.state, .speaking)
+
+        await output.allowFinish()
+        await responseTask.value
+        XCTAssertEqual(coordinator.state, .idle)
+    }
+
+    @MainActor
     func testTypedDraftSendsSlashCommandAndPlaysWAVResponse() async throws {
         let writer = WAVFallbackWriter()
         let format = AudioFormat(sampleRate: 24_000, channels: 1, sampleWidth: 2)
@@ -592,28 +652,47 @@ private actor CoordinatorAudioOutput: AudioOutput {
 
     private let appendError: AudioOutputError?
     private let finishError: AudioOutputError?
+    private let appendReadiness: AudioPlaybackReadiness
+    private let waitsForFinish: Bool
+    private var finishRequested = false
+    private var finishRequestWaiters: [CheckedContinuation<Void, Never>] = []
+    private var finishWaiter: CheckedContinuation<Void, Never>?
     private var recordedOperations: [Operation] = []
 
     init(
         appendError: AudioOutputError? = nil,
-        finishError: AudioOutputError? = nil
+        finishError: AudioOutputError? = nil,
+        appendReadiness: AudioPlaybackReadiness = .ready,
+        waitsForFinish: Bool = false
     ) {
         self.appendError = appendError
         self.finishError = finishError
+        self.appendReadiness = appendReadiness
+        self.waitsForFinish = waitsForFinish
     }
 
     func start(format: AudioFormat) async throws {
         recordedOperations.append(.start(format))
     }
 
-    func append(_ pcm: Data) async throws {
+    func append(_ pcm: Data) async throws -> AudioPlaybackReadiness {
         if let appendError { throw appendError }
         recordedOperations.append(.append)
+        return appendReadiness
     }
 
     func finish() async throws {
         if let finishError { throw finishError }
         recordedOperations.append(.finish)
+        finishRequested = true
+        for waiter in finishRequestWaiters {
+            waiter.resume()
+        }
+        finishRequestWaiters.removeAll()
+        guard waitsForFinish else { return }
+        await withCheckedContinuation { continuation in
+            finishWaiter = continuation
+        }
     }
 
     func stop() async {
@@ -622,6 +701,18 @@ private actor CoordinatorAudioOutput: AudioOutput {
 
     func operations() -> [Operation] {
         recordedOperations
+    }
+
+    func waitUntilFinishRequested() async {
+        if finishRequested { return }
+        await withCheckedContinuation { continuation in
+            finishRequestWaiters.append(continuation)
+        }
+    }
+
+    func allowFinish() {
+        finishWaiter?.resume()
+        finishWaiter = nil
     }
 }
 
