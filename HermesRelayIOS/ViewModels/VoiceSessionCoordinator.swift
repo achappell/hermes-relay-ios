@@ -22,6 +22,9 @@ final class VoiceSessionCoordinator {
     private var audioFileBuffer = Data()
     private var streamedAudioBytes = 0
     private var captureFailureMessage: String?
+    // Event handlers may outlive a cancelled response task, so every response
+    // is allowed to mutate state only while its generation is current.
+    private var responseGeneration: UInt64 = 0
 
     init(
         store: ConversationStore,
@@ -84,8 +87,10 @@ final class VoiceSessionCoordinator {
         }
 
         playbackFailed = false
+        responseGeneration &+= 1
+        let generation = responseGeneration
         responseTask = Task { [weak self] in
-            await self?.submitVoiceTurn(text)
+            await self?.submitVoiceTurn(text, generation: generation)
         }
         await responseTask?.value
         responseTask = nil
@@ -215,13 +220,38 @@ final class VoiceSessionCoordinator {
         }
     }
 
+    func interruptAndBeginCapture() async {
+        guard let activeResponseTask = responseTask else { return }
+
+        responseGeneration &+= 1
+        state = .interrupted
+        await output.stop()
+        activeResponseTask.cancel()
+        let didReconnect = await store.interruptActiveTurn()
+        await activeResponseTask.value
+        responseTask = nil
+        audioStreamActive = false
+        audioFileBuffer.removeAll(keepingCapacity: false)
+        streamedAudioBytes = 0
+        playbackFailed = false
+
+        guard didReconnect else {
+            state = .failed(store.transientError ?? "The Hermes relay could not be restored after interruption.")
+            return
+        }
+
+        await beginCapture()
+    }
+
     func sendDraft() async {
         guard captureTask == nil, responseTask == nil else { return }
         guard !store.draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
 
         playbackFailed = false
+        responseGeneration &+= 1
+        let generation = responseGeneration
         responseTask = Task { [weak self] in
-            await self?.submitDraft()
+            await self?.submitDraft(generation: generation)
         }
         await responseTask?.value
         responseTask = nil
@@ -263,11 +293,13 @@ final class VoiceSessionCoordinator {
         }
     }
 
-    private func submitVoiceTurn(_ text: String) async {
+    private func submitVoiceTurn(_ text: String, generation: UInt64) async {
+        guard generation == responseGeneration, !Task.isCancelled else { return }
         state = .thinking
         let completed = await store.sendTurn(text: text) { [weak self] event in
-            await self?.handle(event)
+            await self?.handle(event, generation: generation)
         }
+        guard generation == responseGeneration, !Task.isCancelled else { return }
         if !completed, !isFailed {
             state = .failed(store.transientError ?? "The voice turn could not be completed.")
         } else if completed, !isFailed, state != .interrupted, !audioStreamActive {
@@ -275,7 +307,8 @@ final class VoiceSessionCoordinator {
         }
     }
 
-    private func handle(_ event: HermesEvent) async {
+    private func handle(_ event: HermesEvent, generation: UInt64) async {
+        guard generation == responseGeneration, !Task.isCancelled else { return }
         switch event {
         case .thinkingDelta, .status:
             if !playbackFailed {
@@ -348,11 +381,13 @@ final class VoiceSessionCoordinator {
         }
     }
 
-    private func submitDraft() async {
+    private func submitDraft(generation: UInt64) async {
+        guard generation == responseGeneration, !Task.isCancelled else { return }
         state = .thinking
         let completed = await store.sendDraft { [weak self] event in
-            await self?.handle(event)
+            await self?.handle(event, generation: generation)
         }
+        guard generation == responseGeneration, !Task.isCancelled else { return }
         if !completed, !isFailed {
             state = .failed(store.transientError ?? "The text turn could not be completed.")
         } else if completed, !isFailed, state != .interrupted {

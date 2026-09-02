@@ -120,6 +120,34 @@ final class ConversationStoreTransportTests: XCTestCase {
     }
 
     @MainActor
+    func testInterruptingActiveTurnReconnectsWithoutSurfacingTransportFailure() async {
+        let client = InterruptibleHermesSessionClient()
+        let store = ConversationStore(client: client)
+        await store.connect()
+
+        let sendTask = Task { @MainActor in
+            await store.sendTurn(text: "Keep listening")
+        }
+        await client.waitUntilTurnStarted()
+
+        let didInterrupt = await store.interruptActiveTurn()
+        let didComplete = await sendTask.value
+        let disconnectCount = await client.disconnectCount
+        let connectCount = await client.connectCount
+
+        XCTAssertTrue(didInterrupt)
+        XCTAssertFalse(didComplete)
+        XCTAssertEqual(disconnectCount, 1)
+        XCTAssertEqual(connectCount, 2)
+        XCTAssertEqual(store.connectionState, .connected)
+        XCTAssertFalse(store.isSending)
+        XCTAssertEqual(store.messages.map(\.role), [.user])
+        XCTAssertNil(store.activityText)
+        XCTAssertNil(store.unconfirmedTurnText)
+        XCTAssertNil(store.transientError)
+    }
+
+    @MainActor
     func testAutoConnectUsesStoredConfigurationOnlyOnce() async throws {
         let profileURL = temporaryProfileURL()
         defer { try? FileManager.default.removeItem(at: profileURL.deletingLastPathComponent()) }
@@ -326,6 +354,44 @@ private final class FakeHermesSessionClient: HermesSessionClient, @unchecked Sen
     }
 
     func disconnect() async {}
+}
+
+private actor InterruptibleHermesSessionClient: HermesSessionClient {
+    private(set) var connectCount = 0
+    private(set) var disconnectCount = 0
+    private var turnContinuation: AsyncThrowingStream<HermesEvent, Error>.Continuation?
+    private var turnStarted = false
+    private var turnStartWaiters: [CheckedContinuation<Void, Never>] = []
+
+    func connect() async throws -> SessionMetadata {
+        connectCount += 1
+        return SessionMetadata(sessionID: "session-\(connectCount)", model: nil)
+    }
+
+    func sendTurn(text: String) async -> AsyncThrowingStream<HermesEvent, Error> {
+        let (stream, continuation) = AsyncThrowingStream<HermesEvent, Error>.makeStream()
+        turnContinuation = continuation
+        turnStarted = true
+        turnStartWaiters.forEach { $0.resume() }
+        turnStartWaiters.removeAll()
+        continuation.yield(.status(text: "Working", kind: "test"))
+        return stream
+    }
+
+    func disconnect() async {
+        disconnectCount += 1
+        turnContinuation?.yield(.messageStart)
+        turnContinuation?.yield(.textDelta("late response"))
+        turnContinuation?.finish(throwing: RelaySessionError.disconnected)
+        turnContinuation = nil
+    }
+
+    func waitUntilTurnStarted() async {
+        if turnStarted { return }
+        await withCheckedContinuation { continuation in
+            turnStartWaiters.append(continuation)
+        }
+    }
 }
 
 private final class AutoConnectSecureValueStore: SecureValueStore, @unchecked Sendable {
