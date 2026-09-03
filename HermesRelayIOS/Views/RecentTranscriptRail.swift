@@ -101,6 +101,36 @@ enum RecentTranscriptReveal {
     }
 }
 
+enum RecentTranscriptDisplay {
+    static func entries(
+        projection: RecentTranscriptProjection,
+        isResponseActive: Bool,
+        revealedTexts: [String: String]
+    ) -> [RecentTranscriptEntry] {
+        guard isResponseActive,
+              let latestAssistantID = projection.entries.last(where: { $0.role == .assistant })?.id else {
+            return projection.entries
+        }
+
+        return projection.entries.map { entry in
+            guard entry.id == latestAssistantID else { return entry }
+            let visibleText = revealedTexts[entry.id].flatMap { revealedText in
+                entry.text.hasPrefix(revealedText) ? revealedText : nil
+            } ?? RecentTranscriptReveal.nextText(
+                current: "",
+                target: entry.text,
+                characterBudget: 1
+            )
+            return RecentTranscriptEntry(
+                id: entry.id,
+                role: entry.role,
+                text: visibleText,
+                isLive: entry.isLive
+            )
+        }
+    }
+}
+
 private struct RecentTranscriptRevealTarget: Equatable, Sendable {
     let id: String
     let text: String
@@ -131,23 +161,11 @@ struct RecentTranscriptRail: View {
     }
 
     private var displayedEntries: [RecentTranscriptEntry] {
-        guard isResponseActive,
-              let latestAssistantID = projection.entries.last(where: { $0.role == .assistant })?.id else {
-            return projection.entries
-        }
-
-        return projection.entries.map { entry in
-            guard entry.id == latestAssistantID else { return entry }
-            let visibleText = revealedTexts[entry.id].flatMap { visibleText in
-                entry.text.hasPrefix(visibleText) ? visibleText : nil
-            } ?? ""
-            return RecentTranscriptEntry(
-                id: entry.id,
-                role: entry.role,
-                text: visibleText,
-                isLive: entry.isLive
-            )
-        }
+        RecentTranscriptDisplay.entries(
+            projection: projection,
+            isResponseActive: isResponseActive,
+            revealedTexts: revealedTexts
+        )
     }
 
     private var revealTarget: RecentTranscriptRevealTarget? {

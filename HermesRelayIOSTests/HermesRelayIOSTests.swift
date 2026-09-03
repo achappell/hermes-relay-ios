@@ -197,6 +197,23 @@ final class HermesRelayIOSTests: XCTestCase {
         XCTAssertEqual(projection.entries.map(\.isLive), [false, false, true])
     }
 
+    func testRecentTranscriptShowsFirstWordBeforeRevealTaskPublishesState() {
+        let response = "Hermes keeps the answer visible while speaking."
+        let projection = RecentTranscriptProjection(
+            messages: [TranscriptMessage(role: .assistant, text: response)],
+            provisionalText: "",
+            isResponseActive: true
+        )
+
+        let displayedEntries = RecentTranscriptDisplay.entries(
+            projection: projection,
+            isResponseActive: true,
+            revealedTexts: [:]
+        )
+
+        XCTAssertEqual(displayedEntries.last?.text, "Hermes ")
+    }
+
     func testSessionDurationFormatsMinuteAndHourDurations() {
         let now = Date(timeIntervalSince1970: 1_000)
 
