@@ -117,7 +117,8 @@ enum RecentTranscriptDisplay {
         return projection.entries.map { entry in
             guard entry.id == latestAssistantID else { return entry }
             let visibleText = revealedTexts[entry.id].flatMap { revealedText in
-                entry.text.hasPrefix(revealedText) ? revealedText : nil
+                guard !revealedText.isEmpty else { return nil }
+                return entry.text.hasPrefix(revealedText) ? revealedText : nil
             } ?? RecentTranscriptReveal.nextText(
                 current: "",
                 target: entry.text,

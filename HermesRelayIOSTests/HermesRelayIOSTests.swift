@@ -239,6 +239,25 @@ final class HermesRelayIOSTests: XCTestCase {
         XCTAssertEqual(displayedEntries.last?.text, "Hermes ")
     }
 
+    func testRecentTranscriptDisplayDoesNotHideAssistantForAnEmptyRevealCursor() {
+        let messageID = UUID()
+        let projection = RecentTranscriptProjection(
+            messages: [
+                TranscriptMessage(id: messageID, role: .assistant, text: "Hermes is speaking now.")
+            ],
+            provisionalText: "",
+            isResponseActive: true
+        )
+
+        let displayedEntries = RecentTranscriptDisplay.entries(
+            projection: projection,
+            isResponseActive: true,
+            revealedTexts: [messageID.uuidString: ""]
+        )
+
+        XCTAssertEqual(displayedEntries.last?.text, "Hermes ")
+    }
+
     func testSessionDurationFormatsMinuteAndHourDurations() {
         let now = Date(timeIntervalSince1970: 1_000)
 
