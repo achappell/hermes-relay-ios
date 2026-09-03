@@ -39,6 +39,7 @@
 		A10000000000000000000098 /* RecoveryTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1000000000000000000009B /* RecoveryTests.swift */; };
 		A10000000000000000000099 /* ConversationPersistence.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1000000000000000000009C /* ConversationPersistence.swift */; };
 		A100000000000000000000A0 /* AudioActivity.swift in Sources */ = {isa = PBXBuildFile; fileRef = A100000000000000000000A1 /* AudioActivity.swift */; };
+		A100000000000000000000A2 /* AmbientHUD.swift in Sources */ = {isa = PBXBuildFile; fileRef = A100000000000000000000A3 /* AmbientHUD.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -88,6 +89,7 @@
 		A1000000000000000000009B /* RecoveryTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RecoveryTests.swift; sourceTree = "<group>"; };
 		A1000000000000000000009C /* ConversationPersistence.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ConversationPersistence.swift; sourceTree = "<group>"; };
 		A100000000000000000000A1 /* AudioActivity.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AudioActivity.swift; sourceTree = "<group>"; };
+		A100000000000000000000A3 /* AmbientHUD.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AmbientHUD.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -202,6 +204,7 @@
 				A10000000000000000000026 /* MessageBubble.swift */,
 				A10000000000000000000095 /* VoiceStatusView.swift */,
 				A10000000000000000000096 /* VoiceControl.swift */,
+				A100000000000000000000A3 /* AmbientHUD.swift */,
 			);
 			path = Views;
 			sourceTree = "<group>";
@@ -324,6 +327,7 @@
 				A10000000000000000000090 /* VoiceSessionCoordinator.swift in Sources */,
 				A10000000000000000000091 /* VoiceStatusView.swift in Sources */,
 				A10000000000000000000092 /* VoiceControl.swift in Sources */,
+				A100000000000000000000A2 /* AmbientHUD.swift in Sources */,
 				A10000000000000000000099 /* ConversationPersistence.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;

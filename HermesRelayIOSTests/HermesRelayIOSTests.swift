@@ -50,14 +50,108 @@ final class HermesRelayIOSTests: XCTestCase {
         }
     }
 
-    func testInitialTranscriptScrollTargetsTheLatestMessageOnlyOnce() {
-        var state = TranscriptScrollState()
-        let first = TranscriptMessage(role: .user, text: "First")
-        let latest = TranscriptMessage(role: .assistant, text: "Latest")
-        let newer = TranscriptMessage(role: .user, text: "Newer")
+    func testAmbientHUDProjectsVoiceStateAndAudioLevel() {
+        let snapshot = AudioActivitySnapshot(
+            microphoneLevel: 0.72,
+            microphoneActivity: .speech,
+            playbackLevel: 0.81,
+            playbackActive: true
+        )
+        let presentation = AmbientHUDPresentation(
+            voiceState: .speaking,
+            activity: snapshot,
+            provisionalText: "",
+            messages: [TranscriptMessage(role: .assistant, text: "The answer is ready.")]
+        )
 
-        XCTAssertNil(state.targetID(for: []))
-        XCTAssertEqual(state.targetID(for: [first, latest]), latest.id)
-        XCTAssertNil(state.targetID(for: [first, latest, newer]))
+        XCTAssertEqual(presentation.mode, .speaking)
+        XCTAssertEqual(presentation.caption, "The answer is ready.")
+        XCTAssertEqual(presentation.captionSource, .hermes)
+        XCTAssertEqual(presentation.intensity, 0.81, accuracy: 0.001)
+        XCTAssertEqual(presentation.accessibilityLabel, "Hermes speaking")
+    }
+
+    func testAmbientHUDUsesLiveUserCaptionUntilHermesHasText() {
+        let messages = [TranscriptMessage(role: .user, text: "What is next?")]
+        let listening = AmbientHUDPresentation(
+            voiceState: .listening,
+            activity: .safe,
+            provisionalText: "What is next",
+            messages: messages
+        )
+        let thinking = AmbientHUDPresentation(
+            voiceState: .thinking,
+            activity: .safe,
+            provisionalText: "",
+            messages: messages
+        )
+
+        XCTAssertEqual(listening.caption, "What is next")
+        XCTAssertEqual(listening.captionSource, .user)
+        XCTAssertEqual(thinking.caption, "What is next?")
+        XCTAssertEqual(thinking.captionSource, .user)
+    }
+
+    func testAmbientHUDPrefersStreamingHermesCaptionAndHidesIdleHistory() {
+        let messages = [
+            TranscriptMessage(role: .user, text: "Hello"),
+            TranscriptMessage(role: .assistant, text: "Hello, Amanda.")
+        ]
+        let speaking = AmbientHUDPresentation(
+            voiceState: .speaking,
+            activity: .safe,
+            provisionalText: "",
+            messages: messages
+        )
+        let idle = AmbientHUDPresentation(
+            voiceState: .idle,
+            activity: .safe,
+            provisionalText: "",
+            messages: messages
+        )
+
+        XCTAssertEqual(speaking.caption, "Hello, Amanda.")
+        XCTAssertEqual(speaking.captionSource, .hermes)
+        XCTAssertNil(idle.caption)
+        XCTAssertNil(idle.captionSource)
+    }
+
+    func testSessionDurationFormatsMinuteAndHourDurations() {
+        let now = Date(timeIntervalSince1970: 1_000)
+
+        XCTAssertEqual(
+            SessionDurationFormatter.string(
+                startedAt: now.addingTimeInterval(-252),
+                now: now
+            ),
+            "04:12"
+        )
+        XCTAssertEqual(
+            SessionDurationFormatter.string(
+                startedAt: now.addingTimeInterval(-3_723),
+                now: now
+            ),
+            "01:02:03"
+        )
+        XCTAssertEqual(
+            SessionDurationFormatter.string(startedAt: nil, now: now),
+            "00:00"
+        )
+    }
+
+    @MainActor
+    func testAmbientHUDModelReceivesNewestActivitySnapshot() async {
+        let activityStore = AudioActivityStore(minimumEmissionIntervalNanoseconds: 0)
+        let model = AmbientHUDModel()
+        model.start(observing: activityStore)
+
+        await activityStore.reportMicrophone(level: 0.68)
+        for _ in 0..<10 {
+            await Task.yield()
+        }
+
+        XCTAssertEqual(model.snapshot.microphoneLevel, 0.68, accuracy: 0.001)
+        XCTAssertEqual(model.snapshot.microphoneActivity, .speech)
+        model.stop()
     }
 }

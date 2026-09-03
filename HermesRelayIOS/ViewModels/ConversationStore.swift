@@ -8,9 +8,11 @@ final class ConversationStore {
     private let configurationStore: RelayConfigurationStore?
     private let socketFactory: any WebSocketConnectionFactory
     private let persistence: (any ConversationPersistence)?
+    private let now: @Sendable () -> Date
 
     var connectionState: ConnectionState = .disconnected
     var sessionMetadata: SessionMetadata?
+    var sessionStartedAt: Date?
     var messages: [TranscriptMessage] = []
     var draft = ""
     var transientError: String?
@@ -31,12 +33,14 @@ final class ConversationStore {
         client: any HermesSessionClient = UnavailableHermesSessionClient(),
         configurationStore: RelayConfigurationStore? = nil,
         socketFactory: any WebSocketConnectionFactory = URLSessionWebSocketConnectionFactory(),
-        persistence: (any ConversationPersistence)? = nil
+        persistence: (any ConversationPersistence)? = nil,
+        now: @escaping @Sendable () -> Date = Date.init
     ) {
         self.client = client
         self.configurationStore = configurationStore
         self.socketFactory = socketFactory
         self.persistence = persistence
+        self.now = now
     }
 
     func loadPersistedConversation() async {
@@ -96,11 +100,13 @@ final class ConversationStore {
         do {
             let metadata = try await client.connect()
             sessionMetadata = metadata
+            sessionStartedAt = now()
             connectionState = .connected
             transientError = nil
         } catch {
             let message = error.localizedDescription
             sessionMetadata = nil
+            sessionStartedAt = nil
             connectionState = .failed(message)
             transientError = message
         }
@@ -169,12 +175,15 @@ final class ConversationStore {
                 if case RelaySessionError.disconnected = error {
                     connectionState = .disconnected
                     sessionMetadata = nil
+                    sessionStartedAt = nil
                 } else if case RelaySessionError.connectionTimedOut = error {
                     connectionState = .disconnected
                     sessionMetadata = nil
+                    sessionStartedAt = nil
                 } else if case RelaySessionError.notConnected = error {
                     connectionState = .disconnected
                     sessionMetadata = nil
+                    sessionStartedAt = nil
                 }
                 transientError = message
                 messages.append(TranscriptMessage(role: .error, text: message))
@@ -212,6 +221,7 @@ final class ConversationStore {
         await client.disconnect()
         connectionState = .disconnected
         sessionMetadata = nil
+        sessionStartedAt = nil
         activityText = nil
         await connect()
         return connectionState.isConnected
@@ -224,6 +234,7 @@ final class ConversationStore {
     private func transportDidDisconnect() {
         connectionState = .disconnected
         sessionMetadata = nil
+        sessionStartedAt = nil
     }
 
     private func apply(_ event: HermesEvent) {
