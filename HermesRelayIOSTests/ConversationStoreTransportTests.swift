@@ -150,6 +150,29 @@ final class ConversationStoreTransportTests: XCTestCase {
     }
 
     @MainActor
+    func testSendDraftClearsComposerWhenTurnIsAccepted() async {
+        let client = InterruptibleHermesSessionClient()
+        let persistence = DraftRecordingPersistence()
+        let store = ConversationStore(client: client, persistence: persistence)
+        await store.connect()
+        store.draft = "Keep listening"
+
+        let sendTask = Task { @MainActor in
+            await store.sendDraft()
+        }
+        await client.waitUntilTurnStarted()
+
+        XCTAssertEqual(store.draft, "")
+
+        _ = await store.interruptActiveTurn()
+        _ = await sendTask.value
+
+        XCTAssertEqual(store.draft, "Keep listening")
+        let saved = await persistence.lastSaved()
+        XCTAssertEqual(saved?.draft, "Keep listening")
+    }
+
+    @MainActor
     func testAutoConnectUsesStoredConfigurationOnlyOnce() async throws {
         let profileURL = temporaryProfileURL()
         defer { try? FileManager.default.removeItem(at: profileURL.deletingLastPathComponent()) }
@@ -393,6 +416,22 @@ private actor InterruptibleHermesSessionClient: HermesSessionClient {
         await withCheckedContinuation { continuation in
             turnStartWaiters.append(continuation)
         }
+    }
+}
+
+private actor DraftRecordingPersistence: ConversationPersistence {
+    private var savedConversation: PersistedConversation?
+
+    func load() async throws -> PersistedConversation {
+        savedConversation ?? PersistedConversation(messages: [], draft: "")
+    }
+
+    func save(_ conversation: PersistedConversation) async throws {
+        savedConversation = conversation
+    }
+
+    func lastSaved() -> PersistedConversation? {
+        savedConversation
     }
 }
 
