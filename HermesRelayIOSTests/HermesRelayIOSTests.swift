@@ -138,6 +138,19 @@ final class HermesRelayIOSTests: XCTestCase {
         XCTAssertEqual(projection.entries.count, 4)
     }
 
+    func testRecentTranscriptExcludesSystemAndErrorMessagesFromConversationRail() {
+        let messages = [
+            TranscriptMessage(role: .user, text: "What is the status?"),
+            TranscriptMessage(role: .error, text: "Setup is incomplete."),
+            TranscriptMessage(role: .assistant, text: "The system is ready.")
+        ]
+
+        let projection = RecentTranscriptProjection(messages: messages, provisionalText: "")
+
+        XCTAssertEqual(projection.entries.map(\.role), [.user, .assistant])
+        XCTAssertFalse(projection.entries.contains { $0.text == "Setup is incomplete." })
+    }
+
     func testRecentTranscriptIncludesLiveUserTextAtTheNewestAnchor() {
         let messages = [TranscriptMessage(role: .assistant, text: "Previous answer")]
 

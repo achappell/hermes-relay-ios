@@ -25,6 +25,7 @@ struct RecentTranscriptProjection: Equatable, Sendable {
         isResponseActive: Bool = false
     ) {
         var entries = messages.compactMap { message -> RecentTranscriptEntry? in
+            guard message.role == .user || message.role == .assistant else { return nil }
             guard !message.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return nil }
 
             return RecentTranscriptEntry(
