@@ -97,6 +97,7 @@ struct ContentView: View {
             sessionStartedAt: store.sessionStartedAt,
             transcriptMessages: store.messages,
             provisionalText: voiceCoordinator.provisionalText,
+            isResponseActive: store.isSending,
             hasTranscript: !store.messages.isEmpty,
             canConfigure: configurationStore != nil,
             onConfigure: {

@@ -164,6 +164,39 @@ final class HermesRelayIOSTests: XCTestCase {
         XCTAssertTrue(state.isFollowingLatest)
     }
 
+    func testRecentTranscriptRevealAdvancesByWordsInsteadOfDumpingTheResponse() {
+        let response = "Hermes keeps the answer moving while the audio is speaking."
+
+        let firstStep = RecentTranscriptReveal.nextText(
+            current: "",
+            target: response,
+            characterBudget: 1
+        )
+        let secondStep = RecentTranscriptReveal.nextText(
+            current: firstStep,
+            target: response,
+            characterBudget: 1
+        )
+
+        XCTAssertEqual(firstStep, "Hermes ")
+        XCTAssertEqual(secondStep, "Hermes keeps ")
+        XCTAssertLessThan(secondStep.count, response.count)
+    }
+
+    func testRecentTranscriptMarksOnlyLatestAssistantAsLiveDuringActiveResponse() {
+        let projection = RecentTranscriptProjection(
+            messages: [
+                TranscriptMessage(role: .assistant, text: "Earlier answer"),
+                TranscriptMessage(role: .user, text: "Current question"),
+                TranscriptMessage(role: .assistant, text: "Current answer")
+            ],
+            provisionalText: "",
+            isResponseActive: true
+        )
+
+        XCTAssertEqual(projection.entries.map(\.isLive), [false, false, true])
+    }
+
     func testSessionDurationFormatsMinuteAndHourDurations() {
         let now = Date(timeIntervalSince1970: 1_000)
 

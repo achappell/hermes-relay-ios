@@ -19,7 +19,11 @@ struct RecentTranscriptProjection: Equatable, Sendable {
 
     let entries: [RecentTranscriptEntry]
 
-    init(messages: [TranscriptMessage], provisionalText: String) {
+    init(
+        messages: [TranscriptMessage],
+        provisionalText: String,
+        isResponseActive: Bool = false
+    ) {
         var entries = messages.compactMap { message -> RecentTranscriptEntry? in
             guard !message.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return nil }
 
@@ -42,6 +46,19 @@ struct RecentTranscriptProjection: Equatable, Sendable {
             )
         }
 
+        if isResponseActive,
+           let latestAssistantID = entries.last(where: { $0.role == .assistant })?.id {
+            entries = entries.map { entry in
+                guard entry.id == latestAssistantID else { return entry }
+                return RecentTranscriptEntry(
+                    id: entry.id,
+                    role: entry.role,
+                    text: entry.text,
+                    isLive: true
+                )
+            }
+        }
+
         self.entries = Array(entries.suffix(Self.maximumEntryCount))
     }
 
@@ -62,19 +79,83 @@ struct RecentTranscriptFollowState: Equatable, Sendable {
     }
 }
 
+enum RecentTranscriptReveal {
+    static func nextText(
+        current: String,
+        target: String,
+        characterBudget: Int
+    ) -> String {
+        guard !target.isEmpty, current != target else { return target }
+        guard target.hasPrefix(current) else { return target }
+
+        let remaining = target.dropFirst(current.count)
+        let minimumCount = min(max(1, characterBudget), remaining.count)
+        let minimumEnd = remaining.index(remaining.startIndex, offsetBy: minimumCount)
+
+        guard let whitespace = remaining[minimumEnd...].firstIndex(where: \.isWhitespace) else {
+            return target
+        }
+
+        let end = remaining.index(after: whitespace)
+        return current + remaining[..<end]
+    }
+}
+
+private struct RecentTranscriptRevealTarget: Equatable, Sendable {
+    let id: String
+    let text: String
+}
+
 struct RecentTranscriptRail: View {
     let messages: [TranscriptMessage]
     let provisionalText: String
     let hasPersistedHistory: Bool
+    let isResponseActive: Bool
     let onShowHistory: () -> Void
 
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var followState = RecentTranscriptFollowState()
+    @State private var revealedTexts: [String: String] = [:]
 
     private static let bottomAnchorID = "recent-transcript-bottom"
+    // Hermes does not include word timing metadata, so this keeps a one-shot
+    // transcript readable at a conversational pace while audio is active.
+    private static let revealStepNanoseconds: UInt64 = 320_000_000
 
     private var projection: RecentTranscriptProjection {
-        RecentTranscriptProjection(messages: messages, provisionalText: provisionalText)
+        RecentTranscriptProjection(
+            messages: messages,
+            provisionalText: provisionalText,
+            isResponseActive: isResponseActive
+        )
+    }
+
+    private var displayedEntries: [RecentTranscriptEntry] {
+        guard isResponseActive,
+              let latestAssistantID = projection.entries.last(where: { $0.role == .assistant })?.id else {
+            return projection.entries
+        }
+
+        return projection.entries.map { entry in
+            guard entry.id == latestAssistantID else { return entry }
+            let visibleText = revealedTexts[entry.id].flatMap { visibleText in
+                entry.text.hasPrefix(visibleText) ? visibleText : nil
+            } ?? ""
+            return RecentTranscriptEntry(
+                id: entry.id,
+                role: entry.role,
+                text: visibleText,
+                isLive: entry.isLive
+            )
+        }
+    }
+
+    private var revealTarget: RecentTranscriptRevealTarget? {
+        guard isResponseActive,
+              let entry = projection.entries.last(where: { $0.role == .assistant }) else {
+            return nil
+        }
+        return RecentTranscriptRevealTarget(id: entry.id, text: entry.text)
     }
 
     var body: some View {
@@ -82,7 +163,7 @@ struct RecentTranscriptRail: View {
             ScrollViewReader { proxy in
                 ScrollView(.vertical, showsIndicators: false) {
                     LazyVStack(alignment: .leading, spacing: 9) {
-                        ForEach(projection.entries) { entry in
+                        ForEach(displayedEntries) { entry in
                             RecentTranscriptEntryView(entry: entry)
                                 .id(entry.id)
                         }
@@ -107,9 +188,9 @@ struct RecentTranscriptRail: View {
                 .onAppear {
                     scrollToLatest(using: proxy, animated: false)
                 }
-                .onChange(of: projection.entries) { _, _ in
+                .onChange(of: displayedEntries) { _, _ in
                     guard followState.isFollowingLatest else { return }
-                    scrollToLatest(using: proxy, animated: false)
+                    scrollToLatest(using: proxy, animated: !reduceMotion)
                 }
                 .onChange(of: followState.isFollowingLatest) { _, isFollowing in
                     guard isFollowing else { return }
@@ -120,6 +201,10 @@ struct RecentTranscriptRail: View {
                         ? "Recent transcript, following newest text"
                         : "Recent transcript, reading paused"
                 )
+            }
+
+            .task(id: revealTarget) {
+                await revealText(for: revealTarget)
             }
 
             HStack(spacing: 12) {
@@ -145,6 +230,37 @@ struct RecentTranscriptRail: View {
         }
         .frame(maxWidth: 680)
         .accessibilityElement(children: .contain)
+    }
+
+    @MainActor
+    private func revealText(for target: RecentTranscriptRevealTarget?) async {
+        guard let target else {
+            return
+        }
+
+        var visibleText = revealedTexts[target.id] ?? ""
+        if !target.text.hasPrefix(visibleText) {
+            visibleText = ""
+            revealedTexts[target.id] = visibleText
+        }
+
+        while !Task.isCancelled, visibleText != target.text {
+            let nextText = RecentTranscriptReveal.nextText(
+                current: visibleText,
+                target: target.text,
+                characterBudget: 1
+            )
+            guard nextText != visibleText else { return }
+            visibleText = nextText
+            revealedTexts[target.id] = visibleText
+
+            guard visibleText != target.text else { return }
+            do {
+                try await Task.sleep(nanoseconds: Self.revealStepNanoseconds)
+            } catch {
+                return
+            }
+        }
     }
 
     private func scrollToLatest(using proxy: ScrollViewProxy, animated: Bool) {
@@ -231,6 +347,7 @@ private extension TranscriptRole {
         ],
         provisionalText: "",
         hasPersistedHistory: true,
+        isResponseActive: false,
         onShowHistory: {}
     )
     .padding()
