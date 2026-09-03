@@ -156,6 +156,7 @@ protocol AudioOutput: Sendable {
     func append(_ pcm: Data) async throws -> AudioPlaybackReadiness
     func finish() async throws
     func stop() async
+    func playbackPosition() async -> TimeInterval?
 }
 
 actor AudioActivityReportingOutput: AudioOutput {
@@ -207,6 +208,10 @@ actor AudioActivityReportingOutput: AudioOutput {
     func stop() async {
         await wrapped.stop()
         await reporter.reportPlaybackEnded()
+    }
+
+    func playbackPosition() async -> TimeInterval? {
+        await wrapped.playbackPosition()
     }
 }
 
@@ -270,6 +275,10 @@ actor RecoveringAudioOutput: AudioOutput {
         await liveOutput.stop()
         format = nil
         bufferedPCM.removeAll(keepingCapacity: false)
+    }
+
+    func playbackPosition() async -> TimeInterval? {
+        await liveOutput.playbackPosition()
     }
 
     func fallbackURL() -> URL? {

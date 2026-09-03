@@ -101,6 +101,17 @@ actor AppleAudioOutput: AudioOutput {
         await stopResources()
     }
 
+    func playbackPosition() async -> TimeInterval? {
+        guard playbackStarted,
+              let renderTime = playerNode.lastRenderTime,
+              let playerTime = playerNode.playerTime(forNodeTime: renderTime),
+              playerTime.sampleRate > 0,
+              playerTime.sampleTime >= 0 else {
+            return nil
+        }
+        return Double(playerTime.sampleTime) / playerTime.sampleRate
+    }
+
     private func schedule(
         _ pcm: Data,
         format: AVAudioFormat?,

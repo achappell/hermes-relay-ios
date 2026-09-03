@@ -41,7 +41,8 @@ store without a network connection.
 ### Domain
 
 - `Models/SessionModels.swift` contains connection state, transcript records,
-  session metadata, and normalized transport events.
+  session metadata, normalized transport events, and the optional
+  `SpeechTiming`/`SpeechTimingWord` caption-timing contract.
 - These types should remain independent of SwiftUI where practical so they are
   easy to test.
 
@@ -59,6 +60,11 @@ store without a network connection.
   entitlements are implemented by platform adapters.
 - Signed 16-bit PCM playback and WAV fallback remain behind the shared
   `AudioOutput` protocol.
+- `AudioOutput.playbackPosition()` reports the elapsed position of the active
+  inbound audio stream when the platform can provide it. The voice coordinator
+  samples that position while streamed PCM or decoded audio-file playback is
+  active, groups timing revisions by segment ID, and clears the timeline on a
+  new turn or interruption.
 - `AudioActivityStore` receives normalized microphone and inbound-playback
   levels, classifies microphone silence/background noise/speech, and emits a
   throttled newest-snapshot stream. It carries no prompt, transcript, or raw
@@ -72,6 +78,12 @@ store without a network connection.
   meaningful transcript entries and appends provisional user speech at a
   stable live anchor. The rail limits viewport height, not message content, so
   long Hermes responses remain scrollable and are never silently truncated.
+- `RecentTranscriptRail` uses accumulated `SpeechTiming` word boundaries and
+  playback position to reveal the active Hermes response. It validates the
+  timed prefix against the visible transcript, never regresses an already
+  revealed prefix, and falls back to the existing word-paced reveal when timing
+  is delayed, revised incompatibly, unavailable, or playback position cannot be
+  read.
 
 ### Later local capabilities
 

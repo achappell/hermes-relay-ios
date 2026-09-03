@@ -383,6 +383,8 @@ private actor RecordingAudioOutput: AudioOutput {
         recordedOperations.append(.stop)
     }
 
+    func playbackPosition() async -> TimeInterval? { nil }
+
     func recordedChunks() -> [Data] { chunks }
     func operations() -> [Operation] { recordedOperations }
     func isActive() -> Bool { active }
@@ -400,6 +402,8 @@ private actor FinishFailingAudioOutput: AudioOutput {
     }
 
     func stop() async {}
+
+    func playbackPosition() async -> TimeInterval? { nil }
 }
 
 private actor PlaybackCompletionFlag {

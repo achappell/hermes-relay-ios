@@ -104,11 +104,95 @@ enum RecentTranscriptReveal {
     }
 }
 
+enum SpeechTimingReveal {
+    static func visibleText(
+        target: String,
+        timing: SpeechTiming,
+        playbackPosition: TimeInterval
+    ) -> String {
+        visibleText(
+            target: target,
+            timings: [timing],
+            playbackPosition: playbackPosition
+        )
+    }
+
+    static func visibleText(
+        target: String,
+        timings: [SpeechTiming],
+        playbackPosition: TimeInterval
+    ) -> String {
+        guard !target.isEmpty,
+              playbackPosition.isFinite,
+              !timings.isEmpty else {
+            return ""
+        }
+
+        let words = timings
+            .sorted { lhs, rhs in
+                (lhs.words.first?.startTime ?? .greatestFiniteMagnitude)
+                    < (rhs.words.first?.startTime ?? .greatestFiniteMagnitude)
+            }
+            .flatMap(\.words)
+        let visibleWordCount = words.prefix {
+            $0.startTime <= max(0, playbackPosition)
+        }.count
+        guard visibleWordCount > 0 else { return "" }
+
+        let targetRanges = wordRanges(in: target)
+        guard !targetRanges.isEmpty else { return "" }
+
+        let matchingWordCount = zip(words, targetRanges)
+            .prefix { timingWord, targetRange in
+                normalizedWord(timingWord.text) == normalizedWord(String(target[targetRange]))
+            }
+            .count
+        let usableWordCount = min(visibleWordCount, matchingWordCount, targetRanges.count)
+        guard usableWordCount > 0 else { return "" }
+
+        let lastVisibleRange = targetRanges[usableWordCount - 1]
+        var end = lastVisibleRange.upperBound
+        while end < target.endIndex, target[end].isWhitespace {
+            end = target.index(after: end)
+        }
+        return String(target[..<end])
+    }
+
+    private static func wordRanges(in text: String) -> [Range<String.Index>] {
+        var ranges: [Range<String.Index>] = []
+        var index = text.startIndex
+
+        while index < text.endIndex {
+            while index < text.endIndex, text[index].isWhitespace {
+                index = text.index(after: index)
+            }
+            guard index < text.endIndex else { break }
+
+            let start = index
+            while index < text.endIndex, !text[index].isWhitespace {
+                index = text.index(after: index)
+            }
+            ranges.append(start..<index)
+        }
+
+        return ranges
+    }
+
+    private static func normalizedWord(_ word: String) -> String {
+        word
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .trimmingCharacters(in: .punctuationCharacters)
+            .lowercased()
+    }
+}
+
 enum RecentTranscriptDisplay {
     static func entries(
         projection: RecentTranscriptProjection,
         isResponseActive: Bool,
-        revealedTexts: [String: String]
+        revealedTexts: [String: String],
+        speechTimings: [SpeechTiming] = [],
+        playbackPosition: TimeInterval? = nil
     ) -> [RecentTranscriptEntry] {
         guard isResponseActive,
               let latestAssistantID = projection.entries.last(where: { $0.role == .assistant })?.id else {
@@ -117,14 +201,35 @@ enum RecentTranscriptDisplay {
 
         return projection.entries.map { entry in
             guard entry.id == latestAssistantID else { return entry }
-            let visibleText = revealedTexts[entry.id].flatMap { revealedText in
+            let pacedText: String? = revealedTexts[entry.id].flatMap { revealedText -> String? in
                 guard !revealedText.isEmpty else { return nil }
                 return entry.text.hasPrefix(revealedText) ? revealedText : nil
-            } ?? RecentTranscriptReveal.nextText(
-                current: "",
-                target: entry.text,
-                characterBudget: 1
-            )
+            }
+            let timedText: String? = playbackPosition.flatMap { position -> String? in
+                guard !speechTimings.isEmpty else { return nil }
+                let visibleText = SpeechTimingReveal.visibleText(
+                    target: entry.text,
+                    timings: speechTimings,
+                    playbackPosition: position
+                )
+                return visibleText.isEmpty ? nil : visibleText
+            }
+            let visibleText: String
+            if let timedText {
+                if let pacedText, timedText.hasPrefix(pacedText) {
+                    visibleText = timedText
+                } else if let pacedText, pacedText.hasPrefix(timedText) {
+                    visibleText = pacedText
+                } else {
+                    visibleText = timedText
+                }
+            } else {
+                visibleText = pacedText ?? RecentTranscriptReveal.nextText(
+                    current: "",
+                    target: entry.text,
+                    characterBudget: 1
+                )
+            }
             return RecentTranscriptEntry(
                 id: entry.id,
                 role: entry.role,
@@ -138,6 +243,7 @@ enum RecentTranscriptDisplay {
 private struct RecentTranscriptRevealTarget: Equatable, Sendable {
     let id: String
     let text: String
+    let usesSpeechTiming: Bool
 }
 
 struct RecentTranscriptRail: View {
@@ -145,6 +251,8 @@ struct RecentTranscriptRail: View {
     let provisionalText: String
     let hasPersistedHistory: Bool
     let isResponseActive: Bool
+    let speechTimings: [SpeechTiming]
+    let playbackPosition: TimeInterval?
     let onShowHistory: () -> Void
 
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
@@ -168,7 +276,9 @@ struct RecentTranscriptRail: View {
         RecentTranscriptDisplay.entries(
             projection: projection,
             isResponseActive: isResponseActive,
-            revealedTexts: revealedTexts
+            revealedTexts: revealedTexts,
+            speechTimings: speechTimings,
+            playbackPosition: playbackPosition
         )
     }
 
@@ -177,7 +287,11 @@ struct RecentTranscriptRail: View {
               let entry = projection.entries.last(where: { $0.role == .assistant }) else {
             return nil
         }
-        return RecentTranscriptRevealTarget(id: entry.id, text: entry.text)
+        return RecentTranscriptRevealTarget(
+            id: entry.id,
+            text: entry.text,
+            usesSpeechTiming: !speechTimings.isEmpty && playbackPosition != nil
+        )
     }
 
     var body: some View {
@@ -259,6 +373,7 @@ struct RecentTranscriptRail: View {
         guard let target else {
             return
         }
+        guard !target.usesSpeechTiming else { return }
 
         var visibleText = revealedTexts[target.id] ?? ""
         if !target.text.hasPrefix(visibleText) {
@@ -370,6 +485,8 @@ private extension TranscriptRole {
         provisionalText: "",
         hasPersistedHistory: true,
         isResponseActive: false,
+        speechTimings: [],
+        playbackPosition: nil,
         onShowHistory: {}
     )
     .padding()

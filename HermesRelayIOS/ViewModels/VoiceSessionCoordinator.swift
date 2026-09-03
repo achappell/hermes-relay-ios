@@ -13,6 +13,8 @@ final class VoiceSessionCoordinator {
 
     private(set) var state: VoiceState = .idle
     private(set) var provisionalText = ""
+    private(set) var speechTimings: [SpeechTiming] = []
+    private(set) var playbackPosition: TimeInterval?
 
     private var finalText: String?
     private var captureTask: Task<Void, Never>?
@@ -22,6 +24,7 @@ final class VoiceSessionCoordinator {
     private var audioFileBuffer = Data()
     private var streamedAudioBytes = 0
     private var captureFailureMessage: String?
+    private var playbackPositionTask: Task<Void, Never>?
     // Event handlers may outlive a cancelled response task, so every response
     // is allowed to mutate state only while its generation is current.
     private var responseGeneration: UInt64 = 0
@@ -87,6 +90,7 @@ final class VoiceSessionCoordinator {
         }
 
         playbackFailed = false
+        resetSpeechTiming()
         responseGeneration &+= 1
         let generation = responseGeneration
         responseTask = Task { [weak self] in
@@ -212,6 +216,7 @@ final class VoiceSessionCoordinator {
 
     func stopPlayback() async {
         await output.stop()
+        resetSpeechTiming()
         switch state {
         case .speaking, .buffering:
             state = .interrupted
@@ -226,6 +231,7 @@ final class VoiceSessionCoordinator {
         responseGeneration &+= 1
         state = .interrupted
         await output.stop()
+        resetSpeechTiming()
         activeResponseTask.cancel()
         let didReconnect = await store.interruptActiveTurn()
         await activeResponseTask.value
@@ -248,6 +254,7 @@ final class VoiceSessionCoordinator {
         guard !store.draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
 
         playbackFailed = false
+        resetSpeechTiming()
         responseGeneration &+= 1
         let generation = responseGeneration
         responseTask = Task { [weak self] in
@@ -319,6 +326,7 @@ final class VoiceSessionCoordinator {
             audioFileBuffer.removeAll(keepingCapacity: false)
             audioStreamActive = true
             streamedAudioBytes = 0
+            startPlaybackPositionObservation(generation: generation)
             await diagnostics.record(.streamStarted(format: format))
             state = .buffering
             do {
@@ -344,6 +352,7 @@ final class VoiceSessionCoordinator {
             do {
                 try await output.finish()
                 audioStreamActive = false
+                stopPlaybackPositionObservation()
                 state = .idle
             } catch {
                 await handlePlaybackFailure()
@@ -363,9 +372,11 @@ final class VoiceSessionCoordinator {
                 try await output.start(format: decoded.format)
                 let readiness = try await output.append(decoded.pcm)
                 if readiness == .ready {
+                    startPlaybackPositionObservation(generation: generation)
                     state = .speaking
                 }
                 try await output.finish()
+                stopPlaybackPositionObservation()
                 state = .idle
             } catch {
                 await handlePlaybackFailure()
@@ -376,6 +387,12 @@ final class VoiceSessionCoordinator {
             }
         case .error(let message):
             state = .failed(message)
+        case .speechTiming(let timing):
+            if let index = speechTimings.firstIndex(where: { $0.segmentID == timing.segmentID }) {
+                speechTimings[index] = timing
+            } else {
+                speechTimings.append(timing)
+            }
         case .messageStart, .textDelta, .textReplace, .messageComplete, .unknown:
             break
         }
@@ -399,6 +416,7 @@ final class VoiceSessionCoordinator {
         playbackFailed = true
         audioStreamActive = false
         audioFileBuffer.removeAll(keepingCapacity: false)
+        stopPlaybackPositionObservation()
         await diagnostics.record(.playbackFailed)
         await output.stop()
         state = .failed("Audio playback failed. The response text is still available.")
@@ -407,6 +425,35 @@ final class VoiceSessionCoordinator {
     private var isFailed: Bool {
         if case .failed = state { return true }
         return false
+    }
+
+    private func startPlaybackPositionObservation(generation: UInt64) {
+        stopPlaybackPositionObservation()
+        playbackPositionTask = Task { [weak self] in
+            guard let self else { return }
+
+            while !Task.isCancelled {
+                guard self.responseGeneration == generation else { return }
+                self.playbackPosition = await self.output.playbackPosition()
+
+                do {
+                    try await Task.sleep(nanoseconds: 50_000_000)
+                } catch {
+                    return
+                }
+            }
+        }
+    }
+
+    private func stopPlaybackPositionObservation() {
+        playbackPositionTask?.cancel()
+        playbackPositionTask = nil
+        playbackPosition = nil
+    }
+
+    private func resetSpeechTiming() {
+        speechTimings.removeAll(keepingCapacity: false)
+        stopPlaybackPositionObservation()
     }
 
     private func permissionMessage(for authorization: SpeechAuthorization) -> String {

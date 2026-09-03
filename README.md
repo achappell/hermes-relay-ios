@@ -23,6 +23,9 @@ The current voice slice provides:
 - Push-to-talk local transcription with permission and cancellation handling.
 - Incremental signed 16-bit PCM playback with temporary WAV recovery when live
   playback fails.
+- Optional word-timed transcript reveal when the relay sends `speech_timing`
+  events. The rail follows the actual audio playback position and retains its
+  readable paced fallback when timing metadata is absent or invalid.
 - Content-safe microphone and inbound-playback activity signals with normalized
   levels, silence/noise/speech classification, throttling, and explicit safe
   unavailable states. These signals are the foundation for future opt-in
@@ -128,9 +131,10 @@ intentionally supports `iphoneos`, `iphonesimulator`, and `macosx`.
 
 ## GitHub Actions and releases
 
-Pull requests and pushes to `main` run the Xcode build and XCTest checks on the
-`macos-26` GitHub-hosted runner. CI builds and tests both the iOS Simulator and
-macOS targets, and retains the XCTest result bundles for failed-run diagnosis.
+Hosted GitHub Actions CI is currently disabled to avoid paying for a macOS
+runner on every pull request. Run the local validation commands above before
+opening a PR; the repository workflow remains available for an intentional
+manual dispatch when hosted validation is worth the spend.
 
 Releases use Release Please and conventional commits. A push to `main` opens or
 updates the release PR; merging that PR creates a `vX.Y.Z` tag and GitHub release,
@@ -161,10 +165,31 @@ channel. The iOS client should preserve these boundaries:
 6. Capture and transcribe locally; do not upload microphone bytes to Hermes.
 7. Play only the declared signed 16-bit PCM stream and preserve visible text
    if playback fails.
+8. A relay that supports word-timed captions may send this optional event:
 
-The existing relay is text-capable but does not currently expose a complete
-iOS-specific upload or control contract. Do not silently drop attachments or
-claim that unsupported remote operations worked.
+   ```json
+   {
+     "type": "speech_timing",
+     "payload": {
+       "segment_id": "segment-1",
+       "text": "Hermes keeps moving.",
+       "words": [
+         {"text": "Hermes", "start_ms": 0, "end_ms": 280},
+         {"text": "keeps", "start_ms": 280, "end_ms": 510},
+         {"text": "moving.", "start_ms": 510, "end_ms": 920}
+       ]
+     }
+   }
+   ```
+
+   Word offsets are relative to the beginning of the active inbound audio
+   stream. Reusing a `segment_id` revises that segment; omitted or malformed
+   timing must never hide the response text.
+
+The current relay is text-capable but does not yet emit this timing extension,
+so live word-synchronized captions require the corresponding Hermes protocol
+work. Do not claim synchronization from an endpoint that only sends text and
+PCM.
 
 ## Workflow
 

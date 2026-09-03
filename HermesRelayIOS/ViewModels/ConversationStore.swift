@@ -276,7 +276,7 @@ final class ConversationStore {
         case .status(let text, _):
             activityText = text
         case .audioStart, .audioChunk, .audioEnd,
-             .audioFileStart, .audioFileChunk, .audioFileEnd, .unknown:
+             .audioFileStart, .audioFileChunk, .audioFileEnd, .speechTiming, .unknown:
             break
         case .messageComplete(_, _, let failureReason):
             if !failureReason.isEmpty {
