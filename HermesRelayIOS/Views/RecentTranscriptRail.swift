@@ -78,28 +78,7 @@ struct RecentTranscriptRail: View {
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            HStack(spacing: 8) {
-                Label("Recent transcript", systemImage: "text.bubble")
-                    .font(.caption.weight(.semibold))
-                    .foregroundStyle(.secondary)
-
-                Spacer(minLength: 8)
-
-                if followState.isFollowingLatest {
-                    Text("Live")
-                        .font(.caption2.weight(.semibold))
-                        .foregroundStyle(.green)
-                } else {
-                    Button("Resume live") {
-                        followState.resumeFollowing()
-                    }
-                    .font(.caption.weight(.semibold))
-                    .buttonStyle(.borderless)
-                    .accessibilityHint("Returns the transcript to the newest text")
-                }
-            }
-
+        VStack(alignment: .leading, spacing: 10) {
             ScrollViewReader { proxy in
                 ScrollView(.vertical, showsIndicators: false) {
                     LazyVStack(alignment: .leading, spacing: 9) {
@@ -112,11 +91,9 @@ struct RecentTranscriptRail: View {
                             .frame(height: 1)
                             .id(Self.bottomAnchorID)
                     }
-                    .padding(.horizontal, 14)
-                    .padding(.vertical, 12)
+                    .padding(.vertical, 4)
                 }
                 .frame(maxHeight: 152)
-                .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 18, style: .continuous))
                 .contentShape(Rectangle())
                 .simultaneousGesture(
                     DragGesture(minimumDistance: 3)
@@ -140,25 +117,30 @@ struct RecentTranscriptRail: View {
                 }
                 .accessibilityLabel(
                     followState.isFollowingLatest
-                        ? "Recent transcript, following live text"
+                        ? "Recent transcript, following newest text"
                         : "Recent transcript, reading paused"
                 )
             }
 
             HStack(spacing: 12) {
-                if hasPersistedHistory {
-                    Button(action: onShowHistory) {
-                        Label("All history", systemImage: "clock.arrow.circlepath")
-                            .font(.footnote.weight(.medium))
+                if !followState.isFollowingLatest {
+                    Button("Resume live") {
+                        followState.resumeFollowing()
                     }
+                    .font(.caption.weight(.semibold))
                     .buttonStyle(.borderless)
+                    .accessibilityHint("Returns the transcript to the newest text")
                 }
 
                 Spacer(minLength: 8)
 
-                Text(followState.isFollowingLatest ? "Following newest" : "Reading paused")
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
+                if hasPersistedHistory {
+                    Button(action: onShowHistory) {
+                        Label("History", systemImage: "clock.arrow.circlepath")
+                            .font(.caption.weight(.medium))
+                    }
+                    .buttonStyle(.borderless)
+                }
             }
         }
         .frame(maxWidth: 680)
@@ -180,25 +162,25 @@ private struct RecentTranscriptEntryView: View {
     let entry: RecentTranscriptEntry
 
     var body: some View {
-        HStack(alignment: .top, spacing: 8) {
-            Text(entry.role.railLabel)
-                .font(.caption2.weight(.bold))
-                .foregroundStyle(entry.role.railTint)
-                .frame(width: 48, alignment: .leading)
+        VStack(alignment: .leading, spacing: 4) {
+            HStack(spacing: 6) {
+                Text(entry.role.railLabel.uppercased())
+                    .font(.caption2.weight(.bold))
+                    .tracking(1.0)
+                    .foregroundStyle(entry.role.railTint)
+
+                if entry.isLive {
+                    Text("LIVE")
+                        .font(.caption2.weight(.semibold))
+                        .foregroundStyle(.secondary)
+                }
+            }
 
             Text(entry.text)
                 .font(.callout)
                 .foregroundStyle(.primary)
                 .lineSpacing(2)
                 .fixedSize(horizontal: false, vertical: true)
-
-            if entry.isLive {
-                Circle()
-                    .fill(entry.role.railTint)
-                    .frame(width: 6, height: 6)
-                    .padding(.top, 6)
-                    .accessibilityHidden(true)
-            }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .accessibilityElement(children: .combine)
