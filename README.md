@@ -9,8 +9,9 @@ the Python/Textual
 
 The current voice slice provides:
 
-- A SwiftUI conversation shell with connection, voice-state, and transcript
-  surfaces.
+- A SwiftUI ambient HUD with minimal connection/session status, an
+  audio-reactive visualizer, lower-third live captions, and an intentional
+  transcript history sheet.
 - An in-app Configure Relay screen for endpoint and client metadata, with
   bearer-token entry backed by Keychain.
 - Keychain-backed bearer-token storage and an application-support relay profile.
@@ -26,6 +27,9 @@ The current voice slice provides:
   levels, silence/noise/speech classification, throttling, and explicit safe
   unavailable states. These signals are the foundation for future opt-in
   hands-free barge-in; they do not enable hands-free mode by themselves.
+- The HUD consumes those activity signals to show live state and caption
+  transitions. The existing push-to-talk control remains the capture path;
+  opt-in hands-free mode and automatic barge-in remain a later slice.
 - Opt-in, content-safe playback diagnostics for comparing stream arrival with
   first-buffer scheduling.
 - Local transcript/draft persistence and an explicit unconfirmed-turn marker;

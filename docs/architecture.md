@@ -22,8 +22,15 @@ store without a network connection.
 
 - `HermesRelayIOSApp.swift` owns the application entry point.
 - `Views/` owns SwiftUI layout and interaction.
+- `Views/AmbientHUD.swift` owns the ambient presentation projection, activity
+  snapshot subscription, state visualizer, live captions, and transcript
+  history sheet. `AmbientHUDModel` is a small main-actor adapter over the
+  actor-isolated `AudioActivityStore`.
 - `ViewModels/ConversationStore.swift` owns main-actor conversation state and
   turns typed client events into transcript records.
+- `ConversationStore.sessionStartedAt` records the current confirmed
+  connection start for the HUD session-duration label; it is cleared on failed
+  or lost connections and is not persisted as conversation content.
 - The app loads local conversation state before asking the store to make one
   guarded automatic connection attempt. Foreground activation calls the same
   idempotent entry point, so lifecycle changes cannot create connection loops.
@@ -54,6 +61,10 @@ store without a network connection.
   throttled newest-snapshot stream. It carries no prompt, transcript, or raw
   PCM data. Permission, route, and lifecycle failures publish explicit safe
   states; it does not itself arm hands-free mode or trigger interruption.
+- `AmbientHUDPresentation` maps `VoiceState`, the current activity snapshot,
+  provisional speech text, and persisted transcript records into one display
+  state. The visualizer is presentation-only: it never infers a relay control
+  operation or starts capture.
 
 ### Later local capabilities
 

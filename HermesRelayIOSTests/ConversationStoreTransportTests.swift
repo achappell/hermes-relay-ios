@@ -7,12 +7,14 @@ final class ConversationStoreTransportTests: XCTestCase {
     func testConnectStoresMetadataWhenClientConnects() async {
         let client = FakeHermesSessionClient()
         client.connectResult = .success(SessionMetadata(sessionID: "session-1", model: "test-model"))
-        let store = ConversationStore(client: client)
+        let startedAt = Date(timeIntervalSince1970: 42)
+        let store = ConversationStore(client: client, now: { startedAt })
 
         await store.connect()
 
         XCTAssertEqual(store.connectionState, .connected)
         XCTAssertEqual(store.sessionMetadata, SessionMetadata(sessionID: "session-1", model: "test-model"))
+        XCTAssertEqual(store.sessionStartedAt, startedAt)
     }
 
     @MainActor

@@ -21,14 +21,13 @@ struct VoiceControl: View {
 
             Spacer(minLength: 8)
 
-            Button("Cancel") {
-                Task { await coordinator.cancelCapture() }
+            if isCapturing {
+                Button("Cancel") {
+                    Task { await coordinator.cancelCapture() }
+                }
+                .font(.footnote.weight(.medium))
+                .relayGlassButtonStyle()
             }
-            .font(.footnote.weight(.medium))
-            .opacity(isCapturing ? 1 : 0)
-            .allowsHitTesting(isCapturing)
-            .accessibilityHidden(!isCapturing)
-            .relayGlassButtonStyle()
 
             RecordButton(coordinator: coordinator)
             .frame(width: 52, height: 52)

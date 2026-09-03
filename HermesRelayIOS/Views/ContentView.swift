@@ -1,27 +1,16 @@
 import SwiftUI
 
-struct TranscriptScrollState: Equatable {
-    private var didScrollToInitialTail = false
-
-    mutating func targetID(for messages: [TranscriptMessage]) -> UUID? {
-        guard !didScrollToInitialTail, let latestMessageID = messages.last?.id else {
-            return nil
-        }
-
-        didScrollToInitialTail = true
-        return latestMessageID
-    }
-}
-
 @MainActor
 struct ContentView: View {
     @State private var store: ConversationStore
     @State private var voiceCoordinator: VoiceSessionCoordinator
-    @State private var transcriptScrollState = TranscriptScrollState()
     @State private var showingConfiguration = false
+    @State private var showingHistory = false
+    @State private var hudModel: AmbientHUDModel
     @Environment(\.scenePhase) private var scenePhase
     @FocusState private var focusedField: FocusField?
     private let configurationStore: RelayConfigurationStore?
+    private let activityStore: AudioActivityStore
 
     private enum FocusField: Hashable {
         case composer
@@ -30,13 +19,16 @@ struct ContentView: View {
     init(
         store: ConversationStore = ConversationStore(),
         voiceCoordinator: VoiceSessionCoordinator? = nil,
-        configurationStore: RelayConfigurationStore? = nil
+        configurationStore: RelayConfigurationStore? = nil,
+        activityStore providedActivityStore: AudioActivityStore? = nil
     ) {
         _store = State(initialValue: store)
+        let activityStore = providedActivityStore ?? AudioActivityStore()
+        self.activityStore = activityStore
+        _hudModel = State(initialValue: AmbientHUDModel())
         if let voiceCoordinator {
             _voiceCoordinator = State(initialValue: voiceCoordinator)
         } else {
-            let activityStore = AudioActivityStore()
             let diagnostics = AudioPlaybackDiagnosticsFactory.make()
             _voiceCoordinator = State(initialValue: VoiceSessionCoordinator(
                 store: store,
@@ -61,35 +53,24 @@ struct ContentView: View {
 
     var body: some View {
         NavigationStack {
-            transcript
-            .safeAreaInset(edge: .top, spacing: 0) {
-                connectionBanner
-            }
+            ambientHUD
             .safeAreaInset(edge: .bottom, spacing: 0) {
                 bottomSurface
             }
             .scrollDismissesKeyboard(.interactively)
-            .navigationTitle("Hermes Relay")
+            .navigationTitle("")
+            #if os(iOS)
+            .navigationBarTitleDisplayMode(.inline)
+            #endif
+            .task {
+                hudModel.start(observing: activityStore)
+            }
+            .onDisappear {
+                hudModel.stop()
+            }
             .onChange(of: scenePhase) { _, newPhase in
                 guard newPhase == .active else { return }
                 Task { await store.autoConnectIfNeeded() }
-            }
-            .toolbar {
-                #if os(iOS)
-                ToolbarItem(placement: .topBarTrailing) {
-                    configureButton
-                }
-                ToolbarItem(placement: .topBarTrailing) {
-                    connectButton
-                }
-                #else
-                ToolbarItem {
-                    configureButton
-                }
-                ToolbarItem {
-                    connectButton
-                }
-                #endif
             }
         }
         .sheet(isPresented: $showingConfiguration) {
@@ -99,121 +80,33 @@ struct ContentView: View {
                 }
             }
         }
+        .sheet(isPresented: $showingHistory) {
+            TranscriptHistoryView(messages: store.messages)
+        }
     }
 
-    @ViewBuilder
-    private var configureButton: some View {
-        if configurationStore != nil {
-            Button {
+    private var ambientHUD: some View {
+        AmbientHUDView(
+            presentation: AmbientHUDPresentation(
+                voiceState: voiceCoordinator.state,
+                activity: hudModel.snapshot,
+                provisionalText: voiceCoordinator.provisionalText,
+                messages: store.messages
+            ),
+            connectionState: store.connectionState,
+            sessionStartedAt: store.sessionStartedAt,
+            hasTranscript: !store.messages.isEmpty,
+            canConfigure: configurationStore != nil,
+            onConfigure: {
                 showingConfiguration = true
-            } label: {
-                Image(systemName: "gearshape")
+            },
+            onConnect: {
+                Task { await store.connect() }
+            },
+            onShowHistory: {
+                showingHistory = true
             }
-            .accessibilityLabel("Configure relay")
-            .relayGlassButtonStyle()
-        }
-    }
-
-    private var connectButton: some View {
-        Button(connectButtonTitle) {
-            Task { await store.connect() }
-        }
-        .disabled(store.connectionState == .connecting)
-        .relayGlassProminentButtonStyle()
-    }
-
-    private var connectButtonTitle: String {
-        switch store.connectionState {
-        case .connected:
-            return "Connected"
-        case .failed:
-            return "Retry"
-        case .disconnected, .connecting:
-            return "Connect"
-        }
-    }
-
-    private var connectionBanner: some View {
-        HStack(spacing: 8) {
-            Circle()
-                .fill(store.connectionState.isConnected ? .green : .secondary)
-                .frame(width: 8, height: 8)
-            Text(store.connectionState.label)
-                .font(.subheadline.weight(.medium))
-            Spacer()
-        }
-        .padding(.horizontal, 14)
-        .padding(.vertical, 9)
-        .frame(maxWidth: 760)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .relayGlass(cornerRadius: 18)
-        .padding(.horizontal, 12)
-        .padding(.vertical, 8)
-    }
-
-    private var transcript: some View {
-        ScrollViewReader { proxy in
-            ScrollView {
-                if #available(iOS 26.0, macOS 26.0, *) {
-                    GlassEffectContainer(spacing: 12) {
-                        transcriptContent
-                    }
-                } else {
-                    transcriptContent
-                }
-            }
-            .task(id: store.messages.last?.id) {
-                guard !Task.isCancelled else { return }
-                await Task.yield()
-                guard !Task.isCancelled,
-                      let targetID = transcriptScrollState.targetID(for: store.messages)
-                else { return }
-
-                withAnimation(.easeOut(duration: 0.2)) {
-                    proxy.scrollTo(targetID, anchor: .bottom)
-                }
-            }
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
-            .background {
-                LinearGradient(
-                    colors: [
-                        Color.accentColor.opacity(0.06),
-                        Color.clear,
-                        Color.secondary.opacity(0.08),
-                    ],
-                    startPoint: .topLeading,
-                    endPoint: .bottomTrailing
-                )
-            }
-        }
-    }
-
-    @ViewBuilder
-    private var transcriptContent: some View {
-        LazyVStack(alignment: .leading, spacing: 12) {
-            if store.messages.isEmpty {
-                VStack(spacing: 12) {
-                    Image(systemName: "waveform.and.person.filled")
-                        .font(.largeTitle)
-                    Text("Conversation shell ready")
-                        .font(.headline)
-                    Text("Connect a configured Hermes relay to stream a text turn.")
-                        .font(.subheadline)
-                        .multilineTextAlignment(.center)
-                }
-                .foregroundStyle(.secondary)
-                .frame(maxWidth: .infinity, minHeight: 220)
-                .padding(.top, 48)
-            } else {
-                ForEach(store.messages) { message in
-                    MessageBubble(message: message)
-                }
-            }
-        }
-        .padding(.horizontal, 16)
-        .padding(.vertical, 12)
-        .frame(maxWidth: 760)
-        .frame(maxWidth: .infinity)
+        )
     }
 
     private var composer: some View {
@@ -275,18 +168,7 @@ struct ContentView: View {
     }
 
     private var voiceInterface: some View {
-        VStack(spacing: 8) {
-            VoiceStatusView(state: voiceCoordinator.state)
-
-            if !voiceCoordinator.provisionalText.isEmpty {
-                Text(voiceCoordinator.provisionalText)
-                    .font(.callout)
-                    .foregroundStyle(.secondary)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .lineLimit(3)
-            }
-            VoiceControl(coordinator: voiceCoordinator)
-        }
+        VoiceControl(coordinator: voiceCoordinator)
         .padding(.horizontal, 12)
         .padding(.top, 8)
         .padding(.bottom, 4)

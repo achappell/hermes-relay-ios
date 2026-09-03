@@ -1,0 +1,498 @@
+import Foundation
+import Observation
+import SwiftUI
+
+enum AmbientHUDMode: Equatable, Sendable {
+    case idle
+    case listening
+    case transcribing
+    case thinking
+    case buffering
+    case speaking
+    case interrupted
+    case failed
+
+    init(voiceState: VoiceState) {
+        switch voiceState {
+        case .idle:
+            self = .idle
+        case .listening:
+            self = .listening
+        case .transcribing:
+            self = .transcribing
+        case .thinking:
+            self = .thinking
+        case .buffering:
+            self = .buffering
+        case .speaking:
+            self = .speaking
+        case .interrupted:
+            self = .interrupted
+        case .failed:
+            self = .failed
+        }
+    }
+
+    var label: String {
+        switch self {
+        case .idle:
+            return "Ready"
+        case .listening:
+            return "Listening"
+        case .transcribing:
+            return "Transcribing"
+        case .thinking:
+            return "Thinking"
+        case .buffering:
+            return "Buffering"
+        case .speaking:
+            return "Speaking"
+        case .interrupted:
+            return "Interrupted"
+        case .failed:
+            return "Unavailable"
+        }
+    }
+
+    var systemImage: String {
+        switch self {
+        case .idle:
+            return "mic"
+        case .listening:
+            return "mic.fill"
+        case .transcribing:
+            return "waveform"
+        case .thinking:
+            return "ellipsis"
+        case .buffering:
+            return "arrow.down.circle"
+        case .speaking:
+            return "speaker.wave.2.fill"
+        case .interrupted:
+            return "pause.circle"
+        case .failed:
+            return "exclamationmark.triangle"
+        }
+    }
+}
+
+enum AmbientCaptionSource: Equatable, Sendable {
+    case user
+    case hermes
+
+    var label: String {
+        switch self {
+        case .user:
+            return "You"
+        case .hermes:
+            return "Hermes"
+        }
+    }
+}
+
+struct AmbientHUDPresentation: Equatable, Sendable {
+    let mode: AmbientHUDMode
+    let caption: String?
+    let captionSource: AmbientCaptionSource?
+    let intensity: Double
+
+    init(
+        voiceState: VoiceState,
+        activity: AudioActivitySnapshot,
+        provisionalText: String,
+        messages: [TranscriptMessage]
+    ) {
+        mode = AmbientHUDMode(voiceState: voiceState)
+
+        let latestUserText = messages.reversed()
+            .first { $0.role == .user && !$0.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }?
+            .text
+        let latestHermesText = messages.reversed()
+            .first { $0.role == .assistant && !$0.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }?
+            .text
+        let liveText = provisionalText.trimmingCharacters(in: .whitespacesAndNewlines)
+
+        switch mode {
+        case .listening, .transcribing:
+            caption = liveText.isEmpty ? latestUserText : liveText
+            captionSource = caption == nil ? nil : .user
+        case .thinking, .buffering, .speaking:
+            if let latestHermesText {
+                caption = latestHermesText
+                captionSource = .hermes
+            } else {
+                caption = latestUserText
+                captionSource = caption == nil ? nil : .user
+            }
+        case .idle, .interrupted, .failed:
+            caption = nil
+            captionSource = nil
+        }
+
+        switch mode {
+        case .listening, .transcribing:
+            intensity = max(0.12, Double(activity.microphoneLevel))
+        case .speaking, .buffering:
+            intensity = activity.playbackActive
+                ? max(0.12, Double(activity.playbackLevel))
+                : 0.18
+        case .thinking:
+            intensity = 0.24
+        case .interrupted:
+            intensity = 0.34
+        case .idle:
+            intensity = 0.08
+        case .failed:
+            intensity = 0.10
+        }
+    }
+
+    var accessibilityLabel: String {
+        "Hermes " + mode.label.lowercased()
+    }
+}
+
+enum SessionDurationFormatter {
+    static func string(startedAt: Date?, now: Date) -> String {
+        guard let startedAt else { return "00:00" }
+        return string(elapsed: max(0, now.timeIntervalSince(startedAt)))
+    }
+
+    static func string(elapsed: TimeInterval) -> String {
+        let totalSeconds = max(0, Int(elapsed.rounded(.down)))
+        let seconds = totalSeconds % 60
+        let totalMinutes = totalSeconds / 60
+        let minutes = totalMinutes % 60
+        let hours = totalMinutes / 60
+
+        if hours > 0 {
+            return String(format: "%02d:%02d:%02d", hours, minutes, seconds)
+        }
+        return String(format: "%02d:%02d", minutes, seconds)
+    }
+}
+
+@MainActor
+@Observable
+final class AmbientHUDModel {
+    private(set) var snapshot = AudioActivitySnapshot.safe
+    private var observationTask: Task<Void, Never>?
+
+    func start(observing activityStore: AudioActivityStore) {
+        guard observationTask == nil else { return }
+
+        observationTask = Task { [weak self] in
+            let snapshots = await activityStore.snapshots()
+            for await snapshot in snapshots {
+                guard !Task.isCancelled else { return }
+                self?.snapshot = snapshot
+            }
+        }
+    }
+
+    func stop() {
+        observationTask?.cancel()
+        observationTask = nil
+    }
+
+}
+
+struct AmbientHUDView: View {
+    let presentation: AmbientHUDPresentation
+    let connectionState: ConnectionState
+    let sessionStartedAt: Date?
+    let hasTranscript: Bool
+    let canConfigure: Bool
+    let onConfigure: () -> Void
+    let onConnect: () -> Void
+    let onShowHistory: () -> Void
+
+    var body: some View {
+        VStack(spacing: 0) {
+            sessionHeader
+
+            Spacer(minLength: 20)
+
+            AmbientVisualizer(presentation: presentation)
+
+            Text(presentation.mode.label)
+                .font(.headline.weight(.semibold))
+                .foregroundStyle(presentation.mode.tint)
+                .accessibilityHidden(true)
+
+            Spacer(minLength: 20)
+
+            captionArea
+        }
+        .padding(.horizontal, 16)
+        .padding(.top, 12)
+        .padding(.bottom, 16)
+        .frame(maxWidth: 900, maxHeight: .infinity)
+        .frame(maxWidth: .infinity)
+        .background {
+            LinearGradient(
+                colors: [
+                    presentation.mode.tint.opacity(0.12),
+                    Color.clear,
+                    presentation.mode.tint.opacity(0.04),
+                ],
+                startPoint: .topLeading,
+                endPoint: .bottomTrailing
+            )
+            .ignoresSafeArea()
+        }
+        .accessibilityElement(children: .contain)
+    }
+
+    private var sessionHeader: some View {
+        TimelineView(.periodic(from: .now, by: 1)) { context in
+            HStack(spacing: 10) {
+                Circle()
+                    .fill(connectionState.statusColor)
+                    .frame(width: 8, height: 8)
+
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Hermes Relay")
+                        .font(.subheadline.weight(.semibold))
+                    Text("\(connectionState.label) · \(SessionDurationFormatter.string(startedAt: sessionStartedAt, now: context.date))")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+
+                Spacer(minLength: 8)
+
+                if !connectionState.isConnected {
+                    Button(connectionState.connectButtonTitle, action: onConnect)
+                        .disabled(connectionState == .connecting)
+                        .font(.footnote.weight(.semibold))
+                        .relayGlassProminentButtonStyle()
+                }
+
+                if canConfigure {
+                    Button(action: onConfigure) {
+                        Image(systemName: "gearshape")
+                    }
+                    .accessibilityLabel("Configure relay")
+                    .relayGlassButtonStyle()
+                }
+            }
+            .padding(.horizontal, 14)
+            .padding(.vertical, 10)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .relayGlass(cornerRadius: 20)
+            .accessibilityElement(children: .combine)
+            .accessibilityLabel(
+                "Hermes Relay, \(connectionState.label), session duration \(SessionDurationFormatter.string(startedAt: sessionStartedAt, now: context.date))"
+            )
+        }
+    }
+
+    private var captionArea: some View {
+        VStack(spacing: 10) {
+            if let caption = presentation.caption,
+               let source = presentation.captionSource {
+                VStack(spacing: 5) {
+                    Text(source.label.uppercased())
+                        .font(.caption2.weight(.bold))
+                        .tracking(1.2)
+                        .foregroundStyle(source == .hermes ? .secondary : presentation.mode.tint)
+
+                    Text(caption)
+                        .font(.title3.weight(.medium))
+                        .multilineTextAlignment(.center)
+                        .lineLimit(2)
+                        .frame(maxWidth: 680)
+                        .transition(.opacity)
+                }
+                .id("\(source.label)-\(caption)")
+            } else {
+                Text(presentation.mode == .idle ? "Tap the microphone to begin" : presentation.mode.label)
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+                    .multilineTextAlignment(.center)
+            }
+
+            if hasTranscript {
+                Button(action: onShowHistory) {
+                    Label("Show transcript history", systemImage: "clock.arrow.circlepath")
+                        .font(.footnote.weight(.medium))
+                }
+                .relayGlassButtonStyle()
+            }
+        }
+        .frame(maxWidth: .infinity)
+        .padding(.horizontal, 18)
+        .padding(.vertical, 14)
+        .relayGlass(cornerRadius: 22)
+        .animation(.easeInOut(duration: 0.2), value: presentation.caption)
+        .accessibilityElement(children: .contain)
+    }
+}
+
+private struct AmbientVisualizer: View {
+    let presentation: AmbientHUDPresentation
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    var body: some View {
+        TimelineView(.animation(minimumInterval: 1.0 / 30.0, paused: reduceMotion)) { context in
+            let phase = reduceMotion
+                ? 0.0
+                : (sin(context.date.timeIntervalSinceReferenceDate * 2.0) + 1.0) / 2.0
+            let intensity = CGFloat(presentation.intensity)
+
+            ZStack {
+                ForEach(0..<3, id: \.self) { index in
+                    ring(index: index, phase: phase, intensity: intensity)
+                }
+
+                coreOrb(phase: phase, intensity: intensity)
+
+                Image(systemName: presentation.mode.systemImage)
+                    .font(.system(size: 34, weight: .semibold))
+                    .foregroundStyle(.white)
+                    .symbolEffect(.pulse, options: .repeating, isActive: !reduceMotion && presentation.mode != .idle)
+            }
+            .frame(width: 260, height: 260)
+            .accessibilityElement(children: .ignore)
+            .accessibilityLabel(presentation.accessibilityLabel)
+            .accessibilityValue(presentation.mode.label)
+        }
+    }
+
+    private func ring(index: Int, phase: Double, intensity: CGFloat) -> some View {
+        let opacity = 0.18 - Double(index) * 0.04
+        let indexOffset = CGFloat(index) * 0.18
+        let phaseOffset = CGFloat(phase) * (0.04 + CGFloat(index) * 0.02)
+        let scale = 1.0 + indexOffset + intensity * 0.10 + phaseOffset
+
+        return Circle()
+            .stroke(presentation.mode.tint.opacity(opacity), lineWidth: 1.5)
+            .frame(width: 142, height: 142)
+            .scaleEffect(scale)
+    }
+
+    private func coreOrb(phase: Double, intensity: CGFloat) -> some View {
+        let diameter = 116 + intensity * 26 + CGFloat(phase) * 5
+
+        return Circle()
+            .fill(
+                RadialGradient(
+                    colors: [
+                        presentation.mode.tint.opacity(0.88),
+                        presentation.mode.tint.opacity(0.22),
+                    ],
+                    center: .center,
+                    startRadius: 2,
+                    endRadius: 100
+                )
+            )
+            .frame(width: diameter, height: diameter)
+            .shadow(
+                color: presentation.mode.tint.opacity(0.32),
+                radius: 18 + intensity * 16
+            )
+    }
+}
+
+struct TranscriptHistoryView: View {
+    let messages: [TranscriptMessage]
+    @Environment(\.dismiss) private var dismiss
+
+    var body: some View {
+        NavigationStack {
+            ScrollView {
+                LazyVStack(alignment: .leading, spacing: 12) {
+                    ForEach(messages) { message in
+                        MessageBubble(message: message)
+                    }
+                }
+                .padding(16)
+                .frame(maxWidth: 760)
+                .frame(maxWidth: .infinity)
+            }
+            .navigationTitle("Conversation history")
+            #if os(iOS)
+            .navigationBarTitleDisplayMode(.inline)
+            #endif
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Done") {
+                        dismiss()
+                    }
+                }
+            }
+        }
+    }
+}
+
+private extension AmbientHUDMode {
+    var tint: Color {
+        switch self {
+        case .idle:
+            return .secondary
+        case .listening:
+            return .accentColor
+        case .transcribing:
+            return .teal
+        case .thinking:
+            return .purple
+        case .buffering:
+            return .indigo
+        case .speaking:
+            return .orange
+        case .interrupted:
+            return .yellow
+        case .failed:
+            return .red
+        }
+    }
+}
+
+private extension ConnectionState {
+    var statusColor: Color {
+        switch self {
+        case .connected:
+            return .green
+        case .failed:
+            return .red
+        case .connecting:
+            return .orange
+        case .disconnected:
+            return .secondary
+        }
+    }
+
+    var connectButtonTitle: String {
+        switch self {
+        case .failed:
+            return "Retry"
+        case .disconnected, .connecting:
+            return "Connect"
+        case .connected:
+            return "Connected"
+        }
+    }
+}
+
+#Preview("Ambient HUD") {
+    AmbientHUDView(
+        presentation: AmbientHUDPresentation(
+            voiceState: .speaking,
+            activity: AudioActivitySnapshot(
+                microphoneLevel: 0,
+                microphoneActivity: .silence,
+                playbackLevel: 0.72,
+                playbackActive: true
+            ),
+            provisionalText: "",
+            messages: [TranscriptMessage(role: .assistant, text: "The ambient HUD is alive.")]
+        ),
+        connectionState: .connected,
+        sessionStartedAt: Date().addingTimeInterval(-252),
+        hasTranscript: true,
+        canConfigure: true,
+        onConfigure: {},
+        onConnect: {},
+        onShowHistory: {}
+    )
+}
