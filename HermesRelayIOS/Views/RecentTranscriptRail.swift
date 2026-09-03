@@ -93,7 +93,7 @@ enum RecentTranscriptReveal {
         let minimumEnd = remaining.index(remaining.startIndex, offsetBy: minimumCount)
 
         guard let whitespace = remaining[minimumEnd...].firstIndex(where: \.isWhitespace) else {
-            return target
+            return current
         }
 
         let end = remaining.index(after: whitespace)

@@ -183,6 +183,19 @@ final class HermesRelayIOSTests: XCTestCase {
         XCTAssertLessThan(secondStep.count, response.count)
     }
 
+    func testRecentTranscriptRevealDoesNotDumpAStreamedPartialWord() {
+        let current = "Hermes keeps "
+        let streamedTarget = "Hermes keeps the"
+
+        let nextStep = RecentTranscriptReveal.nextText(
+            current: current,
+            target: streamedTarget,
+            characterBudget: 1
+        )
+
+        XCTAssertEqual(nextStep, current)
+    }
+
     func testRecentTranscriptMarksOnlyLatestAssistantAsLiveDuringActiveResponse() {
         let projection = RecentTranscriptProjection(
             messages: [
