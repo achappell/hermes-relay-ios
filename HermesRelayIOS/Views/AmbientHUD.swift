@@ -204,11 +204,16 @@ struct AmbientHUDView: View {
     let transcriptMessages: [TranscriptMessage]
     let provisionalText: String
     let isResponseActive: Bool
+    let voiceCoordinator: VoiceSessionCoordinator?
     let hasTranscript: Bool
     let canConfigure: Bool
     let onConfigure: () -> Void
     let onConnect: () -> Void
     let onShowHistory: () -> Void
+
+    private var liveProvisionalText: String {
+        voiceCoordinator?.provisionalText ?? provisionalText
+    }
 
     var body: some View {
         VStack(spacing: 0) {
@@ -293,7 +298,7 @@ struct AmbientHUDView: View {
     private var captionArea: some View {
         let projection = RecentTranscriptProjection(
             messages: transcriptMessages,
-            provisionalText: provisionalText,
+            provisionalText: liveProvisionalText,
             isResponseActive: isResponseActive
         )
 
@@ -306,7 +311,7 @@ struct AmbientHUDView: View {
             } else {
                 RecentTranscriptRail(
                     messages: transcriptMessages,
-                    provisionalText: provisionalText,
+                    provisionalText: liveProvisionalText,
                     hasPersistedHistory: hasTranscript,
                     isResponseActive: isResponseActive,
                     onShowHistory: onShowHistory
@@ -484,6 +489,7 @@ private extension ConnectionState {
         transcriptMessages: [TranscriptMessage(role: .assistant, text: "The ambient HUD is alive and the transcript stays readable while I continue speaking.")],
         provisionalText: "",
         isResponseActive: false,
+        voiceCoordinator: nil,
         hasTranscript: true,
         canConfigure: true,
         onConfigure: {},
