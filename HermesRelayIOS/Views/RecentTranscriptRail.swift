@@ -93,7 +93,9 @@ enum RecentTranscriptReveal {
         let minimumEnd = remaining.index(remaining.startIndex, offsetBy: minimumCount)
 
         guard let whitespace = remaining[minimumEnd...].firstIndex(where: \.isWhitespace) else {
-            return current
+            // The first fragment must give the user visible feedback; later
+            // fragments wait rather than jumping through an unfinished word.
+            return current.isEmpty ? target : current
         }
 
         let end = remaining.index(after: whitespace)

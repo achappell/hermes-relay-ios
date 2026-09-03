@@ -196,6 +196,18 @@ final class HermesRelayIOSTests: XCTestCase {
         XCTAssertEqual(nextStep, current)
     }
 
+    func testRecentTranscriptRevealKeepsAnInitialFragmentVisible() {
+        let firstFragment = "The"
+
+        let firstStep = RecentTranscriptReveal.nextText(
+            current: "",
+            target: firstFragment,
+            characterBudget: 1
+        )
+
+        XCTAssertEqual(firstStep, firstFragment)
+    }
+
     func testRecentTranscriptMarksOnlyLatestAssistantAsLiveDuringActiveResponse() {
         let projection = RecentTranscriptProjection(
             messages: [
