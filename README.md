@@ -22,6 +22,10 @@ The current voice slice provides:
 - Push-to-talk local transcription with permission and cancellation handling.
 - Incremental signed 16-bit PCM playback with temporary WAV recovery when live
   playback fails.
+- Content-safe microphone and inbound-playback activity signals with normalized
+  levels, silence/noise/speech classification, throttling, and explicit safe
+  unavailable states. These signals are the foundation for future opt-in
+  hands-free barge-in; they do not enable hands-free mode by themselves.
 - Opt-in, content-safe playback diagnostics for comparing stream arrival with
   first-buffer scheduling.
 - Local transcript/draft persistence and an explicit unconfirmed-turn marker;

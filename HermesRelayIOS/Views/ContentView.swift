@@ -36,12 +36,16 @@ struct ContentView: View {
         if let voiceCoordinator {
             _voiceCoordinator = State(initialValue: voiceCoordinator)
         } else {
+            let activityStore = AudioActivityStore()
             let diagnostics = AudioPlaybackDiagnosticsFactory.make()
             _voiceCoordinator = State(initialValue: VoiceSessionCoordinator(
                 store: store,
-                input: AppleSpeechInput(),
+                input: AppleSpeechInput(activityReporter: activityStore),
                 output: RecoveringAudioOutput(
-                    liveOutput: AppleAudioOutput(diagnostics: diagnostics)
+                    liveOutput: AudioActivityReportingOutput(
+                        wrapped: AppleAudioOutput(diagnostics: diagnostics),
+                        reporter: activityStore
+                    )
                 ),
                 diagnostics: diagnostics
             ))

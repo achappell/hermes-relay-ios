@@ -158,6 +158,58 @@ protocol AudioOutput: Sendable {
     func stop() async
 }
 
+actor AudioActivityReportingOutput: AudioOutput {
+    private let wrapped: any AudioOutput
+    private let reporter: any AudioActivityReporter
+
+    init(
+        wrapped: any AudioOutput,
+        reporter: any AudioActivityReporter
+    ) {
+        self.wrapped = wrapped
+        self.reporter = reporter
+    }
+
+    func start(format: AudioFormat) async throws {
+        do {
+            try await wrapped.start(format: format)
+        } catch {
+            await reporter.reportPlaybackEnded()
+            throw error
+        }
+    }
+
+    func append(_ pcm: Data) async throws -> AudioPlaybackReadiness {
+        do {
+            let readiness = try await wrapped.append(pcm)
+            if !pcm.isEmpty {
+                await reporter.reportPlayback(
+                    level: PCMActivityAnalyzer.normalizedRMS(pcm)
+                )
+            }
+            return readiness
+        } catch {
+            await reporter.reportPlaybackEnded()
+            throw error
+        }
+    }
+
+    func finish() async throws {
+        do {
+            try await wrapped.finish()
+            await reporter.reportPlaybackEnded()
+        } catch {
+            await reporter.reportPlaybackEnded()
+            throw error
+        }
+    }
+
+    func stop() async {
+        await wrapped.stop()
+        await reporter.reportPlaybackEnded()
+    }
+}
+
 actor RecoveringAudioOutput: AudioOutput {
     private let liveOutput: any AudioOutput
     private let fallbackWriter: WAVFallbackWriter

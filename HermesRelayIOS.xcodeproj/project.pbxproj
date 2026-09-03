@@ -38,6 +38,7 @@
 		A10000000000000000000097 /* ConversationPersistenceTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1000000000000000000009A /* ConversationPersistenceTests.swift */; };
 		A10000000000000000000098 /* RecoveryTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1000000000000000000009B /* RecoveryTests.swift */; };
 		A10000000000000000000099 /* ConversationPersistence.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1000000000000000000009C /* ConversationPersistence.swift */; };
+		A100000000000000000000A0 /* AudioActivity.swift in Sources */ = {isa = PBXBuildFile; fileRef = A100000000000000000000A1 /* AudioActivity.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -86,6 +87,7 @@
 		A1000000000000000000009A /* ConversationPersistenceTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ConversationPersistenceTests.swift; sourceTree = "<group>"; };
 		A1000000000000000000009B /* RecoveryTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RecoveryTests.swift; sourceTree = "<group>"; };
 		A1000000000000000000009C /* ConversationPersistence.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ConversationPersistence.swift; sourceTree = "<group>"; };
+		A100000000000000000000A1 /* AudioActivity.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AudioActivity.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -174,6 +176,7 @@
 				A1000000000000000000003E /* SpeechInput.swift */,
 				A1000000000000000000003F /* AppleSpeechInput.swift */,
 				A1000000000000000000008C /* AudioOutput.swift */,
+				A100000000000000000000A1 /* AudioActivity.swift */,
 				A1000000000000000000008D /* AppleAudioOutput.swift */,
 				A1000000000000000000008E /* WAVFallbackWriter.swift */,
 				A10000000000000000000034 /* SecureValueStore.swift */,
@@ -315,6 +318,7 @@
 				A1000000000000000000002D /* SpeechInput.swift in Sources */,
 				A1000000000000000000002E /* AppleSpeechInput.swift in Sources */,
 				A10000000000000000000088 /* AudioOutput.swift in Sources */,
+				A100000000000000000000A0 /* AudioActivity.swift in Sources */,
 				A10000000000000000000089 /* AppleAudioOutput.swift in Sources */,
 				A1000000000000000000008A /* WAVFallbackWriter.swift in Sources */,
 				A10000000000000000000090 /* VoiceSessionCoordinator.swift in Sources */,

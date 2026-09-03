@@ -9,10 +9,17 @@ actor AppleSpeechInput: SpeechInput {
     private var recognitionTask: SFSpeechRecognitionTask?
     private var recognitionRequest: SFSpeechAudioBufferRecognitionRequest?
     private var activeContinuation: AsyncThrowingStream<SpeechRecognitionUpdate, Error>.Continuation?
+    private let activityReporter: any AudioActivityReporter
     private let finalResultGraceNanoseconds: UInt64
+    private var configurationObserver: AudioEngineConfigurationObserver?
 
-    init(locale: Locale = Locale(identifier: "en-US"), finalResultGraceNanoseconds: UInt64 = 1_000_000_000) {
+    init(
+        locale: Locale = Locale(identifier: "en-US"),
+        finalResultGraceNanoseconds: UInt64 = 1_000_000_000,
+        activityReporter: any AudioActivityReporter = NoopAudioActivityReporter()
+    ) {
         recognizer = SFSpeechRecognizer(locale: locale)
+        self.activityReporter = activityReporter
         self.finalResultGraceNanoseconds = finalResultGraceNanoseconds
     }
 
@@ -42,9 +49,11 @@ actor AppleSpeechInput: SpeechInput {
 
     func start() async throws -> AsyncThrowingStream<SpeechRecognitionUpdate, Error> {
         guard await authorization() == .authorized else {
+            await activityReporter.reportMicrophoneUnavailable()
             throw SpeechInputError.notAuthorized
         }
         guard let recognizer else {
+            await activityReporter.reportMicrophoneUnavailable()
             throw SpeechInputError.captureFailed
         }
 
@@ -64,7 +73,15 @@ actor AppleSpeechInput: SpeechInput {
 
             let inputNode = audioEngine.inputNode
             let recordingFormat = inputNode.outputFormat(forBus: 0)
+            guard recordingFormat.channelCount > 0 else {
+                throw SpeechInputError.captureFailed
+            }
+            let activityReporter = self.activityReporter
             inputNode.installTap(onBus: 0, bufferSize: 1024, format: recordingFormat) { buffer, _ in
+                let level = PCMActivityAnalyzer.normalizedRMS(buffer)
+                Task {
+                    await activityReporter.reportMicrophone(level: level)
+                }
                 request.append(buffer)
             }
             audioEngine.prepare()
@@ -80,18 +97,24 @@ actor AppleSpeechInput: SpeechInput {
                     await self?.handleRecognition(text: text, isFinal: isFinal, didFail: didFail)
                 }
             }
+            installConfigurationObserver()
             return stream
         } catch {
             stopResources()
+            await activityReporter.reportMicrophoneUnavailable()
             continuation.finish(throwing: SpeechInputError.captureFailed)
             throw SpeechInputError.captureFailed
         }
     }
 
     func cancel() async {
+        let wasActive = activeContinuation != nil
         activeContinuation?.finish(throwing: SpeechInputError.cancelled)
         activeContinuation = nil
         stopResources()
+        if wasActive {
+            await activityReporter.reportMicrophoneEnded()
+        }
     }
 
     func finish() async {
@@ -111,15 +134,17 @@ actor AppleSpeechInput: SpeechInput {
             activeContinuation?.finish()
             activeContinuation = nil
             stopResources()
+            await activityReporter.reportMicrophoneEnded()
         }
     }
 
-    private func handleRecognition(text: String?, isFinal: Bool, didFail: Bool) {
+    private func handleRecognition(text: String?, isFinal: Bool, didFail: Bool) async {
         guard let continuation = activeContinuation else { return }
         if didFail {
             continuation.finish(throwing: SpeechInputError.captureFailed)
             activeContinuation = nil
             stopResources()
+            await activityReporter.reportMicrophoneUnavailable()
             return
         }
         if let text, !text.isEmpty {
@@ -127,6 +152,32 @@ actor AppleSpeechInput: SpeechInput {
         }
         if isFinal {
             continuation.finish()
+            activeContinuation = nil
+            stopResources()
+            await activityReporter.reportMicrophoneEnded()
+        }
+    }
+
+    private func installConfigurationObserver() {
+        guard configurationObserver == nil else { return }
+        let observer = NotificationCenter.default.addObserver(
+            forName: Notification.Name("AVAudioEngineConfigurationChangeNotification"),
+            object: audioEngine,
+            queue: nil
+        ) { [weak self] _ in
+            Task {
+                await self?.handleConfigurationChange()
+            }
+        }
+        configurationObserver = AudioEngineConfigurationObserver(observer)
+    }
+
+    private func handleConfigurationChange() async {
+        guard activeContinuation != nil else { return }
+        await activityReporter.reportMicrophoneUnavailable()
+        guard activeContinuation != nil else { return }
+        if audioEngine.inputNode.inputFormat(forBus: 0).channelCount == 0 {
+            activeContinuation?.finish(throwing: SpeechInputError.captureFailed)
             activeContinuation = nil
             stopResources()
         }
@@ -186,5 +237,19 @@ actor AppleSpeechInput: SpeechInput {
         @unknown default:
             return .microphoneDenied
         }
+    }
+
+    deinit {
+        if let configurationObserver {
+            NotificationCenter.default.removeObserver(configurationObserver.token)
+        }
+    }
+}
+
+private final class AudioEngineConfigurationObserver: @unchecked Sendable {
+    let token: NSObjectProtocol
+
+    init(_ token: NSObjectProtocol) {
+        self.token = token
     }
 }

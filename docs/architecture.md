@@ -49,6 +49,11 @@ store without a network connection.
   entitlements are implemented by platform adapters.
 - Signed 16-bit PCM playback and WAV fallback remain behind the shared
   `AudioOutput` protocol.
+- `AudioActivityStore` receives normalized microphone and inbound-playback
+  levels, classifies microphone silence/background noise/speech, and emits a
+  throttled newest-snapshot stream. It carries no prompt, transcript, or raw
+  PCM data. Permission, route, and lifecycle failures publish explicit safe
+  states; it does not itself arm hands-free mode or trigger interruption.
 
 ### Later local capabilities
 
