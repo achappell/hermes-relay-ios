@@ -116,11 +116,23 @@ final class ConversationStore {
     func sendDraft(
         eventHandler: (@MainActor @Sendable (HermesEvent) async -> Void)? = nil
     ) async -> Bool {
+        let originalDraft = draft
         let text = draft.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !text.isEmpty else { return false }
-        let completed = await sendTurn(text: text, eventHandler: eventHandler)
-        if completed, draft.trimmingCharacters(in: .whitespacesAndNewlines) == text {
+
+        // Once a connected turn is accepted, the composer represents a new
+        // draft. Clear it before waiting for the streamed response so the
+        // field does not look stuck while Hermes is working. If the turn
+        // fails, restore the original text unless the user has already
+        // started editing a new draft.
+        let shouldClearDraft = connectionState.isConnected && !isSending
+        if shouldClearDraft {
             draft = ""
+        }
+
+        let completed = await sendTurn(text: text, eventHandler: eventHandler)
+        if !completed, shouldClearDraft, draft.isEmpty {
+            draft = originalDraft
             await persistConversation()
         }
         return completed
