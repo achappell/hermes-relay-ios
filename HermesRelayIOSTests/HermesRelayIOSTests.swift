@@ -116,6 +116,54 @@ final class HermesRelayIOSTests: XCTestCase {
         XCTAssertNil(idle.captionSource)
     }
 
+    func testRecentTranscriptKeepsLatestExchangeAndDoesNotTruncateLongText() {
+        let longResponse = String(repeating: "Hermes keeps explaining the important detail. ", count: 18)
+        let messages = [
+            TranscriptMessage(role: .user, text: "Earlier question"),
+            TranscriptMessage(role: .assistant, text: "Earlier answer"),
+            TranscriptMessage(role: .user, text: "Current question"),
+            TranscriptMessage(role: .assistant, text: longResponse)
+        ]
+
+        let projection = RecentTranscriptProjection(messages: messages, provisionalText: "")
+
+        XCTAssertEqual(projection.entries.map(\.text), [
+            "Earlier question",
+            "Earlier answer",
+            "Current question",
+            longResponse
+        ])
+        XCTAssertEqual(projection.entries.last?.role, .assistant)
+        XCTAssertFalse(projection.entries.last?.isLive ?? true)
+        XCTAssertEqual(projection.entries.count, 4)
+    }
+
+    func testRecentTranscriptIncludesLiveUserTextAtTheNewestAnchor() {
+        let messages = [TranscriptMessage(role: .assistant, text: "Previous answer")]
+
+        let projection = RecentTranscriptProjection(
+            messages: messages,
+            provisionalText: "A new question in progress"
+        )
+
+        XCTAssertEqual(projection.entries.last?.text, "A new question in progress")
+        XCTAssertEqual(projection.entries.last?.role, .user)
+        XCTAssertTrue(projection.entries.last?.isLive ?? false)
+        XCTAssertEqual(projection.latestEntryID, projection.entries.last?.id)
+    }
+
+    func testRecentTranscriptFollowStatePausesAndResumesExplicitly() {
+        var state = RecentTranscriptFollowState()
+
+        XCTAssertTrue(state.isFollowingLatest)
+
+        state.pauseFollowing()
+        XCTAssertFalse(state.isFollowingLatest)
+
+        state.resumeFollowing()
+        XCTAssertTrue(state.isFollowingLatest)
+    }
+
     func testSessionDurationFormatsMinuteAndHourDurations() {
         let now = Date(timeIntervalSince1970: 1_000)
 

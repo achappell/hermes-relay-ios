@@ -201,6 +201,8 @@ struct AmbientHUDView: View {
     let presentation: AmbientHUDPresentation
     let connectionState: ConnectionState
     let sessionStartedAt: Date?
+    let transcriptMessages: [TranscriptMessage]
+    let provisionalText: String
     let hasTranscript: Bool
     let canConfigure: Bool
     let onConfigure: () -> Void
@@ -288,43 +290,30 @@ struct AmbientHUDView: View {
     }
 
     private var captionArea: some View {
-        VStack(spacing: 10) {
-            if let caption = presentation.caption,
-               let source = presentation.captionSource {
-                VStack(spacing: 5) {
-                    Text(source.label.uppercased())
-                        .font(.caption2.weight(.bold))
-                        .tracking(1.2)
-                        .foregroundStyle(source == .hermes ? .secondary : presentation.mode.tint)
+        let projection = RecentTranscriptProjection(
+            messages: transcriptMessages,
+            provisionalText: provisionalText
+        )
 
-                    Text(caption)
-                        .font(.title3.weight(.medium))
-                        .multilineTextAlignment(.center)
-                        .lineLimit(2)
-                        .frame(maxWidth: 680)
-                        .transition(.opacity)
-                }
-                .id("\(source.label)-\(caption)")
-            } else {
+        return VStack(spacing: 10) {
+            if projection.entries.isEmpty {
                 Text(presentation.mode == .idle ? "Tap the microphone to begin" : presentation.mode.label)
                     .font(.callout)
                     .foregroundStyle(.secondary)
                     .multilineTextAlignment(.center)
-            }
-
-            if hasTranscript {
-                Button(action: onShowHistory) {
-                    Label("Show transcript history", systemImage: "clock.arrow.circlepath")
-                        .font(.footnote.weight(.medium))
-                }
-                .relayGlassButtonStyle()
+            } else {
+                RecentTranscriptRail(
+                    messages: transcriptMessages,
+                    provisionalText: provisionalText,
+                    hasPersistedHistory: hasTranscript,
+                    onShowHistory: onShowHistory
+                )
             }
         }
         .frame(maxWidth: .infinity)
         .padding(.horizontal, 18)
         .padding(.vertical, 14)
         .relayGlass(cornerRadius: 22)
-        .animation(.easeInOut(duration: 0.2), value: presentation.caption)
         .accessibilityElement(children: .contain)
     }
 }
@@ -489,6 +478,8 @@ private extension ConnectionState {
         ),
         connectionState: .connected,
         sessionStartedAt: Date().addingTimeInterval(-252),
+        transcriptMessages: [TranscriptMessage(role: .assistant, text: "The ambient HUD is alive and the transcript stays readable while I continue speaking.")],
+        provisionalText: "",
         hasTranscript: true,
         canConfigure: true,
         onConfigure: {},
