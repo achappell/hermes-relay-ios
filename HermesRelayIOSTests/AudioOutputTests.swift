@@ -1,4 +1,5 @@
 import Foundation
+import AVFAudio
 import XCTest
 @testable import HermesRelayIOS
 
@@ -194,6 +195,141 @@ final class AudioOutputTests: XCTestCase {
         }
     }
 
+    func testPCMActivityClassifiesSilenceBackgroundNoiseAndSpeech() {
+        let classifier = AudioActivityClassifier(
+            noiseThreshold: 0.02,
+            speechThreshold: 0.08
+        )
+
+        XCTAssertEqual(classifier.classify(level: 0), .silence)
+        XCTAssertEqual(classifier.classify(level: 0.05), .backgroundNoise)
+        XCTAssertEqual(classifier.classify(level: 0.12), .speech)
+        XCTAssertEqual(classifier.classify(level: .nan), .silence)
+    }
+
+    func testSigned16PCMActivityMeasuresNormalizedRMS() {
+        let pcm = Data([0x00, 0x40, 0x00, 0xC0])
+
+        XCTAssertEqual(
+            PCMActivityAnalyzer.normalizedRMS(pcm),
+            0.5000153,
+            accuracy: 0.0001
+        )
+        XCTAssertEqual(PCMActivityAnalyzer.normalizedRMS(Data([0x01])), 0)
+    }
+
+    func testAVAudioBufferActivityMeasuresNormalizedRMS() {
+        let format = AVAudioFormat(
+            commonFormat: .pcmFormatFloat32,
+            sampleRate: 24_000,
+            channels: 1,
+            interleaved: false
+        )!
+        let buffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: 4)!
+        buffer.frameLength = 4
+        let samples = buffer.floatChannelData![0]
+        samples[0] = 0.5
+        samples[1] = -0.5
+        samples[2] = 0.5
+        samples[3] = -0.5
+
+        XCTAssertEqual(PCMActivityAnalyzer.normalizedRMS(buffer), 0.5, accuracy: 0.0001)
+    }
+
+    func testAudioActivityStoreCombinesAndThrottlesSignals() async {
+        let store = AudioActivityStore(
+            classifier: AudioActivityClassifier(
+                noiseThreshold: 0.02,
+                speechThreshold: 0.08
+            ),
+            minimumEmissionIntervalNanoseconds: 100
+        )
+
+        let first = await store.ingest(.microphone(level: 0.03), at: 0)
+        XCTAssertEqual(
+            first,
+            AudioActivitySnapshot(
+                microphoneLevel: 0.03,
+                microphoneActivity: .backgroundNoise,
+                playbackLevel: 0,
+                playbackActive: false
+            )
+        )
+
+        let throttled = await store.ingest(.microphone(level: 0.04), at: 50)
+        XCTAssertNil(throttled)
+
+        let playback = await store.ingest(.playback(level: 0.5), at: 100)
+        XCTAssertEqual(
+            playback,
+            AudioActivitySnapshot(
+                microphoneLevel: 0.04,
+                microphoneActivity: .backgroundNoise,
+                playbackLevel: 0.5,
+                playbackActive: true
+            )
+        )
+
+        let speech = await store.ingest(.microphone(level: 0.12), at: 101)
+        XCTAssertEqual(
+            speech,
+            AudioActivitySnapshot(
+                microphoneLevel: 0.12,
+                microphoneActivity: .speech,
+                playbackLevel: 0.5,
+                playbackActive: true
+            )
+        )
+
+        let unavailable = await store.ingest(.microphoneUnavailable, at: 102)
+        XCTAssertEqual(
+            unavailable,
+            AudioActivitySnapshot(
+                microphoneLevel: 0,
+                microphoneActivity: .unavailable,
+                playbackLevel: 0.5,
+                playbackActive: true
+            )
+        )
+    }
+
+    func testAudioActivityStorePublishesSafeInitialSnapshotAndLatestState() async {
+        let store = AudioActivityStore(minimumEmissionIntervalNanoseconds: 100)
+        let stream = await store.snapshots()
+        var iterator = stream.makeAsyncIterator()
+
+        let initial = await iterator.next()
+        XCTAssertEqual(initial, .safe)
+
+        let emitted = await store.ingest(.playback(level: 0.25), at: 0)
+        let next = await iterator.next()
+        XCTAssertEqual(next, emitted)
+        let current = await store.currentSnapshot()
+        XCTAssertEqual(current, emitted)
+    }
+
+    func testActivityReportingOutputPublishesPlaybackLevelsAndSafeEnd() async throws {
+        let reporter = RecordingAudioActivityReporter()
+        let output = AudioActivityReportingOutput(
+            wrapped: RecordingAudioOutput(),
+            reporter: reporter
+        )
+        let format = AudioFormat(sampleRate: 24_000, channels: 1, sampleWidth: 2)
+
+        try await output.start(format: format)
+        _ = try await output.append(Data([0x00, 0x40, 0x00, 0xC0]))
+        try await output.finish()
+
+        let events = await reporter.events()
+        XCTAssertEqual(events.count, 2)
+        if case .playback(let level) = events[0] {
+            XCTAssertEqual(level, 0.5000153, accuracy: 0.0001)
+        } else {
+            XCTFail("The first activity event must describe playback")
+        }
+        XCTAssertEqual(events[1], .playbackEnded)
+    }
+
     private func littleEndianUInt16(_ data: Data, offset: Int) -> UInt16 {
         UInt16(data[offset]) | UInt16(data[offset + 1]) << 8
     }
@@ -275,5 +411,33 @@ private actor PlaybackCompletionFlag {
 
     func isCompleted() -> Bool {
         completed
+    }
+}
+
+private actor RecordingAudioActivityReporter: AudioActivityReporter {
+    private var recordedEvents: [AudioActivityEvent] = []
+
+    func reportMicrophone(level: Float) async {
+        recordedEvents.append(.microphone(level: level))
+    }
+
+    func reportMicrophoneUnavailable() async {
+        recordedEvents.append(.microphoneUnavailable)
+    }
+
+    func reportMicrophoneEnded() async {
+        recordedEvents.append(.microphoneEnded)
+    }
+
+    func reportPlayback(level: Float) async {
+        recordedEvents.append(.playback(level: level))
+    }
+
+    func reportPlaybackEnded() async {
+        recordedEvents.append(.playbackEnded)
+    }
+
+    func events() -> [AudioActivityEvent] {
+        recordedEvents
     }
 }
