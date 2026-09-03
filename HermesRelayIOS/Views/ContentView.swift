@@ -95,6 +95,10 @@ struct ContentView: View {
             ),
             connectionState: store.connectionState,
             sessionStartedAt: store.sessionStartedAt,
+            transcriptMessages: store.messages,
+            provisionalText: voiceCoordinator.provisionalText,
+            isResponseActive: store.isSending,
+            voiceCoordinator: voiceCoordinator,
             hasTranscript: !store.messages.isEmpty,
             canConfigure: configurationStore != nil,
             onConfigure: {

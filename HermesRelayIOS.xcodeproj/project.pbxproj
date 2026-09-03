@@ -40,6 +40,7 @@
 		A10000000000000000000099 /* ConversationPersistence.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1000000000000000000009C /* ConversationPersistence.swift */; };
 		A100000000000000000000A0 /* AudioActivity.swift in Sources */ = {isa = PBXBuildFile; fileRef = A100000000000000000000A1 /* AudioActivity.swift */; };
 		A100000000000000000000A2 /* AmbientHUD.swift in Sources */ = {isa = PBXBuildFile; fileRef = A100000000000000000000A3 /* AmbientHUD.swift */; };
+		A100000000000000000000A4 /* RecentTranscriptRail.swift in Sources */ = {isa = PBXBuildFile; fileRef = A100000000000000000000A5 /* RecentTranscriptRail.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -90,6 +91,7 @@
 		A1000000000000000000009C /* ConversationPersistence.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ConversationPersistence.swift; sourceTree = "<group>"; };
 		A100000000000000000000A1 /* AudioActivity.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AudioActivity.swift; sourceTree = "<group>"; };
 		A100000000000000000000A3 /* AmbientHUD.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AmbientHUD.swift; sourceTree = "<group>"; };
+		A100000000000000000000A5 /* RecentTranscriptRail.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RecentTranscriptRail.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -205,6 +207,7 @@
 				A10000000000000000000095 /* VoiceStatusView.swift */,
 				A10000000000000000000096 /* VoiceControl.swift */,
 				A100000000000000000000A3 /* AmbientHUD.swift */,
+				A100000000000000000000A5 /* RecentTranscriptRail.swift */,
 			);
 			path = Views;
 			sourceTree = "<group>";
@@ -328,6 +331,7 @@
 				A10000000000000000000091 /* VoiceStatusView.swift in Sources */,
 				A10000000000000000000092 /* VoiceControl.swift in Sources */,
 				A100000000000000000000A2 /* AmbientHUD.swift in Sources */,
+				A100000000000000000000A4 /* RecentTranscriptRail.swift in Sources */,
 				A10000000000000000000099 /* ConversationPersistence.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;

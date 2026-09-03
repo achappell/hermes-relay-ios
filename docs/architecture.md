@@ -23,9 +23,12 @@ store without a network connection.
 - `HermesRelayIOSApp.swift` owns the application entry point.
 - `Views/` owns SwiftUI layout and interaction.
 - `Views/AmbientHUD.swift` owns the ambient presentation projection, activity
-  snapshot subscription, state visualizer, live captions, and transcript
-  history sheet. `AmbientHUDModel` is a small main-actor adapter over the
-  actor-isolated `AudioActivityStore`.
+  snapshot subscription, state visualizer, and transcript history sheet.
+  `Views/RecentTranscriptRail.swift` owns the bounded recent transcript
+  projection and its local follow/pause state: streaming updates stay anchored
+  to the newest entry until the user reads backward, then an explicit resume
+  action reattaches the live anchor. `AmbientHUDModel` is a small main-actor
+  adapter over the actor-isolated `AudioActivityStore`.
 - `ViewModels/ConversationStore.swift` owns main-actor conversation state and
   turns typed client events into transcript records.
 - `ConversationStore.sessionStartedAt` records the current confirmed
@@ -65,6 +68,10 @@ store without a network connection.
   provisional speech text, and persisted transcript records into one display
   state. The visualizer is presentation-only: it never infers a relay control
   operation or starts capture.
+- `RecentTranscriptProjection` preserves the complete text of the latest six
+  meaningful transcript entries and appends provisional user speech at a
+  stable live anchor. The rail limits viewport height, not message content, so
+  long Hermes responses remain scrollable and are never silently truncated.
 
 ### Later local capabilities
 

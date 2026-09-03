@@ -1,8 +1,54 @@
 import Foundation
+import Observation
 import XCTest
 @testable import HermesRelayIOS
 
 final class VoiceSessionCoordinatorTests: XCTestCase {
+    @MainActor
+    func testAmbientHUDTracksLiveRecognitionUpdatesFromCoordinator() async {
+        let input = CoordinatorSpeechInput()
+        let store = await connectedStore(CoordinatorHermesSessionClient())
+        let coordinator = VoiceSessionCoordinator(
+            store: store,
+            input: input,
+            output: CoordinatorAudioOutput()
+        )
+        await coordinator.beginCapture()
+
+        let view = AmbientHUDView(
+            presentation: AmbientHUDPresentation(
+                voiceState: .listening,
+                activity: .safe,
+                provisionalText: "",
+                messages: []
+            ),
+            connectionState: .connected,
+            sessionStartedAt: nil,
+            transcriptMessages: [],
+            provisionalText: "",
+            isResponseActive: false,
+            voiceCoordinator: coordinator,
+            hasTranscript: false,
+            canConfigure: false,
+            onConfigure: {},
+            onConnect: {},
+            onShowHistory: {}
+        )
+
+        let observationFlag = ObservationFlag()
+        withObservationTracking {
+            _ = view.body
+        } onChange: {
+            observationFlag.markChanged()
+        }
+
+        await input.emit(SpeechRecognitionUpdate(text: "Live phrase", isFinal: false))
+        for _ in 0..<3 { await Task.yield() }
+
+        XCTAssertTrue(observationFlag.didChange)
+        await coordinator.cancelCapture()
+    }
+
     @MainActor
     func testReleaseSubmitsOneFinalRecognitionAndStreamsPlayback() async {
         let input = CoordinatorSpeechInput(finalUpdate: SpeechRecognitionUpdate(text: "Hello Hermes", isFinal: true))
@@ -468,6 +514,14 @@ final class VoiceSessionCoordinatorTests: XCTestCase {
         let store = ConversationStore(client: client)
         await store.connect()
         return store
+    }
+}
+
+private final class ObservationFlag: @unchecked Sendable {
+    private(set) var didChange = false
+
+    func markChanged() {
+        didChange = true
     }
 }
 

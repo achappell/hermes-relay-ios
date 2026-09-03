@@ -116,6 +116,161 @@ final class HermesRelayIOSTests: XCTestCase {
         XCTAssertNil(idle.captionSource)
     }
 
+    func testRecentTranscriptKeepsLatestExchangeAndDoesNotTruncateLongText() {
+        let longResponse = String(repeating: "Hermes keeps explaining the important detail. ", count: 18)
+        let messages = [
+            TranscriptMessage(role: .user, text: "Earlier question"),
+            TranscriptMessage(role: .assistant, text: "Earlier answer"),
+            TranscriptMessage(role: .user, text: "Current question"),
+            TranscriptMessage(role: .assistant, text: longResponse)
+        ]
+
+        let projection = RecentTranscriptProjection(messages: messages, provisionalText: "")
+
+        XCTAssertEqual(projection.entries.map(\.text), [
+            "Earlier question",
+            "Earlier answer",
+            "Current question",
+            longResponse
+        ])
+        XCTAssertEqual(projection.entries.last?.role, .assistant)
+        XCTAssertFalse(projection.entries.last?.isLive ?? true)
+        XCTAssertEqual(projection.entries.count, 4)
+    }
+
+    func testRecentTranscriptExcludesSystemAndErrorMessagesFromConversationRail() {
+        let messages = [
+            TranscriptMessage(role: .user, text: "What is the status?"),
+            TranscriptMessage(role: .error, text: "Setup is incomplete."),
+            TranscriptMessage(role: .assistant, text: "The system is ready.")
+        ]
+
+        let projection = RecentTranscriptProjection(messages: messages, provisionalText: "")
+
+        XCTAssertEqual(projection.entries.map(\.role), [.user, .assistant])
+        XCTAssertFalse(projection.entries.contains { $0.text == "Setup is incomplete." })
+    }
+
+    func testRecentTranscriptIncludesLiveUserTextAtTheNewestAnchor() {
+        let messages = [TranscriptMessage(role: .assistant, text: "Previous answer")]
+
+        let projection = RecentTranscriptProjection(
+            messages: messages,
+            provisionalText: "A new question in progress"
+        )
+
+        XCTAssertEqual(projection.entries.last?.text, "A new question in progress")
+        XCTAssertEqual(projection.entries.last?.role, .user)
+        XCTAssertTrue(projection.entries.last?.isLive ?? false)
+        XCTAssertEqual(projection.latestEntryID, projection.entries.last?.id)
+    }
+
+    func testRecentTranscriptFollowStatePausesAndResumesExplicitly() {
+        var state = RecentTranscriptFollowState()
+
+        XCTAssertTrue(state.isFollowingLatest)
+
+        state.pauseFollowing()
+        XCTAssertFalse(state.isFollowingLatest)
+
+        state.resumeFollowing()
+        XCTAssertTrue(state.isFollowingLatest)
+    }
+
+    func testRecentTranscriptRevealAdvancesByWordsInsteadOfDumpingTheResponse() {
+        let response = "Hermes keeps the answer moving while the audio is speaking."
+
+        let firstStep = RecentTranscriptReveal.nextText(
+            current: "",
+            target: response,
+            characterBudget: 1
+        )
+        let secondStep = RecentTranscriptReveal.nextText(
+            current: firstStep,
+            target: response,
+            characterBudget: 1
+        )
+
+        XCTAssertEqual(firstStep, "Hermes ")
+        XCTAssertEqual(secondStep, "Hermes keeps ")
+        XCTAssertLessThan(secondStep.count, response.count)
+    }
+
+    func testRecentTranscriptRevealDoesNotDumpAStreamedPartialWord() {
+        let current = "Hermes keeps "
+        let streamedTarget = "Hermes keeps the"
+
+        let nextStep = RecentTranscriptReveal.nextText(
+            current: current,
+            target: streamedTarget,
+            characterBudget: 1
+        )
+
+        XCTAssertEqual(nextStep, current)
+    }
+
+    func testRecentTranscriptRevealKeepsAnInitialFragmentVisible() {
+        let firstFragment = "The"
+
+        let firstStep = RecentTranscriptReveal.nextText(
+            current: "",
+            target: firstFragment,
+            characterBudget: 1
+        )
+
+        XCTAssertEqual(firstStep, firstFragment)
+    }
+
+    func testRecentTranscriptMarksOnlyLatestAssistantAsLiveDuringActiveResponse() {
+        let projection = RecentTranscriptProjection(
+            messages: [
+                TranscriptMessage(role: .assistant, text: "Earlier answer"),
+                TranscriptMessage(role: .user, text: "Current question"),
+                TranscriptMessage(role: .assistant, text: "Current answer")
+            ],
+            provisionalText: "",
+            isResponseActive: true
+        )
+
+        XCTAssertEqual(projection.entries.map(\.isLive), [false, false, true])
+    }
+
+    func testRecentTranscriptShowsFirstWordBeforeRevealTaskPublishesState() {
+        let response = "Hermes keeps the answer visible while speaking."
+        let projection = RecentTranscriptProjection(
+            messages: [TranscriptMessage(role: .assistant, text: response)],
+            provisionalText: "",
+            isResponseActive: true
+        )
+
+        let displayedEntries = RecentTranscriptDisplay.entries(
+            projection: projection,
+            isResponseActive: true,
+            revealedTexts: [:]
+        )
+
+        XCTAssertEqual(displayedEntries.last?.text, "Hermes ")
+    }
+
+    func testRecentTranscriptDisplayDoesNotHideAssistantForAnEmptyRevealCursor() {
+        let messageID = UUID()
+        let projection = RecentTranscriptProjection(
+            messages: [
+                TranscriptMessage(id: messageID, role: .assistant, text: "Hermes is speaking now.")
+            ],
+            provisionalText: "",
+            isResponseActive: true
+        )
+
+        let displayedEntries = RecentTranscriptDisplay.entries(
+            projection: projection,
+            isResponseActive: true,
+            revealedTexts: [messageID.uuidString: ""]
+        )
+
+        XCTAssertEqual(displayedEntries.last?.text, "Hermes ")
+    }
+
     func testSessionDurationFormatsMinuteAndHourDurations() {
         let now = Date(timeIntervalSince1970: 1_000)
 
