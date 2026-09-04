@@ -187,11 +187,11 @@ channel. The iOS client should preserve these boundaries:
    stream. Reusing a `segment_id` revises that segment; omitted or malformed
    timing must never hide the response text.
 
-The current relay is text-capable but does not yet emit this timing extension.
-The client can keep its words moving at the response's overall audio cadence
-from PCM/WAV duration, but exact word and pause synchronization requires the
-corresponding Hermes protocol work. Do not claim exact synchronization from an
-endpoint that only sends text and PCM.
+Hermes can optionally emit this timing extension when the experimental
+provider-side forced aligner is enabled. The client still uses the received
+PCM/WAV duration as a safe fallback when alignment is disabled, unavailable, or
+invalid; an endpoint that only sends text and PCM does not provide exact word
+and pause synchronization.
 
 ## Workflow
 
