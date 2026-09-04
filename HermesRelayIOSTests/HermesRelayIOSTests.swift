@@ -429,6 +429,114 @@ final class HermesRelayIOSTests: XCTestCase {
         XCTAssertEqual(displayedEntries.last?.text, "Hermes keeps the answer ")
     }
 
+    func testSegmentAwareRevealUsesDurationForFailedMiddleSegment() {
+        let target = "Hermes keeps the answer moving."
+        let timings = [
+            SpeechTiming(
+                segmentID: "segment-0",
+                text: "Hermes keeps",
+                timingSource: .alignment,
+                audioOffset: 0,
+                duration: 0.48,
+                fallbackReason: nil,
+                words: [
+                    SpeechTimingWord(text: "Hermes", startTime: 0, endTime: 0.25),
+                    SpeechTimingWord(text: "keeps", startTime: 0.25, endTime: 0.48),
+                ]
+            ),
+            SpeechTiming(
+                segmentID: "segment-1",
+                text: "the answer",
+                timingSource: .durationFallback,
+                audioOffset: 0.48,
+                duration: 0.52,
+                fallbackReason: .timeout,
+                words: []
+            ),
+            SpeechTiming(
+                segmentID: "segment-2",
+                text: "moving.",
+                timingSource: .alignment,
+                audioOffset: 1.0,
+                duration: 0.3,
+                fallbackReason: nil,
+                words: [SpeechTimingWord(text: "moving.", startTime: 1.0, endTime: 1.3)]
+            ),
+        ]
+
+        XCTAssertEqual(
+            SpeechTimingReveal.visibleText(
+                target: target,
+                timings: timings,
+                playbackPosition: 0.9
+            ),
+            "Hermes keeps the answer "
+        )
+        XCTAssertEqual(
+            SpeechTimingReveal.visibleText(
+                target: target,
+                timings: timings,
+                playbackPosition: 1.3
+            ),
+            target
+        )
+    }
+
+    func testSegmentAwareRevealMapsNormalizedWordsToRenderedMarkdown() {
+        let target = "**Hermes** keeps\nmoving."
+        let timing = SpeechTiming(
+            segmentID: "segment-0",
+            text: "Hermes keeps moving.",
+            timingSource: .alignment,
+            audioOffset: 0,
+            duration: 0.92,
+            fallbackReason: nil,
+            words: [
+                SpeechTimingWord(text: "Hermes", startTime: 0, endTime: 0.28),
+                SpeechTimingWord(text: "keeps", startTime: 0.28, endTime: 0.51),
+                SpeechTimingWord(text: "moving", startTime: 0.51, endTime: 0.92),
+            ]
+        )
+
+        XCTAssertEqual(
+            SpeechTimingReveal.visibleText(
+                target: target,
+                timing: timing,
+                playbackPosition: 0.50
+            ),
+            "**Hermes** keeps\n"
+        )
+    }
+
+    func testDisplayKeepsTheExistingPrefixWhenTimingArrivesLateOrRevises() {
+        let id = UUID()
+        let target = "Hermes keeps the answer moving."
+        let projection = RecentTranscriptProjection(
+            messages: [TranscriptMessage(id: id, role: .assistant, text: target)],
+            provisionalText: "",
+            isResponseActive: true
+        )
+        let staleCandidate = SpeechTiming(
+            segmentID: "segment-0",
+            text: "Hermes keeps",
+            timingSource: .alignment,
+            audioOffset: 0,
+            duration: 0.48,
+            fallbackReason: nil,
+            words: [SpeechTimingWord(text: "Hermes", startTime: 0, endTime: 0.25)]
+        )
+
+        let displayedEntries = RecentTranscriptDisplay.entries(
+            projection: projection,
+            isResponseActive: true,
+            revealedTexts: [id.uuidString: "Hermes keeps the "],
+            speechTimings: [staleCandidate],
+            playbackPosition: 0.2
+        )
+
+        XCTAssertEqual(displayedEntries.last?.text, "Hermes keeps the ")
+    }
+
     func testRecentTranscriptRevealKeepsAnInitialFragmentVisible() {
         let firstFragment = "The"
 

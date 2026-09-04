@@ -128,38 +128,57 @@ enum SpeechTimingReveal {
             return ""
         }
 
-        let words = timings
-            .sorted { lhs, rhs in
-                (lhs.words.first?.startTime ?? .greatestFiniteMagnitude)
-                    < (rhs.words.first?.startTime ?? .greatestFiniteMagnitude)
+        let targetWords = targetWords(in: target)
+        guard !targetWords.isEmpty else { return "" }
+
+        var targetCursor = 0
+        var visibleEnd: String.Index?
+
+        for timing in deduplicatedTimings(timings) {
+            guard let mapping = map(timing, to: targetWords, from: targetCursor) else {
+                break
             }
-            .flatMap(\.words)
-        let visibleWordCount = words.prefix {
-            $0.startTime <= max(0, playbackPosition)
-        }.count
-        guard visibleWordCount > 0 else { return "" }
 
-        let targetRanges = wordRanges(in: target)
-        guard !targetRanges.isEmpty else { return "" }
-
-        let matchingWordCount = zip(words, targetRanges)
-            .prefix { timingWord, targetRange in
-                normalizedWord(timingWord.text) == normalizedWord(String(target[targetRange]))
+            guard playbackPosition >= timing.audioOffset else {
+                break
             }
-            .count
-        let usableWordCount = min(visibleWordCount, matchingWordCount, targetRanges.count)
-        guard usableWordCount > 0 else { return "" }
 
-        let lastVisibleRange = targetRanges[usableWordCount - 1]
-        var end = lastVisibleRange.upperBound
-        while end < target.endIndex, target[end].isWhitespace {
-            end = target.index(after: end)
+            let visibleWordCount = visibleWordCount(
+                for: timing,
+                mapping: mapping,
+                playbackPosition: playbackPosition
+            )
+            if visibleWordCount > 0 {
+                let lastVisibleWord = targetWords[mapping.targetRange.lowerBound + visibleWordCount - 1]
+                var end = lastVisibleWord.range.upperBound
+                while end < target.endIndex, target[end].isWhitespace {
+                    end = target.index(after: end)
+                }
+                visibleEnd = end
+            }
+
+            targetCursor = mapping.targetRange.upperBound
+            if playbackPosition < timing.endTime {
+                break
+            }
         }
-        return String(target[..<end])
+
+        guard let visibleEnd else { return "" }
+        return String(target[..<visibleEnd])
     }
 
-    private static func wordRanges(in text: String) -> [Range<String.Index>] {
-        var ranges: [Range<String.Index>] = []
+    private struct TargetWord {
+        let range: Range<String.Index>
+        let normalized: String
+    }
+
+    private struct SegmentMapping {
+        let targetRange: Range<Int>
+        let usesWordTiming: Bool
+    }
+
+    private static func targetWords(in text: String) -> [TargetWord] {
+        var words: [TargetWord] = []
         var index = text.startIndex
 
         while index < text.endIndex {
@@ -172,17 +191,132 @@ enum SpeechTimingReveal {
             while index < text.endIndex, !text[index].isWhitespace {
                 index = text.index(after: index)
             }
-            ranges.append(start..<index)
+            words.append(
+                TargetWord(
+                    range: start..<index,
+                    normalized: normalizedWord(String(text[start..<index]))
+                )
+            )
         }
 
-        return ranges
+        return words
+    }
+
+    private static func deduplicatedTimings(_ timings: [SpeechTiming]) -> [SpeechTiming] {
+        var latestByID: [String: SpeechTiming] = [:]
+        for timing in timings {
+            latestByID[timing.segmentID] = timing
+        }
+        return latestByID.values.sorted { lhs, rhs in
+            if lhs.audioOffset == rhs.audioOffset {
+                return lhs.segmentID < rhs.segmentID
+            }
+            return lhs.audioOffset < rhs.audioOffset
+        }
+    }
+
+    private static func map(
+        _ timing: SpeechTiming,
+        to targetWords: [TargetWord],
+        from targetCursor: Int
+    ) -> SegmentMapping? {
+        guard timing.audioOffset.isFinite,
+              timing.duration.isFinite,
+              timing.audioOffset >= 0,
+              timing.duration > 0,
+              timing.endTime.isFinite else {
+            return nil
+        }
+
+        let spokenWords = normalizedTokens(in: timing.text)
+        guard !spokenWords.isEmpty else { return nil }
+
+        let timingWords = timing.words.map { normalizedWord($0.text) }
+        let usesWordTiming = timing.timingSource == .alignment
+            && timingWords == spokenWords
+            && validWordSpans(timing.words, for: timing)
+        let expectedWords = usesWordTiming ? timingWords : spokenWords
+
+        guard targetCursor < targetWords.count,
+              expectedWords.allSatisfy({ !$0.isEmpty }),
+              expectedWords.count <= targetWords.count - targetCursor else {
+            return nil
+        }
+
+        let lastStart = targetWords.count - expectedWords.count
+        guard targetCursor <= lastStart else { return nil }
+
+        for start in targetCursor...lastStart {
+            let candidate = targetWords[start..<(start + expectedWords.count)]
+            guard zip(candidate, expectedWords).allSatisfy({ targetWord, spokenWord in
+                targetWord.normalized == spokenWord
+            }) else {
+                continue
+            }
+            return SegmentMapping(
+                targetRange: start..<(start + expectedWords.count),
+                usesWordTiming: usesWordTiming
+            )
+        }
+
+        return nil
+    }
+
+    private static func visibleWordCount(
+        for timing: SpeechTiming,
+        mapping: SegmentMapping,
+        playbackPosition: TimeInterval
+    ) -> Int {
+        let mappedCount = mapping.targetRange.count
+        guard mappedCount > 0, playbackPosition >= timing.audioOffset else { return 0 }
+
+        if mapping.usesWordTiming {
+            return min(
+                mappedCount,
+                timing.words.prefix { $0.startTime <= max(0, playbackPosition) }.count
+            )
+        }
+
+        let elapsed = playbackPosition - timing.audioOffset
+        guard elapsed > 0 else { return 0 }
+        let progress = min(1, max(0, elapsed / timing.duration))
+        return progress >= 1
+            ? mappedCount
+            : max(1, Int(ceil(progress * Double(mappedCount))))
+    }
+
+    private static func validWordSpans(
+        _ words: [SpeechTimingWord],
+        for timing: SpeechTiming
+    ) -> Bool {
+        guard !words.isEmpty else { return false }
+
+        var previousStart = timing.audioOffset
+        var previousEnd = timing.audioOffset
+        for (index, word) in words.enumerated() {
+            guard !normalizedWord(word.text).isEmpty,
+                  word.startTime.isFinite,
+                  word.endTime.isFinite,
+                  word.startTime >= timing.audioOffset,
+                  word.endTime > word.startTime,
+                  word.endTime <= timing.endTime,
+                  index == 0
+                    ? true
+                    : word.startTime >= previousStart && word.startTime >= previousEnd else {
+                return false
+            }
+            previousStart = word.startTime
+            previousEnd = word.endTime
+        }
+        return true
+    }
+
+    private static func normalizedTokens(in text: String) -> [String] {
+        text.split(whereSeparator: \.isWhitespace).map { normalizedWord(String($0)) }
     }
 
     private static func normalizedWord(_ word: String) -> String {
-        word
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-            .trimmingCharacters(in: .punctuationCharacters)
-            .lowercased()
+        word.lowercased().filter { $0.isLetter || $0.isNumber }
     }
 }
 
@@ -264,48 +398,20 @@ enum RecentTranscriptDisplay {
                 guard !revealedText.isEmpty else { return nil }
                 return entry.text.hasPrefix(revealedText) ? revealedText : nil
             }
-            let timedText: String? = playbackPosition.flatMap { position -> String? in
-                guard !speechTimings.isEmpty else { return nil }
-                let visibleText = SpeechTimingReveal.visibleText(
-                    target: entry.text,
-                    timings: speechTimings,
-                    playbackPosition: position
-                )
-                return visibleText.isEmpty ? nil : visibleText
-            }
-            let durationText: String? = playbackPosition.flatMap { position -> String? in
-                guard let playbackDuration else { return nil }
-                let visibleText = AudioDurationReveal.visibleText(
-                    target: entry.text,
-                    playbackPosition: position,
-                    audioDuration: playbackDuration
-                )
-                return visibleText.isEmpty ? nil : visibleText
-            }
-            let visibleText: String
-            if let timedText {
-                if let pacedText, timedText.hasPrefix(pacedText) {
-                    visibleText = timedText
-                } else if let pacedText, pacedText.hasPrefix(timedText) {
-                    visibleText = pacedText
-                } else {
-                    visibleText = timedText
-                }
-            } else if let durationText {
-                if let pacedText, durationText.hasPrefix(pacedText) {
-                    visibleText = durationText
-                } else if let pacedText, pacedText.hasPrefix(durationText) {
-                    visibleText = pacedText
-                } else {
-                    visibleText = durationText
-                }
-            } else {
-                visibleText = pacedText ?? RecentTranscriptReveal.nextText(
-                    current: "",
-                    target: entry.text,
-                    characterBudget: 1
-                )
-            }
+            let playbackText = playbackText(
+                target: entry.text,
+                speechTimings: speechTimings,
+                playbackDuration: playbackDuration,
+                playbackPosition: playbackPosition
+            )
+            let visibleText = longestValidPrefix(
+                in: entry.text,
+                candidates: [pacedText, playbackText]
+            ) ?? RecentTranscriptReveal.nextText(
+                current: "",
+                target: entry.text,
+                characterBudget: 1
+            )
             return RecentTranscriptEntry(
                 id: entry.id,
                 role: entry.role,
@@ -313,6 +419,44 @@ enum RecentTranscriptDisplay {
                 isLive: entry.isLive
             )
         }
+    }
+
+    static func playbackText(
+        target: String,
+        speechTimings: [SpeechTiming],
+        playbackDuration: TimeInterval?,
+        playbackPosition: TimeInterval?
+    ) -> String? {
+        guard let playbackPosition else { return nil }
+
+        if !speechTimings.isEmpty {
+            let timedText = SpeechTimingReveal.visibleText(
+                target: target,
+                timings: speechTimings,
+                playbackPosition: playbackPosition
+            )
+            if !timedText.isEmpty {
+                return timedText
+            }
+        }
+
+        guard let playbackDuration else { return nil }
+        let durationText = AudioDurationReveal.visibleText(
+            target: target,
+            playbackPosition: playbackPosition,
+            audioDuration: playbackDuration
+        )
+        return durationText.isEmpty ? nil : durationText
+    }
+
+    static func longestValidPrefix(
+        in target: String,
+        candidates: [String?]
+    ) -> String? {
+        candidates
+            .compactMap { $0 }
+            .filter { !$0.isEmpty && target.hasPrefix($0) }
+            .max { lhs, rhs in lhs.count < rhs.count }
     }
 }
 
@@ -526,28 +670,18 @@ struct RecentTranscriptRail: View {
             return
         }
 
-        let candidate: String
-        if !speechTimings.isEmpty {
-            candidate = SpeechTimingReveal.visibleText(
-                target: entry.text,
-                timings: speechTimings,
-                playbackPosition: position
-            )
-        } else if let playbackDuration {
-            candidate = AudioDurationReveal.visibleText(
-                target: entry.text,
-                playbackPosition: position,
-                audioDuration: playbackDuration
-            )
-        } else {
-            return
-        }
-
-        guard !candidate.isEmpty, entry.text.hasPrefix(candidate) else { return }
-
         let current = revealedTexts[entry.id] ?? ""
-        guard entry.text.hasPrefix(current), candidate.count > current.count else { return }
-        revealedTexts[entry.id] = candidate
+        let candidate = RecentTranscriptDisplay.playbackText(
+            target: entry.text,
+            speechTimings: speechTimings,
+            playbackDuration: playbackDuration,
+            playbackPosition: position
+        )
+        guard let visibleText = RecentTranscriptDisplay.longestValidPrefix(
+            in: entry.text,
+            candidates: [current, candidate]
+        ), visibleText.count > current.count else { return }
+        revealedTexts[entry.id] = visibleText
     }
 }
 
