@@ -165,6 +165,22 @@ final class HermesRelayIOSTests: XCTestCase {
         XCTAssertEqual(projection.latestEntryID, projection.entries.last?.id)
     }
 
+    func testRecentTranscriptPinsTheActiveLiveEntryOutsideHistory() {
+        let entries = [
+            RecentTranscriptEntry(id: "older", role: .assistant, text: "Older answer"),
+            RecentTranscriptEntry(id: "live-user", role: .user, text: "Current words", isLive: true),
+        ]
+
+        XCTAssertEqual(
+            RecentTranscriptDisplay.liveEntry(from: entries)?.text,
+            "Current words"
+        )
+        XCTAssertEqual(
+            RecentTranscriptDisplay.historyEntries(from: entries).map(\.id),
+            ["older"]
+        )
+    }
+
     func testRecentTranscriptFollowStatePausesAndResumesExplicitly() {
         var state = RecentTranscriptFollowState()
 

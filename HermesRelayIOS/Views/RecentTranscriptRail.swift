@@ -187,6 +187,14 @@ enum SpeechTimingReveal {
 }
 
 enum RecentTranscriptDisplay {
+    static func liveEntry(from entries: [RecentTranscriptEntry]) -> RecentTranscriptEntry? {
+        entries.last(where: \.isLive)
+    }
+
+    static func historyEntries(from entries: [RecentTranscriptEntry]) -> [RecentTranscriptEntry] {
+        entries.filter { !$0.isLive }
+    }
+
     static func entries(
         projection: RecentTranscriptProjection,
         isResponseActive: Bool,
@@ -282,6 +290,14 @@ struct RecentTranscriptRail: View {
         )
     }
 
+    private var liveEntry: RecentTranscriptEntry? {
+        RecentTranscriptDisplay.liveEntry(from: displayedEntries)
+    }
+
+    private var historyEntries: [RecentTranscriptEntry] {
+        RecentTranscriptDisplay.historyEntries(from: displayedEntries)
+    }
+
     private var revealTarget: RecentTranscriptRevealTarget? {
         guard isResponseActive,
               let entry = projection.entries.last(where: { $0.role == .assistant }) else {
@@ -296,10 +312,16 @@ struct RecentTranscriptRail: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
+            if let liveEntry {
+                RecentTranscriptEntryView(entry: liveEntry)
+                    .padding(.horizontal, 2)
+                    .accessibilityAddTraits(.updatesFrequently)
+            }
+
             ScrollViewReader { proxy in
                 ScrollView(.vertical, showsIndicators: false) {
                     LazyVStack(alignment: .leading, spacing: 9) {
-                        ForEach(displayedEntries) { entry in
+                        ForEach(historyEntries) { entry in
                             RecentTranscriptEntryView(entry: entry)
                                 .id(entry.id)
                         }
