@@ -405,6 +405,12 @@ final class VoiceSessionCoordinator {
             } else {
                 speechTimings.append(timing)
             }
+            speechTimings.sort { lhs, rhs in
+                if lhs.audioOffset == rhs.audioOffset {
+                    return lhs.segmentID < rhs.segmentID
+                }
+                return lhs.audioOffset < rhs.audioOffset
+            }
         case .messageStart, .textDelta, .textReplace, .messageComplete, .unknown:
             break
         }
