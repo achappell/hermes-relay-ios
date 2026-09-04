@@ -31,7 +31,7 @@
 - Consumes: JSON `speech_timing` payloads from protocol-v1 relay events.
 - Produces: `SpeechTimingSource`, bounded fallback reasons, and `SpeechTiming` values with `segmentID`, normalized `text`, `audioOffset`, `duration`, `timingSource`, optional `fallbackReason`, and `words`.
 
-- [ ] **Step 1: Write failing normalization tests**
+- [x] **Step 1: Write failing normalization tests**
 
 Add tests that assert an aligned record retains its source, absolute offset,
 duration, and word spans; a duration-fallback record is accepted with no
@@ -128,7 +128,7 @@ func testPartialSpeechTimingDegradesToDurationFallback() throws {
 }
 ```
 
-- [ ] **Step 2: Run the focused tests and verify the expected failure**
+- [x] **Step 2: Run the focused tests and verify the expected failure**
 
 Run:
 
@@ -139,7 +139,7 @@ xcodebuild test -project HermesRelayIOS.xcodeproj -scheme HermesRelayIOS -destin
 Expected: compilation fails because the new timing source, geometry, and
 fallback fields do not exist yet.
 
-- [ ] **Step 3: Implement the smallest model and normalizer change**
+- [x] **Step 3: Implement the smallest model and normalizer change**
 
 Add the bounded enums and fields to `SessionModels.swift`. In
 `normalizeSpeechTiming`, require non-empty segment ID and text, finite
@@ -152,12 +152,12 @@ duration-fallback record with `.invalid`; otherwise return `nil` so the
 existing content-safe unknown-event path preserves the whole audio-duration
 fallback.
 
-- [ ] **Step 4: Run the focused tests and verify they pass**
+- [x] **Step 4: Run the focused tests and verify they pass**
 
 Run the same `xcodebuild test` command. Expected: all normalizer tests pass,
 including the existing invalid-event and content-safe unknown-event tests.
 
-- [ ] **Step 5: Commit the model and normalizer slice**
+- [x] **Step 5: Commit the model and normalizer slice**
 
 ```bash
 git add HermesRelayIOS/Models/SessionModels.swift HermesRelayIOS/Services/HermesEventNormalizer.swift HermesRelayIOSTests/HermesEventNormalizerTests.swift
@@ -174,7 +174,7 @@ git commit -m "feat: normalize segment-scoped speech timing"
 - Consumes: rendered assistant text, ordered or out-of-order `SpeechTiming` records, playback position, and the existing revealed-text floor.
 - Produces: `SpeechTimingReveal.visibleText(target:timings:playbackPosition:)` as a valid rendered prefix, plus a display projection that never shortens a valid existing prefix.
 
-- [ ] **Step 1: Write failing projection tests**
+- [x] **Step 1: Write failing projection tests**
 
 Add tests for a failed middle segment, normalized Markdown/punctuation and
 line-break matching, delayed metadata, and a revised record with the same
@@ -258,7 +258,7 @@ func testDisplayKeepsTheExistingPrefixWhenTimingArrivesLateOrRevises() {
 }
 ```
 
-- [ ] **Step 2: Run the projection tests and verify the expected failure**
+- [x] **Step 2: Run the projection tests and verify the expected failure**
 
 Run:
 
@@ -269,7 +269,7 @@ xcodebuild test -project HermesRelayIOS.xcodeproj -scheme HermesRelayIOS -destin
 Expected: the new mixed-segment and normalized-token assertions fail against
 the current response-level flattened-word algorithm.
 
-- [ ] **Step 3: Implement segment mapping and prefix-safe projection**
+- [x] **Step 3: Implement segment mapping and prefix-safe projection**
 
 Replace the flattened-word calculation with ordered segment mappings. Tokenize
 the rendered target by whitespace while retaining each original range;
@@ -284,12 +284,12 @@ the rendered target among the timing candidate and the existing revealed-text
 floor; use `AudioDurationReveal` only when no usable segment candidate exists.
 Apply the same fallback choice in `updateRevealFloor()`.
 
-- [ ] **Step 4: Run the projection tests and verify they pass**
+- [x] **Step 4: Run the projection tests and verify they pass**
 
 Run the same `xcodebuild test` command. Expected: all existing IOS-20/IOS-22
 transcript tests and the new segment-aware tests pass.
 
-- [ ] **Step 5: Commit the segment projection slice**
+- [x] **Step 5: Commit the segment projection slice**
 
 ```bash
 git add HermesRelayIOS/Views/RecentTranscriptRail.swift HermesRelayIOSTests/HermesRelayIOSTests.swift
@@ -306,7 +306,7 @@ git commit -m "feat: render segment-aware speech timing"
 - Consumes: normalized `HermesEvent.speechTiming` events delivered with the active response generation.
 - Produces: sorted active-turn `speechTimings` with same-ID revisions replacing prior records and interruption/new-turn resets preserving stale-turn isolation.
 
-- [ ] **Step 1: Write failing coordinator tests**
+- [x] **Step 1: Write failing coordinator tests**
 
 Add assertions that out-of-order segments are exposed in audio-offset order,
 same-ID revisions replace rather than append, and interruption clears the old
@@ -388,7 +388,7 @@ await coordinator.interruptAndBeginCapture()
 XCTAssertTrue(coordinator.speechTimings.isEmpty)
 ```
 
-- [ ] **Step 2: Run the coordinator tests and verify the expected failure**
+- [x] **Step 2: Run the coordinator tests and verify the expected failure**
 
 Run:
 
@@ -400,19 +400,19 @@ Expected: the ordering/revision assertion fails because the current array
 keeps arrival order; the interruption assertion remains a regression guard for
 the existing generation reset.
 
-- [ ] **Step 3: Implement keyed replacement and deterministic ordering**
+- [x] **Step 3: Implement keyed replacement and deterministic ordering**
 
 In the `.speechTiming` handler, replace a matching `segmentID`, otherwise
 append, then sort by `audioOffset` and `segmentID` as a deterministic tie
 breaker. Keep the existing generation guard and reset calls at voice-turn,
 typed-turn, interruption, and playback-stop boundaries.
 
-- [ ] **Step 4: Run the coordinator tests and verify they pass**
+- [x] **Step 4: Run the coordinator tests and verify they pass**
 
 Run the same `xcodebuild test` command. Expected: all coordinator tests pass,
 including existing playback, interruption, and text-turn behavior.
 
-- [ ] **Step 5: Commit the coordinator slice**
+- [x] **Step 5: Commit the coordinator slice**
 
 ```bash
 git add HermesRelayIOS/ViewModels/VoiceSessionCoordinator.swift HermesRelayIOSTests/VoiceSessionCoordinatorTests.swift
@@ -429,23 +429,29 @@ git commit -m "fix: scope speech timing to active response"
 - Consumes: the completed model, normalizer, renderer, and coordinator slices.
 - Produces: passing focused and full validation evidence, a clean reviewable diff, and IOS-22/IOS-24 status ready for joint sign-off.
 
-- [ ] **Step 1: Run the focused XCTest target**
+- [x] **Step 1: Run the focused XCTest target**
 
 ```bash
 xcodebuild test -project HermesRelayIOS.xcodeproj -scheme HermesRelayIOS -destination 'platform=iOS Simulator,id=032066B0-9B2C-4EC7-96A0-BCD9F46D47C2' -only-testing:HermesRelayIOSTests/HermesEventNormalizerTests -only-testing:HermesRelayIOSTests/HermesRelayIOSTests -only-testing:HermesRelayIOSTests/VoiceSessionCoordinatorTests
 ```
 
-- [ ] **Step 2: Build and test the iOS simulator target**
+- [x] **Step 2: Build and test the iOS simulator target**
 
 Use the configured XcodeBuildMCP session for the worktree and run the complete
 `HermesRelayIOS` scheme test suite.
 
-- [ ] **Step 3: Build the macOS target**
+- [x] **Step 3: Build the macOS target**
 
 Run the repository-supported `xcodebuild` macOS build and record whether the
 shared model and view files compile for both intended platforms.
 
 - [ ] **Step 4: Run the manual smoke scenario**
+
+> Smoke attempt: the simulator connected to the local relay and submitted a
+> typed turn, but the relay did not emit a completion event during the wait
+> window. The app remained in `Buffering`; the captured app log contained
+> only known CoreSimulator accessibility/surface warnings. This remains an
+> environment-level limitation, not a passing smoke result.
 
 With alignment still disabled, send a typed turn through the local relay and
 confirm: handshake succeeds, the response contains more than one audio
