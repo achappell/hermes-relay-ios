@@ -313,56 +313,58 @@ struct RecentTranscriptRail: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
             if let liveEntry {
-                RecentTranscriptEntryView(entry: liveEntry)
+                RecentTranscriptEntryView(
+                    entry: liveEntry,
+                    lineLimit: 2,
+                    truncationMode: .head
+                )
                     .padding(.horizontal, 2)
                     .accessibilityAddTraits(.updatesFrequently)
             }
 
-            ScrollViewReader { proxy in
-                ScrollView(.vertical, showsIndicators: false) {
-                    LazyVStack(alignment: .leading, spacing: 9) {
-                        ForEach(historyEntries) { entry in
-                            RecentTranscriptEntryView(entry: entry)
-                                .id(entry.id)
-                        }
+            if liveEntry == nil {
+                ScrollViewReader { proxy in
+                    ScrollView(.vertical, showsIndicators: false) {
+                        LazyVStack(alignment: .leading, spacing: 9) {
+                            ForEach(historyEntries) { entry in
+                                RecentTranscriptEntryView(entry: entry)
+                                    .id(entry.id)
+                            }
 
-                        Color.clear
-                            .frame(height: 1)
-                            .id(Self.bottomAnchorID)
+                            Color.clear
+                                .frame(height: 1)
+                                .id(Self.bottomAnchorID)
+                        }
+                        .padding(.vertical, 4)
                     }
-                    .padding(.vertical, 4)
+                    .frame(maxHeight: 152)
+                    .contentShape(Rectangle())
+                    .simultaneousGesture(
+                        DragGesture(minimumDistance: 3)
+                            .onChanged { _ in
+                                followState.pauseFollowing()
+                            }
+                    )
+                    .onTapGesture {
+                        followState.pauseFollowing()
+                    }
+                    .onAppear {
+                        scrollToLatest(using: proxy, animated: false)
+                    }
+                    .onChange(of: displayedEntries) { _, _ in
+                        guard followState.isFollowingLatest else { return }
+                        scrollToLatest(using: proxy, animated: !reduceMotion)
+                    }
+                    .onChange(of: followState.isFollowingLatest) { _, isFollowing in
+                        guard isFollowing else { return }
+                        scrollToLatest(using: proxy, animated: !reduceMotion)
+                    }
+                    .accessibilityLabel(
+                        followState.isFollowingLatest
+                            ? "Recent transcript, following newest text"
+                            : "Recent transcript, reading paused"
+                    )
                 }
-                .frame(maxHeight: 152)
-                .contentShape(Rectangle())
-                .simultaneousGesture(
-                    DragGesture(minimumDistance: 3)
-                        .onChanged { _ in
-                            followState.pauseFollowing()
-                        }
-                )
-                .onTapGesture {
-                    followState.pauseFollowing()
-                }
-                .onAppear {
-                    scrollToLatest(using: proxy, animated: false)
-                }
-                .onChange(of: displayedEntries) { _, _ in
-                    guard followState.isFollowingLatest else { return }
-                    scrollToLatest(using: proxy, animated: !reduceMotion)
-                }
-                .onChange(of: followState.isFollowingLatest) { _, isFollowing in
-                    guard isFollowing else { return }
-                    scrollToLatest(using: proxy, animated: !reduceMotion)
-                }
-                .accessibilityLabel(
-                    followState.isFollowingLatest
-                        ? "Recent transcript, following newest text"
-                        : "Recent transcript, reading paused"
-                )
-            }
-
-            .task(id: revealTarget) {
-                await revealText(for: revealTarget)
             }
 
             HStack(spacing: 12) {
@@ -384,6 +386,10 @@ struct RecentTranscriptRail: View {
                     }
                     .buttonStyle(.borderless)
                 }
+            }
+
+            .task(id: revealTarget) {
+                await revealText(for: revealTarget)
             }
         }
         .frame(maxWidth: 680)
@@ -435,6 +441,18 @@ struct RecentTranscriptRail: View {
 
 private struct RecentTranscriptEntryView: View {
     let entry: RecentTranscriptEntry
+    let lineLimit: Int?
+    let truncationMode: Text.TruncationMode
+
+    init(
+        entry: RecentTranscriptEntry,
+        lineLimit: Int? = nil,
+        truncationMode: Text.TruncationMode = .tail
+    ) {
+        self.entry = entry
+        self.lineLimit = lineLimit
+        self.truncationMode = truncationMode
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 4) {
@@ -455,6 +473,8 @@ private struct RecentTranscriptEntryView: View {
                 .font(.callout)
                 .foregroundStyle(.primary)
                 .lineSpacing(2)
+                .lineLimit(lineLimit)
+                .truncationMode(truncationMode)
                 .fixedSize(horizontal: false, vertical: true)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
