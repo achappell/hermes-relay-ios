@@ -268,6 +268,7 @@ struct RecentTranscriptRail: View {
     @State private var revealedTexts: [String: String] = [:]
 
     private static let bottomAnchorID = "recent-transcript-bottom"
+    private static let liveTranscriptViewportHeight: CGFloat = 192
     // Hermes does not include word timing metadata, so this keeps a one-shot
     // transcript readable at a conversational pace while audio is active.
     private static let revealStepNanoseconds: UInt64 = 320_000_000
@@ -313,12 +314,11 @@ struct RecentTranscriptRail: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
             if let liveEntry {
-                RecentTranscriptEntryView(
+                LiveTranscriptEntryView(
                     entry: liveEntry,
-                    lineLimit: 2,
-                    truncationMode: .head
+                    viewportHeight: Self.liveTranscriptViewportHeight,
+                    reduceMotion: reduceMotion
                 )
-                    .padding(.horizontal, 2)
                     .accessibilityAddTraits(.updatesFrequently)
             }
 
@@ -441,35 +441,62 @@ struct RecentTranscriptRail: View {
 
 private struct RecentTranscriptEntryView: View {
     let entry: RecentTranscriptEntry
-    let lineLimit: Int?
-    let truncationMode: Text.TruncationMode
-
-    init(
-        entry: RecentTranscriptEntry,
-        lineLimit: Int? = nil,
-        truncationMode: Text.TruncationMode = .tail
-    ) {
-        self.entry = entry
-        self.lineLimit = lineLimit
-        self.truncationMode = truncationMode
-    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 4) {
-            HStack(spacing: 6) {
-                Text(entry.role.railLabel.uppercased())
-                    .font(.caption2.weight(.bold))
-                    .tracking(1.0)
-                    .foregroundStyle(entry.role.railTint)
+            RecentTranscriptEntryHeader(entry: entry)
 
-                if entry.isLive {
-                    Text("LIVE")
-                        .font(.caption2.weight(.semibold))
-                        .foregroundStyle(.secondary)
+            Text(entry.text)
+                .font(.callout)
+                .foregroundStyle(.primary)
+                .lineSpacing(2)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel(
+            entry.isLive
+                ? "(entry.role.railLabel), live, (entry.text)"
+                : "(entry.role.railLabel), (entry.text)"
+        )
+    }
+}
+
+private struct LiveTranscriptEntryView: View {
+    let entry: RecentTranscriptEntry
+    let viewportHeight: CGFloat
+    let reduceMotion: Bool
+
+    private let bottomAnchorID = "live-transcript-bottom"
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            RecentTranscriptEntryHeader(entry: entry)
+
+            ScrollViewReader { proxy in
+                ScrollView(.vertical, showsIndicators: false) {
+                    VStack(alignment: .leading, spacing: 0) {
+                        Text(entry.text)
+                            .font(.title3)
+                            .foregroundStyle(.primary)
+                            .lineSpacing(3)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+
+                        Color.clear
+                            .frame(height: 1)
+                            .id(bottomAnchorID)
+                    }
+                    .padding(.vertical, 2)
+                }
+                .frame(height: viewportHeight)
+                .scrollEdgeEffectStyle(.soft, for: .top)
+                .onAppear {
+                    scrollToLatest(using: proxy, animated: false)
+                }
+                .onChange(of: entry.text) { _, _ in
+                    scrollToLatest(using: proxy, animated: !reduceMotion)
                 }
             }
-
-            transcriptText
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .accessibilityElement(children: .combine)
@@ -480,23 +507,32 @@ private struct RecentTranscriptEntryView: View {
         )
     }
 
-    @ViewBuilder
-    private var transcriptText: some View {
-        if let lineLimit {
-            Text(entry.text)
-                .font(.callout)
-                .foregroundStyle(.primary)
-                .lineSpacing(2)
-                .lineLimit(lineLimit, reservesSpace: true)
-                .truncationMode(truncationMode)
-                .fixedSize(horizontal: false, vertical: false)
+    private func scrollToLatest(using proxy: ScrollViewProxy, animated: Bool) {
+        if animated {
+            withAnimation(.easeOut(duration: 0.16)) {
+                proxy.scrollTo(bottomAnchorID, anchor: .bottom)
+            }
         } else {
-            Text(entry.text)
-                .font(.callout)
-                .foregroundStyle(.primary)
-                .lineSpacing(2)
-                .truncationMode(truncationMode)
-                .fixedSize(horizontal: false, vertical: true)
+            proxy.scrollTo(bottomAnchorID, anchor: .bottom)
+        }
+    }
+}
+
+private struct RecentTranscriptEntryHeader: View {
+    let entry: RecentTranscriptEntry
+
+    var body: some View {
+        HStack(spacing: 6) {
+            Text(entry.role.railLabel.uppercased())
+                .font(.caption2.weight(.bold))
+                .tracking(1.0)
+                .foregroundStyle(entry.role.railTint)
+
+            if entry.isLive {
+                Text("LIVE")
+                    .font(.caption2.weight(.semibold))
+                    .foregroundStyle(.secondary)
+            }
         }
     }
 }
