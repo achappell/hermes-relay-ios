@@ -469,13 +469,7 @@ private struct RecentTranscriptEntryView: View {
                 }
             }
 
-            Text(entry.text)
-                .font(.callout)
-                .foregroundStyle(.primary)
-                .lineSpacing(2)
-                .lineLimit(lineLimit)
-                .truncationMode(truncationMode)
-                .fixedSize(horizontal: false, vertical: true)
+            transcriptText
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .accessibilityElement(children: .combine)
@@ -484,6 +478,26 @@ private struct RecentTranscriptEntryView: View {
                 ? "(entry.role.railLabel), live, (entry.text)"
                 : "(entry.role.railLabel), (entry.text)"
         )
+    }
+
+    @ViewBuilder
+    private var transcriptText: some View {
+        if let lineLimit {
+            Text(entry.text)
+                .font(.callout)
+                .foregroundStyle(.primary)
+                .lineSpacing(2)
+                .lineLimit(lineLimit, reservesSpace: true)
+                .truncationMode(truncationMode)
+                .fixedSize(horizontal: false, vertical: false)
+        } else {
+            Text(entry.text)
+                .font(.callout)
+                .foregroundStyle(.primary)
+                .lineSpacing(2)
+                .truncationMode(truncationMode)
+                .fixedSize(horizontal: false, vertical: true)
+        }
     }
 }
 
