@@ -100,6 +100,7 @@ struct ContentView: View {
             isResponseActive: store.isSending,
             voiceCoordinator: voiceCoordinator,
             speechTimings: voiceCoordinator.speechTimings,
+            playbackDuration: voiceCoordinator.playbackDuration,
             playbackPosition: voiceCoordinator.playbackPosition,
             hasTranscript: !store.messages.isEmpty,
             canConfigure: configurationStore != nil,

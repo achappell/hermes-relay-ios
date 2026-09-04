@@ -63,8 +63,9 @@ store without a network connection.
 - `AudioOutput.playbackPosition()` reports the elapsed position of the active
   inbound audio stream when the platform can provide it. The voice coordinator
   samples that position while streamed PCM or decoded audio-file playback is
-  active, groups timing revisions by segment ID, and clears the timeline on a
-  new turn or interruption.
+  active, publishes the corresponding received-audio duration, groups timing
+  revisions by segment ID, and clears the timeline on a new turn or
+  interruption.
 - `AudioActivityStore` receives normalized microphone and inbound-playback
   levels, classifies microphone silence/background noise/speech, and emits a
   throttled newest-snapshot stream. It carries no prompt, transcript, or raw
@@ -79,11 +80,12 @@ store without a network connection.
   stable live anchor. The rail limits viewport height, not message content, so
   long Hermes responses remain scrollable and are never silently truncated.
 - `RecentTranscriptRail` uses accumulated `SpeechTiming` word boundaries and
-  playback position to reveal the active Hermes response. It validates the
-  timed prefix against the visible transcript, never regresses an already
-  revealed prefix, and falls back to the existing word-paced reveal when timing
-  is delayed, revised incompatibly, unavailable, or playback position cannot be
-  read.
+  playback position to reveal the active Hermes response. When the relay has
+  not supplied word timings, it uses playback position against the received
+  PCM/WAV duration as an overall-cadence fallback. It validates timed and
+  duration-based prefixes against the visible transcript, never regresses an
+  already revealed prefix, and falls back to the existing word-paced reveal
+  when audio timing is unavailable.
 
 ### Later local capabilities
 

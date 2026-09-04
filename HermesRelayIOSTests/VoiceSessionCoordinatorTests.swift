@@ -29,6 +29,7 @@ final class VoiceSessionCoordinatorTests: XCTestCase {
             isResponseActive: false,
             voiceCoordinator: coordinator,
             speechTimings: [],
+            playbackDuration: nil,
             playbackPosition: nil,
             hasTranscript: false,
             canConfigure: false,
@@ -465,7 +466,7 @@ final class VoiceSessionCoordinatorTests: XCTestCase {
             .textDelta("Hermes keeps speaking."),
             .speechTiming(timing),
             .audioStart(AudioFormat(sampleRate: 24_000, channels: 1, sampleWidth: 2)),
-            .audioChunk(Data([0, 1, 2, 3])),
+            .audioChunk(Data(repeating: 0, count: 48_000)),
             .audioEnd,
             .turnComplete(turnID: "turn-1"),
         ])
@@ -480,6 +481,7 @@ final class VoiceSessionCoordinatorTests: XCTestCase {
         for _ in 0..<3 { await Task.yield() }
 
         XCTAssertEqual(coordinator.speechTimings, [timing])
+        XCTAssertEqual(coordinator.playbackDuration ?? -1, 1.0, accuracy: 0.001)
         XCTAssertEqual(coordinator.playbackPosition ?? -1, 0.58, accuracy: 0.001)
 
         await output.allowFinish()
@@ -548,6 +550,11 @@ final class VoiceSessionCoordinatorTests: XCTestCase {
         XCTAssertEqual(client.sentTurns, ["/voice tts"])
         XCTAssertEqual(store.draft, "")
         XCTAssertEqual(coordinator.state, .idle)
+        XCTAssertEqual(
+            coordinator.playbackDuration ?? -1,
+            Double(4) / Double(format.sampleRate * format.channels * format.sampleWidth),
+            accuracy: 0.000_001
+        )
         let operations = await output.operations()
         XCTAssertEqual(operations, [.start(format), .append, .finish])
     }

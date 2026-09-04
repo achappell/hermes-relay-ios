@@ -265,6 +265,75 @@ final class HermesRelayIOSTests: XCTestCase {
         )
     }
 
+    func testAudioDurationRevealTracksPlaybackWhenWordTimingIsUnavailable() {
+        let response = "Hermes keeps the answer moving."
+
+        XCTAssertEqual(
+            AudioDurationReveal.visibleText(
+                target: response,
+                playbackPosition: 0.26,
+                audioDuration: 1.3
+            ),
+            "Hermes "
+        )
+        XCTAssertEqual(
+            AudioDurationReveal.visibleText(
+                target: response,
+                playbackPosition: 0.52,
+                audioDuration: 1.3
+            ),
+            "Hermes keeps "
+        )
+        XCTAssertEqual(
+            AudioDurationReveal.visibleText(
+                target: response,
+                playbackPosition: 1.3,
+                audioDuration: 1.3
+            ),
+            response
+        )
+    }
+
+    func testRecentTranscriptDisplayUsesAudioDurationWithoutSpeechTiming() {
+        let messageID = UUID()
+        let response = "Hermes keeps the answer moving."
+        let projection = RecentTranscriptProjection(
+            messages: [TranscriptMessage(id: messageID, role: .assistant, text: response)],
+            provisionalText: "",
+            isResponseActive: true
+        )
+
+        let displayedEntries = RecentTranscriptDisplay.entries(
+            projection: projection,
+            isResponseActive: true,
+            revealedTexts: [:],
+            playbackDuration: 1.3,
+            playbackPosition: 0.52
+        )
+
+        XCTAssertEqual(displayedEntries.last?.text, "Hermes keeps ")
+    }
+
+    func testRecentTranscriptDisplayDoesNotRegressWhenAudioBufferGrows() {
+        let messageID = UUID()
+        let response = "Hermes keeps the answer moving."
+        let projection = RecentTranscriptProjection(
+            messages: [TranscriptMessage(id: messageID, role: .assistant, text: response)],
+            provisionalText: "",
+            isResponseActive: true
+        )
+
+        let displayedEntries = RecentTranscriptDisplay.entries(
+            projection: projection,
+            isResponseActive: true,
+            revealedTexts: [messageID.uuidString: "Hermes keeps the "],
+            playbackDuration: 2.0,
+            playbackPosition: 0.4
+        )
+
+        XCTAssertEqual(displayedEntries.last?.text, "Hermes keeps the ")
+    }
+
     func testTimedTranscriptAccumulatesSegmentsAndDoesNotUseMismatchedTiming() {
         let response = "Hermes keeps the answer moving."
         let firstSegment = SpeechTiming(
