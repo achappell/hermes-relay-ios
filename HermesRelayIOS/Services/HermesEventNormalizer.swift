@@ -189,13 +189,85 @@ struct HermesEventNormalizer: Sendable {
         _ payload: [String: Any],
         turnID: String
     ) -> SpeechTiming? {
-        guard let rawWords = payload["words"] as? [[String: Any]], !rawWords.isEmpty else {
+        guard let segmentID = stringValue(for: "segment_id", in: payload),
+              !segmentID.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+              let text = stringValue(for: "text", in: payload)
+                ?? stringValue(for: "rendered", in: payload),
+              !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+              let audioOffsetMilliseconds = doubleValue(for: "audio_offset_ms", in: payload),
+              let durationMilliseconds = doubleValue(for: "duration_ms", in: payload),
+              audioOffsetMilliseconds.isFinite,
+              durationMilliseconds.isFinite,
+              audioOffsetMilliseconds >= 0,
+              durationMilliseconds > 0,
+              (audioOffsetMilliseconds + durationMilliseconds).isFinite else {
             return nil
         }
 
+        let audioOffset = audioOffsetMilliseconds / 1_000
+        let duration = durationMilliseconds / 1_000
+        let fallback = { (reason: SpeechTimingFallbackReason) in
+            SpeechTiming(
+                segmentID: segmentID,
+                text: text,
+                timingSource: .durationFallback,
+                audioOffset: audioOffset,
+                duration: duration,
+                fallbackReason: reason,
+                words: []
+            )
+        }
+
+        let source = stringValue(for: "timing_source", in: payload)
+            .flatMap { SpeechTimingSource(rawValue: $0.trimmingCharacters(in: .whitespacesAndNewlines)) }
+        guard let source else {
+            return fallback(.invalid)
+        }
+
+        guard source == .alignment else {
+            return SpeechTiming(
+                segmentID: segmentID,
+                text: text,
+                timingSource: .durationFallback,
+                audioOffset: audioOffset,
+                duration: duration,
+                fallbackReason: fallbackReason(in: payload),
+                words: []
+            )
+        }
+
+        guard let rawWords = payload["words"] as? [[String: Any]],
+              let words = validatedSpeechTimingWords(
+                  rawWords,
+                  audioOffsetMilliseconds: audioOffsetMilliseconds,
+                  durationMilliseconds: durationMilliseconds
+              ),
+              normalizedTokens(in: text) == words.map({ normalizedToken($0.text) }) else {
+            return fallback(.invalid)
+        }
+
+        return SpeechTiming(
+            segmentID: segmentID,
+            text: text,
+            timingSource: .alignment,
+            audioOffset: audioOffset,
+            duration: duration,
+            fallbackReason: nil,
+            words: words
+        )
+    }
+
+    private func validatedSpeechTimingWords(
+        _ rawWords: [[String: Any]],
+        audioOffsetMilliseconds: Double,
+        durationMilliseconds: Double
+    ) -> [SpeechTimingWord]? {
+        guard !rawWords.isEmpty else { return nil }
+
+        let segmentEndMilliseconds = audioOffsetMilliseconds + durationMilliseconds
+        var previousStartMilliseconds = audioOffsetMilliseconds
+        var previousEndMilliseconds = audioOffsetMilliseconds
         var words: [SpeechTimingWord] = []
-        var previousStartTime = 0.0
-        var previousEndTime = 0.0
 
         for (index, rawWord) in rawWords.enumerated() {
             guard let text = stringValue(for: "text", in: rawWord),
@@ -204,42 +276,43 @@ struct HermesEventNormalizer: Sendable {
                   let endMilliseconds = doubleValue(for: "end_ms", in: rawWord),
                   startMilliseconds.isFinite,
                   endMilliseconds.isFinite,
-                  startMilliseconds >= 0,
-                  endMilliseconds > startMilliseconds else {
-                return nil
-            }
-
-            let startTime = startMilliseconds / 1_000
-            let endTime = endMilliseconds / 1_000
-            guard index == 0
-                    ? startTime >= 0
-                    : startTime >= previousStartTime && startTime >= previousEndTime else {
+                  startMilliseconds >= audioOffsetMilliseconds,
+                  endMilliseconds > startMilliseconds,
+                  endMilliseconds <= segmentEndMilliseconds,
+                  index == 0
+                    ? true
+                    : startMilliseconds >= previousStartMilliseconds
+                        && startMilliseconds >= previousEndMilliseconds else {
                 return nil
             }
 
             words.append(
                 SpeechTimingWord(
                     text: text,
-                    startTime: startTime,
-                    endTime: endTime
+                    startTime: startMilliseconds / 1_000,
+                    endTime: endMilliseconds / 1_000
                 )
             )
-            previousStartTime = startTime
-            previousEndTime = endTime
+            previousStartMilliseconds = startMilliseconds
+            previousEndMilliseconds = endMilliseconds
         }
 
-        let text = stringValue(for: "text", in: payload)
-            ?? stringValue(for: "rendered", in: payload)
-            ?? words.map(\.text).joined(separator: " ")
-        guard !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
-            return nil
-        }
+        return words
+    }
 
-        return SpeechTiming(
-            segmentID: stringValue(for: "segment_id", in: payload) ?? turnID,
-            text: text,
-            words: words
-        )
+    private func fallbackReason(in payload: [String: Any]) -> SpeechTimingFallbackReason {
+        guard let rawReason = stringValue(for: "fallback_reason", in: payload) else {
+            return .missing
+        }
+        return SpeechTimingFallbackReason(rawValue: rawReason) ?? .invalid
+    }
+
+    private func normalizedTokens(in text: String) -> [String] {
+        text.split(whereSeparator: \.isWhitespace).map { normalizedToken(String($0)) }
+    }
+
+    private func normalizedToken(_ token: String) -> String {
+        token.lowercased().filter { $0.isLetter || $0.isNumber }
     }
 
     private func stringValue(for key: String, in object: [String: Any]) -> String? {

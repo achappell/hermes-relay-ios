@@ -230,6 +230,10 @@ final class HermesRelayIOSTests: XCTestCase {
         let timing = SpeechTiming(
             segmentID: "segment-1",
             text: response,
+            timingSource: .alignment,
+            audioOffset: 0,
+            duration: 1.3,
+            fallbackReason: nil,
             words: [
                 SpeechTimingWord(text: "Hermes", startTime: 0, endTime: 0.25),
                 SpeechTimingWord(text: "keeps", startTime: 0.25, endTime: 0.48),
@@ -339,6 +343,10 @@ final class HermesRelayIOSTests: XCTestCase {
         let firstSegment = SpeechTiming(
             segmentID: "segment-1",
             text: "Hermes keeps",
+            timingSource: .alignment,
+            audioOffset: 0,
+            duration: 0.48,
+            fallbackReason: nil,
             words: [
                 SpeechTimingWord(text: "Hermes", startTime: 0, endTime: 0.25),
                 SpeechTimingWord(text: "keeps", startTime: 0.25, endTime: 0.48),
@@ -347,6 +355,10 @@ final class HermesRelayIOSTests: XCTestCase {
         let secondSegment = SpeechTiming(
             segmentID: "segment-2",
             text: "the answer moving.",
+            timingSource: .alignment,
+            audioOffset: 0.48,
+            duration: 0.82,
+            fallbackReason: nil,
             words: [
                 SpeechTimingWord(text: "the", startTime: 0.48, endTime: 0.58),
                 SpeechTimingWord(text: "answer", startTime: 0.58, endTime: 0.92),
@@ -369,6 +381,10 @@ final class HermesRelayIOSTests: XCTestCase {
                     SpeechTiming(
                         segmentID: "wrong",
                         text: "Something else",
+                        timingSource: .alignment,
+                        audioOffset: 0,
+                        duration: 0.3,
+                        fallbackReason: nil,
                         words: [SpeechTimingWord(text: "Something", startTime: 0, endTime: 0.3)]
                     ),
                 ],
@@ -389,6 +405,10 @@ final class HermesRelayIOSTests: XCTestCase {
         let timing = SpeechTiming(
             segmentID: "segment-1",
             text: response,
+            timingSource: .alignment,
+            audioOffset: 0,
+            duration: 1.3,
+            fallbackReason: nil,
             words: [
                 SpeechTimingWord(text: "Hermes", startTime: 0, endTime: 0.25),
                 SpeechTimingWord(text: "keeps", startTime: 0.25, endTime: 0.48),

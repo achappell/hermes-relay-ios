@@ -451,6 +451,10 @@ final class VoiceSessionCoordinatorTests: XCTestCase {
         let timing = SpeechTiming(
             segmentID: "segment-1",
             text: "Hermes keeps speaking.",
+            timingSource: .alignment,
+            audioOffset: 0,
+            duration: 0.9,
+            fallbackReason: nil,
             words: [
                 SpeechTimingWord(text: "Hermes", startTime: 0, endTime: 0.25),
                 SpeechTimingWord(text: "keeps", startTime: 0.25, endTime: 0.48),

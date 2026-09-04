@@ -95,11 +95,37 @@ struct SpeechTimingWord: Equatable, Sendable {
     let endTime: TimeInterval
 }
 
+enum SpeechTimingSource: String, Equatable, Sendable {
+    case alignment
+    case durationFallback = "duration_fallback"
+}
+
+enum SpeechTimingFallbackReason: String, Equatable, Sendable {
+    case disabled
+    case unsupported
+    case missing
+    case error
+    case timeout
+    case invalid
+}
+
 /// Timing for one audio segment. Segment revisions use the same segment ID.
 struct SpeechTiming: Equatable, Sendable {
     let segmentID: String
     let text: String
+    let timingSource: SpeechTimingSource
+    let audioOffset: TimeInterval
+    let duration: TimeInterval
+    let fallbackReason: SpeechTimingFallbackReason?
     let words: [SpeechTimingWord]
+
+    var endTime: TimeInterval {
+        audioOffset + duration
+    }
+
+    var usesWordTiming: Bool {
+        timingSource == .alignment && !words.isEmpty
+    }
 }
 
 enum TranscriptRole: String, Codable, Equatable, Sendable {
