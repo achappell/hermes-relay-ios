@@ -309,6 +309,15 @@ final class HermesRelayIOSTests: XCTestCase {
         XCTAssertTrue(gate.request())
     }
 
+    func testPlaybackRevealTickCoalescesSubFrameClockChanges() {
+        let first = PlaybackRevealTick(position: 0.101, duration: 1.001)
+        let sameFrame = PlaybackRevealTick(position: 0.109, duration: 1.009)
+        let later = PlaybackRevealTick(position: 0.135, duration: 1.035)
+
+        XCTAssertEqual(first, sameFrame)
+        XCTAssertNotEqual(first, later)
+    }
+
     @MainActor
     func testDisplayFrameUpdateSchedulerUsesLatestStateWhenRequestsCoalesce() async {
         let scheduler = DisplayFrameUpdateScheduler(frameNanoseconds: 1_000_000)

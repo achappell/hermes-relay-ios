@@ -466,6 +466,25 @@ private struct RecentTranscriptRevealTarget: Equatable, Sendable {
     let usesPlaybackClock: Bool
 }
 
+struct PlaybackRevealTick: Equatable, Sendable {
+    private static let ticksPerSecond = 30
+
+    let position: Int?
+    let duration: Int?
+
+    init(position: TimeInterval?, duration: TimeInterval?) {
+        self.position = Self.bucket(position)
+        self.duration = Self.bucket(duration)
+    }
+
+    private static func bucket(_ value: TimeInterval?) -> Int? {
+        guard let value, value.isFinite else { return nil }
+        let scaled = value * Double(ticksPerSecond)
+        guard scaled.isFinite else { return nil }
+        return max(0, Int(scaled.rounded(.down)))
+    }
+}
+
 struct DisplayFrameUpdateGate: Equatable, Sendable {
     private(set) var hasPendingUpdate = false
 
@@ -590,6 +609,10 @@ struct RecentTranscriptRail: View {
         )
     }
 
+    private var playbackRevealTick: PlaybackRevealTick {
+        PlaybackRevealTick(position: playbackPosition, duration: playbackDuration)
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
             if let liveEntry {
@@ -673,10 +696,7 @@ struct RecentTranscriptRail: View {
             .onAppear {
                 updateRevealFloor()
             }
-            .onChange(of: playbackPosition) { _, _ in
-                scheduleRevealFloorUpdate()
-            }
-            .onChange(of: playbackDuration) { _, _ in
+            .onChange(of: playbackRevealTick) { _, _ in
                 scheduleRevealFloorUpdate()
             }
             .onDisappear {
