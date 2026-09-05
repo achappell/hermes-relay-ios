@@ -204,6 +204,7 @@ struct AmbientHUDView: View {
     let transcriptMessages: [TranscriptMessage]
     let provisionalText: String
     let isResponseActive: Bool
+    let activeAssistantID: UUID?
     let voiceCoordinator: VoiceSessionCoordinator?
     let speechTimings: [SpeechTiming]
     let playbackDuration: TimeInterval?
@@ -342,7 +343,8 @@ struct AmbientHUDView: View {
         let projection = RecentTranscriptProjection(
             messages: transcriptMessages,
             provisionalText: liveProvisionalText,
-            isResponseActive: isResponseActive
+            isResponseActive: isResponseActive,
+            activeAssistantID: activeAssistantID
         )
 
         return VStack(spacing: 10) {
@@ -357,6 +359,7 @@ struct AmbientHUDView: View {
                     provisionalText: liveProvisionalText,
                     hasPersistedHistory: hasTranscript,
                     isResponseActive: isResponseActive,
+                    activeAssistantID: activeAssistantID,
                     speechTimings: speechTimings,
                     playbackDuration: playbackDuration,
                     playbackPosition: playbackPosition,
@@ -538,6 +541,7 @@ private extension ConnectionState {
         transcriptMessages: [TranscriptMessage(role: .assistant, text: "The ambient HUD is alive and the transcript stays readable while I continue speaking.")],
         provisionalText: "",
         isResponseActive: false,
+        activeAssistantID: nil,
         voiceCoordinator: nil,
         speechTimings: [],
         playbackDuration: nil,

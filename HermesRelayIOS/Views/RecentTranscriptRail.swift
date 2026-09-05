@@ -22,7 +22,8 @@ struct RecentTranscriptProjection: Equatable, Sendable {
     init(
         messages: [TranscriptMessage],
         provisionalText: String,
-        isResponseActive: Bool = false
+        isResponseActive: Bool,
+        activeAssistantID: UUID?
     ) {
         var entries = messages.compactMap { message -> RecentTranscriptEntry? in
             guard message.role == .user || message.role == .assistant else { return nil }
@@ -47,10 +48,13 @@ struct RecentTranscriptProjection: Equatable, Sendable {
             )
         }
 
-        if isResponseActive,
-           let latestAssistantID = entries.last(where: { $0.role == .assistant })?.id {
+        // The live entry is the message this turn is generating — never merely
+        // the newest assistant message. Between submitting a turn and its first
+        // text there is no live entry at all.
+        if isResponseActive, let activeAssistantID {
+            let liveID = activeAssistantID.uuidString
             entries = entries.map { entry in
-                guard entry.id == latestAssistantID else { return entry }
+                guard entry.id == liveID else { return entry }
                 return RecentTranscriptEntry(
                     id: entry.id,
                     role: entry.role,
@@ -386,19 +390,20 @@ enum RecentTranscriptDisplay {
     static func entries(
         projection: RecentTranscriptProjection,
         isResponseActive: Bool,
+        activeAssistantID: UUID?,
         revealedTexts: [String: String],
         speechTimings: [SpeechTiming] = [],
         playbackDuration: TimeInterval? = nil,
         playbackPosition: TimeInterval? = nil,
         isPlaybackDurationFinal: Bool = false
     ) -> [RecentTranscriptEntry] {
-        guard isResponseActive,
-              let latestAssistantID = projection.entries.last(where: { $0.role == .assistant })?.id else {
+        guard isResponseActive, let activeAssistantID else {
             return projection.entries
         }
+        let liveID = activeAssistantID.uuidString
 
         return projection.entries.map { entry in
-            guard entry.id == latestAssistantID else { return entry }
+            guard entry.id == liveID else { return entry }
             let pacedText: String? = revealedTexts[entry.id].flatMap { revealedText -> String? in
                 guard !revealedText.isEmpty else { return nil }
                 return entry.text.hasPrefix(revealedText) ? revealedText : nil
@@ -480,6 +485,7 @@ struct RecentTranscriptRail: View {
     let provisionalText: String
     let hasPersistedHistory: Bool
     let isResponseActive: Bool
+    let activeAssistantID: UUID?
     let speechTimings: [SpeechTiming]
     let playbackDuration: TimeInterval?
     let playbackPosition: TimeInterval?
@@ -500,7 +506,8 @@ struct RecentTranscriptRail: View {
         RecentTranscriptProjection(
             messages: messages,
             provisionalText: provisionalText,
-            isResponseActive: isResponseActive
+            isResponseActive: isResponseActive,
+            activeAssistantID: activeAssistantID
         )
     }
 
@@ -508,6 +515,7 @@ struct RecentTranscriptRail: View {
         RecentTranscriptDisplay.entries(
             projection: projection,
             isResponseActive: isResponseActive,
+            activeAssistantID: activeAssistantID,
             revealedTexts: revealedTexts,
             speechTimings: speechTimings,
             playbackDuration: playbackDuration,
@@ -526,7 +534,8 @@ struct RecentTranscriptRail: View {
 
     private var revealTarget: RecentTranscriptRevealTarget? {
         guard isResponseActive,
-              let entry = projection.entries.last(where: { $0.role == .assistant }) else {
+              let activeAssistantID,
+              let entry = projection.entries.last(where: { $0.id == activeAssistantID.uuidString }) else {
             return nil
         }
         return RecentTranscriptRevealTarget(
@@ -810,6 +819,7 @@ private extension TranscriptRole {
         provisionalText: "",
         hasPersistedHistory: true,
         isResponseActive: false,
+        activeAssistantID: nil,
         speechTimings: [],
         playbackDuration: nil,
         playbackPosition: nil,

@@ -98,6 +98,7 @@ struct ContentView: View {
             transcriptMessages: store.messages,
             provisionalText: voiceCoordinator.provisionalText,
             isResponseActive: store.isSending,
+            activeAssistantID: store.activeAssistantID,
             voiceCoordinator: voiceCoordinator,
             speechTimings: voiceCoordinator.speechTimings,
             playbackDuration: voiceCoordinator.playbackDuration,
