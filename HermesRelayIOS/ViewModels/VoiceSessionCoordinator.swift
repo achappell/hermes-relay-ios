@@ -16,6 +16,10 @@ final class VoiceSessionCoordinator {
     private(set) var speechTimings: [SpeechTiming] = []
     private(set) var playbackDuration: TimeInterval?
     private(set) var playbackPosition: TimeInterval?
+    // While audio is still streaming, `playbackDuration` only covers the bytes
+    // received so far. Pacing text against that partial value overshoots wildly,
+    // so the duration clock stays unusable until the stream is complete.
+    private(set) var isPlaybackDurationFinal = false
 
     private var finalText: String?
     private var captureTask: Task<Void, Never>?
@@ -330,6 +334,7 @@ final class VoiceSessionCoordinator {
             audioFormat = format
             streamedAudioBytes = 0
             playbackDuration = 0
+            isPlaybackDurationFinal = false
             startPlaybackPositionObservation(generation: generation)
             await diagnostics.record(.streamStarted(format: format))
             state = .buffering
@@ -360,6 +365,7 @@ final class VoiceSessionCoordinator {
             do {
                 try await output.finish()
                 audioStreamActive = false
+                isPlaybackDurationFinal = playbackDuration != nil
                 stopPlaybackPositionObservation()
                 state = .idle
             } catch {
@@ -381,6 +387,7 @@ final class VoiceSessionCoordinator {
                     byteCount: decoded.pcm.count,
                     format: decoded.format
                 )
+                isPlaybackDurationFinal = playbackDuration != nil
                 try await output.start(format: decoded.format)
                 let readiness = try await output.append(decoded.pcm)
                 if readiness == .ready {
@@ -473,6 +480,7 @@ final class VoiceSessionCoordinator {
         speechTimings.removeAll(keepingCapacity: false)
         audioFormat = nil
         playbackDuration = nil
+        isPlaybackDurationFinal = false
         stopPlaybackPositionObservation()
     }
 

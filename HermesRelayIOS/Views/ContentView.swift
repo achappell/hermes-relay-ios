@@ -102,6 +102,7 @@ struct ContentView: View {
             speechTimings: voiceCoordinator.speechTimings,
             playbackDuration: voiceCoordinator.playbackDuration,
             playbackPosition: voiceCoordinator.playbackPosition,
+            isPlaybackDurationFinal: voiceCoordinator.isPlaybackDurationFinal,
             hasTranscript: !store.messages.isEmpty,
             canConfigure: configurationStore != nil,
             onConfigure: {

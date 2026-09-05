@@ -135,8 +135,12 @@ enum SpeechTimingReveal {
         var visibleEnd: String.Index?
 
         for timing in deduplicatedTimings(timings) {
+            // A segment the mapper cannot place (spoken text the synthesiser
+            // rewrote, markdown the transcript still carries) must be skipped,
+            // not treated as the end of the response. Breaking here froze the
+            // reveal for every later segment no matter how much audio played.
             guard let mapping = map(timing, to: targetWords, from: targetCursor) else {
-                break
+                continue
             }
 
             guard playbackPosition >= timing.audioOffset else {
@@ -385,7 +389,8 @@ enum RecentTranscriptDisplay {
         revealedTexts: [String: String],
         speechTimings: [SpeechTiming] = [],
         playbackDuration: TimeInterval? = nil,
-        playbackPosition: TimeInterval? = nil
+        playbackPosition: TimeInterval? = nil,
+        isPlaybackDurationFinal: Bool = false
     ) -> [RecentTranscriptEntry] {
         guard isResponseActive,
               let latestAssistantID = projection.entries.last(where: { $0.role == .assistant })?.id else {
@@ -402,7 +407,8 @@ enum RecentTranscriptDisplay {
                 target: entry.text,
                 speechTimings: speechTimings,
                 playbackDuration: playbackDuration,
-                playbackPosition: playbackPosition
+                playbackPosition: playbackPosition,
+                isPlaybackDurationFinal: isPlaybackDurationFinal
             )
             let visibleText = longestValidPrefix(
                 in: entry.text,
@@ -425,7 +431,8 @@ enum RecentTranscriptDisplay {
         target: String,
         speechTimings: [SpeechTiming],
         playbackDuration: TimeInterval?,
-        playbackPosition: TimeInterval?
+        playbackPosition: TimeInterval?,
+        isPlaybackDurationFinal: Bool = false
     ) -> String? {
         guard let playbackPosition else { return nil }
 
@@ -440,7 +447,9 @@ enum RecentTranscriptDisplay {
             }
         }
 
-        guard let playbackDuration else { return nil }
+        // A still-growing duration makes progress both overshoot and retract,
+        // so the fallback clock only runs once the total length is known.
+        guard isPlaybackDurationFinal, let playbackDuration else { return nil }
         let durationText = AudioDurationReveal.visibleText(
             target: target,
             playbackPosition: playbackPosition,
@@ -466,88 +475,6 @@ private struct RecentTranscriptRevealTarget: Equatable, Sendable {
     let usesPlaybackClock: Bool
 }
 
-struct PlaybackRevealTick: Equatable, Sendable {
-    private static let ticksPerSecond = 30
-
-    let position: Int?
-    let duration: Int?
-
-    init(position: TimeInterval?, duration: TimeInterval?) {
-        self.position = Self.bucket(position)
-        self.duration = Self.bucket(duration)
-    }
-
-    private static func bucket(_ value: TimeInterval?) -> Int? {
-        guard let value, value.isFinite else { return nil }
-        let scaled = value * Double(ticksPerSecond)
-        guard scaled.isFinite else { return nil }
-        return max(0, Int(scaled.rounded(.down)))
-    }
-}
-
-struct DisplayFrameUpdateGate: Equatable, Sendable {
-    private(set) var hasPendingUpdate = false
-
-    mutating func request() -> Bool {
-        guard !hasPendingUpdate else { return false }
-        hasPendingUpdate = true
-        return true
-    }
-
-    mutating func complete() {
-        hasPendingUpdate = false
-    }
-}
-
-@MainActor
-final class DisplayFrameUpdateScheduler {
-    private let frameNanoseconds: UInt64
-    private var gate = DisplayFrameUpdateGate()
-    private var pendingTask: Task<Void, Never>?
-    private var pendingAction: (@MainActor () -> Void)?
-
-    init(frameNanoseconds: UInt64 = 16_000_000) {
-        self.frameNanoseconds = frameNanoseconds
-    }
-
-    func schedule(_ action: @escaping @MainActor () -> Void) {
-        pendingAction = action
-        guard gate.request() else { return }
-
-        let frameNanoseconds = self.frameNanoseconds
-        pendingTask = Task { @MainActor [weak self] in
-            do {
-                try await Task.sleep(nanoseconds: frameNanoseconds)
-            } catch {
-                self?.pendingTask = nil
-                self?.pendingAction = nil
-                self?.gate.complete()
-                return
-            }
-
-            guard let self else { return }
-            guard !Task.isCancelled else {
-                pendingTask = nil
-                pendingAction = nil
-                gate.complete()
-                return
-            }
-            let action = pendingAction
-            pendingTask = nil
-            pendingAction = nil
-            gate.complete()
-            action?()
-        }
-    }
-
-    func cancel() {
-        pendingTask?.cancel()
-        pendingTask = nil
-        pendingAction = nil
-        gate.complete()
-    }
-}
-
 struct RecentTranscriptRail: View {
     let messages: [TranscriptMessage]
     let provisionalText: String
@@ -556,12 +483,12 @@ struct RecentTranscriptRail: View {
     let speechTimings: [SpeechTiming]
     let playbackDuration: TimeInterval?
     let playbackPosition: TimeInterval?
+    let isPlaybackDurationFinal: Bool
     let onShowHistory: () -> Void
 
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var followState = RecentTranscriptFollowState()
     @State private var revealedTexts: [String: String] = [:]
-    @State private var revealFloorScheduler = DisplayFrameUpdateScheduler()
 
     private static let bottomAnchorID = "recent-transcript-bottom"
     private static let liveTranscriptViewportHeight: CGFloat = 192
@@ -584,7 +511,8 @@ struct RecentTranscriptRail: View {
             revealedTexts: revealedTexts,
             speechTimings: speechTimings,
             playbackDuration: playbackDuration,
-            playbackPosition: playbackPosition
+            playbackPosition: playbackPosition,
+            isPlaybackDurationFinal: isPlaybackDurationFinal
         )
     }
 
@@ -605,12 +533,9 @@ struct RecentTranscriptRail: View {
             id: entry.id,
             text: entry.text,
             usesPlaybackClock: playbackPosition != nil
-                && (!speechTimings.isEmpty || playbackDuration != nil)
+                && (!speechTimings.isEmpty
+                    || (isPlaybackDurationFinal && playbackDuration != nil))
         )
-    }
-
-    private var playbackRevealTick: PlaybackRevealTick {
-        PlaybackRevealTick(position: playbackPosition, duration: playbackDuration)
     }
 
     var body: some View {
@@ -689,18 +614,8 @@ struct RecentTranscriptRail: View {
                     .buttonStyle(.borderless)
                 }
             }
-
             .task(id: revealTarget) {
                 await revealText(for: revealTarget)
-            }
-            .onAppear {
-                updateRevealFloor()
-            }
-            .onChange(of: playbackRevealTick) { _, _ in
-                scheduleRevealFloorUpdate()
-            }
-            .onDisappear {
-                revealFloorScheduler.cancel()
             }
         }
         .frame(maxWidth: 680)
@@ -721,6 +636,19 @@ struct RecentTranscriptRail: View {
         }
 
         while !Task.isCancelled, visibleText != target.text {
+            // Every text delta changes the reveal target and restarts this task.
+            // Emitting on entry therefore paced the reveal by the delta rate
+            // rather than the clock, dumping the opening of the response. Only
+            // the very first fragment is allowed to appear without waiting.
+            if !visibleText.isEmpty {
+                do {
+                    try await Task.sleep(nanoseconds: Self.revealStepNanoseconds)
+                } catch {
+                    return
+                }
+                guard !Task.isCancelled else { return }
+            }
+
             let nextText = RecentTranscriptReveal.nextText(
                 current: visibleText,
                 target: target.text,
@@ -729,13 +657,6 @@ struct RecentTranscriptRail: View {
             guard nextText != visibleText else { return }
             visibleText = nextText
             revealedTexts[target.id] = visibleText
-
-            guard visibleText != target.text else { return }
-            do {
-                try await Task.sleep(nanoseconds: Self.revealStepNanoseconds)
-            } catch {
-                return
-            }
         }
     }
 
@@ -749,34 +670,6 @@ struct RecentTranscriptRail: View {
         }
     }
 
-    @MainActor
-    private func updateRevealFloor() {
-        guard isResponseActive,
-              let position = playbackPosition,
-              let entry = projection.entries.last(where: { $0.role == .assistant }) else {
-            return
-        }
-
-        let current = revealedTexts[entry.id] ?? ""
-        let candidate = RecentTranscriptDisplay.playbackText(
-            target: entry.text,
-            speechTimings: speechTimings,
-            playbackDuration: playbackDuration,
-            playbackPosition: position
-        )
-        guard let visibleText = RecentTranscriptDisplay.longestValidPrefix(
-            in: entry.text,
-            candidates: [current, candidate]
-        ), visibleText.count > current.count else { return }
-        revealedTexts[entry.id] = visibleText
-    }
-
-    @MainActor
-    private func scheduleRevealFloorUpdate() {
-        revealFloorScheduler.schedule { [self] in
-            updateRevealFloor()
-        }
-    }
 }
 
 private struct RecentTranscriptEntryView: View {
@@ -920,6 +813,7 @@ private extension TranscriptRole {
         speechTimings: [],
         playbackDuration: nil,
         playbackPosition: nil,
+        isPlaybackDurationFinal: false,
         onShowHistory: {}
     )
     .padding()

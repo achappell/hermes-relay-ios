@@ -298,47 +298,6 @@ final class HermesRelayIOSTests: XCTestCase {
         )
     }
 
-    func testDisplayFrameUpdateGateOnlySchedulesOneUpdateUntilItCompletes() {
-        var gate = DisplayFrameUpdateGate()
-
-        XCTAssertTrue(gate.request())
-        XCTAssertFalse(gate.request())
-
-        gate.complete()
-
-        XCTAssertTrue(gate.request())
-    }
-
-    func testPlaybackRevealTickCoalescesSubFrameClockChanges() {
-        let first = PlaybackRevealTick(position: 0.101, duration: 1.001)
-        let sameFrame = PlaybackRevealTick(position: 0.109, duration: 1.009)
-        let later = PlaybackRevealTick(position: 0.135, duration: 1.035)
-
-        XCTAssertEqual(first, sameFrame)
-        XCTAssertNotEqual(first, later)
-    }
-
-    @MainActor
-    func testDisplayFrameUpdateSchedulerUsesLatestStateWhenRequestsCoalesce() async {
-        let scheduler = DisplayFrameUpdateScheduler(frameNanoseconds: 1_000_000)
-        let callback = expectation(description: "coalesced update runs")
-        var callbackID = 0
-
-        scheduler.schedule {
-            callbackID = 1
-            callback.fulfill()
-        }
-        scheduler.schedule {
-            callbackID = 2
-            callback.fulfill()
-        }
-
-        await fulfillment(of: [callback], timeout: 1)
-
-        XCTAssertEqual(callbackID, 2)
-        scheduler.cancel()
-    }
-
     func testRecentTranscriptDisplayUsesAudioDurationWithoutSpeechTiming() {
         let messageID = UUID()
         let response = "Hermes keeps the answer moving."
@@ -353,7 +312,8 @@ final class HermesRelayIOSTests: XCTestCase {
             isResponseActive: true,
             revealedTexts: [:],
             playbackDuration: 1.3,
-            playbackPosition: 0.52
+            playbackPosition: 0.52,
+            isPlaybackDurationFinal: true
         )
 
         XCTAssertEqual(displayedEntries.last?.text, "Hermes keeps ")
@@ -373,10 +333,103 @@ final class HermesRelayIOSTests: XCTestCase {
             isResponseActive: true,
             revealedTexts: [messageID.uuidString: "Hermes keeps the "],
             playbackDuration: 2.0,
-            playbackPosition: 0.4
+            playbackPosition: 0.4,
+            isPlaybackDurationFinal: true
         )
 
         XCTAssertEqual(displayedEntries.last?.text, "Hermes keeps the ")
+    }
+
+    // One segment the mapper cannot place must not abandon every segment after
+    // it; the reveal has to keep following the audio it can still explain.
+    func testSpeechTimingRevealSkipsUnmappableSegment() {
+        let target = "Alpha beta gamma delta epsilon"
+        let segments = [
+            SpeechTiming(
+                segmentID: "s1",
+                text: "Alpha beta",
+                timingSource: .durationFallback,
+                audioOffset: 0,
+                duration: 1,
+                fallbackReason: .missing,
+                words: []
+            ),
+            SpeechTiming(
+                segmentID: "s2",
+                text: "zeta eta",
+                timingSource: .durationFallback,
+                audioOffset: 1,
+                duration: 1,
+                fallbackReason: .missing,
+                words: []
+            ),
+            SpeechTiming(
+                segmentID: "s3",
+                text: "delta epsilon",
+                timingSource: .durationFallback,
+                audioOffset: 2,
+                duration: 1,
+                fallbackReason: .missing,
+                words: []
+            )
+        ]
+
+        XCTAssertEqual(
+            SpeechTimingReveal.visibleText(
+                target: target,
+                timings: segments,
+                playbackPosition: 3.0
+            ),
+            target
+        )
+    }
+
+    // A streaming duration only covers the bytes received so far, so pacing
+    // against it makes an early playhead look almost complete and dumps the
+    // whole response in one frame.
+    func testRecentTranscriptDisplayIgnoresStillGrowingAudioDuration() {
+        let messageID = UUID()
+        let response = "Hermes keeps the answer moving."
+        let projection = RecentTranscriptProjection(
+            messages: [TranscriptMessage(id: messageID, role: .assistant, text: response)],
+            provisionalText: "",
+            isResponseActive: true
+        )
+
+        let displayedEntries = RecentTranscriptDisplay.entries(
+            projection: projection,
+            isResponseActive: true,
+            revealedTexts: [:],
+            playbackDuration: 0.2,
+            playbackPosition: 0.18,
+            isPlaybackDurationFinal: false
+        )
+
+        XCTAssertEqual(displayedEntries.last?.text, "Hermes ")
+    }
+
+    func testPlaybackTextPrefersSpeechTimingWhileDurationIsStillGrowing() {
+        let response = "Hermes keeps the answer moving."
+        let timing = SpeechTiming(
+            segmentID: "segment-1",
+            text: "Hermes keeps",
+            timingSource: .durationFallback,
+            audioOffset: 0,
+            duration: 1.0,
+            fallbackReason: .missing,
+            words: []
+        )
+
+        XCTAssertEqual(
+            RecentTranscriptDisplay.playbackText(
+                target: response,
+                speechTimings: [timing],
+                playbackDuration: 0.2,
+                playbackPosition: 0.6,
+                isPlaybackDurationFinal: false
+            ),
+            "Hermes keeps "
+        )
     }
 
     func testTimedTranscriptAccumulatesSegmentsAndDoesNotUseMismatchedTiming() {

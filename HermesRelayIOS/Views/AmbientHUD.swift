@@ -208,6 +208,7 @@ struct AmbientHUDView: View {
     let speechTimings: [SpeechTiming]
     let playbackDuration: TimeInterval?
     let playbackPosition: TimeInterval?
+    let isPlaybackDurationFinal: Bool
     let hasTranscript: Bool
     let canConfigure: Bool
     let onConfigure: () -> Void
@@ -320,6 +321,7 @@ struct AmbientHUDView: View {
                     speechTimings: speechTimings,
                     playbackDuration: playbackDuration,
                     playbackPosition: playbackPosition,
+                    isPlaybackDurationFinal: isPlaybackDurationFinal,
                     onShowHistory: onShowHistory
                 )
             }
@@ -499,6 +501,7 @@ private extension ConnectionState {
         speechTimings: [],
         playbackDuration: nil,
         playbackPosition: nil,
+        isPlaybackDurationFinal: false,
         hasTranscript: true,
         canConfigure: true,
         onConfigure: {},

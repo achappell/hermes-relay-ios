@@ -31,6 +31,7 @@ final class VoiceSessionCoordinatorTests: XCTestCase {
             speechTimings: [],
             playbackDuration: nil,
             playbackPosition: nil,
+            isPlaybackDurationFinal: false,
             hasTranscript: false,
             canConfigure: false,
             onConfigure: {},
