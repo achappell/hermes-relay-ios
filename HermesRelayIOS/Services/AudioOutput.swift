@@ -178,6 +178,10 @@ struct OSLogAudioPlaybackDiagnostics: AudioPlaybackDiagnostics, Sendable {
 }
 
 enum AudioPlaybackDiagnosticsFactory {
+    /// Debug builds always log, so a build launched from the phone's home
+    /// screen diagnoses as readily as one launched from Xcode. The launch
+    /// argument is kept as an explicit opt-in for any non-debug use. Release
+    /// builds never log, which is what keeps this content-safe.
     static func make(
         arguments: [String] = ProcessInfo.processInfo.arguments
     ) -> any AudioPlaybackDiagnostics {
