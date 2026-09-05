@@ -445,13 +445,19 @@ Use the configured XcodeBuildMCP session for the worktree and run the complete
 Run the repository-supported `xcodebuild` macOS build and record whether the
 shared model and view files compile for both intended platforms.
 
-- [ ] **Step 4: Run the manual smoke scenario**
+- [x] **Step 4: Run the manual smoke scenario**
 
-> Smoke attempt: the simulator connected to the local relay and submitted a
+> Earlier attempt: the simulator connected to the local relay and submitted a
 > typed turn, but the relay did not emit a completion event during the wait
 > window. The app remained in `Buffering`; the captured app log contained
-> only known CoreSimulator accessibility/surface warnings. This remains an
-> environment-level limitation, not a passing smoke result.
+> only known CoreSimulator accessibility/surface warnings. That was an
+> environment-level limitation, not a smoke result.
+>
+> Smoke result 2026-09-04: run on the configured device after commit 2668113.
+> A long multi-segment response paces with the audio across the viewport, with
+> no opening dump, no repeated first segment, and no mid-response freeze.
+> Still not individually confirmed: prefix retention specifically while audio
+> buffers grow, and interruption/reconnect leaving no stale timing visible.
 
 With alignment still disabled, send a typed turn through the local relay and
 confirm: handshake succeeds, the response contains more than one audio
@@ -459,10 +465,21 @@ segment, fallback timing does not repeat the first segment, the caption keeps
 its prefix while audio buffers grow, and interruption/reconnect leaves no old
 timing visible. Do not record audio or log content.
 
-- [ ] **Step 5: Review the diff and update the project item**
+- [x] **Step 5: Review the diff and update the project item**
 
 Check `git diff --check`, credentials/audio/generated files, and the full file
 list. Add the test counts, smoke result, commit SHAs, and any known simulator
 speech-recognition limitation to IOS-24. Keep IOS-22 in `Verify` until this
 combined validation is complete; move both to `Done` only after the evidence
 supports joint sign-off.
+
+## Outcome — 2026-09-04
+
+Three reveal defects were found after the IOS-22 merge and fixed in commit
+2668113 (merged as b6795ab, PR #19): an unmappable segment abandoning every
+later segment, duration pacing against a still-growing buffer, and the
+character reveal running at the text-delta rate. Full suite 135 tests, 0
+failures.
+
+IOS-20, IOS-22 and IOS-24 are `Done`. IOS-23 returned to `Todo` — no work was
+started on it. The mapper's remaining strictness is tracked as IOS-28.
