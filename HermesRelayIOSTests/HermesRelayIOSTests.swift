@@ -298,6 +298,17 @@ final class HermesRelayIOSTests: XCTestCase {
         )
     }
 
+    func testDisplayFrameUpdateGateOnlySchedulesOneUpdateUntilItCompletes() {
+        var gate = DisplayFrameUpdateGate()
+
+        XCTAssertTrue(gate.request())
+        XCTAssertFalse(gate.request())
+
+        gate.complete()
+
+        XCTAssertTrue(gate.request())
+    }
+
     func testRecentTranscriptDisplayUsesAudioDurationWithoutSpeechTiming() {
         let messageID = UUID()
         let response = "Hermes keeps the answer moving."

@@ -466,6 +466,57 @@ private struct RecentTranscriptRevealTarget: Equatable, Sendable {
     let usesPlaybackClock: Bool
 }
 
+struct DisplayFrameUpdateGate: Equatable, Sendable {
+    private(set) var hasPendingUpdate = false
+
+    mutating func request() -> Bool {
+        guard !hasPendingUpdate else { return false }
+        hasPendingUpdate = true
+        return true
+    }
+
+    mutating func complete() {
+        hasPendingUpdate = false
+    }
+}
+
+@MainActor
+final class DisplayFrameUpdateScheduler {
+    private let frameNanoseconds: UInt64
+    private var gate = DisplayFrameUpdateGate()
+    private var pendingTask: Task<Void, Never>?
+
+    init(frameNanoseconds: UInt64 = 16_000_000) {
+        self.frameNanoseconds = frameNanoseconds
+    }
+
+    func schedule(_ action: @escaping @MainActor () -> Void) {
+        guard gate.request() else { return }
+
+        let frameNanoseconds = self.frameNanoseconds
+        pendingTask = Task { @MainActor [weak self] in
+            do {
+                try await Task.sleep(nanoseconds: frameNanoseconds)
+            } catch {
+                self?.pendingTask = nil
+                self?.gate.complete()
+                return
+            }
+
+            guard let self, !Task.isCancelled else { return }
+            pendingTask = nil
+            gate.complete()
+            action()
+        }
+    }
+
+    func cancel() {
+        pendingTask?.cancel()
+        pendingTask = nil
+        gate.complete()
+    }
+}
+
 struct RecentTranscriptRail: View {
     let messages: [TranscriptMessage]
     let provisionalText: String
@@ -479,6 +530,7 @@ struct RecentTranscriptRail: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var followState = RecentTranscriptFollowState()
     @State private var revealedTexts: [String: String] = [:]
+    @State private var revealFloorScheduler = DisplayFrameUpdateScheduler()
 
     private static let bottomAnchorID = "recent-transcript-bottom"
     private static let liveTranscriptViewportHeight: CGFloat = 192
@@ -610,10 +662,13 @@ struct RecentTranscriptRail: View {
                 updateRevealFloor()
             }
             .onChange(of: playbackPosition) { _, _ in
-                updateRevealFloor()
+                scheduleRevealFloorUpdate()
             }
             .onChange(of: playbackDuration) { _, _ in
-                updateRevealFloor()
+                scheduleRevealFloorUpdate()
+            }
+            .onDisappear {
+                revealFloorScheduler.cancel()
             }
         }
         .frame(maxWidth: 680)
@@ -682,6 +737,13 @@ struct RecentTranscriptRail: View {
             candidates: [current, candidate]
         ), visibleText.count > current.count else { return }
         revealedTexts[entry.id] = visibleText
+    }
+
+    @MainActor
+    private func scheduleRevealFloorUpdate() {
+        revealFloorScheduler.schedule { [self] in
+            updateRevealFloor()
+        }
     }
 }
 
