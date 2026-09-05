@@ -260,14 +260,6 @@ final class ConversationStore {
         reconnectTask != nil
     }
 
-    /// Resend a turn that was in flight when the transport died. Nothing else
-    /// may replay it: recovery restores the text, the user decides to send it.
-    @discardableResult
-    func resendUnconfirmedTurn() async -> Bool {
-        guard let text = unconfirmedTurnText else { return false }
-        return await sendTurn(text: text)
-    }
-
     /// Called when the transport reports a loss the user did not ask for.
     func handleUnexpectedTransportLoss() {
         sessionMetadata = nil

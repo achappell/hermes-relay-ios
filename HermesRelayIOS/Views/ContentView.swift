@@ -107,7 +107,7 @@ struct ContentView: View {
             canConfigure: configurationStore != nil,
             unconfirmedTurnText: store.unconfirmedTurnText,
             onResendUnconfirmedTurn: {
-                Task { await store.resendUnconfirmedTurn() }
+                Task { await voiceCoordinator.resendUnconfirmedTurn() }
             },
             onConfigure: {
                 showingConfiguration = true

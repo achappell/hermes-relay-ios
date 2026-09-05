@@ -95,7 +95,7 @@ final class ConversationStoreReconnectTests: XCTestCase {
     }
 
     @MainActor
-    func testResendUnconfirmedTurnSendsOnceAndClearsTheMarker() async {
+    func testResendingTheUnconfirmedTurnSendsItOnceAndClearsTheMarker() async throws {
         let client = ReconnectingFakeClient()
         let store = makeStore(client: client, sleeps: SleepRecorder())
         await store.connect()
@@ -105,7 +105,8 @@ final class ConversationStoreReconnectTests: XCTestCase {
         await store.waitForReconnectToFinish()
         client.sendError = nil
 
-        await store.resendUnconfirmedTurn()
+        let unconfirmed = try XCTUnwrap(store.unconfirmedTurnText)
+        await store.sendTurn(text: unconfirmed)
 
         XCTAssertEqual(client.sentTurns, ["did this arrive", "did this arrive"])
         XCTAssertNil(store.unconfirmedTurnText)

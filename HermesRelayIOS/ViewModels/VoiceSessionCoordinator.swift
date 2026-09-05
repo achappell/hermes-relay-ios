@@ -270,6 +270,26 @@ final class VoiceSessionCoordinator {
         responseTask = nil
     }
 
+    /// Resend a turn the relay never confirmed. It goes through the same
+    /// submission path as any other turn, because the event handler is what
+    /// produces the spoken answer and the visible state — sending straight to
+    /// the store would deliver a silent, invisible turn.
+    func resendUnconfirmedTurn() async {
+        guard captureTask == nil, responseTask == nil else { return }
+        guard let text = store.unconfirmedTurnText?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !text.isEmpty else { return }
+
+        playbackFailed = false
+        resetSpeechTiming()
+        responseGeneration &+= 1
+        let generation = responseGeneration
+        responseTask = Task { [weak self] in
+            await self?.submitVoiceTurn(text, generation: generation)
+        }
+        await responseTask?.value
+        responseTask = nil
+    }
+
     private nonisolated func consumeRecognition(
         _ stream: AsyncThrowingStream<SpeechRecognitionUpdate, Error>
     ) async {

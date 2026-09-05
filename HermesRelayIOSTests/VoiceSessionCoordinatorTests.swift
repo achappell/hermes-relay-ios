@@ -631,6 +631,54 @@ final class VoiceSessionCoordinatorTests: XCTestCase {
     }
 
     @MainActor
+    func testResendingAnUnconfirmedTurnPlaysTheResponseLikeAnyOtherTurn() async throws {
+        let writer = WAVFallbackWriter()
+        let format = AudioFormat(sampleRate: 24_000, channels: 1, sampleWidth: 2)
+        let wavURL = try writer.write(pcm: Data([0x01, 0x02, 0x03, 0x04]), format: format)
+        defer { try? FileManager.default.removeItem(at: wavURL) }
+
+        let output = CoordinatorAudioOutput()
+        let client = CoordinatorHermesSessionClient(events: [
+            .messageStart,
+            .textDelta("Answering the resent turn"),
+            .audioFileStart(contentType: "audio/wav"),
+            .audioFileChunk(try Data(contentsOf: wavURL)),
+            .audioFileEnd,
+            .turnComplete(turnID: "turn-2"),
+        ])
+        let store = await connectedStore(client)
+        store.unconfirmedTurnText = "Did this one arrive"
+        let coordinator = VoiceSessionCoordinator(
+            store: store,
+            input: CoordinatorSpeechInput(),
+            output: output
+        )
+
+        await coordinator.resendUnconfirmedTurn()
+
+        XCTAssertEqual(client.sentTurns, ["Did this one arrive"])
+        XCTAssertNil(store.unconfirmedTurnText)
+        XCTAssertEqual(coordinator.state, .idle)
+        let operations = await output.operations()
+        XCTAssertEqual(operations, [.start(format), .append, .finish])
+    }
+
+    @MainActor
+    func testResendingWithNoUnconfirmedTurnSendsNothing() async {
+        let client = CoordinatorHermesSessionClient(events: [.turnComplete(turnID: "turn-1")])
+        let store = await connectedStore(client)
+        let coordinator = VoiceSessionCoordinator(
+            store: store,
+            input: CoordinatorSpeechInput(),
+            output: CoordinatorAudioOutput()
+        )
+
+        await coordinator.resendUnconfirmedTurn()
+
+        XCTAssertEqual(client.sentTurns, [])
+    }
+
+    @MainActor
     private func connectedStore(_ client: CoordinatorHermesSessionClient) async -> ConversationStore {
         client.connectResult = .success(SessionMetadata(sessionID: "session-1", model: nil))
         let store = ConversationStore(client: client)
