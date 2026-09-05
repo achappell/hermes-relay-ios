@@ -9,6 +9,8 @@ final class ConversationStore {
     private let socketFactory: any WebSocketConnectionFactory
     private let persistence: (any ConversationPersistence)?
     private let now: @Sendable () -> Date
+    private let reconnectPolicy: ReconnectPolicy
+    private let sleep: @Sendable (UInt64) async -> Void
 
     var connectionState: ConnectionState = .disconnected
     var sessionMetadata: SessionMetadata?
@@ -28,19 +30,28 @@ final class ConversationStore {
     private var nextTurnGeneration: UInt64 = 0
     private var activeTurnGeneration: UInt64?
     private var interruptedTurnGeneration: UInt64?
+    // Recovery from an unexpected transport loss runs as a single task. A
+    // second loss reported while it is running is the same outage, not a new
+    // one, so it must not stack a second backoff ladder.
+    private var reconnectTask: Task<Void, Never>?
+    private var isExpectedDisconnect = false
 
     init(
         client: any HermesSessionClient = UnavailableHermesSessionClient(),
         configurationStore: RelayConfigurationStore? = nil,
         socketFactory: any WebSocketConnectionFactory = URLSessionWebSocketConnectionFactory(),
         persistence: (any ConversationPersistence)? = nil,
-        now: @escaping @Sendable () -> Date = Date.init
+        now: @escaping @Sendable () -> Date = Date.init,
+        reconnectPolicy: ReconnectPolicy = .default,
+        sleep: @escaping @Sendable (UInt64) async -> Void = { try? await Task.sleep(nanoseconds: $0) }
     ) {
         self.client = client
         self.configurationStore = configurationStore
         self.socketFactory = socketFactory
         self.persistence = persistence
         self.now = now
+        self.reconnectPolicy = reconnectPolicy
+        self.sleep = sleep
     }
 
     func loadPersistedConversation() async {
@@ -75,7 +86,7 @@ final class ConversationStore {
                 token: token,
                 socketFactory: socketFactory,
                 onTransportDisconnected: { @MainActor [weak self] in
-                    self?.transportDidDisconnect()
+                    self?.handleUnexpectedTransportLoss()
                 }
             )
             transientError = nil
@@ -230,7 +241,9 @@ final class ConversationStore {
 
         interruptedTurnGeneration = turnGeneration
         activeTurnGeneration = nil
+        isExpectedDisconnect = true
         await client.disconnect()
+        isExpectedDisconnect = false
         connectionState = .disconnected
         sessionMetadata = nil
         sessionStartedAt = nil
@@ -243,10 +256,75 @@ final class ConversationStore {
         transientError = nil
     }
 
-    private func transportDidDisconnect() {
-        connectionState = .disconnected
+    var isReconnecting: Bool {
+        reconnectTask != nil
+    }
+
+    /// Resend a turn that was in flight when the transport died. Nothing else
+    /// may replay it: recovery restores the text, the user decides to send it.
+    @discardableResult
+    func resendUnconfirmedTurn() async -> Bool {
+        guard let text = unconfirmedTurnText else { return false }
+        return await sendTurn(text: text)
+    }
+
+    /// Called when the transport reports a loss the user did not ask for.
+    func handleUnexpectedTransportLoss() {
         sessionMetadata = nil
         sessionStartedAt = nil
+        guard !isExpectedDisconnect else {
+            connectionState = .disconnected
+            return
+        }
+        guard reconnectTask == nil else { return }
+
+        connectionState = .disconnected
+        reconnectTask = Task { [weak self] in
+            await self?.runReconnectLoop()
+        }
+    }
+
+    /// Test seam: await the in-flight recovery without exposing the task.
+    func waitForReconnectToFinish() async {
+        await reconnectTask?.value
+    }
+
+    private func runReconnectLoop() async {
+        defer { reconnectTask = nil }
+
+        var attempt = 1
+        while let delay = reconnectPolicy.delayNanoseconds(forAttempt: attempt) {
+            connectionState = .reconnecting(attempt: attempt, of: reconnectPolicy.maxAttempts)
+            await sleep(delay)
+            if Task.isCancelled { return }
+
+            do {
+                let metadata = try await client.connect()
+                sessionMetadata = metadata
+                sessionStartedAt = now()
+                connectionState = .connected
+                transientError = nil
+                return
+            } catch is RelayUnavailableError {
+                // Configuration or credentials are wrong; retrying cannot fix it.
+                fail(with: RelayUnavailableError())
+                return
+            } catch {
+                if attempt == reconnectPolicy.maxAttempts {
+                    fail(with: error)
+                    return
+                }
+            }
+            attempt += 1
+        }
+    }
+
+    private func fail(with error: Error) {
+        let message = error.localizedDescription
+        sessionMetadata = nil
+        sessionStartedAt = nil
+        connectionState = .failed(message)
+        transientError = message
     }
 
     private func apply(_ event: HermesEvent) {
