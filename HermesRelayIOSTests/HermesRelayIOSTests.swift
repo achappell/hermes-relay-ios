@@ -815,4 +815,19 @@ final class HermesRelayIOSTests: XCTestCase {
         XCTAssertEqual(model.snapshot.microphoneActivity, .speech)
         model.stop()
     }
+
+    // The project had no SWIFT_ACTIVE_COMPILATION_CONDITIONS, so `#if DEBUG`
+    // was false in every configuration and the audio diagnostics silently
+    // compiled down to the no-op recorder. Pin the gate itself.
+    func testDebugBuildsSelectTheLoggingDiagnostics() {
+        #if DEBUG
+        XCTAssertTrue(
+            AudioPlaybackDiagnosticsFactory.make() is OSLogAudioPlaybackDiagnostics
+        )
+        #else
+        // Tests run against the Debug configuration. Reaching this branch
+        // means DEBUG is not defined and every #if DEBUG in the app is dead.
+        XCTFail("The Debug configuration must define DEBUG.")
+        #endif
+    }
 }

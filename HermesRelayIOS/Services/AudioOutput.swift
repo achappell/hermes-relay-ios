@@ -182,11 +182,10 @@ enum AudioPlaybackDiagnosticsFactory {
         arguments: [String] = ProcessInfo.processInfo.arguments
     ) -> any AudioPlaybackDiagnostics {
         #if DEBUG
-        if arguments.contains("--hermes-audio-debug") {
-            return OSLogAudioPlaybackDiagnostics()
-        }
-        #endif
+        return OSLogAudioPlaybackDiagnostics()
+        #else
         return NoopAudioPlaybackDiagnostics()
+        #endif
     }
 }
 
