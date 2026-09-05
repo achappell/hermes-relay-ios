@@ -457,6 +457,12 @@ struct TranscriptHistoryView: View {
                 .frame(maxWidth: 760)
                 .frame(maxWidth: .infinity)
             }
+            // The newest message is what the reader came for. Anchoring is
+            // resolved before the first frame, so the sheet opens at the
+            // bottom rather than scrolling there afterwards — which matters
+            // with a LazyVStack, whose trailing rows do not exist yet when a
+            // scrollTo would run.
+            .defaultScrollAnchor(.bottom)
             .navigationTitle("Conversation history")
             #if os(iOS)
             .navigationBarTitleDisplayMode(.inline)
