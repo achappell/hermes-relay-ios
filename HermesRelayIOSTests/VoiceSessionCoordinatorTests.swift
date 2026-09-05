@@ -880,6 +880,37 @@ final class VoiceSessionCoordinatorTests: XCTestCase {
         XCTAssertEqual(timingFallbacks, [nil, "invalid"])
     }
 
+    // The relay streams audio far faster than it plays: a 76-second answer
+    // arrives in seconds. Ending the response when the event stream closes
+    // therefore announced Ready — and froze the caption — while the phone was
+    // still speaking. The response ends when playback drains.
+    @MainActor
+    func testResponseWaitsForPlaybackToDrainWhenTheStreamClosesEarly() async {
+        let format = AudioFormat(sampleRate: 24_000, channels: 1, sampleWidth: 2)
+        let output = CoordinatorAudioOutput()
+        let client = CoordinatorHermesSessionClient(events: [
+            .messageStart,
+            .textDelta("A long answer."),
+            .audioStart(format),
+            .audioChunk(Data([0, 1, 2, 3])),
+            .turnComplete(turnID: "turn-1"),
+        ])
+        let store = await connectedStore(client)
+        store.draft = "Tell me something long"
+        let coordinator = VoiceSessionCoordinator(
+            store: store,
+            input: CoordinatorSpeechInput(),
+            output: output
+        )
+
+        await coordinator.sendDraft()
+
+        // finish() is what waits for the scheduled buffers to play out.
+        let operations = await output.operations()
+        XCTAssertEqual(operations, [.start(format), .append, .finish])
+        XCTAssertEqual(coordinator.state, .idle)
+    }
+
     @MainActor
     private func connectedStore(_ client: CoordinatorHermesSessionClient) async -> ConversationStore {
         client.connectResult = .success(SessionMetadata(sessionID: "session-1", model: nil))

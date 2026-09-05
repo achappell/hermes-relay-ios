@@ -345,11 +345,7 @@ final class VoiceSessionCoordinator {
         if !completed, !isFailed {
             state = .failed(store.transientError ?? "The voice turn could not be completed.")
         } else if completed, !isFailed, state != .interrupted {
-            // The event stream has closed, so no further audio can arrive.
-            // This is terminal even if the relay never sent a trailing
-            // audio_end, which otherwise left the HUD stuck on Speaking.
-            audioStreamActive = false
-            endResponse()
+            await finishPlaybackAndEndResponse()
         }
     }
 
@@ -496,9 +492,27 @@ final class VoiceSessionCoordinator {
         if !completed, !isFailed {
             state = .failed(store.transientError ?? "The text turn could not be completed.")
         } else if completed, !isFailed, state != .interrupted {
-            audioStreamActive = false
-            endResponse()
+            await finishPlaybackAndEndResponse()
         }
+    }
+
+    /// The relay delivers audio far faster than it plays: a minute of speech
+    /// can arrive in seconds. A closed event stream therefore means no more
+    /// audio is *coming*, not that the answer has been *heard*. Drain what is
+    /// already scheduled before going quiet — `finish()` returns once the
+    /// buffers have actually played out.
+    private func finishPlaybackAndEndResponse() async {
+        if audioStreamActive {
+            audioStreamActive = false
+            do {
+                try await output.finish()
+                isPlaybackDurationFinal = playbackDuration != nil
+            } catch {
+                await handlePlaybackFailure()
+                return
+            }
+        }
+        endResponse()
     }
 
     private func handlePlaybackFailure() async {

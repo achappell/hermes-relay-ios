@@ -188,9 +188,6 @@ enum AudioPlaybackDiagnosticsFactory {
         #if DEBUG
         return OSLogAudioPlaybackDiagnostics()
         #else
-        if arguments.contains("--hermes-audio-debug") {
-            return OSLogAudioPlaybackDiagnostics()
-        }
         return NoopAudioPlaybackDiagnostics()
         #endif
     }
