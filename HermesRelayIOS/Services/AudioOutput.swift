@@ -156,7 +156,10 @@ struct OSLogAudioPlaybackDiagnostics: AudioPlaybackDiagnostics, Sendable {
         case .playbackFailed:
             logger.error("audio playback failed")
         case .segmentBoundary(let index, let phase, let positionMilliseconds):
-            logger.debug(
+            // Info rather than debug: OSLog does not persist debug messages,
+            // and Console hides them unless the user opts in. These two lines
+            // exist to be read after a run.
+            logger.info(
                 "audio segment \(phase.rawValue, privacy: .public) index=\(index, privacy: .public) playback_position_ms=\(positionMilliseconds ?? -1, privacy: .public)"
             )
         case .speechTimingReceived(
@@ -167,7 +170,7 @@ struct OSLogAudioPlaybackDiagnostics: AudioPlaybackDiagnostics, Sendable {
             let source,
             let fallbackReason
         ):
-            logger.debug(
+            logger.info(
                 "speech timing segment_index=\(segmentIndex, privacy: .public) audio_offset_ms=\(audioOffsetMilliseconds, privacy: .public) duration_ms=\(durationMilliseconds, privacy: .public) words=\(wordCount, privacy: .public) source=\(source, privacy: .public) fallback=\(fallbackReason ?? "none", privacy: .public)"
             )
         }
