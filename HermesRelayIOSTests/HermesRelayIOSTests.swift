@@ -830,4 +830,77 @@ final class HermesRelayIOSTests: XCTestCase {
         XCTFail("The Debug configuration must define DEBUG.")
         #endif
     }
+
+    // Ported from the TUI's timing.py, which paces noticeably better than the
+    // iOS rail did. Before a segment's timing record arrives, the caption must
+    // still advance against the PLAYBACK clock — not a wall clock, which
+    // cannot track speech and drifts further the longer a segment runs.
+    // Expected values mirror tests/test_timing.py in hermes-relay-tui.
+    func testFallbackRevealPacesFromThePlaybackClock() {
+        let target = "one two three four five six"
+
+        XCTAssertEqual(
+            FallbackReveal.visibleText(target: target, elapsed: 0, wordsPerSecond: 2),
+            ""
+        )
+        XCTAssertEqual(
+            FallbackReveal.visibleText(target: target, elapsed: 0.5, wordsPerSecond: 2),
+            "one "
+        )
+        XCTAssertEqual(
+            FallbackReveal.visibleText(target: target, elapsed: 1.1, wordsPerSecond: 2),
+            "one two three "
+        )
+        XCTAssertEqual(
+            FallbackReveal.visibleText(target: target, elapsed: 3.0, wordsPerSecond: 2),
+            target
+        )
+    }
+
+    func testFallbackRevealRejectsNonsenseInput() {
+        XCTAssertEqual(FallbackReveal.visibleText(target: "", elapsed: 1), "")
+        XCTAssertEqual(
+            FallbackReveal.visibleText(target: "word", elapsed: .infinity),
+            ""
+        )
+        XCTAssertEqual(
+            FallbackReveal.visibleText(target: "word", elapsed: 1, wordsPerSecond: 0),
+            ""
+        )
+    }
+
+    // The window this closes: audio is playing, no timing record has arrived,
+    // and the total duration is not yet final. That returned nil, which sent
+    // the rail to the 320ms wall-clock reveal.
+    func testPlaybackTextBridgesBeforeAnyTimingRecordArrives() {
+        let target = "one two three four five six"
+
+        let bridged = RecentTranscriptDisplay.playbackText(
+            target: target,
+            speechTimings: [],
+            playbackDuration: nil,
+            playbackPosition: 1.6,
+            isPlaybackDurationFinal: false,
+            fallbackPlaybackOrigin: 0.5
+        )
+
+        XCTAssertEqual(
+            bridged,
+            FallbackReveal.visibleText(target: target, elapsed: 1.1)
+        )
+        XCTAssertNotNil(bridged)
+    }
+
+    func testPlaybackTextStillNeedsAnOriginBeforeBridging() {
+        XCTAssertNil(
+            RecentTranscriptDisplay.playbackText(
+                target: "one two three",
+                speechTimings: [],
+                playbackDuration: nil,
+                playbackPosition: 1.6,
+                isPlaybackDurationFinal: false,
+                fallbackPlaybackOrigin: nil
+            )
+        )
+    }
 }

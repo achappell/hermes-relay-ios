@@ -328,6 +328,39 @@ enum SpeechTimingReveal {
     }
 }
 
+/// Paces the caption from the playback clock while a segment's timing record
+/// is still in flight. Ported from the TUI's `fallback_visible_text`, which
+/// tracks speech noticeably better than a wall-clock reveal: a fixed
+/// milliseconds-per-fragment timer has no relationship to the audio and drifts
+/// further the longer a segment runs.
+enum FallbackReveal {
+    /// Conservative speaking rate. Deliberately under a natural pace so the
+    /// caption trails the voice rather than racing ahead of it.
+    static let defaultWordsPerSecond: Double = 2.8
+
+    static func visibleText(
+        target: String,
+        elapsed: TimeInterval,
+        wordsPerSecond: Double = defaultWordsPerSecond
+    ) -> String {
+        guard !target.isEmpty,
+              elapsed.isFinite,
+              wordsPerSecond.isFinite,
+              wordsPerSecond > 0 else {
+            return ""
+        }
+
+        let wordCount = AudioDurationReveal.wordCount(in: target)
+        guard wordCount > 0 else { return "" }
+
+        return AudioDurationReveal.visibleText(
+            target: target,
+            playbackPosition: elapsed,
+            audioDuration: Double(wordCount) / wordsPerSecond
+        )
+    }
+}
+
 enum AudioDurationReveal {
     static func visibleText(
         target: String,
@@ -355,6 +388,10 @@ enum AudioDurationReveal {
             end = target.index(after: end)
         }
         return String(target[..<end])
+    }
+
+    static func wordCount(in text: String) -> Int {
+        wordRanges(in: text).count
     }
 
     private static func wordRanges(in text: String) -> [Range<String.Index>] {
@@ -395,7 +432,8 @@ enum RecentTranscriptDisplay {
         speechTimings: [SpeechTiming] = [],
         playbackDuration: TimeInterval? = nil,
         playbackPosition: TimeInterval? = nil,
-        isPlaybackDurationFinal: Bool = false
+        isPlaybackDurationFinal: Bool = false,
+        fallbackPlaybackOrigin: TimeInterval? = nil
     ) -> [RecentTranscriptEntry] {
         guard isResponseActive, let activeAssistantID else {
             return projection.entries
@@ -413,7 +451,8 @@ enum RecentTranscriptDisplay {
                 speechTimings: speechTimings,
                 playbackDuration: playbackDuration,
                 playbackPosition: playbackPosition,
-                isPlaybackDurationFinal: isPlaybackDurationFinal
+                isPlaybackDurationFinal: isPlaybackDurationFinal,
+                fallbackPlaybackOrigin: fallbackPlaybackOrigin
             )
             let visibleText = longestValidPrefix(
                 in: entry.text,
@@ -437,7 +476,8 @@ enum RecentTranscriptDisplay {
         speechTimings: [SpeechTiming],
         playbackDuration: TimeInterval?,
         playbackPosition: TimeInterval?,
-        isPlaybackDurationFinal: Bool = false
+        isPlaybackDurationFinal: Bool = false,
+        fallbackPlaybackOrigin: TimeInterval? = nil
     ) -> String? {
         guard let playbackPosition else { return nil }
 
@@ -453,14 +493,24 @@ enum RecentTranscriptDisplay {
         }
 
         // A still-growing duration makes progress both overshoot and retract,
-        // so the fallback clock only runs once the total length is known.
-        guard isPlaybackDurationFinal, let playbackDuration else { return nil }
-        let durationText = AudioDurationReveal.visibleText(
+        // so the segment clock only runs once the total length is known.
+        if isPlaybackDurationFinal, let playbackDuration {
+            let durationText = AudioDurationReveal.visibleText(
+                target: target,
+                playbackPosition: playbackPosition,
+                audioDuration: playbackDuration
+            )
+            if !durationText.isEmpty { return durationText }
+        }
+
+        // Nothing authoritative yet. Keep moving against the playback clock
+        // rather than handing the caption to a wall-clock timer.
+        guard let fallbackPlaybackOrigin else { return nil }
+        let bridged = FallbackReveal.visibleText(
             target: target,
-            playbackPosition: playbackPosition,
-            audioDuration: playbackDuration
+            elapsed: playbackPosition - fallbackPlaybackOrigin
         )
-        return durationText.isEmpty ? nil : durationText
+        return bridged.isEmpty ? nil : bridged
     }
 
     static func longestValidPrefix(
@@ -495,6 +545,11 @@ struct RecentTranscriptRail: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var followState = RecentTranscriptFollowState()
     @State private var revealedTexts: [String: String] = [:]
+    // The playback position when the caption first needed a clock for this
+    // response. Elapsed time is measured from here, not from zero, because the
+    // node's position does not restart per response.
+    @State private var fallbackPlaybackOrigin: TimeInterval?
+    @State private var fallbackOriginTargetID: String?
 
     private static let bottomAnchorID = "recent-transcript-bottom"
     private static let liveTranscriptViewportHeight: CGFloat = 192
@@ -520,7 +575,8 @@ struct RecentTranscriptRail: View {
             speechTimings: speechTimings,
             playbackDuration: playbackDuration,
             playbackPosition: playbackPosition,
-            isPlaybackDurationFinal: isPlaybackDurationFinal
+            isPlaybackDurationFinal: isPlaybackDurationFinal,
+            fallbackPlaybackOrigin: fallbackPlaybackOrigin
         )
     }
 
@@ -541,9 +597,10 @@ struct RecentTranscriptRail: View {
         return RecentTranscriptRevealTarget(
             id: entry.id,
             text: entry.text,
+            // Any playback position is now enough: FallbackReveal bridges the
+            // window before timings or a final duration arrive. The wall-clock
+            // reveal below is only for turns with no audio at all.
             usesPlaybackClock: playbackPosition != nil
-                && (!speechTimings.isEmpty
-                    || (isPlaybackDurationFinal && playbackDuration != nil))
         )
     }
 
@@ -625,6 +682,22 @@ struct RecentTranscriptRail: View {
             }
             .task(id: revealTarget) {
                 await revealText(for: revealTarget)
+            }
+            .onChange(of: revealTarget?.id) { _, newValue in
+                // A new response needs a new origin.
+                if newValue != fallbackOriginTargetID {
+                    fallbackOriginTargetID = newValue
+                    fallbackPlaybackOrigin = nil
+                }
+            }
+            .onChange(of: playbackPosition) { _, newValue in
+                guard let newValue, newValue.isFinite else {
+                    fallbackPlaybackOrigin = nil
+                    return
+                }
+                if fallbackPlaybackOrigin == nil {
+                    fallbackPlaybackOrigin = newValue
+                }
             }
         }
         .frame(maxWidth: 680)
