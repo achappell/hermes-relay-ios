@@ -679,6 +679,94 @@ final class VoiceSessionCoordinatorTests: XCTestCase {
         XCTAssertEqual(client.sentTurns, [])
     }
 
+    // A multi-segment answer emits audio_start/audio_end per paragraph. Each
+    // audio_end used to report the whole response finished, so the HUD said
+    // "Ready" and the reveal froze while Hermes was still talking.
+    @MainActor
+    func testSegmentEndDoesNotEndTheResponse() async {
+        let format = AudioFormat(sampleRate: 24_000, channels: 1, sampleWidth: 2)
+        let recorder = SegmentBoundaryStateRecorder()
+        let client = CoordinatorHermesSessionClient(events: [
+            .messageStart,
+            .textDelta("First paragraph."),
+            .audioStart(format),
+            .audioChunk(Data([0, 1, 2, 3])),
+            .audioEnd,
+            .textDelta(" Second paragraph."),
+            .audioStart(format),
+            .audioChunk(Data([4, 5, 6, 7])),
+            .audioEnd,
+            .turnComplete(turnID: "turn-1"),
+        ])
+        let store = await connectedStore(client)
+        store.draft = "Tell me something long"
+        let coordinator = VoiceSessionCoordinator(
+            store: store,
+            input: CoordinatorSpeechInput(),
+            output: StateRecordingAudioOutput(recorder: recorder)
+        )
+        recorder.provider = { [weak coordinator] in coordinator?.state ?? .idle }
+
+        await coordinator.sendDraft()
+        await Task.yield()
+
+        // The gap between paragraphs stays "Speaking": the answer is ongoing.
+        XCTAssertEqual(recorder.statesAfterSegmentEnd, [.speaking, .speaking])
+        XCTAssertEqual(coordinator.state, .idle)
+    }
+
+    @MainActor
+    func testSingleSegmentAnswerStillEndsIdle() async {
+        let format = AudioFormat(sampleRate: 24_000, channels: 1, sampleWidth: 2)
+        let output = CoordinatorAudioOutput()
+        let client = CoordinatorHermesSessionClient(events: [
+            .messageStart,
+            .textDelta("One paragraph."),
+            .audioStart(format),
+            .audioChunk(Data([0, 1, 2, 3])),
+            .audioEnd,
+            .turnComplete(turnID: "turn-1"),
+        ])
+        let store = await connectedStore(client)
+        store.draft = "Say one thing"
+        let coordinator = VoiceSessionCoordinator(
+            store: store,
+            input: CoordinatorSpeechInput(),
+            output: output
+        )
+
+        await coordinator.sendDraft()
+
+        XCTAssertEqual(coordinator.state, .idle)
+        let operations = await output.operations()
+        XCTAssertEqual(operations, [.start(format), .append, .finish])
+    }
+
+    // Completion can arrive before the last segment's audio has drained.
+    @MainActor
+    func testCompletionBeforeTheFinalSegmentStillEndsIdle() async {
+        let format = AudioFormat(sampleRate: 24_000, channels: 1, sampleWidth: 2)
+        let client = CoordinatorHermesSessionClient(events: [
+            .messageStart,
+            .textDelta("Answer."),
+            .audioStart(format),
+            .audioChunk(Data([0, 1, 2, 3])),
+            .turnComplete(turnID: "turn-1"),
+            .audioEnd,
+        ])
+        let store = await connectedStore(client)
+        store.draft = "Say something"
+        let coordinator = VoiceSessionCoordinator(
+            store: store,
+            input: CoordinatorSpeechInput(),
+            output: CoordinatorAudioOutput()
+        )
+
+        await coordinator.sendDraft()
+
+        XCTAssertEqual(coordinator.state, .idle)
+    }
+
     @MainActor
     private func connectedStore(_ client: CoordinatorHermesSessionClient) async -> ConversationStore {
         client.connectResult = .success(SessionMetadata(sessionID: "session-1", model: nil))
@@ -901,6 +989,44 @@ private actor BlockingFinishCoordinatorSpeechInput: SpeechInput {
         continuation?.finish(throwing: SpeechInputError.cancelled)
         continuation = nil
     }
+}
+
+@MainActor
+final class SegmentBoundaryStateRecorder {
+    private(set) var statesAfterSegmentEnd: [VoiceState] = []
+    var provider: (@MainActor () -> VoiceState)?
+
+    func recordAfterCurrentWork() {
+        // `handle` runs serially on the MainActor and has no suspension point
+        // between `output.finish()` returning and the state assignment that
+        // follows it, so a task enqueued here observes the settled state.
+        Task { @MainActor in
+            guard let provider else { return }
+            self.statesAfterSegmentEnd.append(provider())
+        }
+    }
+}
+
+private actor StateRecordingAudioOutput: AudioOutput {
+    private let recorder: SegmentBoundaryStateRecorder
+
+    init(recorder: SegmentBoundaryStateRecorder) {
+        self.recorder = recorder
+    }
+
+    func start(format: AudioFormat) async throws {}
+
+    func append(_ pcm: Data) async throws -> AudioPlaybackReadiness {
+        .ready
+    }
+
+    func finish() async throws {
+        await recorder.recordAfterCurrentWork()
+    }
+
+    func stop() async {}
+
+    func playbackPosition() async -> TimeInterval? { nil }
 }
 
 private actor CoordinatorAudioOutput: AudioOutput {

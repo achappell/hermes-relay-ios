@@ -13,6 +13,10 @@ final class VoiceSessionCoordinator {
 
     private(set) var state: VoiceState = .idle
     private(set) var provisionalText = ""
+    // The relay emits audio_start/audio_end per segment, so a drained audio
+    // stream means "this paragraph ended", not "the answer ended". Only
+    // turn completion ends the response.
+    private var turnDidComplete = false
     private(set) var speechTimings: [SpeechTiming] = []
     private(set) var playbackDuration: TimeInterval?
     private(set) var playbackPosition: TimeInterval?
@@ -328,6 +332,7 @@ final class VoiceSessionCoordinator {
 
     private func submitVoiceTurn(_ text: String, generation: UInt64) async {
         guard generation == responseGeneration, !Task.isCancelled else { return }
+        turnDidComplete = false
         state = .thinking
         let completed = await store.sendTurn(text: text) { [weak self] event in
             await self?.handle(event, generation: generation)
@@ -386,8 +391,9 @@ final class VoiceSessionCoordinator {
                 try await output.finish()
                 audioStreamActive = false
                 isPlaybackDurationFinal = playbackDuration != nil
-                stopPlaybackPositionObservation()
-                state = .idle
+                if turnDidComplete {
+                    endResponse()
+                }
             } catch {
                 await handlePlaybackFailure()
             }
@@ -415,14 +421,16 @@ final class VoiceSessionCoordinator {
                     state = .speaking
                 }
                 try await output.finish()
-                stopPlaybackPositionObservation()
-                state = .idle
+                if turnDidComplete {
+                    endResponse()
+                }
             } catch {
                 await handlePlaybackFailure()
             }
         case .turnComplete:
+            turnDidComplete = true
             if !isFailed, !audioStreamActive {
-                state = .idle
+                endResponse()
             }
         case .error(let message):
             state = .failed(message)
@@ -445,6 +453,7 @@ final class VoiceSessionCoordinator {
 
     private func submitDraft(generation: UInt64) async {
         guard generation == responseGeneration, !Task.isCancelled else { return }
+        turnDidComplete = false
         state = .thinking
         let completed = await store.sendDraft { [weak self] event in
             await self?.handle(event, generation: generation)
@@ -488,6 +497,14 @@ final class VoiceSessionCoordinator {
                 }
             }
         }
+    }
+
+    /// The answer is finished: audio has drained and the relay has confirmed
+    /// the turn. Only then does the clock stop and the HUD go quiet.
+    private func endResponse() {
+        guard !isFailed, state != .interrupted else { return }
+        stopPlaybackPositionObservation()
+        state = .idle
     }
 
     private func stopPlaybackPositionObservation() {
