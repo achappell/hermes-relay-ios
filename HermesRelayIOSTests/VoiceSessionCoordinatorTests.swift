@@ -29,7 +29,9 @@ final class VoiceSessionCoordinatorTests: XCTestCase {
             isResponseActive: false,
             voiceCoordinator: coordinator,
             speechTimings: [],
+            playbackDuration: nil,
             playbackPosition: nil,
+            isPlaybackDurationFinal: false,
             hasTranscript: false,
             canConfigure: false,
             onConfigure: {},
@@ -450,6 +452,10 @@ final class VoiceSessionCoordinatorTests: XCTestCase {
         let timing = SpeechTiming(
             segmentID: "segment-1",
             text: "Hermes keeps speaking.",
+            timingSource: .alignment,
+            audioOffset: 0,
+            duration: 0.9,
+            fallbackReason: nil,
             words: [
                 SpeechTimingWord(text: "Hermes", startTime: 0, endTime: 0.25),
                 SpeechTimingWord(text: "keeps", startTime: 0.25, endTime: 0.48),
@@ -465,7 +471,7 @@ final class VoiceSessionCoordinatorTests: XCTestCase {
             .textDelta("Hermes keeps speaking."),
             .speechTiming(timing),
             .audioStart(AudioFormat(sampleRate: 24_000, channels: 1, sampleWidth: 2)),
-            .audioChunk(Data([0, 1, 2, 3])),
+            .audioChunk(Data(repeating: 0, count: 48_000)),
             .audioEnd,
             .turnComplete(turnID: "turn-1"),
         ])
@@ -480,7 +486,71 @@ final class VoiceSessionCoordinatorTests: XCTestCase {
         for _ in 0..<3 { await Task.yield() }
 
         XCTAssertEqual(coordinator.speechTimings, [timing])
+        XCTAssertEqual(coordinator.playbackDuration ?? -1, 1.0, accuracy: 0.001)
         XCTAssertEqual(coordinator.playbackPosition ?? -1, 0.58, accuracy: 0.001)
+
+        await output.allowFinish()
+        await responseTask.value
+    }
+
+    @MainActor
+    func testCoordinatorReplacesTimingRevisionAndSortsSegments() async {
+        let input = CoordinatorSpeechInput(finalUpdate: SpeechRecognitionUpdate(text: "Speak", isFinal: true))
+        let output = CoordinatorAudioOutput(waitsForFinish: true)
+        let initialSegment = SpeechTiming(
+            segmentID: "segment-1",
+            text: "keeps",
+            timingSource: .durationFallback,
+            audioOffset: 0.25,
+            duration: 0.4,
+            fallbackReason: .timeout,
+            words: []
+        )
+        let revisedSegment = SpeechTiming(
+            segmentID: "segment-1",
+            text: "keeps",
+            timingSource: .alignment,
+            audioOffset: 0.25,
+            duration: 0.4,
+            fallbackReason: nil,
+            words: [
+                SpeechTimingWord(text: "keeps", startTime: 0.25, endTime: 0.65),
+            ]
+        )
+        let firstSegment = SpeechTiming(
+            segmentID: "segment-0",
+            text: "Hermes",
+            timingSource: .alignment,
+            audioOffset: 0,
+            duration: 0.25,
+            fallbackReason: nil,
+            words: [
+                SpeechTimingWord(text: "Hermes", startTime: 0, endTime: 0.25),
+            ]
+        )
+        let client = CoordinatorHermesSessionClient(events: [
+            .messageStart,
+            .textDelta("Hermes keeps"),
+            .speechTiming(initialSegment),
+            .speechTiming(firstSegment),
+            .speechTiming(revisedSegment),
+            .audioStart(AudioFormat(sampleRate: 24_000, channels: 1, sampleWidth: 2)),
+            .audioChunk(Data(repeating: 0, count: 48_000)),
+            .audioEnd,
+            .turnComplete(turnID: "turn-1"),
+        ])
+        let store = await connectedStore(client)
+        let coordinator = VoiceSessionCoordinator(store: store, input: input, output: output)
+
+        await coordinator.beginCapture()
+        let responseTask = Task { @MainActor in
+            await coordinator.endCaptureAndSend()
+        }
+        await output.waitUntilFinishRequested()
+        for _ in 0..<3 { await Task.yield() }
+
+        XCTAssertEqual(coordinator.speechTimings.map(\.segmentID), ["segment-0", "segment-1"])
+        XCTAssertEqual(coordinator.speechTimings.last?.timingSource, .alignment)
 
         await output.allowFinish()
         await responseTask.value
@@ -504,6 +574,7 @@ final class VoiceSessionCoordinatorTests: XCTestCase {
         await output.waitUntilAppendRequested()
 
         XCTAssertEqual(coordinator.state, .speaking)
+        XCTAssertEqual(coordinator.speechTimings.map(\.segmentID), ["interrupt-segment"])
 
         await coordinator.interruptAndBeginCapture()
 
@@ -548,6 +619,11 @@ final class VoiceSessionCoordinatorTests: XCTestCase {
         XCTAssertEqual(client.sentTurns, ["/voice tts"])
         XCTAssertEqual(store.draft, "")
         XCTAssertEqual(coordinator.state, .idle)
+        XCTAssertEqual(
+            coordinator.playbackDuration ?? -1,
+            Double(4) / Double(format.sampleRate * format.channels * format.sampleWidth),
+            accuracy: 0.000_001
+        )
         let operations = await output.operations()
         XCTAssertEqual(operations, [.start(format), .append, .finish])
     }
@@ -929,6 +1005,19 @@ private actor InterruptibleCoordinatorHermesSessionClient: HermesSessionClient {
         turnStartWaiters.forEach { $0.resume() }
         turnStartWaiters.removeAll()
         continuation.yield(.messageStart)
+        continuation.yield(
+            .speechTiming(
+                SpeechTiming(
+                    segmentID: "interrupt-segment",
+                    text: "Interrupt me",
+                    timingSource: .durationFallback,
+                    audioOffset: 0,
+                    duration: 0.4,
+                    fallbackReason: .timeout,
+                    words: []
+                )
+            )
+        )
         continuation.yield(
             .audioStart(AudioFormat(sampleRate: 24_000, channels: 1, sampleWidth: 2))
         )

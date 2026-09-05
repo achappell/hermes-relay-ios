@@ -24,8 +24,9 @@ The current voice slice provides:
 - Incremental signed 16-bit PCM playback with temporary WAV recovery when live
   playback fails.
 - Optional word-timed transcript reveal when the relay sends `speech_timing`
-  events. The rail follows the actual audio playback position and retains its
-  readable paced fallback when timing metadata is absent or invalid.
+  events. The rail follows the actual audio playback position and uses the
+  received PCM/WAV duration for an overall-cadence fallback when word timing
+  metadata is absent or invalid.
 - Content-safe microphone and inbound-playback activity signals with normalized
   levels, silence/noise/speech classification, throttling, and explicit safe
   unavailable states. These signals are the foundation for future opt-in
@@ -186,10 +187,11 @@ channel. The iOS client should preserve these boundaries:
    stream. Reusing a `segment_id` revises that segment; omitted or malformed
    timing must never hide the response text.
 
-The current relay is text-capable but does not yet emit this timing extension,
-so live word-synchronized captions require the corresponding Hermes protocol
-work. Do not claim synchronization from an endpoint that only sends text and
-PCM.
+Hermes can optionally emit this timing extension when the experimental
+provider-side forced aligner is enabled. The client still uses the received
+PCM/WAV duration as a safe fallback when alignment is disabled, unavailable, or
+invalid; an endpoint that only sends text and PCM does not provide exact word
+and pause synchronization.
 
 ## Workflow
 

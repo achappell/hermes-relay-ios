@@ -108,6 +108,9 @@ final class HermesEventNormalizerTests: XCTestCase {
                 "payload": [
                     "segment_id": "segment-1",
                     "text": "Hermes keeps moving.",
+                    "timing_source": "alignment",
+                    "audio_offset_ms": 0,
+                    "duration_ms": 920,
                     "words": [
                         ["text": "Hermes", "start_ms": 0, "end_ms": 280],
                         ["text": "keeps", "start_ms": 280, "end_ms": 510],
@@ -125,6 +128,10 @@ final class HermesEventNormalizerTests: XCTestCase {
                     SpeechTiming(
                         segmentID: "segment-1",
                         text: "Hermes keeps moving.",
+                        timingSource: .alignment,
+                        audioOffset: 0,
+                        duration: 0.92,
+                        fallbackReason: nil,
                         words: [
                             SpeechTimingWord(text: "Hermes", startTime: 0, endTime: 0.28),
                             SpeechTimingWord(text: "keeps", startTime: 0.28, endTime: 0.51),
@@ -152,6 +159,65 @@ final class HermesEventNormalizerTests: XCTestCase {
         )
 
         XCTAssertEqual(events, [.unknown(type: "speech_timing")])
+    }
+
+    func testSpeechTimingAcceptsDurationFallbackWithoutWords() throws {
+        var normalizer = HermesEventNormalizer()
+
+        let events = try normalizer.normalizeJSON(
+            json([
+                "type": "speech_timing",
+                "payload": [
+                    "segment_id": "turn-1-tts-1",
+                    "text": "The next segment.",
+                    "timing_source": "duration_fallback",
+                    "fallback_reason": "timeout",
+                    "audio_offset_ms": 1_560,
+                    "duration_ms": 640,
+                    "words": [],
+                ] as [String: Any],
+            ]),
+            turnID: "turn-1"
+        )
+
+        XCTAssertEqual(
+            events,
+            [.speechTiming(SpeechTiming(
+                segmentID: "turn-1-tts-1",
+                text: "The next segment.",
+                timingSource: .durationFallback,
+                audioOffset: 1.56,
+                duration: 0.64,
+                fallbackReason: .timeout,
+                words: []
+            ))]
+        )
+    }
+
+    func testPartialSpeechTimingDegradesToDurationFallback() throws {
+        var normalizer = HermesEventNormalizer()
+
+        let events = try normalizer.normalizeJSON(
+            json([
+                "type": "speech_timing",
+                "payload": [
+                    "segment_id": "turn-1-tts-0",
+                    "text": "Hermes keeps moving.",
+                    "timing_source": "alignment",
+                    "audio_offset_ms": 0,
+                    "duration_ms": 920,
+                    "words": [["text": "Hermes", "start_ms": 0, "end_ms": 280]],
+                ] as [String: Any],
+            ]),
+            turnID: "turn-1"
+        )
+
+        guard case .speechTiming(let timing) = try XCTUnwrap(events.first) else {
+            return XCTFail("Expected a duration fallback event")
+        }
+        XCTAssertEqual(timing.timingSource, .durationFallback)
+        XCTAssertEqual(timing.fallbackReason, .invalid)
+        XCTAssertTrue(timing.words.isEmpty)
     }
 
     func testErrorStopsWithTheServerMessageOrFallback() throws {

@@ -14,13 +14,19 @@ final class VoiceSessionCoordinator {
     private(set) var state: VoiceState = .idle
     private(set) var provisionalText = ""
     private(set) var speechTimings: [SpeechTiming] = []
+    private(set) var playbackDuration: TimeInterval?
     private(set) var playbackPosition: TimeInterval?
+    // While audio is still streaming, `playbackDuration` only covers the bytes
+    // received so far. Pacing text against that partial value overshoots wildly,
+    // so the duration clock stays unusable until the stream is complete.
+    private(set) var isPlaybackDurationFinal = false
 
     private var finalText: String?
     private var captureTask: Task<Void, Never>?
     private var responseTask: Task<Void, Never>?
     private var playbackFailed = false
     private var audioStreamActive = false
+    private var audioFormat: AudioFormat?
     private var audioFileBuffer = Data()
     private var streamedAudioBytes = 0
     private var captureFailureMessage: String?
@@ -325,7 +331,10 @@ final class VoiceSessionCoordinator {
             guard !playbackFailed else { return }
             audioFileBuffer.removeAll(keepingCapacity: false)
             audioStreamActive = true
+            audioFormat = format
             streamedAudioBytes = 0
+            playbackDuration = 0
+            isPlaybackDurationFinal = false
             startPlaybackPositionObservation(generation: generation)
             await diagnostics.record(.streamStarted(format: format))
             state = .buffering
@@ -337,6 +346,10 @@ final class VoiceSessionCoordinator {
         case .audioChunk(let pcm):
             guard !playbackFailed else { return }
             streamedAudioBytes += pcm.count
+            playbackDuration = Self.audioDuration(
+                byteCount: streamedAudioBytes,
+                format: audioFormat
+            )
             await diagnostics.record(.chunkReceived(bytes: pcm.count))
             do {
                 let readiness = try await output.append(pcm)
@@ -352,6 +365,7 @@ final class VoiceSessionCoordinator {
             do {
                 try await output.finish()
                 audioStreamActive = false
+                isPlaybackDurationFinal = playbackDuration != nil
                 stopPlaybackPositionObservation()
                 state = .idle
             } catch {
@@ -369,6 +383,11 @@ final class VoiceSessionCoordinator {
             do {
                 let decoded = try WAVAudioDecoder().decode(audioFileBuffer)
                 audioFileBuffer.removeAll(keepingCapacity: false)
+                playbackDuration = Self.audioDuration(
+                    byteCount: decoded.pcm.count,
+                    format: decoded.format
+                )
+                isPlaybackDurationFinal = playbackDuration != nil
                 try await output.start(format: decoded.format)
                 let readiness = try await output.append(decoded.pcm)
                 if readiness == .ready {
@@ -392,6 +411,12 @@ final class VoiceSessionCoordinator {
                 speechTimings[index] = timing
             } else {
                 speechTimings.append(timing)
+            }
+            speechTimings.sort { lhs, rhs in
+                if lhs.audioOffset == rhs.audioOffset {
+                    return lhs.segmentID < rhs.segmentID
+                }
+                return lhs.audioOffset < rhs.audioOffset
             }
         case .messageStart, .textDelta, .textReplace, .messageComplete, .unknown:
             break
@@ -453,7 +478,22 @@ final class VoiceSessionCoordinator {
 
     private func resetSpeechTiming() {
         speechTimings.removeAll(keepingCapacity: false)
+        audioFormat = nil
+        playbackDuration = nil
+        isPlaybackDurationFinal = false
         stopPlaybackPositionObservation()
+    }
+
+    private static func audioDuration(byteCount: Int, format: AudioFormat?) -> TimeInterval? {
+        guard let format,
+              format.sampleRate > 0,
+              format.channels > 0,
+              format.sampleWidth > 0 else {
+            return nil
+        }
+        let bytesPerFrame = format.channels * format.sampleWidth
+        guard bytesPerFrame > 0 else { return nil }
+        return Double(byteCount / bytesPerFrame) / Double(format.sampleRate)
     }
 
     private func permissionMessage(for authorization: SpeechAuthorization) -> String {
