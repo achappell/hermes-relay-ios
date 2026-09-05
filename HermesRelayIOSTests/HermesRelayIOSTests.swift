@@ -309,6 +309,27 @@ final class HermesRelayIOSTests: XCTestCase {
         XCTAssertTrue(gate.request())
     }
 
+    @MainActor
+    func testDisplayFrameUpdateSchedulerUsesLatestStateWhenRequestsCoalesce() async {
+        let scheduler = DisplayFrameUpdateScheduler(frameNanoseconds: 1_000_000)
+        let callback = expectation(description: "coalesced update runs")
+        var callbackID = 0
+
+        scheduler.schedule {
+            callbackID = 1
+            callback.fulfill()
+        }
+        scheduler.schedule {
+            callbackID = 2
+            callback.fulfill()
+        }
+
+        await fulfillment(of: [callback], timeout: 1)
+
+        XCTAssertEqual(callbackID, 2)
+        scheduler.cancel()
+    }
+
     func testRecentTranscriptDisplayUsesAudioDurationWithoutSpeechTiming() {
         let messageID = UUID()
         let response = "Hermes keeps the answer moving."

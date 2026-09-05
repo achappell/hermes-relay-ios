@@ -485,12 +485,14 @@ final class DisplayFrameUpdateScheduler {
     private let frameNanoseconds: UInt64
     private var gate = DisplayFrameUpdateGate()
     private var pendingTask: Task<Void, Never>?
+    private var pendingAction: (@MainActor () -> Void)?
 
     init(frameNanoseconds: UInt64 = 16_000_000) {
         self.frameNanoseconds = frameNanoseconds
     }
 
     func schedule(_ action: @escaping @MainActor () -> Void) {
+        pendingAction = action
         guard gate.request() else { return }
 
         let frameNanoseconds = self.frameNanoseconds
@@ -499,20 +501,30 @@ final class DisplayFrameUpdateScheduler {
                 try await Task.sleep(nanoseconds: frameNanoseconds)
             } catch {
                 self?.pendingTask = nil
+                self?.pendingAction = nil
                 self?.gate.complete()
                 return
             }
 
-            guard let self, !Task.isCancelled else { return }
+            guard let self else { return }
+            guard !Task.isCancelled else {
+                pendingTask = nil
+                pendingAction = nil
+                gate.complete()
+                return
+            }
+            let action = pendingAction
             pendingTask = nil
+            pendingAction = nil
             gate.complete()
-            action()
+            action?()
         }
     }
 
     func cancel() {
         pendingTask?.cancel()
         pendingTask = nil
+        pendingAction = nil
         gate.complete()
     }
 }
