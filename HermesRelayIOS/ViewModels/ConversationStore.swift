@@ -22,7 +22,7 @@ final class ConversationStore {
     var isSending = false
     var unconfirmedTurnText: String?
 
-    private var activeAssistantID: UUID?
+    private(set) var activeAssistantID: UUID?
     private var turnCompleted = false
     private var didAttemptAutomaticConnection = false
     // A closed stream can still deliver already-buffered events. Generation

@@ -27,6 +27,7 @@ final class VoiceSessionCoordinatorTests: XCTestCase {
             transcriptMessages: [],
             provisionalText: "",
             isResponseActive: false,
+            activeAssistantID: nil,
             voiceCoordinator: coordinator,
             speechTimings: [],
             playbackDuration: nil,
