@@ -767,6 +767,33 @@ final class VoiceSessionCoordinatorTests: XCTestCase {
         XCTAssertEqual(coordinator.state, .idle)
     }
 
+    // The end of the response stream is terminal: no further audio can arrive.
+    // Requiring a trailing audio_end to leave Speaking left the HUD stuck.
+    @MainActor
+    func testResponseEndsIdleWhenTheStreamClosesWithoutATrailingAudioEnd() async {
+        let format = AudioFormat(sampleRate: 24_000, channels: 1, sampleWidth: 2)
+        let client = CoordinatorHermesSessionClient(events: [
+            .messageStart,
+            .textDelta("An answer."),
+            .audioStart(format),
+            .audioChunk(Data([0, 1, 2, 3])),
+            .turnComplete(turnID: "turn-1"),
+        ])
+        let store = await connectedStore(client)
+        let coordinator = VoiceSessionCoordinator(
+            store: store,
+            input: CoordinatorSpeechInput(
+                finalUpdate: SpeechRecognitionUpdate(text: "Say something", isFinal: true)
+            ),
+            output: CoordinatorAudioOutput()
+        )
+
+        await coordinator.beginCapture()
+        await coordinator.endCaptureAndSend()
+
+        XCTAssertEqual(coordinator.state, .idle)
+    }
+
     @MainActor
     private func connectedStore(_ client: CoordinatorHermesSessionClient) async -> ConversationStore {
         client.connectResult = .success(SessionMetadata(sessionID: "session-1", model: nil))

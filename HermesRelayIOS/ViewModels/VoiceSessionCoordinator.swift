@@ -340,8 +340,12 @@ final class VoiceSessionCoordinator {
         guard generation == responseGeneration, !Task.isCancelled else { return }
         if !completed, !isFailed {
             state = .failed(store.transientError ?? "The voice turn could not be completed.")
-        } else if completed, !isFailed, state != .interrupted, !audioStreamActive {
-            state = .idle
+        } else if completed, !isFailed, state != .interrupted {
+            // The event stream has closed, so no further audio can arrive.
+            // This is terminal even if the relay never sent a trailing
+            // audio_end, which otherwise left the HUD stuck on Speaking.
+            audioStreamActive = false
+            endResponse()
         }
     }
 
@@ -462,7 +466,8 @@ final class VoiceSessionCoordinator {
         if !completed, !isFailed {
             state = .failed(store.transientError ?? "The text turn could not be completed.")
         } else if completed, !isFailed, state != .interrupted {
-            state = .idle
+            audioStreamActive = false
+            endResponse()
         }
     }
 
