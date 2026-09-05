@@ -104,11 +104,103 @@ enum RecentTranscriptReveal {
     }
 }
 
+enum SpeechTimingReveal {
+    static func visibleText(
+        target: String,
+        timing: SpeechTiming,
+        playbackPosition: TimeInterval
+    ) -> String {
+        visibleText(
+            target: target,
+            timings: [timing],
+            playbackPosition: playbackPosition
+        )
+    }
+
+    static func visibleText(
+        target: String,
+        timings: [SpeechTiming],
+        playbackPosition: TimeInterval
+    ) -> String {
+        guard !target.isEmpty,
+              playbackPosition.isFinite,
+              !timings.isEmpty else {
+            return ""
+        }
+
+        let words = timings
+            .sorted { lhs, rhs in
+                (lhs.words.first?.startTime ?? .greatestFiniteMagnitude)
+                    < (rhs.words.first?.startTime ?? .greatestFiniteMagnitude)
+            }
+            .flatMap(\.words)
+        let visibleWordCount = words.prefix {
+            $0.startTime <= max(0, playbackPosition)
+        }.count
+        guard visibleWordCount > 0 else { return "" }
+
+        let targetRanges = wordRanges(in: target)
+        guard !targetRanges.isEmpty else { return "" }
+
+        let matchingWordCount = zip(words, targetRanges)
+            .prefix { timingWord, targetRange in
+                normalizedWord(timingWord.text) == normalizedWord(String(target[targetRange]))
+            }
+            .count
+        let usableWordCount = min(visibleWordCount, matchingWordCount, targetRanges.count)
+        guard usableWordCount > 0 else { return "" }
+
+        let lastVisibleRange = targetRanges[usableWordCount - 1]
+        var end = lastVisibleRange.upperBound
+        while end < target.endIndex, target[end].isWhitespace {
+            end = target.index(after: end)
+        }
+        return String(target[..<end])
+    }
+
+    private static func wordRanges(in text: String) -> [Range<String.Index>] {
+        var ranges: [Range<String.Index>] = []
+        var index = text.startIndex
+
+        while index < text.endIndex {
+            while index < text.endIndex, text[index].isWhitespace {
+                index = text.index(after: index)
+            }
+            guard index < text.endIndex else { break }
+
+            let start = index
+            while index < text.endIndex, !text[index].isWhitespace {
+                index = text.index(after: index)
+            }
+            ranges.append(start..<index)
+        }
+
+        return ranges
+    }
+
+    private static func normalizedWord(_ word: String) -> String {
+        word
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .trimmingCharacters(in: .punctuationCharacters)
+            .lowercased()
+    }
+}
+
 enum RecentTranscriptDisplay {
+    static func liveEntry(from entries: [RecentTranscriptEntry]) -> RecentTranscriptEntry? {
+        entries.last(where: \.isLive)
+    }
+
+    static func historyEntries(from entries: [RecentTranscriptEntry]) -> [RecentTranscriptEntry] {
+        entries.filter { !$0.isLive }
+    }
+
     static func entries(
         projection: RecentTranscriptProjection,
         isResponseActive: Bool,
-        revealedTexts: [String: String]
+        revealedTexts: [String: String],
+        speechTimings: [SpeechTiming] = [],
+        playbackPosition: TimeInterval? = nil
     ) -> [RecentTranscriptEntry] {
         guard isResponseActive,
               let latestAssistantID = projection.entries.last(where: { $0.role == .assistant })?.id else {
@@ -117,14 +209,35 @@ enum RecentTranscriptDisplay {
 
         return projection.entries.map { entry in
             guard entry.id == latestAssistantID else { return entry }
-            let visibleText = revealedTexts[entry.id].flatMap { revealedText in
+            let pacedText: String? = revealedTexts[entry.id].flatMap { revealedText -> String? in
                 guard !revealedText.isEmpty else { return nil }
                 return entry.text.hasPrefix(revealedText) ? revealedText : nil
-            } ?? RecentTranscriptReveal.nextText(
-                current: "",
-                target: entry.text,
-                characterBudget: 1
-            )
+            }
+            let timedText: String? = playbackPosition.flatMap { position -> String? in
+                guard !speechTimings.isEmpty else { return nil }
+                let visibleText = SpeechTimingReveal.visibleText(
+                    target: entry.text,
+                    timings: speechTimings,
+                    playbackPosition: position
+                )
+                return visibleText.isEmpty ? nil : visibleText
+            }
+            let visibleText: String
+            if let timedText {
+                if let pacedText, timedText.hasPrefix(pacedText) {
+                    visibleText = timedText
+                } else if let pacedText, pacedText.hasPrefix(timedText) {
+                    visibleText = pacedText
+                } else {
+                    visibleText = timedText
+                }
+            } else {
+                visibleText = pacedText ?? RecentTranscriptReveal.nextText(
+                    current: "",
+                    target: entry.text,
+                    characterBudget: 1
+                )
+            }
             return RecentTranscriptEntry(
                 id: entry.id,
                 role: entry.role,
@@ -138,6 +251,7 @@ enum RecentTranscriptDisplay {
 private struct RecentTranscriptRevealTarget: Equatable, Sendable {
     let id: String
     let text: String
+    let usesSpeechTiming: Bool
 }
 
 struct RecentTranscriptRail: View {
@@ -145,6 +259,8 @@ struct RecentTranscriptRail: View {
     let provisionalText: String
     let hasPersistedHistory: Bool
     let isResponseActive: Bool
+    let speechTimings: [SpeechTiming]
+    let playbackPosition: TimeInterval?
     let onShowHistory: () -> Void
 
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
@@ -152,6 +268,7 @@ struct RecentTranscriptRail: View {
     @State private var revealedTexts: [String: String] = [:]
 
     private static let bottomAnchorID = "recent-transcript-bottom"
+    private static let liveTranscriptViewportHeight: CGFloat = 192
     // Hermes does not include word timing metadata, so this keeps a one-shot
     // transcript readable at a conversational pace while audio is active.
     private static let revealStepNanoseconds: UInt64 = 320_000_000
@@ -168,8 +285,18 @@ struct RecentTranscriptRail: View {
         RecentTranscriptDisplay.entries(
             projection: projection,
             isResponseActive: isResponseActive,
-            revealedTexts: revealedTexts
+            revealedTexts: revealedTexts,
+            speechTimings: speechTimings,
+            playbackPosition: playbackPosition
         )
+    }
+
+    private var liveEntry: RecentTranscriptEntry? {
+        RecentTranscriptDisplay.liveEntry(from: displayedEntries)
+    }
+
+    private var historyEntries: [RecentTranscriptEntry] {
+        RecentTranscriptDisplay.historyEntries(from: displayedEntries)
     }
 
     private var revealTarget: RecentTranscriptRevealTarget? {
@@ -177,56 +304,67 @@ struct RecentTranscriptRail: View {
               let entry = projection.entries.last(where: { $0.role == .assistant }) else {
             return nil
         }
-        return RecentTranscriptRevealTarget(id: entry.id, text: entry.text)
+        return RecentTranscriptRevealTarget(
+            id: entry.id,
+            text: entry.text,
+            usesSpeechTiming: !speechTimings.isEmpty && playbackPosition != nil
+        )
     }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
-            ScrollViewReader { proxy in
-                ScrollView(.vertical, showsIndicators: false) {
-                    LazyVStack(alignment: .leading, spacing: 9) {
-                        ForEach(displayedEntries) { entry in
-                            RecentTranscriptEntryView(entry: entry)
-                                .id(entry.id)
-                        }
-
-                        Color.clear
-                            .frame(height: 1)
-                            .id(Self.bottomAnchorID)
-                    }
-                    .padding(.vertical, 4)
-                }
-                .frame(maxHeight: 152)
-                .contentShape(Rectangle())
-                .simultaneousGesture(
-                    DragGesture(minimumDistance: 3)
-                        .onChanged { _ in
-                            followState.pauseFollowing()
-                        }
+            if let liveEntry {
+                LiveTranscriptEntryView(
+                    entry: liveEntry,
+                    viewportHeight: Self.liveTranscriptViewportHeight,
+                    reduceMotion: reduceMotion
                 )
-                .onTapGesture {
-                    followState.pauseFollowing()
-                }
-                .onAppear {
-                    scrollToLatest(using: proxy, animated: false)
-                }
-                .onChange(of: displayedEntries) { _, _ in
-                    guard followState.isFollowingLatest else { return }
-                    scrollToLatest(using: proxy, animated: !reduceMotion)
-                }
-                .onChange(of: followState.isFollowingLatest) { _, isFollowing in
-                    guard isFollowing else { return }
-                    scrollToLatest(using: proxy, animated: !reduceMotion)
-                }
-                .accessibilityLabel(
-                    followState.isFollowingLatest
-                        ? "Recent transcript, following newest text"
-                        : "Recent transcript, reading paused"
-                )
+                    .accessibilityAddTraits(.updatesFrequently)
             }
 
-            .task(id: revealTarget) {
-                await revealText(for: revealTarget)
+            if liveEntry == nil {
+                ScrollViewReader { proxy in
+                    ScrollView(.vertical, showsIndicators: false) {
+                        LazyVStack(alignment: .leading, spacing: 9) {
+                            ForEach(historyEntries) { entry in
+                                RecentTranscriptEntryView(entry: entry)
+                                    .id(entry.id)
+                            }
+
+                            Color.clear
+                                .frame(height: 1)
+                                .id(Self.bottomAnchorID)
+                        }
+                        .padding(.vertical, 4)
+                    }
+                    .frame(maxHeight: 152)
+                    .contentShape(Rectangle())
+                    .simultaneousGesture(
+                        DragGesture(minimumDistance: 3)
+                            .onChanged { _ in
+                                followState.pauseFollowing()
+                            }
+                    )
+                    .onTapGesture {
+                        followState.pauseFollowing()
+                    }
+                    .onAppear {
+                        scrollToLatest(using: proxy, animated: false)
+                    }
+                    .onChange(of: displayedEntries) { _, _ in
+                        guard followState.isFollowingLatest else { return }
+                        scrollToLatest(using: proxy, animated: !reduceMotion)
+                    }
+                    .onChange(of: followState.isFollowingLatest) { _, isFollowing in
+                        guard isFollowing else { return }
+                        scrollToLatest(using: proxy, animated: !reduceMotion)
+                    }
+                    .accessibilityLabel(
+                        followState.isFollowingLatest
+                            ? "Recent transcript, following newest text"
+                            : "Recent transcript, reading paused"
+                    )
+                }
             }
 
             HStack(spacing: 12) {
@@ -249,6 +387,10 @@ struct RecentTranscriptRail: View {
                     .buttonStyle(.borderless)
                 }
             }
+
+            .task(id: revealTarget) {
+                await revealText(for: revealTarget)
+            }
         }
         .frame(maxWidth: 680)
         .accessibilityElement(children: .contain)
@@ -259,6 +401,7 @@ struct RecentTranscriptRail: View {
         guard let target else {
             return
         }
+        guard !target.usesSpeechTiming else { return }
 
         var visibleText = revealedTexts[target.id] ?? ""
         if !target.text.hasPrefix(visibleText) {
@@ -301,18 +444,7 @@ private struct RecentTranscriptEntryView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 4) {
-            HStack(spacing: 6) {
-                Text(entry.role.railLabel.uppercased())
-                    .font(.caption2.weight(.bold))
-                    .tracking(1.0)
-                    .foregroundStyle(entry.role.railTint)
-
-                if entry.isLive {
-                    Text("LIVE")
-                        .font(.caption2.weight(.semibold))
-                        .foregroundStyle(.secondary)
-                }
-            }
+            RecentTranscriptEntryHeader(entry: entry)
 
             Text(entry.text)
                 .font(.callout)
@@ -327,6 +459,81 @@ private struct RecentTranscriptEntryView: View {
                 ? "(entry.role.railLabel), live, (entry.text)"
                 : "(entry.role.railLabel), (entry.text)"
         )
+    }
+}
+
+private struct LiveTranscriptEntryView: View {
+    let entry: RecentTranscriptEntry
+    let viewportHeight: CGFloat
+    let reduceMotion: Bool
+
+    private let bottomAnchorID = "live-transcript-bottom"
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            RecentTranscriptEntryHeader(entry: entry)
+
+            ScrollViewReader { proxy in
+                ScrollView(.vertical, showsIndicators: false) {
+                    VStack(alignment: .leading, spacing: 0) {
+                        Text(entry.text)
+                            .font(.title3)
+                            .foregroundStyle(.primary)
+                            .lineSpacing(3)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+
+                        Color.clear
+                            .frame(height: 1)
+                            .id(bottomAnchorID)
+                    }
+                    .padding(.vertical, 2)
+                }
+                .frame(height: viewportHeight)
+                .scrollEdgeEffectStyle(.soft, for: .top)
+                .onAppear {
+                    scrollToLatest(using: proxy, animated: false)
+                }
+                .onChange(of: entry.text) { _, _ in
+                    scrollToLatest(using: proxy, animated: !reduceMotion)
+                }
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel(
+            entry.isLive
+                ? "(entry.role.railLabel), live, (entry.text)"
+                : "(entry.role.railLabel), (entry.text)"
+        )
+    }
+
+    private func scrollToLatest(using proxy: ScrollViewProxy, animated: Bool) {
+        if animated {
+            withAnimation(.easeOut(duration: 0.16)) {
+                proxy.scrollTo(bottomAnchorID, anchor: .bottom)
+            }
+        } else {
+            proxy.scrollTo(bottomAnchorID, anchor: .bottom)
+        }
+    }
+}
+
+private struct RecentTranscriptEntryHeader: View {
+    let entry: RecentTranscriptEntry
+
+    var body: some View {
+        HStack(spacing: 6) {
+            Text(entry.role.railLabel.uppercased())
+                .font(.caption2.weight(.bold))
+                .tracking(1.0)
+                .foregroundStyle(entry.role.railTint)
+
+            if entry.isLive {
+                Text("LIVE")
+                    .font(.caption2.weight(.semibold))
+                    .foregroundStyle(.secondary)
+            }
+        }
     }
 }
 
@@ -370,6 +577,8 @@ private extension TranscriptRole {
         provisionalText: "",
         hasPersistedHistory: true,
         isResponseActive: false,
+        speechTimings: [],
+        playbackPosition: nil,
         onShowHistory: {}
     )
     .padding()

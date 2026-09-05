@@ -99,6 +99,61 @@ final class HermesEventNormalizerTests: XCTestCase {
         XCTAssertEqual(end, [.audioFileEnd])
     }
 
+    func testSpeechTimingNormalizesWordBoundariesInMilliseconds() throws {
+        var normalizer = HermesEventNormalizer()
+
+        let events = try normalizer.normalizeJSON(
+            json([
+                "type": "speech_timing",
+                "payload": [
+                    "segment_id": "segment-1",
+                    "text": "Hermes keeps moving.",
+                    "words": [
+                        ["text": "Hermes", "start_ms": 0, "end_ms": 280],
+                        ["text": "keeps", "start_ms": 280, "end_ms": 510],
+                        ["text": "moving.", "start_ms": 510, "end_ms": 920],
+                    ],
+                ] as [String: Any],
+            ]),
+            turnID: "turn-1"
+        )
+
+        XCTAssertEqual(
+            events,
+            [
+                .speechTiming(
+                    SpeechTiming(
+                        segmentID: "segment-1",
+                        text: "Hermes keeps moving.",
+                        words: [
+                            SpeechTimingWord(text: "Hermes", startTime: 0, endTime: 0.28),
+                            SpeechTimingWord(text: "keeps", startTime: 0.28, endTime: 0.51),
+                            SpeechTimingWord(text: "moving.", startTime: 0.51, endTime: 0.92),
+                        ]
+                    )
+                ),
+            ]
+        )
+    }
+
+    func testInvalidSpeechTimingIsIgnoredAsAnUnknownEvent() throws {
+        var normalizer = HermesEventNormalizer()
+
+        let events = try normalizer.normalizeJSON(
+            json([
+                "type": "speech_timing",
+                "payload": [
+                    "words": [
+                        ["text": "Hermes", "start_ms": 400, "end_ms": 200],
+                    ],
+                ],
+            ] as [String: Any]),
+            turnID: "turn-1"
+        )
+
+        XCTAssertEqual(events, [.unknown(type: "speech_timing")])
+    }
+
     func testErrorStopsWithTheServerMessageOrFallback() throws {
         var normalizer = HermesEventNormalizer()
 

@@ -110,6 +110,11 @@ struct HermesEventNormalizer: Sendable {
             ]
         case "audio_file_end":
             return [.audioFileEnd]
+        case "speech_timing":
+            guard let timing = normalizeSpeechTiming(payload, turnID: turnID) else {
+                return [.unknown(type: type)]
+            }
+            return [.speechTiming(timing)]
         case "error":
             let message = stringValue(for: "error", in: payload)
                 ?? stringValue(for: "message", in: payload)
@@ -180,6 +185,63 @@ struct HermesEventNormalizer: Sendable {
         return [.textReplace(finalText)]
     }
 
+    private func normalizeSpeechTiming(
+        _ payload: [String: Any],
+        turnID: String
+    ) -> SpeechTiming? {
+        guard let rawWords = payload["words"] as? [[String: Any]], !rawWords.isEmpty else {
+            return nil
+        }
+
+        var words: [SpeechTimingWord] = []
+        var previousStartTime = 0.0
+        var previousEndTime = 0.0
+
+        for (index, rawWord) in rawWords.enumerated() {
+            guard let text = stringValue(for: "text", in: rawWord),
+                  !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+                  let startMilliseconds = doubleValue(for: "start_ms", in: rawWord),
+                  let endMilliseconds = doubleValue(for: "end_ms", in: rawWord),
+                  startMilliseconds.isFinite,
+                  endMilliseconds.isFinite,
+                  startMilliseconds >= 0,
+                  endMilliseconds > startMilliseconds else {
+                return nil
+            }
+
+            let startTime = startMilliseconds / 1_000
+            let endTime = endMilliseconds / 1_000
+            guard index == 0
+                    ? startTime >= 0
+                    : startTime >= previousStartTime && startTime >= previousEndTime else {
+                return nil
+            }
+
+            words.append(
+                SpeechTimingWord(
+                    text: text,
+                    startTime: startTime,
+                    endTime: endTime
+                )
+            )
+            previousStartTime = startTime
+            previousEndTime = endTime
+        }
+
+        let text = stringValue(for: "text", in: payload)
+            ?? stringValue(for: "rendered", in: payload)
+            ?? words.map(\.text).joined(separator: " ")
+        guard !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            return nil
+        }
+
+        return SpeechTiming(
+            segmentID: stringValue(for: "segment_id", in: payload) ?? turnID,
+            text: text,
+            words: words
+        )
+    }
+
     private func stringValue(for key: String, in object: [String: Any]) -> String? {
         object[key] as? String
     }
@@ -193,5 +255,12 @@ struct HermesEventNormalizer: Sendable {
         if let value = object[key] as? NSNumber { return value.intValue }
         if let value = object[key] as? String, let integer = Int(value) { return integer }
         return defaultValue
+    }
+
+    private func doubleValue(for key: String, in object: [String: Any]) -> Double? {
+        if let value = object[key] as? Double { return value }
+        if let value = object[key] as? NSNumber { return value.doubleValue }
+        if let value = object[key] as? String { return Double(value) }
+        return nil
     }
 }

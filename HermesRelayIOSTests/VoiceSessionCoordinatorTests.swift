@@ -28,6 +28,8 @@ final class VoiceSessionCoordinatorTests: XCTestCase {
             provisionalText: "",
             isResponseActive: false,
             voiceCoordinator: coordinator,
+            speechTimings: [],
+            playbackPosition: nil,
             hasTranscript: false,
             canConfigure: false,
             onConfigure: {},
@@ -443,6 +445,48 @@ final class VoiceSessionCoordinatorTests: XCTestCase {
     }
 
     @MainActor
+    func testCoordinatorPublishesPlaybackPositionForSpeechTiming() async {
+        let input = CoordinatorSpeechInput(finalUpdate: SpeechRecognitionUpdate(text: "Speak", isFinal: true))
+        let timing = SpeechTiming(
+            segmentID: "segment-1",
+            text: "Hermes keeps speaking.",
+            words: [
+                SpeechTimingWord(text: "Hermes", startTime: 0, endTime: 0.25),
+                SpeechTimingWord(text: "keeps", startTime: 0.25, endTime: 0.48),
+                SpeechTimingWord(text: "speaking.", startTime: 0.48, endTime: 0.9),
+            ]
+        )
+        let output = CoordinatorAudioOutput(
+            waitsForFinish: true,
+            playbackPosition: 0.58
+        )
+        let client = CoordinatorHermesSessionClient(events: [
+            .messageStart,
+            .textDelta("Hermes keeps speaking."),
+            .speechTiming(timing),
+            .audioStart(AudioFormat(sampleRate: 24_000, channels: 1, sampleWidth: 2)),
+            .audioChunk(Data([0, 1, 2, 3])),
+            .audioEnd,
+            .turnComplete(turnID: "turn-1"),
+        ])
+        let store = await connectedStore(client)
+        let coordinator = VoiceSessionCoordinator(store: store, input: input, output: output)
+
+        await coordinator.beginCapture()
+        let responseTask = Task { @MainActor in
+            await coordinator.endCaptureAndSend()
+        }
+        await output.waitUntilFinishRequested()
+        for _ in 0..<3 { await Task.yield() }
+
+        XCTAssertEqual(coordinator.speechTimings, [timing])
+        XCTAssertEqual(coordinator.playbackPosition ?? -1, 0.58, accuracy: 0.001)
+
+        await output.allowFinish()
+        await responseTask.value
+    }
+
+    @MainActor
     func testInterruptStopsPlaybackReconnectsAndBeginsNewCapture() async {
         let input = CoordinatorSpeechInput(
             finalUpdate: SpeechRecognitionUpdate(text: "Interrupt me", isFinal: true)
@@ -744,6 +788,7 @@ private actor CoordinatorAudioOutput: AudioOutput {
     private let finishError: AudioOutputError?
     private let appendReadiness: AudioPlaybackReadiness
     private let waitsForFinish: Bool
+    private let reportedPlaybackPosition: TimeInterval?
     private var finishRequested = false
     private var finishRequestWaiters: [CheckedContinuation<Void, Never>] = []
     private var appendRequested = false
@@ -755,12 +800,14 @@ private actor CoordinatorAudioOutput: AudioOutput {
         appendError: AudioOutputError? = nil,
         finishError: AudioOutputError? = nil,
         appendReadiness: AudioPlaybackReadiness = .ready,
-        waitsForFinish: Bool = false
+        waitsForFinish: Bool = false,
+        playbackPosition: TimeInterval? = nil
     ) {
         self.appendError = appendError
         self.finishError = finishError
         self.appendReadiness = appendReadiness
         self.waitsForFinish = waitsForFinish
+        self.reportedPlaybackPosition = playbackPosition
     }
 
     func start(format: AudioFormat) async throws {
@@ -795,6 +842,8 @@ private actor CoordinatorAudioOutput: AudioOutput {
     func stop() async {
         recordedOperations.append(.stop)
     }
+
+    func playbackPosition() async -> TimeInterval? { reportedPlaybackPosition }
 
     func operations() -> [Operation] {
         recordedOperations

@@ -88,6 +88,20 @@ struct AudioFormat: Equatable, Sendable {
     let sampleWidth: Int
 }
 
+/// A word boundary measured from the beginning of the active inbound audio stream.
+struct SpeechTimingWord: Equatable, Sendable {
+    let text: String
+    let startTime: TimeInterval
+    let endTime: TimeInterval
+}
+
+/// Timing for one audio segment. Segment revisions use the same segment ID.
+struct SpeechTiming: Equatable, Sendable {
+    let segmentID: String
+    let text: String
+    let words: [SpeechTimingWord]
+}
+
 enum TranscriptRole: String, Codable, Equatable, Sendable {
     case user
     case assistant
@@ -119,6 +133,7 @@ enum HermesEvent: Equatable, Sendable {
     case audioFileStart(contentType: String)
     case audioFileChunk(Data)
     case audioFileEnd
+    case speechTiming(SpeechTiming)
     case messageComplete(text: String, reasoning: String, failureReason: String)
     case turnComplete(turnID: String)
     case error(String)

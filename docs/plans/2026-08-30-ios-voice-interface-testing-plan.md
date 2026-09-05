@@ -87,6 +87,13 @@ device/OS used.
 10. Review diagnostics and artifacts. Confirm no prompt, response, token, raw
    frame, microphone audio, or PCM content was logged or captured.
 
+For a relay build that emits `speech_timing`, repeat step 5 with a response
+long enough to span multiple timing segments. Confirm the rail reveals words as
+the speaker reaches their playback offsets, a revised segment does not duplicate
+text, and missing or incompatible timing leaves the readable paced transcript
+visible. Interrupt during playback and confirm the timing cursor and response
+playback state clear before the next capture.
+
 ## macOS validation
 
 Build the shared target explicitly:

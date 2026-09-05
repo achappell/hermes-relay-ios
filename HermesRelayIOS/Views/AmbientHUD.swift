@@ -205,6 +205,8 @@ struct AmbientHUDView: View {
     let provisionalText: String
     let isResponseActive: Bool
     let voiceCoordinator: VoiceSessionCoordinator?
+    let speechTimings: [SpeechTiming]
+    let playbackPosition: TimeInterval?
     let hasTranscript: Bool
     let canConfigure: Bool
     let onConfigure: () -> Void
@@ -314,6 +316,8 @@ struct AmbientHUDView: View {
                     provisionalText: liveProvisionalText,
                     hasPersistedHistory: hasTranscript,
                     isResponseActive: isResponseActive,
+                    speechTimings: speechTimings,
+                    playbackPosition: playbackPosition,
                     onShowHistory: onShowHistory
                 )
             }
@@ -490,6 +494,8 @@ private extension ConnectionState {
         provisionalText: "",
         isResponseActive: false,
         voiceCoordinator: nil,
+        speechTimings: [],
+        playbackPosition: nil,
         hasTranscript: true,
         canConfigure: true,
         onConfigure: {},
