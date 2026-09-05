@@ -17,6 +17,9 @@ final class VoiceSessionCoordinator {
     // stream means "this paragraph ended", not "the answer ended". Only
     // turn completion ends the response.
     private var turnDidComplete = false
+    // IOS-32 instrumentation: which audio segment of the current answer is
+    // playing, so a boundary can be correlated with the playback clock.
+    private var audioSegmentIndex = 0
     private(set) var speechTimings: [SpeechTiming] = []
     private(set) var playbackDuration: TimeInterval?
     private(set) var playbackPosition: TimeInterval?
@@ -333,6 +336,7 @@ final class VoiceSessionCoordinator {
     private func submitVoiceTurn(_ text: String, generation: UInt64) async {
         guard generation == responseGeneration, !Task.isCancelled else { return }
         turnDidComplete = false
+        audioSegmentIndex = 0
         state = .thinking
         let completed = await store.sendTurn(text: text) { [weak self] event in
             await self?.handle(event, generation: generation)
@@ -358,6 +362,13 @@ final class VoiceSessionCoordinator {
             }
         case .audioStart(let format):
             guard !playbackFailed else { return }
+            await diagnostics.record(
+                .segmentBoundary(
+                    index: audioSegmentIndex,
+                    phase: .started,
+                    playbackPositionMilliseconds: Self.milliseconds(playbackPosition)
+                )
+            )
             audioFileBuffer.removeAll(keepingCapacity: false)
             audioStreamActive = true
             audioFormat = format
@@ -391,6 +402,14 @@ final class VoiceSessionCoordinator {
         case .audioEnd:
             guard !playbackFailed else { return }
             await diagnostics.record(.streamEnded(bytes: streamedAudioBytes))
+            await diagnostics.record(
+                .segmentBoundary(
+                    index: audioSegmentIndex,
+                    phase: .ended,
+                    playbackPositionMilliseconds: Self.milliseconds(playbackPosition)
+                )
+            )
+            audioSegmentIndex += 1
             do {
                 try await output.finish()
                 audioStreamActive = false
@@ -439,6 +458,16 @@ final class VoiceSessionCoordinator {
         case .error(let message):
             state = .failed(message)
         case .speechTiming(let timing):
+            await diagnostics.record(
+                .speechTimingReceived(
+                    segmentIndex: audioSegmentIndex,
+                    audioOffsetMilliseconds: Self.milliseconds(timing.audioOffset) ?? 0,
+                    durationMilliseconds: Self.milliseconds(timing.duration) ?? 0,
+                    wordCount: timing.words.count,
+                    source: String(describing: timing.timingSource),
+                    fallbackReason: timing.fallbackReason.map { String(describing: $0) }
+                )
+            )
             if let index = speechTimings.firstIndex(where: { $0.segmentID == timing.segmentID }) {
                 speechTimings[index] = timing
             } else {
@@ -458,6 +487,7 @@ final class VoiceSessionCoordinator {
     private func submitDraft(generation: UInt64) async {
         guard generation == responseGeneration, !Task.isCancelled else { return }
         turnDidComplete = false
+        audioSegmentIndex = 0
         state = .thinking
         let completed = await store.sendDraft { [weak self] event in
             await self?.handle(event, generation: generation)
@@ -516,6 +546,11 @@ final class VoiceSessionCoordinator {
         playbackPositionTask?.cancel()
         playbackPositionTask = nil
         playbackPosition = nil
+    }
+
+    private static func milliseconds(_ seconds: TimeInterval?) -> Int? {
+        guard let seconds, seconds.isFinite else { return nil }
+        return Int((seconds * 1000).rounded())
     }
 
     private func resetSpeechTiming() {
