@@ -383,9 +383,11 @@ final class VoiceSessionCoordinatorTests: XCTestCase {
 
         let events = await diagnostics.events()
         XCTAssertEqual(events, [
+            .segmentBoundary(index: 0, phase: .started, playbackPositionMilliseconds: nil),
             .streamStarted(format: format),
             .chunkReceived(bytes: 4),
             .streamEnded(bytes: 4),
+            .segmentBoundary(index: 0, phase: .ended, playbackPositionMilliseconds: nil),
         ])
     }
 
@@ -792,6 +794,90 @@ final class VoiceSessionCoordinatorTests: XCTestCase {
         await coordinator.endCaptureAndSend()
 
         XCTAssertEqual(coordinator.state, .idle)
+    }
+
+    // IOS-32 instrumentation: one run must show whether the playback clock
+    // restarts per segment while timing offsets keep climbing.
+    @MainActor
+    func testSegmentBoundariesAndSpeechTimingAreRecordedForDiagnosis() async {
+        let format = AudioFormat(sampleRate: 24_000, channels: 1, sampleWidth: 2)
+        let diagnostics = RecordingAudioPlaybackDiagnostics()
+        let client = CoordinatorHermesSessionClient(events: [
+            .messageStart,
+            .audioStart(format),
+            .speechTiming(
+                SpeechTiming(
+                    segmentID: "segment-0",
+                    text: "First",
+                    timingSource: .alignment,
+                    audioOffset: 0,
+                    duration: 1.5,
+                    fallbackReason: nil,
+                    words: [SpeechTimingWord(text: "First", startTime: 0, endTime: 1.5)]
+                )
+            ),
+            .audioChunk(Data([0, 1, 2, 3])),
+            .audioEnd,
+            .audioStart(format),
+            .speechTiming(
+                SpeechTiming(
+                    segmentID: "segment-1",
+                    text: "Second",
+                    timingSource: .durationFallback,
+                    audioOffset: 1.5,
+                    duration: 2.0,
+                    fallbackReason: .invalid,
+                    words: []
+                )
+            ),
+            .audioChunk(Data([4, 5, 6, 7])),
+            .audioEnd,
+            .turnComplete(turnID: "turn-1"),
+        ])
+        let store = await connectedStore(client)
+        store.draft = "Tell me something long"
+        let coordinator = VoiceSessionCoordinator(
+            store: store,
+            input: CoordinatorSpeechInput(),
+            output: CoordinatorAudioOutput(),
+            diagnostics: diagnostics
+        )
+
+        await coordinator.sendDraft()
+
+        let recorded = await diagnostics.events()
+        var boundaryIndexes: [Int] = []
+        var boundaryPhases: [AudioSegmentPhase] = []
+        for event in recorded {
+            guard case .segmentBoundary(let index, let phase, _) = event else { continue }
+            boundaryIndexes.append(index)
+            boundaryPhases.append(phase)
+        }
+        XCTAssertEqual(boundaryIndexes, [0, 0, 1, 1])
+        XCTAssertEqual(
+            boundaryPhases,
+            [AudioSegmentPhase.started, .ended, .started, .ended]
+        )
+
+        var timingSegments: [Int] = []
+        var timingOffsets: [Int] = []
+        var timingFallbacks: [String?] = []
+        for event in recorded {
+            guard case .speechTimingReceived(
+                let segmentIndex,
+                let audioOffsetMilliseconds,
+                _,
+                _,
+                _,
+                let fallbackReason
+            ) = event else { continue }
+            timingSegments.append(segmentIndex)
+            timingOffsets.append(audioOffsetMilliseconds)
+            timingFallbacks.append(fallbackReason)
+        }
+        XCTAssertEqual(timingSegments, [0, 1])
+        XCTAssertEqual(timingOffsets, [0, 1500])
+        XCTAssertEqual(timingFallbacks, [nil, "invalid"])
     }
 
     @MainActor

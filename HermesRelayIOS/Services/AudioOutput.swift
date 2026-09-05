@@ -100,6 +100,27 @@ enum AudioPlaybackDiagnostic: Equatable, Sendable {
     case streamEnded(bytes: Int)
     case playbackCompleted(bytes: Int)
     case playbackFailed
+    // IOS-32: separates a per-segment playback clock reset from timing
+    // segments the normalizer could not map. Numbers and enum names only —
+    // never transcript text.
+    case segmentBoundary(
+        index: Int,
+        phase: AudioSegmentPhase,
+        playbackPositionMilliseconds: Int?
+    )
+    case speechTimingReceived(
+        segmentIndex: Int,
+        audioOffsetMilliseconds: Int,
+        durationMilliseconds: Int,
+        wordCount: Int,
+        source: String,
+        fallbackReason: String?
+    )
+}
+
+enum AudioSegmentPhase: String, Equatable, Sendable {
+    case started
+    case ended
 }
 
 protocol AudioPlaybackDiagnostics: Sendable {
@@ -134,6 +155,21 @@ struct OSLogAudioPlaybackDiagnostics: AudioPlaybackDiagnostics, Sendable {
             logger.debug("audio playback completed bytes=\(bytes, privacy: .public)")
         case .playbackFailed:
             logger.error("audio playback failed")
+        case .segmentBoundary(let index, let phase, let positionMilliseconds):
+            logger.debug(
+                "audio segment \(phase.rawValue, privacy: .public) index=\(index, privacy: .public) playback_position_ms=\(positionMilliseconds ?? -1, privacy: .public)"
+            )
+        case .speechTimingReceived(
+            let segmentIndex,
+            let audioOffsetMilliseconds,
+            let durationMilliseconds,
+            let wordCount,
+            let source,
+            let fallbackReason
+        ):
+            logger.debug(
+                "speech timing segment_index=\(segmentIndex, privacy: .public) audio_offset_ms=\(audioOffsetMilliseconds, privacy: .public) duration_ms=\(durationMilliseconds, privacy: .public) words=\(wordCount, privacy: .public) source=\(source, privacy: .public) fallback=\(fallbackReason ?? "none", privacy: .public)"
+            )
         }
     }
 }
