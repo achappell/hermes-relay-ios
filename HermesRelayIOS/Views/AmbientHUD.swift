@@ -211,6 +211,8 @@ struct AmbientHUDView: View {
     let isPlaybackDurationFinal: Bool
     let hasTranscript: Bool
     let canConfigure: Bool
+    let unconfirmedTurnText: String?
+    let onResendUnconfirmedTurn: () -> Void
     let onConfigure: () -> Void
     let onConnect: () -> Void
     let onShowHistory: () -> Void
@@ -222,6 +224,10 @@ struct AmbientHUDView: View {
     var body: some View {
         VStack(spacing: 0) {
             sessionHeader
+
+            if let unconfirmedTurnText {
+                unconfirmedTurnNotice(text: unconfirmedTurnText)
+            }
 
             Spacer(minLength: 20)
 
@@ -256,6 +262,39 @@ struct AmbientHUDView: View {
         .accessibilityElement(children: .contain)
     }
 
+    /// A turn that was in flight when the transport died is never replayed
+    /// automatically: Hermes may already have received it. Show what it was
+    /// and let the sending be a deliberate act.
+    private func unconfirmedTurnNotice(text: String) -> some View {
+        HStack(alignment: .firstTextBaseline, spacing: 10) {
+            Image(systemName: "exclamationmark.arrow.circlepath")
+                .foregroundStyle(.orange)
+
+            VStack(alignment: .leading, spacing: 2) {
+                Text(text)
+                    .font(.footnote)
+                    .lineLimit(2)
+                Text("Not confirmed by Hermes. It was not sent again automatically.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+
+            Spacer(minLength: 8)
+
+            Button("Resend", action: onResendUnconfirmedTurn)
+                .disabled(!connectionState.isConnected)
+                .font(.footnote.weight(.semibold))
+                .relayGlassProminentButtonStyle()
+        }
+        .padding(.horizontal, 14)
+        .padding(.vertical, 10)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .relayGlass(cornerRadius: 20)
+        .padding(.top, 8)
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel("Unconfirmed turn, \(text). It was not sent again automatically.")
+    }
+
     private var sessionHeader: some View {
         TimelineView(.periodic(from: .now, by: 1)) { context in
             HStack(spacing: 10) {
@@ -275,7 +314,7 @@ struct AmbientHUDView: View {
 
                 if !connectionState.isConnected {
                     Button(connectionState.connectButtonTitle, action: onConnect)
-                        .disabled(connectionState == .connecting)
+                        .disabled(connectionState == .connecting || connectionState.isReconnecting)
                         .font(.footnote.weight(.semibold))
                         .relayGlassProminentButtonStyle()
                 }
@@ -460,7 +499,7 @@ private extension ConnectionState {
             return .green
         case .failed:
             return .red
-        case .connecting:
+        case .connecting, .reconnecting:
             return .orange
         case .disconnected:
             return .secondary
@@ -471,6 +510,8 @@ private extension ConnectionState {
         switch self {
         case .failed:
             return "Retry"
+        case .reconnecting:
+            return "Reconnecting…"
         case .disconnected, .connecting:
             return "Connect"
         case .connected:
@@ -504,6 +545,8 @@ private extension ConnectionState {
         isPlaybackDurationFinal: false,
         hasTranscript: true,
         canConfigure: true,
+        unconfirmedTurnText: "Did this one reach Hermes?",
+        onResendUnconfirmedTurn: {},
         onConfigure: {},
         onConnect: {},
         onShowHistory: {}

@@ -4,6 +4,7 @@ enum ConnectionState: Equatable, Sendable {
     case disconnected
     case connecting
     case connected
+    case reconnecting(attempt: Int, of: Int)
     case failed(String)
 
     var label: String {
@@ -14,6 +15,8 @@ enum ConnectionState: Equatable, Sendable {
             return "Connecting…"
         case .connected:
             return "Connected"
+        case .reconnecting(let attempt, let total):
+            return "Reconnecting… (\(attempt) of \(total))"
         case .failed:
             return "Unavailable"
         }
@@ -21,6 +24,11 @@ enum ConnectionState: Equatable, Sendable {
 
     var isConnected: Bool {
         self == .connected
+    }
+
+    var isReconnecting: Bool {
+        if case .reconnecting = self { return true }
+        return false
     }
 }
 

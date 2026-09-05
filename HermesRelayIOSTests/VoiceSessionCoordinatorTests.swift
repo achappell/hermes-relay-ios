@@ -34,6 +34,8 @@ final class VoiceSessionCoordinatorTests: XCTestCase {
             isPlaybackDurationFinal: false,
             hasTranscript: false,
             canConfigure: false,
+            unconfirmedTurnText: nil,
+            onResendUnconfirmedTurn: {},
             onConfigure: {},
             onConnect: {},
             onShowHistory: {}

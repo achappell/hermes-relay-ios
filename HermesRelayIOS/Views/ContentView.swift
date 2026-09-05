@@ -105,6 +105,10 @@ struct ContentView: View {
             isPlaybackDurationFinal: voiceCoordinator.isPlaybackDurationFinal,
             hasTranscript: !store.messages.isEmpty,
             canConfigure: configurationStore != nil,
+            unconfirmedTurnText: store.unconfirmedTurnText,
+            onResendUnconfirmedTurn: {
+                Task { await store.resendUnconfirmedTurn() }
+            },
             onConfigure: {
                 showingConfiguration = true
             },

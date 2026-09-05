@@ -21,6 +21,9 @@
 		A1000000000000000000001C /* HermesEventNormalizerTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000000000000000000037 /* HermesEventNormalizerTests.swift */; };
 		A1000000000000000000001D /* HermesEventNormalizer.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000000000000000000038 /* HermesEventNormalizer.swift */; };
 		A1000000000000000000001E /* URLSessionHermesSessionClientTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000000000000000000039 /* URLSessionHermesSessionClientTests.swift */; };
+		A100000000000000000000A6 /* ReconnectPolicy.swift in Sources */ = {isa = PBXBuildFile; fileRef = A100000000000000000000A7 /* ReconnectPolicy.swift */; };
+		A100000000000000000000A8 /* ReconnectPolicyTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A100000000000000000000A9 /* ReconnectPolicyTests.swift */; };
+		A100000000000000000000AA /* ConversationStoreReconnectTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A100000000000000000000AB /* ConversationStoreReconnectTests.swift */; };
 		A1000000000000000000001F /* WebSocketConnection.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1000000000000000000003A /* WebSocketConnection.swift */; };
 		A1000000000000000000002A /* URLSessionHermesSessionClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1000000000000000000003B /* URLSessionHermesSessionClient.swift */; };
 		A1000000000000000000002B /* ConversationStoreTransportTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1000000000000000000003C /* ConversationStoreTransportTests.swift */; };
@@ -72,6 +75,9 @@
 		A10000000000000000000037 /* HermesEventNormalizerTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HermesEventNormalizerTests.swift; sourceTree = "<group>"; };
 		A10000000000000000000038 /* HermesEventNormalizer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HermesEventNormalizer.swift; sourceTree = "<group>"; };
 		A10000000000000000000039 /* URLSessionHermesSessionClientTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = URLSessionHermesSessionClientTests.swift; sourceTree = "<group>"; };
+		A100000000000000000000A7 /* ReconnectPolicy.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ReconnectPolicy.swift; sourceTree = "<group>"; };
+		A100000000000000000000A9 /* ReconnectPolicyTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ReconnectPolicyTests.swift; sourceTree = "<group>"; };
+		A100000000000000000000AB /* ConversationStoreReconnectTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ConversationStoreReconnectTests.swift; sourceTree = "<group>"; };
 		A1000000000000000000003A /* WebSocketConnection.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WebSocketConnection.swift; sourceTree = "<group>"; };
 		A1000000000000000000003B /* URLSessionHermesSessionClient.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = URLSessionHermesSessionClient.swift; sourceTree = "<group>"; };
 		A1000000000000000000003C /* ConversationStoreTransportTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ConversationStoreTransportTests.swift; sourceTree = "<group>"; };
@@ -142,6 +148,8 @@
 				A10000000000000000000032 /* RelayConfigurationTests.swift */,
 				A10000000000000000000037 /* HermesEventNormalizerTests.swift */,
 				A10000000000000000000039 /* URLSessionHermesSessionClientTests.swift */,
+				A100000000000000000000A9 /* ReconnectPolicyTests.swift */,
+				A100000000000000000000AB /* ConversationStoreReconnectTests.swift */,
 				A1000000000000000000003C /* ConversationStoreTransportTests.swift */,
 				A1000000000000000000003D /* SpeechInputTests.swift */,
 				A1000000000000000000008B /* AudioOutputTests.swift */,
@@ -175,6 +183,7 @@
 			children = (
 				A10000000000000000000023 /* HermesSessionClient.swift */,
 				A10000000000000000000038 /* HermesEventNormalizer.swift */,
+				A100000000000000000000A7 /* ReconnectPolicy.swift */,
 				A1000000000000000000003A /* WebSocketConnection.swift */,
 				A1000000000000000000003B /* URLSessionHermesSessionClient.swift */,
 				A1000000000000000000003E /* SpeechInput.swift */,
@@ -319,6 +328,7 @@
 				A1000000000000000000001A /* SecureValueStore.swift in Sources */,
 				A1000000000000000000001B /* RelayConfigurationStore.swift in Sources */,
 				A1000000000000000000001D /* HermesEventNormalizer.swift in Sources */,
+				A100000000000000000000A6 /* ReconnectPolicy.swift in Sources */,
 				A1000000000000000000001F /* WebSocketConnection.swift in Sources */,
 				A1000000000000000000002A /* URLSessionHermesSessionClient.swift in Sources */,
 				A1000000000000000000002D /* SpeechInput.swift in Sources */,
@@ -344,6 +354,8 @@
 				A10000000000000000000018 /* RelayConfigurationTests.swift in Sources */,
 				A1000000000000000000001C /* HermesEventNormalizerTests.swift in Sources */,
 				A1000000000000000000001E /* URLSessionHermesSessionClientTests.swift in Sources */,
+				A100000000000000000000A8 /* ReconnectPolicyTests.swift in Sources */,
+				A100000000000000000000AA /* ConversationStoreReconnectTests.swift in Sources */,
 				A1000000000000000000002B /* ConversationStoreTransportTests.swift in Sources */,
 				A1000000000000000000002C /* SpeechInputTests.swift in Sources */,
 				A10000000000000000000087 /* AudioOutputTests.swift in Sources */,
