@@ -46,6 +46,9 @@ final class RelayProfileListModel {
 @MainActor
 struct RelayConfigurationView: View {
     let configurationStore: RelayConfigurationStore
+    /// Live connection state, so the list can show which profile is actually
+    /// connected rather than only which one is selected.
+    let connectionState: ConnectionState
     let onSaved: @MainActor () async -> Void
 
     @Environment(\.dismiss) private var dismiss
@@ -62,9 +65,11 @@ struct RelayConfigurationView: View {
 
     init(
         configurationStore: RelayConfigurationStore,
+        connectionState: ConnectionState = .disconnected,
         onSaved: @escaping @MainActor () async -> Void = {}
     ) {
         self.configurationStore = configurationStore
+        self.connectionState = connectionState
         self.onSaved = onSaved
         _draft = State(initialValue: RelayConfigurationDraft(identity: .current()))
         _listModel = State(
@@ -90,9 +95,20 @@ struct RelayConfigurationView: View {
                                     }
                                     Spacer(minLength: 8)
                                     if profile.id == listModel.collection.selectedID {
-                                        Image(systemName: "checkmark")
-                                            .foregroundStyle(.tint)
-                                            .accessibilityLabel("Active profile")
+                                        Label(
+                                            connectionState.label,
+                                            systemImage: connectionState.isConnected
+                                                ? "checkmark.circle.fill"
+                                                : "circle.dotted"
+                                        )
+                                        .labelStyle(.titleAndIcon)
+                                        .font(.caption)
+                                        .foregroundStyle(
+                                            connectionState.isConnected ? .green : .secondary
+                                        )
+                                        .accessibilityLabel(
+                                            "Active profile, \(connectionState.label)"
+                                        )
                                     }
                                 }
                             }
@@ -230,6 +246,9 @@ struct RelayConfigurationView: View {
             identity: .current()
         )
         statusMessage = "\(profile.displayName) is now the active profile."
+        // Selecting is the switch. Without this the app kept talking to the
+        // previous relay until the user also pressed Save.
+        await onSaved()
     }
 
     private func delete(_ profile: RelayProfile) async {
