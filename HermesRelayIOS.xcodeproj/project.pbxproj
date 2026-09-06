@@ -11,6 +11,7 @@
 		A10000000000000000000012 /* SessionModels.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000000000000000000022 /* SessionModels.swift */; };
 		A10000000000000000000013 /* HermesSessionClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000000000000000000023 /* HermesSessionClient.swift */; };
 		A10000000000000000000014 /* ConversationStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000000000000000000024 /* ConversationStore.swift */; };
+		A100000000000000000000B2 /* RelayConfigurationView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A100000000000000000000B3 /* RelayConfigurationView.swift */; };
 		A10000000000000000000015 /* ContentView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000000000000000000025 /* ContentView.swift */; };
 		A10000000000000000000016 /* MessageBubble.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000000000000000000026 /* MessageBubble.swift */; };
 		A10000000000000000000017 /* HermesRelayIOSTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000000000000000000031 /* HermesRelayIOSTests.swift */; };
@@ -63,6 +64,7 @@
 		A10000000000000000000022 /* SessionModels.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SessionModels.swift; sourceTree = "<group>"; };
 		A10000000000000000000023 /* HermesSessionClient.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HermesSessionClient.swift; sourceTree = "<group>"; };
 		A10000000000000000000024 /* ConversationStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ConversationStore.swift; sourceTree = "<group>"; };
+		A100000000000000000000B3 /* RelayConfigurationView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RelayConfigurationView.swift; sourceTree = "<group>"; };
 		A10000000000000000000025 /* ContentView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ContentView.swift; sourceTree = "<group>"; };
 		A10000000000000000000026 /* MessageBubble.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MessageBubble.swift; sourceTree = "<group>"; };
 		A10000000000000000000030 /* HermesRelayIOSTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = HermesRelayIOSTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
@@ -214,6 +216,7 @@
 		A10000000000000000000067 /* Views */ = {
 			isa = PBXGroup;
 			children = (
+				A100000000000000000000B3 /* RelayConfigurationView.swift */,
 				A10000000000000000000025 /* ContentView.swift */,
 				A10000000000000000000026 /* MessageBubble.swift */,
 				A10000000000000000000095 /* VoiceStatusView.swift */,
@@ -325,6 +328,7 @@
 				A10000000000000000000012 /* SessionModels.swift in Sources */,
 				A10000000000000000000013 /* HermesSessionClient.swift in Sources */,
 				A10000000000000000000014 /* ConversationStore.swift in Sources */,
+				A100000000000000000000B2 /* RelayConfigurationView.swift in Sources */,
 				A10000000000000000000015 /* ContentView.swift in Sources */,
 				A10000000000000000000016 /* MessageBubble.swift in Sources */,
 				A100000000000000000000B0 /* RelayProfileCollection.swift in Sources */,
