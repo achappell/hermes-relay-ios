@@ -158,6 +158,7 @@ final class ConversationStoreReconnectTests: XCTestCase {
         XCTAssertEqual(store.connectionState, .connected)
     }
 
+
     @MainActor
     private func makeStore(client: ReconnectingFakeClient, sleeps: SleepRecorder) -> ConversationStore {
         ConversationStore(

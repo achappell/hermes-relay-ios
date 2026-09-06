@@ -252,6 +252,26 @@ final class ConversationStore {
         return connectionState.isConnected
     }
 
+    /// Selecting a different profile is one action: drop the current relay and
+    /// connect the chosen one. A failure surfaces honestly rather than falling
+    /// back to the previous profile, which would connect the user to a relay
+    /// they did not choose.
+    func switchToSelectedProfile() async {
+        // A deliberate teardown, not an outage — without this the reconnect
+        // ladder from IOS-25 would race the switch.
+        isExpectedDisconnect = true
+        await client.disconnect()
+        isExpectedDisconnect = false
+
+        connectionState = .disconnected
+        sessionMetadata = nil
+        sessionStartedAt = nil
+        activityText = nil
+
+        guard await loadConfiguredClient() else { return }
+        await connect()
+    }
+
     func clearTransientError() {
         transientError = nil
     }

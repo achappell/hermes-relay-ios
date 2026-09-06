@@ -76,7 +76,10 @@ struct ContentView: View {
         .sheet(isPresented: $showingConfiguration) {
             if let configurationStore {
                 RelayConfigurationView(configurationStore: configurationStore) {
-                    await store.loadConfiguredClient()
+                    // The selected profile may have changed, so reconnect to
+                    // whichever relay is now active rather than only reloading
+                    // credentials for the old one.
+                    await store.switchToSelectedProfile()
                 }
             }
         }
