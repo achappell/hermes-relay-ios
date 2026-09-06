@@ -230,6 +230,49 @@ final class RelayConfigurationTests: XCTestCase {
             .appendingPathComponent("HermesRelayIOS-\(UUID().uuidString)")
             .appendingPathComponent("profile.json")
     }
+
+    func testProfileKeepsItsIdentityAcrossACodableRoundTrip() throws {
+        let id = UUID()
+        let profile = try RelayProfile(
+            id: id,
+            endpoint: URL(string: "wss://relay.example/socket")!,
+            clientID: "client",
+            deviceID: "device",
+            displayName: "Relay"
+        )
+
+        let decoded = try JSONDecoder().decode(
+            RelayProfile.self,
+            from: JSONEncoder().encode(profile)
+        )
+
+        XCTAssertEqual(decoded.id, id)
+        XCTAssertEqual(decoded, profile)
+    }
+
+    // A profile written before this change has no id field. Decoding must
+    // succeed and mint one rather than throwing and stranding the user's
+    // configuration.
+    func testProfileWithoutAnIdDecodesWithAGeneratedIdentity() throws {
+        let legacy = """
+        {"endpoint":"wss://relay.example/socket","clientID":"client",\
+        "deviceID":"device","displayName":"Relay"}
+        """
+
+        let decoded = try JSONDecoder().decode(
+            RelayProfile.self,
+            from: Data(legacy.utf8)
+        )
+        let second = try JSONDecoder().decode(
+            RelayProfile.self,
+            from: Data(legacy.utf8)
+        )
+
+        XCTAssertEqual(decoded.displayName, "Relay")
+        // Two decodes of the same id-less JSON must mint distinct identities,
+        // which proves one was generated rather than defaulted to a constant.
+        XCTAssertNotEqual(decoded.id, second.id)
+    }
 }
 
 private final class FakeSecureValueStore: SecureValueStore, @unchecked Sendable {
@@ -250,4 +293,5 @@ private final class FakeSecureValueStore: SecureValueStore, @unchecked Sendable 
     func delete(service: String, account: String) throws {
         values.removeValue(forKey: "\(service)/\(account)")
     }
+
 }

@@ -27,17 +27,22 @@ enum RelayProfileError: LocalizedError, Equatable, Sendable {
 }
 
 struct RelayProfile: Codable, Equatable, Sendable {
+    /// Stable identity. The display name is cosmetic: keying a profile's
+    /// secret by name would orphan the token the moment it is renamed.
+    let id: UUID
     let endpoint: URL
     let clientID: String
     let deviceID: String
     let displayName: String
 
     init(
+        id: UUID = UUID(),
         endpoint: URL,
         clientID: String,
         deviceID: String,
         displayName: String
     ) throws {
+        self.id = id
         guard let scheme = endpoint.scheme?.lowercased(), scheme == "ws" || scheme == "wss" else {
             throw RelayProfileError.unsupportedEndpointScheme
         }
@@ -69,6 +74,7 @@ struct RelayProfile: Codable, Equatable, Sendable {
     }
 
     private enum CodingKeys: String, CodingKey {
+        case id
         case endpoint
         case clientID
         case deviceID
@@ -78,6 +84,9 @@ struct RelayProfile: Codable, Equatable, Sendable {
     init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         try self.init(
+            // Profiles written before saved-profile support have no id.
+            // Mint one rather than throwing and stranding the configuration.
+            id: container.decodeIfPresent(UUID.self, forKey: .id) ?? UUID(),
             endpoint: container.decode(URL.self, forKey: .endpoint),
             clientID: container.decode(String.self, forKey: .clientID),
             deviceID: container.decode(String.self, forKey: .deviceID),
