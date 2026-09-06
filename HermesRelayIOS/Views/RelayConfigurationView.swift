@@ -1,4 +1,47 @@
 import SwiftUI
+import Observation
+
+/// The profile list's state. The view stays a thin shell over this so the
+/// select and delete behaviour is assertable without driving SwiftUI.
+@MainActor
+@Observable
+final class RelayProfileListModel {
+    private(set) var collection = RelayProfileCollection()
+    var errorMessage: String?
+
+    private let configurationStore: RelayConfigurationStore
+
+    init(configurationStore: RelayConfigurationStore) {
+        self.configurationStore = configurationStore
+    }
+
+    func load() async {
+        do {
+            collection = try await configurationStore.loadCollection()
+            errorMessage = nil
+        } catch {
+            errorMessage = error.localizedDescription
+        }
+    }
+
+    func select(id: UUID) async {
+        do {
+            try await configurationStore.selectProfile(id: id)
+            await load()
+        } catch {
+            errorMessage = error.localizedDescription
+        }
+    }
+
+    func delete(id: UUID) async {
+        do {
+            try await configurationStore.deleteProfile(id: id)
+            await load()
+        } catch {
+            errorMessage = error.localizedDescription
+        }
+    }
+}
 
 @MainActor
 struct RelayConfigurationView: View {
@@ -12,6 +55,10 @@ struct RelayConfigurationView: View {
     @State private var errorMessage: String?
     @State private var statusMessage: String?
     @State private var didLoad = false
+    @State private var listModel: RelayProfileListModel
+    /// Which saved profile the form is editing. Nil means the form is
+    /// composing a new one, so saving must not overwrite the active profile.
+    @State private var editingProfileID: UUID?
 
     init(
         configurationStore: RelayConfigurationStore,
@@ -20,11 +67,54 @@ struct RelayConfigurationView: View {
         self.configurationStore = configurationStore
         self.onSaved = onSaved
         _draft = State(initialValue: RelayConfigurationDraft(identity: .current()))
+        _listModel = State(
+            initialValue: RelayProfileListModel(configurationStore: configurationStore)
+        )
     }
 
     var body: some View {
         NavigationStack {
             Form {
+                if !listModel.collection.profiles.isEmpty {
+                    Section {
+                        ForEach(listModel.collection.profiles, id: \.id) { profile in
+                            Button {
+                                Task { await select(profile) }
+                            } label: {
+                                HStack {
+                                    VStack(alignment: .leading, spacing: 2) {
+                                        Text(profile.displayName)
+                                        Text(profile.endpoint.absoluteString)
+                                            .font(.caption)
+                                            .foregroundStyle(.secondary)
+                                    }
+                                    Spacer(minLength: 8)
+                                    if profile.id == listModel.collection.selectedID {
+                                        Image(systemName: "checkmark")
+                                            .foregroundStyle(.tint)
+                                            .accessibilityLabel("Active profile")
+                                    }
+                                }
+                            }
+                            .buttonStyle(.plain)
+                            .swipeActions {
+                                Button("Delete", role: .destructive) {
+                                    Task { await delete(profile) }
+                                }
+                            }
+                        }
+
+                        Button("Add profile") {
+                            addProfile()
+                        }
+                        .disabled(isLoading || isSaving)
+                    } header: {
+                        Text("Saved profiles")
+                    } footer: {
+                        Text("The checked profile is the one Connect uses.")
+                    }
+                }
+
                 Section {
                     TextField("Endpoint", text: $draft.endpoint)
                         .autocorrectionDisabled()
@@ -125,8 +215,36 @@ struct RelayConfigurationView: View {
             }
             .task {
                 await load()
+                await listModel.load()
             }
         }
+    }
+
+    private func select(_ profile: RelayProfile) async {
+        await listModel.select(id: profile.id)
+        editingProfileID = profile.id
+        let token = try? await configurationStore.loadToken(for: profile.id)
+        draft = RelayConfigurationDraft(
+            profile: profile,
+            hasStoredToken: token != nil,
+            identity: .current()
+        )
+        statusMessage = "\(profile.displayName) is now the active profile."
+    }
+
+    private func delete(_ profile: RelayProfile) async {
+        await listModel.delete(id: profile.id)
+        if editingProfileID == profile.id {
+            addProfile()
+        }
+    }
+
+    /// Compose a new profile rather than editing the active one.
+    private func addProfile() {
+        editingProfileID = nil
+        draft = RelayConfigurationDraft(identity: .current())
+        statusMessage = nil
+        errorMessage = nil
     }
 
     private func load() async {
@@ -137,6 +255,7 @@ struct RelayConfigurationView: View {
         do {
             let profile = try await configurationStore.loadProfile()
             let token = try await configurationStore.loadToken()
+            editingProfileID = profile?.id
             draft = RelayConfigurationDraft(
                 profile: profile,
                 hasStoredToken: token != nil,
@@ -156,10 +275,10 @@ struct RelayConfigurationView: View {
         statusMessage = nil
 
         do {
-            // Editing the active profile keeps its identity, so saving
-            // updates it instead of creating a duplicate alongside it.
-            let editingID = try await configurationStore.loadProfile()?.id
-            let profile = try draft.makeProfile(id: editingID)
+            // Editing a saved profile keeps its identity so saving updates it;
+            // composing a new one mints a fresh identity instead of
+            // overwriting whichever profile happens to be active.
+            let profile = try draft.makeProfile(id: editingProfileID)
             let existingToken = try await configurationStore.loadToken()
             let token = try draft.tokenToSave(existingToken: existingToken)
 
@@ -168,6 +287,11 @@ struct RelayConfigurationView: View {
                 try await configurationStore.saveToken(token, for: profile.id)
             }
             draft.hasStoredToken = true
+            if editingProfileID == nil {
+                try await configurationStore.selectProfile(id: profile.id)
+            }
+            editingProfileID = profile.id
+            await listModel.load()
             await onSaved()
             dismiss()
         } catch {
@@ -183,7 +307,7 @@ struct RelayConfigurationView: View {
         statusMessage = nil
 
         do {
-            if let id = try await configurationStore.loadProfile()?.id {
+            if let id = editingProfileID {
                 try await configurationStore.deleteToken(for: id)
             }
             draft.hasStoredToken = false

@@ -499,6 +499,32 @@ final class RelayConfigurationTests: XCTestCase {
         XCTAssertEqual(first.profiles.map(\.id), second.profiles.map(\.id))
         XCTAssertEqual(second.profiles.count, 1)
     }
+
+    @MainActor
+    func testListModelSelectsAndDeletesThroughTheStore() async throws {
+        let store = RelayConfigurationStore(
+            secureStore: FakeSecureValueStore(), profileURL: makeTemporaryProfileURL()
+        )
+        let first = try RelayProfile(
+            endpoint: URL(string: "wss://one.example/s")!,
+            clientID: "c", deviceID: "d", displayName: "One"
+        )
+        let second = try RelayProfile(
+            endpoint: URL(string: "wss://two.example/s")!,
+            clientID: "c", deviceID: "d", displayName: "Two"
+        )
+        try await store.saveProfile(first)
+        try await store.saveProfile(second)
+        let model = RelayProfileListModel(configurationStore: store)
+
+        await model.load()
+        await model.select(id: second.id)
+        XCTAssertEqual(model.collection.selectedID, second.id)
+
+        await model.delete(id: second.id)
+        XCTAssertEqual(model.collection.profiles.map(\.id), [first.id])
+        XCTAssertNil(model.collection.selectedID)
+    }
 }
 
 private final class FakeSecureValueStore: SecureValueStore, @unchecked Sendable {
