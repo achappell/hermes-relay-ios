@@ -273,6 +273,59 @@ final class RelayConfigurationTests: XCTestCase {
         // which proves one was generated rather than defaulted to a constant.
         XCTAssertNotEqual(decoded.id, second.id)
     }
+
+    func testCollectionUpsertReplacesByIdentityRatherThanAppending() throws {
+        let id = UUID()
+        let original = try RelayProfile(
+            id: id, endpoint: URL(string: "wss://one.example/s")!,
+            clientID: "c", deviceID: "d", displayName: "One"
+        )
+        let renamed = try RelayProfile(
+            id: id, endpoint: URL(string: "wss://one.example/s")!,
+            clientID: "c", deviceID: "d", displayName: "Renamed"
+        )
+        var collection = RelayProfileCollection(profiles: [original], selectedID: id)
+
+        collection.upsert(renamed)
+
+        XCTAssertEqual(collection.profiles.count, 1)
+        XCTAssertEqual(collection.profiles.first?.displayName, "Renamed")
+        XCTAssertEqual(collection.selectedID, id)
+    }
+
+    // Deleting the active profile must not silently connect the user to a
+    // different relay than the one they were using.
+    func testRemovingTheSelectedProfileClearsTheSelection() throws {
+        let first = try RelayProfile(
+            endpoint: URL(string: "wss://one.example/s")!,
+            clientID: "c", deviceID: "d", displayName: "One"
+        )
+        let second = try RelayProfile(
+            endpoint: URL(string: "wss://two.example/s")!,
+            clientID: "c", deviceID: "d", displayName: "Two"
+        )
+        var collection = RelayProfileCollection(
+            profiles: [first, second], selectedID: first.id
+        )
+
+        collection.remove(id: first.id)
+
+        XCTAssertEqual(collection.profiles.map(\.id), [second.id])
+        XCTAssertNil(collection.selectedID)
+        XCTAssertNil(collection.selectedProfile)
+    }
+
+    func testSelectedProfileResolvesTheSelectedIdentity() throws {
+        let profile = try RelayProfile(
+            endpoint: URL(string: "wss://one.example/s")!,
+            clientID: "c", deviceID: "d", displayName: "One"
+        )
+        let collection = RelayProfileCollection(
+            profiles: [profile], selectedID: profile.id
+        )
+
+        XCTAssertEqual(collection.selectedProfile, profile)
+    }
 }
 
 private final class FakeSecureValueStore: SecureValueStore, @unchecked Sendable {
