@@ -56,3 +56,36 @@ actor JSONConversationPersistence: ConversationPersistence {
         #endif
     }
 }
+
+
+/// Conversations are stored one file per relay profile. Separate files delete
+/// with their profile and cannot leak into each other through an indexing
+/// mistake, which a single keyed file would always be one bug away from.
+enum ConversationPersistenceFile {
+    static func url(in directory: URL, for profileID: UUID) -> URL {
+        directory.appendingPathComponent("conversation-\(profileID.uuidString).json")
+    }
+
+    static let legacyName = "conversation.json"
+}
+
+enum ConversationPersistenceMigrator {
+    /// Hand the pre-profiles conversation to whichever profile is active.
+    ///
+    /// The file is moved rather than copied, so a later launch cannot adopt
+    /// the same history for a second profile.
+    static func migrateLegacyConversation(in directory: URL, to profileID: UUID) {
+        let legacyURL = directory.appendingPathComponent(
+            ConversationPersistenceFile.legacyName
+        )
+        guard FileManager.default.fileExists(atPath: legacyURL.path) else { return }
+
+        let destination = ConversationPersistenceFile.url(in: directory, for: profileID)
+        guard !FileManager.default.fileExists(atPath: destination.path) else { return }
+
+        try? FileManager.default.createDirectory(
+            at: directory, withIntermediateDirectories: true
+        )
+        try? FileManager.default.moveItem(at: legacyURL, to: destination)
+    }
+}

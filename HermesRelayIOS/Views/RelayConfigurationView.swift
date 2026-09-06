@@ -10,9 +10,16 @@ final class RelayProfileListModel {
     var errorMessage: String?
 
     private let configurationStore: RelayConfigurationStore
+    /// Where per-profile conversations live, so deleting a profile takes its
+    /// messages with it rather than leaving them readable on disk.
+    private let conversationDirectory: URL?
 
-    init(configurationStore: RelayConfigurationStore) {
+    init(
+        configurationStore: RelayConfigurationStore,
+        conversationDirectory: URL? = nil
+    ) {
         self.configurationStore = configurationStore
+        self.conversationDirectory = conversationDirectory
     }
 
     func load() async {
@@ -36,6 +43,13 @@ final class RelayProfileListModel {
     func delete(id: UUID) async {
         do {
             try await configurationStore.deleteProfile(id: id)
+            if let conversationDirectory {
+                try? FileManager.default.removeItem(
+                    at: ConversationPersistenceFile.url(
+                        in: conversationDirectory, for: id
+                    )
+                )
+            }
             await load()
         } catch {
             errorMessage = error.localizedDescription
@@ -49,6 +63,7 @@ struct RelayConfigurationView: View {
     /// Live connection state, so the list can show which profile is actually
     /// connected rather than only which one is selected.
     let connectionState: ConnectionState
+    let conversationDirectory: URL?
     let onSaved: @MainActor () async -> Void
 
     @Environment(\.dismiss) private var dismiss
@@ -66,14 +81,19 @@ struct RelayConfigurationView: View {
     init(
         configurationStore: RelayConfigurationStore,
         connectionState: ConnectionState = .disconnected,
+        conversationDirectory: URL? = nil,
         onSaved: @escaping @MainActor () async -> Void = {}
     ) {
         self.configurationStore = configurationStore
         self.connectionState = connectionState
+        self.conversationDirectory = conversationDirectory
         self.onSaved = onSaved
         _draft = State(initialValue: RelayConfigurationDraft(identity: .current()))
         _listModel = State(
-            initialValue: RelayProfileListModel(configurationStore: configurationStore)
+            initialValue: RelayProfileListModel(
+                configurationStore: configurationStore,
+                conversationDirectory: conversationDirectory
+            )
         )
     }
 

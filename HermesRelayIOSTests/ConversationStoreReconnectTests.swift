@@ -159,6 +159,27 @@ final class ConversationStoreReconnectTests: XCTestCase {
     }
 
 
+
+    // Switching must clear the previous account's transcript before the new
+    // one loads. Loading first would flash the wrong conversation, which is
+    // the whole point of per-profile history.
+    @MainActor
+    func testSwitchingProfilesClearsTheTranscriptBeforeLoading() async {
+        let client = ReconnectingFakeClient()
+        let store = ConversationStore(client: client)
+        await store.connect()
+        await store.sendTurn(text: "belongs to the first account")
+        XCTAssertFalse(store.messages.isEmpty)
+        store.draft = "half typed"
+        store.unconfirmedTurnText = "in flight"
+
+        await store.switchToSelectedProfile()
+
+        XCTAssertTrue(store.messages.isEmpty)
+        XCTAssertEqual(store.draft, "")
+        XCTAssertNil(store.unconfirmedTurnText)
+    }
+
     @MainActor
     private func makeStore(client: ReconnectingFakeClient, sleeps: SleepRecorder) -> ConversationStore {
         ConversationStore(
