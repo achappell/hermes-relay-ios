@@ -63,14 +63,28 @@ final class RelayConfigurationTests: XCTestCase {
             profileURL: temporaryProfileURL()
         )
 
-        try await store.saveToken("token-value")
+        let profile = try RelayProfile(
+            endpoint: URL(string: "ws://localhost:8765")!,
+            clientID: "hermes-ios",
+            deviceID: "device-123",
+            displayName: "Test Mac"
+        )
+        try await store.saveProfile(profile)
+        try await store.saveToken("token-value", for: profile.id)
 
         let token = try await store.loadToken()
 
         XCTAssertEqual(token, "token-value")
         XCTAssertEqual(secureStore.lastReadService, "com.achappell.HermesRelayIOS.profile")
-        XCTAssertEqual(secureStore.lastReadAccount, "default-token")
-        XCTAssertEqual(secureStore.values["com.achappell.HermesRelayIOS.profile/default-token"], Data("token-value".utf8))
+        // The account is the profile's identity, which is what lets a second
+        // profile hold a second token.
+        XCTAssertEqual(secureStore.lastReadAccount, profile.id.uuidString)
+        XCTAssertEqual(
+            secureStore.values[
+                "com.achappell.HermesRelayIOS.profile/\(profile.id.uuidString)"
+            ],
+            Data("token-value".utf8)
+        )
     }
 
     func testWhitespaceOnlyTokenIsRejected() async throws {
@@ -80,7 +94,7 @@ final class RelayConfigurationTests: XCTestCase {
         )
 
         do {
-            try await store.saveToken("  \n\t ")
+            try await store.saveToken("  \n\t ", for: UUID())
             XCTFail("Whitespace-only tokens must not be stored")
         } catch let error as RelayConfigurationError {
             XCTAssertEqual(error, .emptyToken)
@@ -89,11 +103,20 @@ final class RelayConfigurationTests: XCTestCase {
 
     func testEmptyStoredTokenIsRejected() async throws {
         let secureStore = FakeSecureValueStore()
-        secureStore.values["com.achappell.HermesRelayIOS.profile/default-token"] = Data("  ".utf8)
         let store = RelayConfigurationStore(
             secureStore: secureStore,
             profileURL: temporaryProfileURL()
         )
+        let profile = try RelayProfile(
+            endpoint: URL(string: "ws://localhost:8765")!,
+            clientID: "hermes-ios",
+            deviceID: "device-123",
+            displayName: "Test Mac"
+        )
+        try await store.saveProfile(profile)
+        secureStore.values[
+            "com.achappell.HermesRelayIOS.profile/\(profile.id.uuidString)"
+        ] = Data("  ".utf8)
 
         do {
             _ = try await store.loadToken()
@@ -116,8 +139,8 @@ final class RelayConfigurationTests: XCTestCase {
         )
 
         try await store.saveProfile(expected)
-        try await store.saveToken("token-value")
-        try await store.deleteToken()
+        try await store.saveToken("token-value", for: expected.id)
+        try await store.deleteToken(for: expected.id)
 
         let profile = try await store.loadProfile()
         let token = try await store.loadToken()
@@ -326,10 +349,162 @@ final class RelayConfigurationTests: XCTestCase {
 
         XCTAssertEqual(collection.selectedProfile, profile)
     }
+
+    func testSavingTwoProfilesKeepsTheirTokensSeparate() async throws {
+        let store = RelayConfigurationStore(
+            secureStore: FakeSecureValueStore(), profileURL: makeTemporaryProfileURL()
+        )
+        let first = try RelayProfile(
+            endpoint: URL(string: "wss://one.example/s")!,
+            clientID: "c", deviceID: "d", displayName: "One"
+        )
+        let second = try RelayProfile(
+            endpoint: URL(string: "wss://two.example/s")!,
+            clientID: "c", deviceID: "d", displayName: "Two"
+        )
+
+        try await store.saveProfile(first)
+        try await store.saveToken("token-one", for: first.id)
+        try await store.saveProfile(second)
+        try await store.saveToken("token-two", for: second.id)
+
+        let loadedFirst = try await store.loadToken(for: first.id)
+        let loadedSecond = try await store.loadToken(for: second.id)
+        XCTAssertEqual(loadedFirst, "token-one")
+        XCTAssertEqual(loadedSecond, "token-two")
+    }
+
+    func testDeletingAProfileRemovesItsSecret() async throws {
+        let secureStore = FakeSecureValueStore()
+        let store = RelayConfigurationStore(
+            secureStore: secureStore, profileURL: makeTemporaryProfileURL()
+        )
+        let profile = try RelayProfile(
+            endpoint: URL(string: "wss://one.example/s")!,
+            clientID: "c", deviceID: "d", displayName: "One"
+        )
+        try await store.saveProfile(profile)
+        try await store.saveToken("token-one", for: profile.id)
+
+        try await store.deleteProfile(id: profile.id)
+
+        let collection = try await store.loadCollection()
+        XCTAssertTrue(collection.profiles.isEmpty)
+        let orphaned = try await store.loadToken(for: profile.id)
+        XCTAssertNil(orphaned)
+        XCTAssertFalse(
+            secureStore.values.keys.contains { $0.hasSuffix(profile.id.uuidString) }
+        )
+    }
+
+    func testPersistedCollectionNeverContainsAToken() async throws {
+        let url = makeTemporaryProfileURL()
+        let store = RelayConfigurationStore(
+            secureStore: FakeSecureValueStore(), profileURL: url
+        )
+        let profile = try RelayProfile(
+            endpoint: URL(string: "wss://one.example/s")!,
+            clientID: "c", deviceID: "d", displayName: "One"
+        )
+
+        try await store.saveProfile(profile)
+        try await store.saveToken("super-secret-token", for: profile.id)
+
+        let written = try String(contentsOf: url, encoding: .utf8)
+        XCTAssertFalse(written.contains("super-secret-token"))
+    }
+
+    private func makeTemporaryProfileURL() -> URL {
+        FileManager.default.temporaryDirectory
+            .appendingPathComponent("HermesRelayIOS-Profiles-\(UUID().uuidString)")
+            .appendingPathComponent("profiles.json")
+    }
+
+    func testLegacyProfileAndTokenMigrateIntoTheCollection() async throws {
+        let url = makeTemporaryProfileURL()
+        try FileManager.default.createDirectory(
+            at: url.deletingLastPathComponent(), withIntermediateDirectories: true
+        )
+        let legacy = """
+        {"endpoint":"wss://legacy.example/socket","clientID":"client",\
+        "deviceID":"device","displayName":"Legacy"}
+        """
+        try Data(legacy.utf8).write(to: url)
+        let secureStore = FakeSecureValueStore()
+        secureStore.values[
+            "\(RelayConfigurationStore.keychainService)/\(RelayConfigurationStore.tokenAccount)"
+        ] = Data("legacy-token".utf8)
+        let store = RelayConfigurationStore(secureStore: secureStore, profileURL: url)
+
+        let collection = try await store.loadCollection()
+
+        let migrated = try XCTUnwrap(collection.profiles.first)
+        XCTAssertEqual(collection.profiles.count, 1)
+        XCTAssertEqual(migrated.displayName, "Legacy")
+        XCTAssertEqual(collection.selectedID, migrated.id)
+        let token = try await store.loadToken(for: migrated.id)
+        XCTAssertEqual(token, "legacy-token")
+    }
+
+    // The ordering test with teeth: if writing the new account fails, the
+    // legacy secret must still be there to retry from. Deleting before
+    // copying would pass a "delete failed" assertion while silently losing
+    // the token, so the failure injected here is the write.
+    func testMigrationKeepsTheLegacySecretWhenTheCopyFails() async throws {
+        let url = makeTemporaryProfileURL()
+        try FileManager.default.createDirectory(
+            at: url.deletingLastPathComponent(), withIntermediateDirectories: true
+        )
+        let legacy = """
+        {"endpoint":"wss://legacy.example/socket","clientID":"client",\
+        "deviceID":"device","displayName":"Legacy"}
+        """
+        try Data(legacy.utf8).write(to: url)
+        let secureStore = FakeSecureValueStore()
+        let legacyKey =
+            "\(RelayConfigurationStore.keychainService)/\(RelayConfigurationStore.tokenAccount)"
+        secureStore.values[legacyKey] = Data("legacy-token".utf8)
+        secureStore.failWrites = true
+        let store = RelayConfigurationStore(secureStore: secureStore, profileURL: url)
+
+        do {
+            _ = try await store.loadCollection()
+            XCTFail("A failed copy must not report a successful migration")
+        } catch {
+            // Expected: the migration could not complete.
+        }
+
+        XCTAssertEqual(secureStore.values[legacyKey], Data("legacy-token".utf8))
+    }
+
+    func testMigrationIsIdempotent() async throws {
+        let url = makeTemporaryProfileURL()
+        try FileManager.default.createDirectory(
+            at: url.deletingLastPathComponent(), withIntermediateDirectories: true
+        )
+        let legacy = """
+        {"endpoint":"wss://legacy.example/socket","clientID":"client",\
+        "deviceID":"device","displayName":"Legacy"}
+        """
+        try Data(legacy.utf8).write(to: url)
+        let secureStore = FakeSecureValueStore()
+        secureStore.values[
+            "\(RelayConfigurationStore.keychainService)/\(RelayConfigurationStore.tokenAccount)"
+        ] = Data("legacy-token".utf8)
+        let store = RelayConfigurationStore(secureStore: secureStore, profileURL: url)
+
+        let first = try await store.loadCollection()
+        let second = try await store.loadCollection()
+
+        XCTAssertEqual(first.profiles.map(\.id), second.profiles.map(\.id))
+        XCTAssertEqual(second.profiles.count, 1)
+    }
 }
 
 private final class FakeSecureValueStore: SecureValueStore, @unchecked Sendable {
     var values: [String: Data] = [:]
+    var failDeletes = false
+    var failWrites = false
     var lastReadService: String?
     var lastReadAccount: String?
 
@@ -340,10 +515,16 @@ private final class FakeSecureValueStore: SecureValueStore, @unchecked Sendable 
     }
 
     func write(_ value: Data, service: String, account: String) throws {
+        if failWrites {
+            throw KeychainError.operationFailed(status: -1, name: "write")
+        }
         values["\(service)/\(account)"] = value
     }
 
     func delete(service: String, account: String) throws {
+        if failDeletes {
+            throw KeychainError.operationFailed(status: -1, name: "delete")
+        }
         values.removeValue(forKey: "\(service)/\(account)")
     }
 

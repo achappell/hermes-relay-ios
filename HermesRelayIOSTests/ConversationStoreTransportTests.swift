@@ -188,7 +188,7 @@ final class ConversationStoreTransportTests: XCTestCase {
             displayName: "Test iPhone"
         )
         try await configuration.saveProfile(profile)
-        try await configuration.saveToken("test-token")
+        try await configuration.saveToken("test-token", for: profile.id)
 
         let socket = AutoConnectWebSocketConnection()
         let factory = AutoConnectWebSocketConnectionFactory(socket: socket)
@@ -311,7 +311,7 @@ final class ConversationStoreTransportTests: XCTestCase {
             displayName: "Test iPhone"
         )
         try await configuration.saveProfile(profile)
-        try await configuration.saveToken("test-token")
+        try await configuration.saveToken("test-token", for: profile.id)
 
         let socket = AutoConnectWebSocketConnection(frames: [
             .text("{\"type\":\"status\",\"text\":\"not an ack\"}")

@@ -459,13 +459,16 @@ struct RelayConfigurationView: View {
         statusMessage = nil
 
         do {
-            let profile = try draft.makeProfile()
+            // Editing the active profile keeps its identity, so saving
+            // updates it instead of creating a duplicate alongside it.
+            let editingID = try await configurationStore.loadProfile()?.id
+            let profile = try draft.makeProfile(id: editingID)
             let existingToken = try await configurationStore.loadToken()
             let token = try draft.tokenToSave(existingToken: existingToken)
 
             try await configurationStore.saveProfile(profile)
             if !draft.token.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                try await configurationStore.saveToken(token)
+                try await configurationStore.saveToken(token, for: profile.id)
             }
             draft.hasStoredToken = true
             await onSaved()
@@ -483,7 +486,9 @@ struct RelayConfigurationView: View {
         statusMessage = nil
 
         do {
-            try await configurationStore.deleteToken()
+            if let id = try await configurationStore.loadProfile()?.id {
+                try await configurationStore.deleteToken(for: id)
+            }
             draft.hasStoredToken = false
             statusMessage = "The stored relay token was removed."
             await onSaved()
