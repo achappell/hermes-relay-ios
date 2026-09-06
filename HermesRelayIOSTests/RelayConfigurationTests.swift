@@ -525,6 +525,41 @@ final class RelayConfigurationTests: XCTestCase {
         XCTAssertEqual(model.collection.profiles.map(\.id), [first.id])
         XCTAssertNil(model.collection.selectedID)
     }
+
+    @MainActor
+    func testDeletingAProfileRemovesItsConversationFile() async throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("HermesRelayIOS-Delete-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        let store = RelayConfigurationStore(
+            secureStore: FakeSecureValueStore(),
+            profileURL: directory.appendingPathComponent("profiles.json")
+        )
+        let profile = try RelayProfile(
+            endpoint: URL(string: "wss://one.example/s")!,
+            clientID: "c", deviceID: "d", displayName: "One"
+        )
+        try await store.saveProfile(profile)
+        let conversationURL = ConversationPersistenceFile.url(in: directory, for: profile.id)
+        try await JSONConversationPersistence(fileURL: conversationURL).save(
+            PersistedConversation(
+                messages: [TranscriptMessage(role: .user, text: "private")],
+                draft: ""
+            )
+        )
+        XCTAssertTrue(FileManager.default.fileExists(atPath: conversationURL.path))
+
+        let model = RelayProfileListModel(
+            configurationStore: store, conversationDirectory: directory
+        )
+        await model.load()
+        await model.delete(id: profile.id)
+
+        // Messages must not outlive the profile they belong to.
+        XCTAssertFalse(FileManager.default.fileExists(atPath: conversationURL.path))
+    }
 }
 
 private final class FakeSecureValueStore: SecureValueStore, @unchecked Sendable {
