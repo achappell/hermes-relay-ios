@@ -21,9 +21,6 @@
 		A1000000000000000000001C /* HermesEventNormalizerTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000000000000000000037 /* HermesEventNormalizerTests.swift */; };
 		A1000000000000000000001D /* HermesEventNormalizer.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000000000000000000038 /* HermesEventNormalizer.swift */; };
 		A1000000000000000000001E /* URLSessionHermesSessionClientTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000000000000000000039 /* URLSessionHermesSessionClientTests.swift */; };
-		A100000000000000000000A6 /* ReconnectPolicy.swift in Sources */ = {isa = PBXBuildFile; fileRef = A100000000000000000000A7 /* ReconnectPolicy.swift */; };
-		A100000000000000000000A8 /* ReconnectPolicyTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A100000000000000000000A9 /* ReconnectPolicyTests.swift */; };
-		A100000000000000000000AA /* ConversationStoreReconnectTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A100000000000000000000AB /* ConversationStoreReconnectTests.swift */; };
 		A1000000000000000000001F /* WebSocketConnection.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1000000000000000000003A /* WebSocketConnection.swift */; };
 		A1000000000000000000002A /* URLSessionHermesSessionClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1000000000000000000003B /* URLSessionHermesSessionClient.swift */; };
 		A1000000000000000000002B /* ConversationStoreTransportTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1000000000000000000003C /* ConversationStoreTransportTests.swift */; };
@@ -44,6 +41,11 @@
 		A100000000000000000000A0 /* AudioActivity.swift in Sources */ = {isa = PBXBuildFile; fileRef = A100000000000000000000A1 /* AudioActivity.swift */; };
 		A100000000000000000000A2 /* AmbientHUD.swift in Sources */ = {isa = PBXBuildFile; fileRef = A100000000000000000000A3 /* AmbientHUD.swift */; };
 		A100000000000000000000A4 /* RecentTranscriptRail.swift in Sources */ = {isa = PBXBuildFile; fileRef = A100000000000000000000A5 /* RecentTranscriptRail.swift */; };
+		A100000000000000000000A6 /* ReconnectPolicy.swift in Sources */ = {isa = PBXBuildFile; fileRef = A100000000000000000000A7 /* ReconnectPolicy.swift */; };
+		A100000000000000000000A8 /* ReconnectPolicyTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A100000000000000000000A9 /* ReconnectPolicyTests.swift */; };
+		A100000000000000000000AA /* ConversationStoreReconnectTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A100000000000000000000AB /* ConversationStoreReconnectTests.swift */; };
+		A100000000000000000000B0 /* RelayProfileCollection.swift in Sources */ = {isa = PBXBuildFile; fileRef = A100000000000000000000B1 /* RelayProfileCollection.swift */; };
+		A100000000000000000000B2 /* RelayConfigurationView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A100000000000000000000B3 /* RelayConfigurationView.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -71,13 +73,9 @@
 		A10000000000000000000034 /* SecureValueStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SecureValueStore.swift; sourceTree = "<group>"; };
 		A10000000000000000000035 /* RelayConfigurationStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RelayConfigurationStore.swift; sourceTree = "<group>"; };
 		A10000000000000000000036 /* HermesRelayIOS.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = HermesRelayIOS.entitlements; sourceTree = "<group>"; };
-		A1000000000000000000009D /* Development-Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Development-Info.plist; sourceTree = "<group>"; };
 		A10000000000000000000037 /* HermesEventNormalizerTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HermesEventNormalizerTests.swift; sourceTree = "<group>"; };
 		A10000000000000000000038 /* HermesEventNormalizer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HermesEventNormalizer.swift; sourceTree = "<group>"; };
 		A10000000000000000000039 /* URLSessionHermesSessionClientTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = URLSessionHermesSessionClientTests.swift; sourceTree = "<group>"; };
-		A100000000000000000000A7 /* ReconnectPolicy.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ReconnectPolicy.swift; sourceTree = "<group>"; };
-		A100000000000000000000A9 /* ReconnectPolicyTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ReconnectPolicyTests.swift; sourceTree = "<group>"; };
-		A100000000000000000000AB /* ConversationStoreReconnectTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ConversationStoreReconnectTests.swift; sourceTree = "<group>"; };
 		A1000000000000000000003A /* WebSocketConnection.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WebSocketConnection.swift; sourceTree = "<group>"; };
 		A1000000000000000000003B /* URLSessionHermesSessionClient.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = URLSessionHermesSessionClient.swift; sourceTree = "<group>"; };
 		A1000000000000000000003C /* ConversationStoreTransportTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ConversationStoreTransportTests.swift; sourceTree = "<group>"; };
@@ -95,9 +93,15 @@
 		A1000000000000000000009A /* ConversationPersistenceTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ConversationPersistenceTests.swift; sourceTree = "<group>"; };
 		A1000000000000000000009B /* RecoveryTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RecoveryTests.swift; sourceTree = "<group>"; };
 		A1000000000000000000009C /* ConversationPersistence.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ConversationPersistence.swift; sourceTree = "<group>"; };
+		A1000000000000000000009D /* Development-Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = "Development-Info.plist"; sourceTree = "<group>"; };
 		A100000000000000000000A1 /* AudioActivity.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AudioActivity.swift; sourceTree = "<group>"; };
 		A100000000000000000000A3 /* AmbientHUD.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AmbientHUD.swift; sourceTree = "<group>"; };
 		A100000000000000000000A5 /* RecentTranscriptRail.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RecentTranscriptRail.swift; sourceTree = "<group>"; };
+		A100000000000000000000A7 /* ReconnectPolicy.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ReconnectPolicy.swift; sourceTree = "<group>"; };
+		A100000000000000000000A9 /* ReconnectPolicyTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ReconnectPolicyTests.swift; sourceTree = "<group>"; };
+		A100000000000000000000AB /* ConversationStoreReconnectTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ConversationStoreReconnectTests.swift; sourceTree = "<group>"; };
+		A100000000000000000000B1 /* RelayProfileCollection.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RelayProfileCollection.swift; sourceTree = "<group>"; };
+		A100000000000000000000B3 /* RelayConfigurationView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RelayConfigurationView.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -173,6 +177,7 @@
 			isa = PBXGroup;
 			children = (
 				A10000000000000000000022 /* SessionModels.swift */,
+				A100000000000000000000B1 /* RelayProfileCollection.swift */,
 				A10000000000000000000033 /* RelayProfile.swift */,
 			);
 			path = Models;
@@ -211,6 +216,7 @@
 		A10000000000000000000067 /* Views */ = {
 			isa = PBXGroup;
 			children = (
+				A100000000000000000000B3 /* RelayConfigurationView.swift */,
 				A10000000000000000000025 /* ContentView.swift */,
 				A10000000000000000000026 /* MessageBubble.swift */,
 				A10000000000000000000095 /* VoiceStatusView.swift */,
@@ -322,8 +328,10 @@
 				A10000000000000000000012 /* SessionModels.swift in Sources */,
 				A10000000000000000000013 /* HermesSessionClient.swift in Sources */,
 				A10000000000000000000014 /* ConversationStore.swift in Sources */,
+				A100000000000000000000B2 /* RelayConfigurationView.swift in Sources */,
 				A10000000000000000000015 /* ContentView.swift in Sources */,
 				A10000000000000000000016 /* MessageBubble.swift in Sources */,
+				A100000000000000000000B0 /* RelayProfileCollection.swift in Sources */,
 				A10000000000000000000019 /* RelayProfile.swift in Sources */,
 				A1000000000000000000001A /* SecureValueStore.swift in Sources */,
 				A1000000000000000000001B /* RelayConfigurationStore.swift in Sources */,
@@ -379,12 +387,12 @@
 		A10000000000000000000081 /* Debug */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
-				SWIFT_ACTIVE_COMPILATION_CONDITIONS = "DEBUG $(inherited)";
 				ALWAYS_SEARCH_USER_PATHS = NO;
 				CLANG_ENABLE_MODULES = YES;
 				CLANG_ENABLE_OBJC_ARC = YES;
 				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
 				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
+				SWIFT_ACTIVE_COMPILATION_CONDITIONS = "DEBUG $(inherited)";
 				SWIFT_OPTIMIZATION_LEVEL = "-Onone";
 				SWIFT_VERSION = 6.0;
 			};
@@ -407,6 +415,7 @@
 			buildSettings = {
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				CODE_SIGN_ENTITLEMENTS = HermesRelayIOS/HermesRelayIOS.entitlements;
+				"CODE_SIGN_IDENTITY[sdk=macosx*]" = "Apple Development";
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 1;
 				DEVELOPMENT_TEAM = 37CAHGRH45;
@@ -415,15 +424,15 @@
 				ENABLE_OUTGOING_NETWORK_CONNECTIONS = YES;
 				ENABLE_TESTABILITY = YES;
 				GENERATE_INFOPLIST_FILE = NO;
+				INFOPLIST_FILE = "HermesRelayIOS/Development-Info.plist";
 				INFOPLIST_KEY_CFBundleDisplayName = "Hermes Relay";
-				INFOPLIST_FILE = HermesRelayIOS/Development-Info.plist;
 				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.productivity";
 				INFOPLIST_KEY_NSMicrophoneUsageDescription = "Hermes uses the microphone for push-to-talk voice turns.";
 				INFOPLIST_KEY_NSSpeechRecognitionUsageDescription = "Hermes uses speech recognition to turn a voice turn into text.";
 				INFOPLIST_KEY_UISupportedInterfaceOrientations = "UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight UIInterfaceOrientationPortrait UIInterfaceOrientationPortraitUpsideDown";
 				IPHONEOS_DEPLOYMENT_TARGET = 26.0;
 				MACOSX_DEPLOYMENT_TARGET = 26.0;
-				MARKETING_VERSION = 0.2.0; // x-release-please-version
+				MARKETING_VERSION = 0.2.0;
 				PRODUCT_BUNDLE_IDENTIFIER = com.achappell.HermesRelayIOS;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				REGISTER_APP_GROUPS = YES;
@@ -444,6 +453,7 @@
 			buildSettings = {
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				CODE_SIGN_ENTITLEMENTS = HermesRelayIOS/HermesRelayIOS.entitlements;
+				"CODE_SIGN_IDENTITY[sdk=macosx*]" = "Apple Development";
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 1;
 				DEVELOPMENT_TEAM = 37CAHGRH45;
@@ -458,7 +468,7 @@
 				INFOPLIST_KEY_UISupportedInterfaceOrientations = "UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight UIInterfaceOrientationPortrait UIInterfaceOrientationPortraitUpsideDown";
 				IPHONEOS_DEPLOYMENT_TARGET = 26.0;
 				MACOSX_DEPLOYMENT_TARGET = 26.0;
-				MARKETING_VERSION = 0.2.0; // x-release-please-version
+				MARKETING_VERSION = 0.2.0;
 				PRODUCT_BUNDLE_IDENTIFIER = com.achappell.HermesRelayIOS;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				REGISTER_APP_GROUPS = YES;

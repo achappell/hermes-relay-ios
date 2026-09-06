@@ -33,54 +33,147 @@ actor RelayConfigurationStore {
         self.profileURL = profileURL
     }
 
-    func loadProfile() async throws -> RelayProfile? {
+    static func tokenAccount(for id: UUID) -> String { id.uuidString }
+
+    func loadCollection() async throws -> RelayProfileCollection {
         guard FileManager.default.fileExists(atPath: profileURL.path) else {
-            return nil
+            return RelayProfileCollection()
         }
 
+        let data = try Data(contentsOf: profileURL)
         do {
-            let data = try Data(contentsOf: profileURL)
-            return try JSONDecoder().decode(RelayProfile.self, from: data)
+            return try JSONDecoder().decode(RelayProfileCollection.self, from: data)
         } catch is DecodingError {
-            throw RelayConfigurationError.invalidProfile
-        } catch is RelayProfileError {
-            throw RelayConfigurationError.invalidProfile
+            return try await migrateLegacyProfile(from: data)
         }
+    }
+
+    func saveCollection(_ collection: RelayProfileCollection) async throws {
+        let directoryURL = profileURL.deletingLastPathComponent()
+        try FileManager.default.createDirectory(
+            at: directoryURL, withIntermediateDirectories: true
+        )
+        try JSONEncoder().encode(collection).write(to: profileURL, options: .atomic)
     }
 
     func saveProfile(_ profile: RelayProfile) async throws {
-        let directoryURL = profileURL.deletingLastPathComponent()
-        try FileManager.default.createDirectory(at: directoryURL, withIntermediateDirectories: true)
-        let data = try JSONEncoder().encode(profile)
-        try data.write(to: profileURL, options: .atomic)
+        var collection = try await loadCollection()
+        collection.upsert(profile)
+        if collection.selectedID == nil {
+            collection.selectedID = profile.id
+        }
+        try await saveCollection(collection)
     }
 
-    func loadToken() async throws -> String? {
-        guard let data = try secureStore.read(service: Self.keychainService, account: Self.tokenAccount) else {
-            return nil
-        }
-        guard let token = String(data: data, encoding: .utf8) else {
-            throw RelayConfigurationError.invalidTokenEncoding
-        }
-        let normalizedToken = token.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !normalizedToken.isEmpty else {
-            throw RelayConfigurationError.emptyToken
-        }
-        return normalizedToken
-    }
-
-    func saveToken(_ token: String) async throws {
-        let normalizedToken = token.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !normalizedToken.isEmpty else { throw RelayConfigurationError.emptyToken }
-        try secureStore.write(
-            Data(normalizedToken.utf8),
-            service: Self.keychainService,
-            account: Self.tokenAccount
+    func deleteProfile(id: UUID) async throws {
+        var collection = try await loadCollection()
+        collection.remove(id: id)
+        try await saveCollection(collection)
+        try secureStore.delete(
+            service: Self.keychainService, account: Self.tokenAccount(for: id)
         )
     }
 
-    func deleteToken() async throws {
-        try secureStore.delete(service: Self.keychainService, account: Self.tokenAccount)
+    func selectProfile(id: UUID) async throws {
+        var collection = try await loadCollection()
+        guard collection.profiles.contains(where: { $0.id == id }) else {
+            throw RelayConfigurationError.invalidProfile
+        }
+        collection.selectedID = id
+        try await saveCollection(collection)
+    }
+
+    /// The active profile. ConversationStore and auto-connect use these, so
+    /// they stay unaware that more than one profile exists.
+    func loadProfile() async throws -> RelayProfile? {
+        try await loadCollection().selectedProfile
+    }
+
+    func loadToken() async throws -> String? {
+        guard let id = try await loadCollection().selectedID else { return nil }
+        return try await loadToken(for: id)
+    }
+
+    func loadToken(for id: UUID) async throws -> String? {
+        try normalizedToken(
+            secureStore.read(
+                service: Self.keychainService, account: Self.tokenAccount(for: id)
+            )
+        )
+    }
+
+    func saveToken(_ token: String, for id: UUID) async throws {
+        let normalized = token.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !normalized.isEmpty else { throw RelayConfigurationError.emptyToken }
+        try secureStore.write(
+            Data(normalized.utf8),
+            service: Self.keychainService,
+            account: Self.tokenAccount(for: id)
+        )
+    }
+
+    func deleteToken(for id: UUID) async throws {
+        try secureStore.delete(
+            service: Self.keychainService, account: Self.tokenAccount(for: id)
+        )
+    }
+
+    private func normalizedToken(_ data: Data?) throws -> String? {
+        guard let data else { return nil }
+        guard let token = String(data: data, encoding: .utf8) else {
+            throw RelayConfigurationError.invalidTokenEncoding
+        }
+        let normalized = token.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !normalized.isEmpty else { throw RelayConfigurationError.emptyToken }
+        return normalized
+    }
+
+    /// Copy, verify, then delete. A crash at any step leaves the token
+    /// readable from at least one account, and re-running is safe.
+    private func migrateLegacyProfile(from data: Data) async throws -> RelayProfileCollection {
+        let legacyProfile: RelayProfile
+        do {
+            legacyProfile = try JSONDecoder().decode(RelayProfile.self, from: data)
+        } catch {
+            throw RelayConfigurationError.invalidProfile
+        }
+
+        try? FileManager.default.copyItem(
+            at: profileURL,
+            to: profileURL.appendingPathExtension("legacy-backup")
+        )
+
+        if let legacyToken = try normalizedToken(
+            secureStore.read(service: Self.keychainService, account: Self.tokenAccount)
+        ) {
+            try secureStore.write(
+                Data(legacyToken.utf8),
+                service: Self.keychainService,
+                account: Self.tokenAccount(for: legacyProfile.id)
+            )
+            let verified = try normalizedToken(
+                secureStore.read(
+                    service: Self.keychainService,
+                    account: Self.tokenAccount(for: legacyProfile.id)
+                )
+            )
+            guard verified == legacyToken else {
+                throw RelayConfigurationError.invalidProfile
+            }
+        }
+
+        let collection = RelayProfileCollection(
+            profiles: [legacyProfile], selectedID: legacyProfile.id
+        )
+        try await saveCollection(collection)
+
+        // Only now is the legacy secret redundant. A failure here is not fatal:
+        // the token already lives under the profile's own account.
+        try? secureStore.delete(
+            service: Self.keychainService, account: Self.tokenAccount
+        )
+
+        return collection
     }
 }
 
@@ -176,7 +269,7 @@ struct RelayConfigurationDraft: Equatable, Sendable {
         self.hasStoredToken = hasStoredToken
     }
 
-    func makeProfile() throws -> RelayProfile {
+    func makeProfile(id: UUID? = nil) throws -> RelayProfile {
         let endpointText = endpoint.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !endpointText.isEmpty else {
             throw RelayConfigurationFormError.endpointRequired
@@ -187,6 +280,7 @@ struct RelayConfigurationDraft: Equatable, Sendable {
 
         do {
             return try RelayProfile(
+                id: id ?? UUID(),
                 endpoint: endpointURL,
                 clientID: clientID.trimmingCharacters(in: .whitespacesAndNewlines),
                 deviceID: deviceID.trimmingCharacters(in: .whitespacesAndNewlines),

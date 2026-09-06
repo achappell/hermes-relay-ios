@@ -172,6 +172,63 @@ final class ConversationStoreTransportTests: XCTestCase {
         XCTAssertEqual(saved?.draft, "Keep listening")
     }
 
+
+    // Switching profiles is one action: drop the current relay and connect the
+    // newly selected one. Exercised here rather than against a fake client
+    // because the connect half runs through the real configuration path.
+    @MainActor
+    func testSwitchingProfilesConnectsTheNewlySelectedRelay() async throws {
+        let profileURL = temporaryProfileURL()
+        defer { try? FileManager.default.removeItem(at: profileURL.deletingLastPathComponent()) }
+
+        let configuration = RelayConfigurationStore(
+            secureStore: AutoConnectSecureValueStore(),
+            profileURL: profileURL
+        )
+        let first = try RelayProfile(
+            endpoint: URL(string: "wss://one.example.test/session")!,
+            clientID: "hermes-ios", deviceID: "device-1", displayName: "One"
+        )
+        let second = try RelayProfile(
+            endpoint: URL(string: "wss://two.example.test/session")!,
+            clientID: "hermes-ios", deviceID: "device-2", displayName: "Two"
+        )
+        try await configuration.saveProfile(first)
+        try await configuration.saveToken("token-one", for: first.id)
+        try await configuration.saveProfile(second)
+        try await configuration.saveToken("token-two", for: second.id)
+
+        let socket = AutoConnectWebSocketConnection()
+        let factory = AutoConnectWebSocketConnectionFactory(
+            socket: socket,
+            makeSocket: { AutoConnectWebSocketConnection() }
+        )
+        let store = ConversationStore(
+            configurationStore: configuration,
+            socketFactory: factory
+        )
+
+        await store.autoConnectIfNeeded()
+        XCTAssertEqual(store.connectionState, .connected)
+        XCTAssertEqual(factory.openCount, 1)
+
+        try await configuration.selectProfile(id: second.id)
+        await store.switchToSelectedProfile()
+
+        XCTAssertEqual(store.connectionState, .connected)
+        // A second socket was opened, which is the switch actually happening
+        // rather than the old connection being reused.
+        XCTAssertEqual(factory.openCount, 2)
+        XCTAssertEqual(
+            factory.lastRequest?.url,
+            URL(string: "wss://two.example.test/session")
+        )
+
+        for opened in factory.openedSockets {
+            await opened.close()
+        }
+    }
+
     @MainActor
     func testAutoConnectUsesStoredConfigurationOnlyOnce() async throws {
         let profileURL = temporaryProfileURL()
@@ -188,7 +245,7 @@ final class ConversationStoreTransportTests: XCTestCase {
             displayName: "Test iPhone"
         )
         try await configuration.saveProfile(profile)
-        try await configuration.saveToken("test-token")
+        try await configuration.saveToken("test-token", for: profile.id)
 
         let socket = AutoConnectWebSocketConnection()
         let factory = AutoConnectWebSocketConnectionFactory(socket: socket)
@@ -311,7 +368,7 @@ final class ConversationStoreTransportTests: XCTestCase {
             displayName: "Test iPhone"
         )
         try await configuration.saveProfile(profile)
-        try await configuration.saveToken("test-token")
+        try await configuration.saveToken("test-token", for: profile.id)
 
         let socket = AutoConnectWebSocketConnection(frames: [
             .text("{\"type\":\"status\",\"text\":\"not an ack\"}")
@@ -454,14 +511,27 @@ private final class AutoConnectSecureValueStore: SecureValueStore, @unchecked Se
 private final class AutoConnectWebSocketConnectionFactory: WebSocketConnectionFactory, @unchecked Sendable {
     let socket: AutoConnectWebSocketConnection
     private(set) var openCount = 0
+    private(set) var lastRequest: URLRequest?
+    private(set) var openedSockets: [AutoConnectWebSocketConnection] = []
+    /// Each connection needs its own socket: a socket's queued hello_ack is
+    /// consumed by the first handshake, so reusing one would park the second
+    /// connection forever rather than failing.
+    private let makeSocket: (@Sendable () -> AutoConnectWebSocketConnection)?
 
-    init(socket: AutoConnectWebSocketConnection) {
+    init(
+        socket: AutoConnectWebSocketConnection,
+        makeSocket: (@Sendable () -> AutoConnectWebSocketConnection)? = nil
+    ) {
         self.socket = socket
+        self.makeSocket = makeSocket
     }
 
     func open(urlRequest: URLRequest) async throws -> any WebSocketConnection {
         openCount += 1
-        return socket
+        lastRequest = urlRequest
+        let connection = makeSocket?() ?? socket
+        openedSockets.append(connection)
+        return connection
     }
 }
 

@@ -7,7 +7,10 @@ final class ConversationStore {
     private var client: any HermesSessionClient
     private let configurationStore: RelayConfigurationStore?
     private let socketFactory: any WebSocketConnectionFactory
-    private let persistence: (any ConversationPersistence)?
+    private var persistence: (any ConversationPersistence)?
+    /// Resolves the conversation store for a profile. Conversations belong to
+    /// a relay, so switching profiles switches the file behind them.
+    private let makePersistence: (@Sendable (UUID) -> any ConversationPersistence)?
     private let now: @Sendable () -> Date
     private let reconnectPolicy: ReconnectPolicy
     private let sleep: @Sendable (UInt64) async -> Void
@@ -41,6 +44,7 @@ final class ConversationStore {
         configurationStore: RelayConfigurationStore? = nil,
         socketFactory: any WebSocketConnectionFactory = URLSessionWebSocketConnectionFactory(),
         persistence: (any ConversationPersistence)? = nil,
+        makePersistence: (@Sendable (UUID) -> any ConversationPersistence)? = nil,
         now: @escaping @Sendable () -> Date = Date.init,
         reconnectPolicy: ReconnectPolicy = .default,
         sleep: @escaping @Sendable (UInt64) async -> Void = { try? await Task.sleep(nanoseconds: $0) }
@@ -49,6 +53,7 @@ final class ConversationStore {
         self.configurationStore = configurationStore
         self.socketFactory = socketFactory
         self.persistence = persistence
+        self.makePersistence = makePersistence
         self.now = now
         self.reconnectPolicy = reconnectPolicy
         self.sleep = sleep
@@ -80,6 +85,9 @@ final class ConversationStore {
             guard let token = try await configurationStore.loadToken() else {
                 transientError = "Add a Hermes relay token before connecting."
                 return false
+            }
+            if let makePersistence {
+                persistence = makePersistence(profile.id)
             }
             client = URLSessionHermesSessionClient(
                 profile: profile,
@@ -250,6 +258,35 @@ final class ConversationStore {
         activityText = nil
         await connect()
         return connectionState.isConnected
+    }
+
+    /// Selecting a different profile is one action: drop the current relay and
+    /// connect the chosen one. A failure surfaces honestly rather than falling
+    /// back to the previous profile, which would connect the user to a relay
+    /// they did not choose.
+    func switchToSelectedProfile() async {
+        // A deliberate teardown, not an outage — without this the reconnect
+        // ladder from IOS-25 would race the switch.
+        isExpectedDisconnect = true
+        await client.disconnect()
+        isExpectedDisconnect = false
+
+        connectionState = .disconnected
+        sessionMetadata = nil
+        sessionStartedAt = nil
+        activityText = nil
+
+        // Clear before loading. The previous account's transcript must never
+        // be on screen while the new profile's conversation is read.
+        messages = []
+        draft = ""
+        unconfirmedTurnText = nil
+        activeAssistantID = nil
+        transientError = nil
+
+        guard await loadConfiguredClient() else { return }
+        await loadPersistedConversation()
+        await connect()
     }
 
     func clearTransientError() {
