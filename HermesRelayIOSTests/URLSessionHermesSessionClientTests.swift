@@ -3,6 +3,204 @@ import XCTest
 @testable import HermesRelayIOS
 
 final class URLSessionHermesSessionClientTests: XCTestCase {
+    @MainActor
+    func testNativeRemoteClosesEndThinkingPreserveTextAndReconnectWithoutReplay() async throws {
+        for code: URLSessionWebSocketTask.CloseCode in [.normalClosure, .goingAway, .policyViolation] {
+            let task = CloseNotificationWebSocketTask()
+            let replacementTask = CloseNotificationWebSocketTask()
+            let factory = FakeWebSocketConnectionFactory(sockets: [
+                URLSessionWebSocketConnection(task: task),
+                URLSessionWebSocketConnection(task: replacementTask),
+            ])
+            let loss = expectation(description: "Native close reported")
+            let bridge = TransportLossBridge()
+            let client = try makeClient(factory: factory, onTransportDisconnected: {
+                bridge.store?.handleUnexpectedTransportLoss()
+                loss.fulfill()
+            })
+            let barrier = ReconnectBarrier()
+            let store = ConversationStore(client: client, sleep: { _ in await barrier.wait() })
+            bridge.store = store
+            await store.connect()
+            store.draft = "pending turn"
+            let coordinator = VoiceSessionCoordinator(
+                store: store, input: CloseTestSpeechInput(), output: CloseTestAudioOutput()
+            )
+            let turnSent = expectation(description: "Turn sent")
+            task.onTurnSend = { turnSent.fulfill() }
+            let sending = Task { @MainActor in await coordinator.sendDraft() }
+            await fulfillment(of: [turnSent], timeout: 1)
+            let readingAgain = expectation(description: "Reader receives partial frame")
+            task.onReceive = { readingAgain.fulfill() }
+            task.deliver(.success(.string(json(["type": "text_delta", "text": "partial response"]))))
+            await fulfillment(of: [readingAgain], timeout: 1)
+            task.onReceive = nil
+            task.notifyClose(code)
+            await fulfillment(of: [loss], timeout: 1)
+            await sending.value
+
+            XCTAssertFalse(store.isSending)
+            XCTAssertEqual(coordinator.state, .failed(RelaySessionError.disconnected.localizedDescription))
+            XCTAssertEqual(store.messages.first(where: { $0.role == .assistant })?.text, "partial response")
+            XCTAssertEqual(store.unconfirmedTurnText, "pending turn")
+            XCTAssertEqual(store.draft, "pending turn")
+
+            await barrier.release()
+            await store.waitForReconnectToFinish()
+            XCTAssertEqual(store.connectionState, .connected)
+            XCTAssertEqual(factory.openCount, 2)
+            XCTAssertEqual(task.sendCount, 2)
+            XCTAssertEqual(replacementTask.sendCount, 1, "Reconnect sends hello, never replays the turn")
+            await client.disconnect()
+        }
+    }
+
+    @MainActor
+    func testNativeCloseWhileIdleReconnectsButLocalDisconnectDoesNot() async throws {
+        let task = CloseNotificationWebSocketTask()
+        let replacement = CloseNotificationWebSocketTask()
+        let factory = FakeWebSocketConnectionFactory(sockets: [
+            URLSessionWebSocketConnection(task: task), URLSessionWebSocketConnection(task: replacement),
+        ])
+        let bridge = TransportLossBridge()
+        let loss = expectation(description: "Idle close reported once")
+        let client = try makeClient(factory: factory, onTransportDisconnected: {
+            bridge.store?.handleUnexpectedTransportLoss()
+            loss.fulfill()
+        })
+        let store = ConversationStore(client: client, sleep: { _ in })
+        bridge.store = store
+        await store.connect()
+        task.notifyClose(.normalClosure)
+        await fulfillment(of: [loss], timeout: 1)
+        await store.waitForReconnectToFinish()
+        XCTAssertEqual(store.connectionState, .connected)
+        XCTAssertEqual(factory.openCount, 2)
+        await client.disconnect()
+        replacement.notifyClose(.normalClosure)
+        XCTAssertFalse(store.isReconnecting)
+    }
+
+    func testNativeCloseFinishesPendingReceiveAndRejectsLaterOperations() async throws {
+        for code: URLSessionWebSocketTask.CloseCode in [.normalClosure, .goingAway, .policyViolation] {
+            let task = CloseNotificationWebSocketTask()
+            let socket = URLSessionWebSocketConnection(task: task)
+            let receiving = expectation(description: "Receive registered")
+            task.onReceive = { receiving.fulfill() }
+            let reader = Task { try await socket.receive() }
+            await fulfillment(of: [receiving], timeout: 1)
+
+            task.notifyClose(code)
+            // A delayed receive callback must not double-resume or deliver data.
+            task.deliver(.success(.string("late frame")))
+            do {
+                _ = try await reader.value
+                XCTFail("Close must fail the pending receive")
+            } catch let error as RelaySessionError {
+                XCTAssertEqual(error, .disconnected)
+            }
+            do {
+                try await socket.send(text: "must not be sent")
+                XCTFail("Closed sockets must reject send")
+            } catch let error as RelaySessionError {
+                XCTAssertEqual(error, .disconnected)
+            }
+            do {
+                _ = try await socket.receive()
+                XCTFail("Closed sockets must reject receive")
+            } catch let error as RelaySessionError {
+                XCTAssertEqual(error, .disconnected)
+            }
+            XCTAssertEqual(task.sendCount, 0)
+            await socket.close()
+        }
+    }
+
+    func testNativeTaskCompletionWithoutReceiveCallbackFinishesReceive() async throws {
+        let task = CloseNotificationWebSocketTask()
+        let socket = URLSessionWebSocketConnection(task: task)
+        let receiving = expectation(description: "Receive registered")
+        task.onReceive = { receiving.fulfill() }
+        let reader = Task { try await socket.receive() }
+        await fulfillment(of: [receiving], timeout: 1)
+
+        task.notifyCompletion()
+        do {
+            _ = try await reader.value
+            XCTFail("Task completion must finish receive even without an error")
+        } catch let error as RelaySessionError {
+            XCTAssertEqual(error, .disconnected)
+        }
+        await socket.close()
+    }
+
+    func testReceiveCallbackBeforeCloseDoesNotLoseDeliveredFrame() async throws {
+        let task = CloseNotificationWebSocketTask()
+        let socket = URLSessionWebSocketConnection(task: task)
+        let receiving = expectation(description: "Receive registered")
+        task.onReceive = { receiving.fulfill() }
+        let reader = Task { try await socket.receive() }
+        await fulfillment(of: [receiving], timeout: 1)
+        task.deliver(.success(.string("partial response")))
+        task.notifyClose(.normalClosure)
+
+        let frame = try await reader.value
+        XCTAssertEqual(frame, .text("partial response"))
+        await socket.close()
+    }
+
+    @MainActor
+    func testRemoteLossPreservesPartialResponseAndMarksTurnUnconfirmed() async throws {
+        let socket = FakeWebSocketConnection()
+        socket.enqueue(.text(json(["type": "hello_ack"])))
+        let loss = expectation(description: "Transport loss reported")
+        let client = try makeClient(socket: socket, onTransportDisconnected: { loss.fulfill() })
+        let store = ConversationStore(client: client)
+        await store.connect()
+        store.draft = "pending turn"
+        let receivedPartial = expectation(description: "Partial response received")
+        let sent = expectation(description: "Turn sent")
+        socket.onSend = { sent.fulfill() }
+        let send = Task { @MainActor in
+            await store.sendDraft { event in
+                if case .textDelta = event { receivedPartial.fulfill() }
+            }
+        }
+        await fulfillment(of: [sent], timeout: 1)
+        socket.enqueue(.text(json(["type": "text_delta", "text": "partial response"])))
+        await fulfillment(of: [receivedPartial], timeout: 1)
+        socket.failNextReceive(with: CancellationError())
+        await fulfillment(of: [loss], timeout: 1)
+        await client.disconnect()
+        _ = await send.value
+        XCTAssertFalse(store.isSending)
+        XCTAssertEqual(store.messages.first(where: { $0.role == .assistant })?.text, "partial response")
+        XCTAssertEqual(store.unconfirmedTurnText, "pending turn")
+        XCTAssertEqual(store.draft, "pending turn")
+        XCTAssertEqual(store.connectionState, .disconnected)
+        XCTAssertEqual(socket.sentTexts.count, 2, "Only hello and the original turn were sent")
+    }
+
+    func testUnexpectedReceiveCancellationReportsTransportLoss() async throws {
+        let socket = FakeWebSocketConnection()
+        socket.enqueue(.text(json(["type": "hello_ack"])))
+        let disconnected = expectation(description: "Unexpected cancellation reports transport loss")
+        let client = try makeClient(socket: socket, onTransportDisconnected: { disconnected.fulfill() })
+        _ = try await client.connect()
+        let stream = await client.sendTurn(text: "pending turn")
+
+        socket.failNextReceive(with: CancellationError())
+        await fulfillment(of: [disconnected], timeout: 1)
+        // Cleanup also bounds the failing regression: never leave collect hung.
+        await client.disconnect()
+        do {
+            _ = try await collect(stream)
+            XCTFail("Unexpected cancellation must fail the turn")
+        } catch let error as RelaySessionError {
+            XCTAssertEqual(error, .disconnected)
+        }
+    }
+
     func testConnectSendsProtocolV1HelloAndWaitsForHelloAck() async throws {
         let socket = FakeWebSocketConnection()
         socket.enqueue(.text(json(["type": "hello_ack", "model": "test-model"])))
@@ -254,7 +452,8 @@ final class URLSessionHermesSessionClientTests: XCTestCase {
     private func makeClient(
         socket: FakeWebSocketConnection? = nil,
         factory: FakeWebSocketConnectionFactory? = nil,
-        sendTimeoutNanoseconds: UInt64 = 10_000_000_000
+        sendTimeoutNanoseconds: UInt64 = 10_000_000_000,
+        onTransportDisconnected: (@MainActor @Sendable () -> Void)? = nil
     ) throws -> URLSessionHermesSessionClient {
         let profile = try RelayProfile(
             endpoint: URL(string: "wss://relay.example.test/session")!,
@@ -272,7 +471,8 @@ final class URLSessionHermesSessionClientTests: XCTestCase {
             profile: profile,
             token: "test-token",
             socketFactory: selectedFactory,
-            sendTimeoutNanoseconds: sendTimeoutNanoseconds
+            sendTimeoutNanoseconds: sendTimeoutNanoseconds,
+            onTransportDisconnected: onTransportDisconnected
         )
     }
 
@@ -290,8 +490,111 @@ final class URLSessionHermesSessionClientTests: XCTestCase {
     }
 }
 
+private final class CloseNotificationWebSocketTask: WebSocketTask, @unchecked Sendable {
+    typealias Message = URLSessionWebSocketTask.Message
+    typealias CloseCode = URLSessionWebSocketTask.CloseCode
+    var delegate: (any URLSessionTaskDelegate)?
+    private let lock = NSLock()
+    private var receiveCallback: (@Sendable (Result<Message, Error>) -> Void)?
+    private var queued: [Result<Message, Error>] = []
+    private var receiveObserver: (@Sendable () -> Void)?
+    private var turnObserver: (@Sendable () -> Void)?
+    var onReceive: (@Sendable () -> Void)? {
+        get { lock.withLock { receiveObserver } }
+        set { lock.withLock { receiveObserver = newValue } }
+    }
+    var onTurnSend: (@Sendable () -> Void)? {
+        get { lock.withLock { turnObserver } }
+        set { lock.withLock { turnObserver = newValue } }
+    }
+    private var sends = 0
+    var sendCount: Int { lock.withLock { sends } }
+
+    func receive(completionHandler: @escaping @Sendable (Result<Message, Error>) -> Void) {
+        let result: Result<Message, Error>? = lock.withLock {
+            if !queued.isEmpty { return queued.removeFirst() }
+            receiveCallback = completionHandler
+            return nil
+        }
+        if let result { completionHandler(result) }
+        onReceive?()
+    }
+
+    func send(_ message: Message, completionHandler: @escaping @Sendable (Error?) -> Void) {
+        lock.withLock { sends += 1 }
+        if case .string(let text) = message,
+           let object = try? text.jsonObject(), object["type"] as? String == "hello" {
+            deliver(.success(.string("{\"type\":\"hello_ack\"}")))
+        } else {
+            onTurnSend?()
+        }
+        completionHandler(nil)
+    }
+
+    func cancel(with closeCode: CloseCode, reason: Data?) {}
+
+    func notifyCompletion() {
+        let task = URLSession.shared.webSocketTask(with: URL(string: "ws://localhost")!)
+        delegate?.urlSession?(URLSession.shared, task: task, didCompleteWithError: nil)
+    }
+
+    func notifyClose(_ code: CloseCode) {
+        let task = URLSession.shared.webSocketTask(with: URL(string: "ws://localhost")!)
+        (delegate as? URLSessionWebSocketDelegate)?.urlSession?(
+            URLSession.shared, webSocketTask: task, didCloseWith: code,
+            reason: Data("server-controlled private reason".utf8)
+        )
+    }
+
+    func deliver(_ result: Result<Message, Error>) {
+        let callback = lock.withLock {
+            if receiveCallback == nil { queued.append(result) }
+            let callback = receiveCallback
+            receiveCallback = nil
+            return callback
+        }
+        callback?(result)
+    }
+
+}
+
+@MainActor
+private final class TransportLossBridge {
+    weak var store: ConversationStore?
+}
+
+private actor ReconnectBarrier {
+    private var released = false
+    private var waiter: CheckedContinuation<Void, Never>?
+    func wait() async {
+        if released { return }
+        await withCheckedContinuation { waiter = $0 }
+    }
+    func release() {
+        released = true
+        waiter?.resume()
+        waiter = nil
+    }
+}
+
+private struct CloseTestSpeechInput: SpeechInput {
+    func authorization() async -> SpeechAuthorization { .notDetermined }
+    func requestAuthorization() async -> SpeechAuthorization { .notDetermined }
+    func start() async throws -> AsyncThrowingStream<SpeechRecognitionUpdate, Error> { throw SpeechInputError.notAuthorized }
+    func finish() async {}
+    func cancel() async {}
+}
+
+private struct CloseTestAudioOutput: AudioOutput {
+    func start(format: AudioFormat) async throws {}
+    func append(_ pcm: Data) async throws -> AudioPlaybackReadiness { .ready }
+    func finish() async throws {}
+    func stop() async {}
+    func playbackPosition() async -> TimeInterval? { nil }
+}
+
 private final class FakeWebSocketConnectionFactory: WebSocketConnectionFactory, @unchecked Sendable {
-    private var sockets: [FakeWebSocketConnection]
+    private var sockets: [any WebSocketConnection]
     var lastRequest: URLRequest?
     private(set) var openCount = 0
 
@@ -299,7 +602,7 @@ private final class FakeWebSocketConnectionFactory: WebSocketConnectionFactory, 
         self.sockets = [socket]
     }
 
-    init(sockets: [FakeWebSocketConnection]) {
+    init(sockets: [any WebSocketConnection]) {
         self.sockets = sockets
     }
 
@@ -316,6 +619,7 @@ private final class FakeWebSocketConnection: WebSocketConnection, @unchecked Sen
     private var pendingReceives: [CheckedContinuation<WebSocketFrame, Error>] = []
     private var nextReceiveError: Error?
     var sendDelayNanoseconds: UInt64?
+    var onSend: (@Sendable () -> Void)?
     private(set) var sentTexts: [String] = []
     private(set) var closeCalled = false
 
@@ -324,6 +628,7 @@ private final class FakeWebSocketConnection: WebSocketConnection, @unchecked Sen
             try await Task.sleep(nanoseconds: sendDelayNanoseconds)
         }
         appendSentText(text)
+        onSend?()
     }
 
     func receive() async throws -> WebSocketFrame {
