@@ -167,6 +167,7 @@ actor URLSessionHermesSessionClient: HermesSessionClient {
 
             do {
                 let frame = try await socket.receive()
+                guard generation == transportGeneration, !Task.isCancelled else { return }
                 switch frame {
                 case .text(let text):
                     try handleTextFrame(text)
@@ -180,6 +181,11 @@ actor URLSessionHermesSessionClient: HermesSessionClient {
                     )
                 }
             } catch is CancellationError {
+                // A transport may report cancellation without this reader
+                // having been cancelled by our own teardown.
+                if !Task.isCancelled {
+                    await failTransport(RelaySessionError.disconnected, generation: generation)
+                }
                 return
             } catch let error as HermesEventNormalizationError {
                 await failTransport(error, generation: generation)
