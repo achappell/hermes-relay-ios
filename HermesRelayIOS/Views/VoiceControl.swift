@@ -1,5 +1,22 @@
 import SwiftUI
 
+enum VoiceControlInteractionPolicy {
+    static func isResponseActive(_ state: VoiceState) -> Bool {
+        switch state {
+        case .thinking, .buffering, .speaking:
+            return true
+        default:
+            return false
+        }
+    }
+
+    /// Stopping capture can remain in flight while the response starts.
+    /// Response states must stay tappable so that action can be interrupted.
+    static func isDisabled(isActionInFlight: Bool, state: VoiceState) -> Bool {
+        isActionInFlight && !isResponseActive(state)
+    }
+}
+
 struct VoiceControl: View {
     let coordinator: VoiceSessionCoordinator
 
@@ -13,12 +30,7 @@ struct VoiceControl: View {
     }
 
     private var isResponseActive: Bool {
-        switch coordinator.state {
-        case .thinking, .buffering, .speaking:
-            return true
-        default:
-            return false
-        }
+        VoiceControlInteractionPolicy.isResponseActive(coordinator.state)
     }
 
     var body: some View {
@@ -65,12 +77,7 @@ struct VoiceControl: View {
         }
 
         private var isResponseActive: Bool {
-            switch coordinator.state {
-            case .thinking, .buffering, .speaking:
-                return true
-            default:
-                return false
-            }
+            VoiceControlInteractionPolicy.isResponseActive(coordinator.state)
         }
 
         var body: some View {
@@ -89,7 +96,12 @@ struct VoiceControl: View {
                     }
             }
             .buttonStyle(.plain)
-            .disabled(isActionInFlight)
+            .disabled(
+                VoiceControlInteractionPolicy.isDisabled(
+                    isActionInFlight: isActionInFlight,
+                    state: coordinator.state
+                )
+            )
             .accessibilityLabel("Voice control")
             .accessibilityValue(
                 isCapturing
@@ -108,7 +120,7 @@ struct VoiceControl: View {
         }
 
         private func toggleCapture() {
-            guard !isActionInFlight else { return }
+            guard !isActionInFlight || isResponseActive else { return }
             isActionInFlight = true
             let shouldEndCapture = isCapturing
             let shouldInterruptResponse = isResponseActive

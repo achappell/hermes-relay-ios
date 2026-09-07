@@ -393,7 +393,7 @@ final class VoiceSessionCoordinator {
             audioStreamActive = true
             audioFormat = format
             streamedAudioBytes = 0
-            playbackDuration = 0
+            playbackDuration = nil
             isPlaybackDurationFinal = false
             startPlaybackPositionObservation(generation: generation)
             await diagnostics.record(.streamStarted(format: format))
@@ -406,10 +406,6 @@ final class VoiceSessionCoordinator {
         case .audioChunk(let pcm):
             guard !playbackFailed else { return }
             streamedAudioBytes += pcm.count
-            playbackDuration = Self.audioDuration(
-                byteCount: streamedAudioBytes,
-                format: audioFormat
-            )
             await diagnostics.record(.chunkReceived(bytes: pcm.count))
             do {
                 let readiness = try await output.append(pcm)
@@ -433,7 +429,7 @@ final class VoiceSessionCoordinator {
             do {
                 try await output.finish()
                 audioStreamActive = false
-                isPlaybackDurationFinal = playbackDuration != nil
+                finalizePlaybackDuration()
                 if turnDidComplete {
                     endResponse()
                 }
@@ -545,7 +541,7 @@ final class VoiceSessionCoordinator {
             audioStreamActive = false
             do {
                 try await output.finish()
-                isPlaybackDurationFinal = playbackDuration != nil
+                finalizePlaybackDuration()
             } catch {
                 await handlePlaybackFailure()
                 return
@@ -612,6 +608,14 @@ final class VoiceSessionCoordinator {
         playbackDuration = nil
         isPlaybackDurationFinal = false
         stopPlaybackPositionObservation()
+    }
+
+    private func finalizePlaybackDuration() {
+        playbackDuration = Self.audioDuration(
+            byteCount: streamedAudioBytes,
+            format: audioFormat
+        )
+        isPlaybackDurationFinal = playbackDuration != nil
     }
 
     private static func audioDuration(byteCount: Int, format: AudioFormat?) -> TimeInterval? {

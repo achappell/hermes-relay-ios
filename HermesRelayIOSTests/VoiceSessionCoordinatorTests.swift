@@ -4,6 +4,21 @@ import XCTest
 @testable import HermesRelayIOS
 
 final class VoiceSessionCoordinatorTests: XCTestCase {
+    func testVoiceControlRemainsEnabledToInterruptAfterCaptureActionStarted() {
+        XCTAssertTrue(
+            VoiceControlInteractionPolicy.isDisabled(
+                isActionInFlight: true,
+                state: .transcribing
+            )
+        )
+        XCTAssertFalse(
+            VoiceControlInteractionPolicy.isDisabled(
+                isActionInFlight: true,
+                state: .speaking
+            )
+        )
+    }
+
     @MainActor
     func testAmbientHUDTracksLiveRecognitionUpdatesFromCoordinator() async {
         let input = CoordinatorSpeechInput()
@@ -491,11 +506,17 @@ final class VoiceSessionCoordinatorTests: XCTestCase {
         for _ in 0..<3 { await Task.yield() }
 
         XCTAssertEqual(coordinator.speechTimings, [timing])
-        XCTAssertEqual(coordinator.playbackDuration ?? -1, 1.0, accuracy: 0.001)
+        XCTAssertNil(
+            coordinator.playbackDuration,
+            "The partial stream must not publish a duration before audioEnd."
+        )
+        XCTAssertFalse(coordinator.isPlaybackDurationFinal)
         XCTAssertEqual(coordinator.playbackPosition ?? -1, 0.58, accuracy: 0.001)
 
         await output.allowFinish()
         await responseTask.value
+        XCTAssertEqual(coordinator.playbackDuration ?? -1, 1.0, accuracy: 0.001)
+        XCTAssertTrue(coordinator.isPlaybackDurationFinal)
     }
 
     @MainActor
