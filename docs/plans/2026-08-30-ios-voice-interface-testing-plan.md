@@ -81,10 +81,16 @@ device/OS used.
    failure.
 8. Exercise an unavailable or interrupted speaker route. Confirm response text
    remains visible and the UI reports playback failure or fallback recovery.
-9. Drop the network during a turn. Confirm the connection is not shown as
+9. During a speaking response, tap the voice control once. When
+   `hello_ack.capabilities` contains `interrupt`, confirm playback stops,
+   `turn_interrupted` leaves the existing connection connected, the partial
+   assistant text remains visible, and no unconfirmed marker or replacement
+   turn appears. With a legacy endpoint, confirm the close-and-reconnect
+   fallback marks the submitted turn unconfirmed instead.
+10. Drop the network during a turn. Confirm the connection is not shown as
    connected, the local turn is marked unconfirmed, reconnect does not replay
    it, and a later explicitly submitted turn can complete.
-10. Review diagnostics and artifacts. Confirm no prompt, response, token, raw
+11. Review diagnostics and artifacts. Confirm no prompt, response, token, raw
    frame, microphone audio, or PCM content was logged or captured.
 
 For a relay build that emits `speech_timing`, repeat step 5 with a response

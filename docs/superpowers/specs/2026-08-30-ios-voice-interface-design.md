@@ -8,8 +8,8 @@
 
 Build a native voice conversation path for the Hermes Relay client that works
 with the intentional iOS 26 and macOS 26 target matrix, while preserving the
-existing Hermes voice-session protocol boundary and keeping unsupported remote
-operations out of the client.
+existing Hermes voice-session protocol boundary and keeping remote operations
+unsupported by the connected endpoint out of the client.
 
 The first useful experience is push-to-talk: the user starts capture, sees a
 local transcription, releases or cancels capture, sends the resulting text as
@@ -30,10 +30,12 @@ The protocol currently supports:
 - `audio_start` metadata followed by binary signed 16-bit PCM frames; and
 - `turn_end` completion.
 
-The protocol does not currently expose client microphone upload or an explicit
-remote interrupt operation. The iOS/macOS client therefore performs local
-capture and transcription, sends recognized text through the existing text
-turn contract, and treats cancellation as local capture/playback control.
+The protocol does not expose client microphone upload, but Hermes endpoints may
+advertise an explicit remote interrupt capability in `hello_ack`. The iOS/macOS
+client performs local capture and transcription, sends recognized text through
+the existing text turn contract, and uses a server-confirmed interrupt when
+that capability is present. Endpoints without it retain the local
+close-and-reconnect fallback and mark the submitted turn unconfirmed.
 
 ## Platform matrix
 
@@ -109,7 +111,11 @@ raw WebSocket frames must not cross into the store or views.
    active assistant message, and audio events to the playback adapter.
 7. `audio_start` begins playback with its declared signed-16-bit PCM format;
    binary chunks are queued or played; `audio_end` closes that response stream.
-8. `turn_end` returns the coordinator to `idle`. Errors preserve the last safe
+8. When `hello_ack.capabilities` contains `interrupt`, an active voice turn
+   sends one protocol-v1 `interrupt`. `audio_abort` stops playback and clears
+   pending audio immediately; `turn_interrupted` confirms the remote turn is
+   over without reconnecting or creating a replacement turn.
+9. `turn_end` returns the coordinator to `idle`. Errors preserve the last safe
    transcript/draft state and explain the next action.
 
 ## Interaction and failure rules
@@ -127,9 +133,11 @@ raw WebSocket frames must not cross into the store or views.
 - Unknown protocol events may produce opt-in, content-safe diagnostics, but
   raw payloads, prompts, responses, tokens, and audio contents must not be
   logged.
-- Local cancellation stops local capture or playback only. Remote generation
-  remains subject to the current Hermes contract until `RELAY-01` adds an
-  explicit interrupt operation.
+- A local capture cancellation stops capture without submitting a turn. Tapping
+  the voice control during a response requests a server-confirmed interrupt
+  when the endpoint advertises it; `audio_abort` stops playback immediately.
+  If the endpoint cannot confirm interruption, the client closes and
+  reconnects, labels the submitted turn unconfirmed, and never replays it.
 
 ## Planned slices
 
@@ -226,12 +234,30 @@ state does not claim server confirmation.
 **Validation:** Deterministic transport failure tests, relaunch persistence
 tests, and device smoke tests for network loss and audio interruption.
 
+### IOS-26 — Server-confirmed interruption and playback abort
+
+Adopt Hermes' advertised `interrupt` capability for active voice responses.
+Send one protocol-v1 interrupt, stop queued playback on `audio_abort`, and
+retain the partial transcript when `turn_interrupted` confirms cancellation.
+Keep the close-and-reconnect fallback for legacy endpoints and label those
+turns unconfirmed.
+
+**Acceptance:** A supported endpoint interrupts without disconnecting or
+creating a replacement turn; stale text, audio, and completion frames cannot
+contaminate the next turn; and a legacy endpoint remains recoverable and
+honest about confirmation.
+
+**Validation:** Deterministic supported, nested-capability, timeout/fallback,
+late-frame, audio-abort, and coordinator tests, followed by an iOS device
+smoke test during streamed playback.
+
 ## Explicitly out of scope
 
 - Streaming microphone bytes to Hermes before the relay exposes an upload
   contract.
-- Remote interrupt, steer, approval, sudo, or secret-prompt operations; track
-  these under `RELAY-01`.
+- Remote steer, approval, sudo, and secret-prompt operations; track these under
+  `RELAY-01`. Remote interruption is implemented by IOS-26 only for the
+  advertised Hermes contract.
 - Session browser and server transcript hydration; track these under
   `SESSION-01`.
 - Wake-word/always-listening behavior.

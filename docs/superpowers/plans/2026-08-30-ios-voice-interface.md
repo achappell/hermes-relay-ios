@@ -11,6 +11,11 @@
 
 **Spec:** docs/superpowers/specs/2026-08-30-ios-voice-interface-design.md
 
+> Historical scope note (2026-09-07): this plan predates Hermes' advertised
+> server interruption contract. IOS-26 supersedes the remote-interrupt
+> deferral described below; the current behavior and validation live in the
+> IOS-26 plan and the voice-interface testing plan.
+
 ## Global Constraints
 
 - Build targets intentionally support iphoneos, iphonesimulator, and macosx.

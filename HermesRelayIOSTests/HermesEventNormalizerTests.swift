@@ -99,6 +99,38 @@ final class HermesEventNormalizerTests: XCTestCase {
         XCTAssertEqual(end, [.audioFileEnd])
     }
 
+    func testInterruptEventsRemainTypedWithTheirTurnIdentity() throws {
+        var normalizer = HermesEventNormalizer()
+
+        let audioAbort = try normalizer.normalizeJSON(
+            json([
+                "type": "audio_abort",
+                "turn_id": "turn-7",
+                "session_id": "session-1",
+                "error": "client interrupt",
+            ]),
+            turnID: "turn-7"
+        )
+        let interrupted = try normalizer.normalizeJSON(
+            json([
+                "type": "turn_interrupted",
+                "turn_id": "turn-7",
+                "session_id": "session-1",
+                "reason": "turn interrupted",
+            ]),
+            turnID: "turn-7"
+        )
+
+        XCTAssertEqual(
+            audioAbort,
+            [.audioAbort(turnID: "turn-7", reason: "client interrupt")]
+        )
+        XCTAssertEqual(
+            interrupted,
+            [.turnInterrupted(turnID: "turn-7", reason: "turn interrupted")]
+        )
+    }
+
     func testSpeechTimingNormalizesWordBoundariesInMilliseconds() throws {
         var normalizer = HermesEventNormalizer()
 

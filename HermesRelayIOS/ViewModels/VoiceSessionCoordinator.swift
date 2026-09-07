@@ -228,6 +228,11 @@ final class VoiceSessionCoordinator {
     }
 
     func stopPlayback() async {
+        if responseTask != nil {
+            _ = await interruptActiveTurn()
+            return
+        }
+
         await output.stop()
         resetSpeechTiming()
         switch state {
@@ -239,14 +244,33 @@ final class VoiceSessionCoordinator {
     }
 
     func interruptAndBeginCapture() async {
-        guard let activeResponseTask = responseTask else { return }
+        guard responseTask != nil else { return }
 
-        responseGeneration &+= 1
+        guard await interruptActiveTurn() else { return }
+        await beginCapture()
+    }
+
+    @discardableResult
+    func interruptActiveTurn() async -> Bool {
+        guard let activeResponseTask = responseTask else { return false }
+
         state = .interrupted
         await output.stop()
         resetSpeechTiming()
+        // The relay may already have sent turn_end while local audio is still
+        // draining. In that small window there is no active server turn to
+        // interrupt; stopping the local output is sufficient and must not
+        // trigger the legacy reconnect fallback.
+        let didReconnect = store.isSending
+            ? await store.interruptActiveTurn()
+            : true
+        // Let the active response consume the server's interruption
+        // confirmation (and close its stream) before invalidating its
+        // generation. Cancelling first would make the confirmation look like
+        // a late frame and leave the store waiting for a turn that is already
+        // dead.
+        responseGeneration &+= 1
         activeResponseTask.cancel()
-        let didReconnect = await store.interruptActiveTurn()
         await activeResponseTask.value
         responseTask = nil
         audioStreamActive = false
@@ -256,10 +280,10 @@ final class VoiceSessionCoordinator {
 
         guard didReconnect else {
             state = .failed(store.transientError ?? "The Hermes relay could not be restored after interruption.")
-            return
+            return false
         }
 
-        await beginCapture()
+        return true
     }
 
     func sendDraft() async {
@@ -342,7 +366,7 @@ final class VoiceSessionCoordinator {
             await self?.handle(event, generation: generation)
         }
         guard generation == responseGeneration, !Task.isCancelled else { return }
-        if !completed, !isFailed {
+        if !completed, !isFailed, state != .interrupted {
             state = .failed(store.transientError ?? "The voice turn could not be completed.")
         } else if completed, !isFailed, state != .interrupted {
             await finishPlaybackAndEndResponse()
@@ -369,7 +393,7 @@ final class VoiceSessionCoordinator {
             audioStreamActive = true
             audioFormat = format
             streamedAudioBytes = 0
-            playbackDuration = 0
+            playbackDuration = nil
             isPlaybackDurationFinal = false
             startPlaybackPositionObservation(generation: generation)
             await diagnostics.record(.streamStarted(format: format))
@@ -382,10 +406,6 @@ final class VoiceSessionCoordinator {
         case .audioChunk(let pcm):
             guard !playbackFailed else { return }
             streamedAudioBytes += pcm.count
-            playbackDuration = Self.audioDuration(
-                byteCount: streamedAudioBytes,
-                format: audioFormat
-            )
             await diagnostics.record(.chunkReceived(bytes: pcm.count))
             do {
                 let readiness = try await output.append(pcm)
@@ -409,7 +429,7 @@ final class VoiceSessionCoordinator {
             do {
                 try await output.finish()
                 audioStreamActive = false
-                isPlaybackDurationFinal = playbackDuration != nil
+                finalizePlaybackDuration()
                 if turnDidComplete {
                     endResponse()
                 }
@@ -453,6 +473,11 @@ final class VoiceSessionCoordinator {
             }
         case .error(let message):
             state = .failed(message)
+        case .audioAbort:
+            await stopInterruptedPlayback()
+        case .turnInterrupted:
+            await stopInterruptedPlayback()
+            state = .interrupted
         case .speechTiming(let timing):
             await diagnostics.record(
                 .speechTimingReceived(
@@ -480,6 +505,16 @@ final class VoiceSessionCoordinator {
         }
     }
 
+    private func stopInterruptedPlayback() async {
+        await output.stop()
+        audioStreamActive = false
+        audioFileBuffer.removeAll(keepingCapacity: false)
+        streamedAudioBytes = 0
+        playbackFailed = false
+        resetSpeechTiming()
+        state = .interrupted
+    }
+
     private func submitDraft(generation: UInt64) async {
         guard generation == responseGeneration, !Task.isCancelled else { return }
         turnDidComplete = false
@@ -489,7 +524,7 @@ final class VoiceSessionCoordinator {
             await self?.handle(event, generation: generation)
         }
         guard generation == responseGeneration, !Task.isCancelled else { return }
-        if !completed, !isFailed {
+        if !completed, !isFailed, state != .interrupted {
             state = .failed(store.transientError ?? "The text turn could not be completed.")
         } else if completed, !isFailed, state != .interrupted {
             await finishPlaybackAndEndResponse()
@@ -506,7 +541,7 @@ final class VoiceSessionCoordinator {
             audioStreamActive = false
             do {
                 try await output.finish()
-                isPlaybackDurationFinal = playbackDuration != nil
+                finalizePlaybackDuration()
             } catch {
                 await handlePlaybackFailure()
                 return
@@ -573,6 +608,14 @@ final class VoiceSessionCoordinator {
         playbackDuration = nil
         isPlaybackDurationFinal = false
         stopPlaybackPositionObservation()
+    }
+
+    private func finalizePlaybackDuration() {
+        playbackDuration = Self.audioDuration(
+            byteCount: streamedAudioBytes,
+            format: audioFormat
+        )
+        isPlaybackDurationFinal = playbackDuration != nil
     }
 
     private static func audioDuration(byteCount: Int, format: AudioFormat?) -> TimeInterval? {

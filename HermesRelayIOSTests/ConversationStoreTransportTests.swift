@@ -145,6 +145,38 @@ final class ConversationStoreTransportTests: XCTestCase {
         XCTAssertFalse(store.isSending)
         XCTAssertEqual(store.messages.map(\.role), [.user])
         XCTAssertNil(store.activityText)
+        XCTAssertEqual(
+            store.unconfirmedTurnText,
+            "Keep listening",
+            "Legacy close-and-reconnect interruption is not server-confirmed"
+        )
+        XCTAssertNil(store.transientError)
+    }
+
+    @MainActor
+    func testServerConfirmedInterruptKeepsConnectionAndDoesNotMarkTurnUnconfirmed() async {
+        let client = ServerInterruptHermesSessionClient()
+        let store = ConversationStore(client: client)
+        await store.connect()
+
+        let sendTask = Task { @MainActor in
+            await store.sendTurn(text: "Stop that answer")
+        }
+        await client.waitUntilTurnStarted()
+
+        let didInterrupt = await store.interruptActiveTurn()
+        let didComplete = await sendTask.value
+        let disconnectCount = await client.disconnectCount
+        let interruptCount = await client.interruptCount
+
+        XCTAssertTrue(didInterrupt)
+        XCTAssertFalse(didComplete)
+        XCTAssertEqual(disconnectCount, 0)
+        XCTAssertEqual(interruptCount, 1)
+        XCTAssertEqual(store.connectionState, .connected)
+        XCTAssertFalse(store.isSending)
+        XCTAssertEqual(store.messages.map(\.role), [.user, .assistant])
+        XCTAssertEqual(store.messages.last?.text, "partial answer")
         XCTAssertNil(store.unconfirmedTurnText)
         XCTAssertNil(store.transientError)
     }
@@ -464,6 +496,57 @@ private actor InterruptibleHermesSessionClient: HermesSessionClient {
         disconnectCount += 1
         turnContinuation?.yield(.messageStart)
         turnContinuation?.yield(.textDelta("late response"))
+        turnContinuation?.finish(throwing: RelaySessionError.disconnected)
+        turnContinuation = nil
+    }
+
+    func waitUntilTurnStarted() async {
+        if turnStarted { return }
+        await withCheckedContinuation { continuation in
+            turnStartWaiters.append(continuation)
+        }
+    }
+}
+
+private actor ServerInterruptHermesSessionClient: HermesSessionClient {
+    private(set) var connectCount = 0
+    private(set) var disconnectCount = 0
+    private(set) var interruptCount = 0
+    private var turnContinuation: AsyncThrowingStream<HermesEvent, Error>.Continuation?
+    private var turnStarted = false
+    private var turnStartWaiters: [CheckedContinuation<Void, Never>] = []
+
+    func connect() async throws -> SessionMetadata {
+        connectCount += 1
+        return SessionMetadata(
+            sessionID: "session-\(connectCount)",
+            model: nil,
+            capabilities: ["interrupt"]
+        )
+    }
+
+    func sendTurn(text: String) async -> AsyncThrowingStream<HermesEvent, Error> {
+        let (stream, continuation) = AsyncThrowingStream<HermesEvent, Error>.makeStream()
+        turnContinuation = continuation
+        turnStarted = true
+        turnStartWaiters.forEach { $0.resume() }
+        turnStartWaiters.removeAll()
+        continuation.yield(.messageStart)
+        continuation.yield(.textDelta("partial answer"))
+        return stream
+    }
+
+    func interruptActiveTurn() async -> Bool {
+        interruptCount += 1
+        turnContinuation?.yield(.audioAbort(turnID: "turn-1", reason: "client interrupt"))
+        turnContinuation?.yield(.turnInterrupted(turnID: "turn-1", reason: "turn interrupted"))
+        turnContinuation?.finish()
+        turnContinuation = nil
+        return true
+    }
+
+    func disconnect() async {
+        disconnectCount += 1
         turnContinuation?.finish(throwing: RelaySessionError.disconnected)
         turnContinuation = nil
     }
