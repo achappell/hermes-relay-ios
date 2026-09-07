@@ -35,6 +35,7 @@ actor URLSessionHermesSessionClient: HermesSessionClient {
     private let token: String
     private let socketFactory: any WebSocketConnectionFactory
     private let sendTimeoutNanoseconds: UInt64
+    private let interruptionConfirmationTimeoutNanoseconds: UInt64
     private let onTransportDisconnected: (@MainActor @Sendable () -> Void)?
 
     private var socket: (any WebSocketConnection)?
@@ -42,10 +43,16 @@ actor URLSessionHermesSessionClient: HermesSessionClient {
     private var pathMonitor: NWPathMonitor?
     private var transportGeneration = 0
     private var sessionID: String?
+    private var sessionMetadata: SessionMetadata?
     private var activeTurnID: String?
     private var activeContinuation: AsyncThrowingStream<HermesEvent, Error>.Continuation?
+    private var capabilities: [String] = []
+    private var interruptionRequestTurnID: String?
+    private var interruptionContinuation: AsyncStream<Bool>.Continuation?
+    private var interruptionTimeoutTask: Task<Void, Never>?
     private var audioStarted = false
     private var audioFileStarted = false
+    private var discardBinaryUntilAudioStart = false
     private var normalizer = HermesEventNormalizer()
 
     init(
@@ -53,18 +60,20 @@ actor URLSessionHermesSessionClient: HermesSessionClient {
         token: String,
         socketFactory: any WebSocketConnectionFactory,
         sendTimeoutNanoseconds: UInt64 = 10_000_000_000,
+        interruptionConfirmationTimeoutNanoseconds: UInt64 = 2_000_000_000,
         onTransportDisconnected: (@MainActor @Sendable () -> Void)? = nil
     ) {
         self.profile = profile
         self.token = token
         self.socketFactory = socketFactory
         self.sendTimeoutNanoseconds = sendTimeoutNanoseconds
+        self.interruptionConfirmationTimeoutNanoseconds = interruptionConfirmationTimeoutNanoseconds
         self.onTransportDisconnected = onTransportDisconnected
     }
 
     func connect() async throws -> SessionMetadata {
         if let sessionID, socket != nil {
-            return SessionMetadata(sessionID: sessionID, model: nil)
+            return sessionMetadata ?? SessionMetadata(sessionID: sessionID, model: nil)
         }
 
         var request = URLRequest(url: profile.endpoint)
@@ -80,6 +89,8 @@ actor URLSessionHermesSessionClient: HermesSessionClient {
 
             socket = connection
             sessionID = newSessionID
+            sessionMetadata = metadata
+            capabilities = metadata.capabilities
             transportGeneration += 1
             let generation = transportGeneration
             startPathMonitoring()
@@ -127,6 +138,46 @@ actor URLSessionHermesSessionClient: HermesSessionClient {
         return stream
     }
 
+    /// Send one explicit interruption and wait for Hermes to confirm it. The
+    /// active turn's stream remains owned by `receiveLoop`, so the confirmation
+    /// can arrive without opening a second WebSocket reader.
+    func interruptActiveTurn() async -> Bool {
+        guard let socket,
+              let sessionID,
+              let turnID = activeTurnID,
+              capabilities.contains("interrupt") else {
+            return false
+        }
+        if interruptionRequestTurnID == turnID {
+            return true
+        }
+
+        let (confirmationStream, continuation) = AsyncStream<Bool>.makeStream()
+        interruptionRequestTurnID = turnID
+        interruptionContinuation = continuation
+        let timeout = interruptionConfirmationTimeoutNanoseconds
+        interruptionTimeoutTask = Task { [weak self] in
+            do {
+                try await Task.sleep(nanoseconds: timeout)
+            } catch {
+                return
+            }
+            await self?.resolveInterruption(confirmed: false)
+        }
+
+        do {
+            try await send(
+                message: interruptJSON(turnID: turnID, sessionID: sessionID),
+                on: socket
+            )
+        } catch {
+            resolveInterruption(confirmed: false)
+            return false
+        }
+
+        return await confirmationStream.first(where: { _ in true }) ?? false
+    }
+
     func disconnect() async {
         let connection = socket
         markTransportDisconnected()
@@ -153,10 +204,15 @@ actor URLSessionHermesSessionClient: HermesSessionClient {
                 throw RelaySessionError.helloAckMissing
             }
 
-            let payload = object["payload"] as? [String: Any] ?? object
+            let payload = object["payload"] as? [String: Any] ?? [:]
+            let model = payload["model"] as? String ?? object["model"] as? String
+            let payloadCapabilities = stringArrayValue(for: "capabilities", in: payload)
+            let rootCapabilities = stringArrayValue(for: "capabilities", in: object)
+                .filter { !payloadCapabilities.contains($0) }
             return SessionMetadata(
                 sessionID: sessionID,
-                model: payload["model"] as? String ?? object["model"] as? String
+                model: model,
+                capabilities: payloadCapabilities + rootCapabilities
             )
         }
     }
@@ -172,7 +228,19 @@ actor URLSessionHermesSessionClient: HermesSessionClient {
                 case .text(let text):
                     try handleTextFrame(text)
                 case .binary(let data):
-                    guard activeContinuation != nil, audioStarted || audioFileStarted else {
+                    guard activeContinuation != nil else {
+                        // A remote interruption can leave one already-buffered
+                        // binary frame behind the terminal event. It belongs to
+                        // the stale turn and must not resurrect the transport.
+                        continue
+                    }
+                    guard audioStarted || audioFileStarted else {
+                        if discardBinaryUntilAudioStart {
+                            // A terminal interruption can leave one binary
+                            // frame buffered behind its confirmation. Drop it
+                            // until the next turn describes a fresh stream.
+                            continue
+                        }
                         await failTransport(RelaySessionError.unexpectedBinaryFrame, generation: generation)
                         return
                     }
@@ -199,12 +267,20 @@ actor URLSessionHermesSessionClient: HermesSessionClient {
 
     private func handleTextFrame(_ text: String) throws {
         guard let turnID = activeTurnID else { return }
-        let events = try normalizer.normalizeJSON(Data(text.utf8), turnID: turnID)
+        let data = Data(text.utf8)
+        if let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+           let frameTurnID = turnIdentifier(in: object),
+           frameTurnID != turnID {
+            return
+        }
+
+        let events = try normalizer.normalizeJSON(data, turnID: turnID)
         for event in events {
             switch event {
             case .audioStart:
                 audioFileStarted = false
                 audioStarted = true
+                discardBinaryUntilAudioStart = false
                 activeContinuation?.yield(event)
             case .audioEnd:
                 audioStarted = false
@@ -212,10 +288,22 @@ actor URLSessionHermesSessionClient: HermesSessionClient {
             case .audioFileStart:
                 audioStarted = false
                 audioFileStarted = true
+                discardBinaryUntilAudioStart = false
                 activeContinuation?.yield(event)
             case .audioFileEnd:
                 audioFileStarted = false
                 activeContinuation?.yield(event)
+            case .audioAbort:
+                audioStarted = false
+                audioFileStarted = false
+                discardBinaryUntilAudioStart = true
+                activeContinuation?.yield(event)
+            case .turnInterrupted:
+                activeContinuation?.yield(event)
+                resolveInterruption(confirmed: true)
+                finishActiveTurn()
+                discardBinaryUntilAudioStart = true
+                return
             case .error:
                 activeContinuation?.yield(event)
                 finishActiveTurn()
@@ -294,12 +382,17 @@ actor URLSessionHermesSessionClient: HermesSessionClient {
         transportGeneration += 1
         socket = nil
         sessionID = nil
+        sessionMetadata = nil
+        capabilities = []
+        resolveInterruption(confirmed: false)
         audioStarted = false
         audioFileStarted = false
+        discardBinaryUntilAudioStart = false
     }
 
     private func finishActiveTurn(throwing error: Error? = nil) {
         guard let continuation = activeContinuation else { return }
+        resolveInterruption(confirmed: false)
         if let error {
             continuation.finish(throwing: error)
         } else {
@@ -331,6 +424,43 @@ actor URLSessionHermesSessionClient: HermesSessionClient {
             "text": text,
             "stt_source": "local",
         ])
+    }
+
+    private func interruptJSON(turnID: String, sessionID: String) throws -> String {
+        try jsonString([
+            "type": "interrupt",
+            "protocol_version": 1,
+            "turn_id": turnID,
+            "session_id": sessionID,
+        ])
+    }
+
+    private func turnIdentifier(in object: [String: Any]) -> String? {
+        let payload = object["payload"] as? [String: Any]
+        return payload?["turn_id"] as? String ?? object["turn_id"] as? String
+    }
+
+    private func stringArrayValue(for key: String, in object: [String: Any]) -> [String] {
+        let rawValues = object[key] as? [Any] ?? []
+        var values: [String] = []
+        for rawValue in rawValues {
+            guard let value = rawValue as? String else { continue }
+            let normalized = value.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+            guard !normalized.isEmpty, !values.contains(normalized) else { continue }
+            values.append(normalized)
+        }
+        return values
+    }
+
+    private func resolveInterruption(confirmed: Bool) {
+        guard interruptionRequestTurnID != nil else { return }
+        interruptionTimeoutTask?.cancel()
+        interruptionTimeoutTask = nil
+        interruptionRequestTurnID = nil
+        let continuation = interruptionContinuation
+        interruptionContinuation = nil
+        continuation?.yield(confirmed)
+        continuation?.finish()
     }
 
     private func jsonString(_ object: [String: Any]) throws -> String {

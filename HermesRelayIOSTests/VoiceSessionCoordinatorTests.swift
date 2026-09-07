@@ -599,6 +599,101 @@ final class VoiceSessionCoordinatorTests: XCTestCase {
     }
 
     @MainActor
+    func testServerConfirmedInterruptStopsPlaybackWithoutDisconnecting() async {
+        let input = CoordinatorSpeechInput(
+            finalUpdate: SpeechRecognitionUpdate(text: "Interrupt me", isFinal: true)
+        )
+        let output = CoordinatorAudioOutput()
+        let client = InterruptibleCoordinatorHermesSessionClient(supportsInterrupt: true)
+        let store = ConversationStore(client: client)
+        await store.connect()
+        let coordinator = VoiceSessionCoordinator(store: store, input: input, output: output)
+
+        await coordinator.beginCapture()
+        let responseTask = Task { @MainActor in
+            await coordinator.endCaptureAndSend()
+        }
+        await output.waitUntilAppendRequested()
+
+        await coordinator.interruptAndBeginCapture()
+
+        let disconnectCount = await client.disconnectCount
+        let interruptCount = await client.interruptCount
+        let operations = await output.operations()
+        XCTAssertEqual(disconnectCount, 0)
+        XCTAssertEqual(interruptCount, 1)
+        XCTAssertTrue(operations.contains(.stop))
+        XCTAssertEqual(store.connectionState, .connected)
+        XCTAssertEqual(store.messages.map(\.role), [.user, .assistant])
+        XCTAssertEqual(store.messages.last?.text, "partial response")
+        XCTAssertNil(store.unconfirmedTurnText)
+        XCTAssertEqual(coordinator.state, .listening)
+
+        await coordinator.cancelCapture()
+        await responseTask.value
+    }
+
+    @MainActor
+    func testStopPlaybackUsesServerInterruptWithoutStartingCapture() async {
+        let input = CoordinatorSpeechInput(
+            finalUpdate: SpeechRecognitionUpdate(text: "Interrupt me", isFinal: true)
+        )
+        let output = CoordinatorAudioOutput()
+        let client = InterruptibleCoordinatorHermesSessionClient(supportsInterrupt: true)
+        let store = ConversationStore(client: client)
+        await store.connect()
+        let coordinator = VoiceSessionCoordinator(store: store, input: input, output: output)
+
+        await coordinator.beginCapture()
+        let responseTask = Task { @MainActor in
+            await coordinator.endCaptureAndSend()
+        }
+        await output.waitUntilAppendRequested()
+
+        await coordinator.stopPlayback()
+
+        let interruptCount = await client.interruptCount
+        let disconnectCount = await client.disconnectCount
+        XCTAssertEqual(interruptCount, 1)
+        XCTAssertEqual(disconnectCount, 0)
+        XCTAssertEqual(coordinator.state, .interrupted)
+
+        await responseTask.value
+    }
+
+    @MainActor
+    func testAudioAbortStopsPlaybackWithoutTurningAnIntentionalInterruptIntoFailure() async {
+        let format = AudioFormat(sampleRate: 24_000, channels: 1, sampleWidth: 2)
+        let client = CoordinatorHermesSessionClient(events: [
+            .messageStart,
+            .textDelta("partial response"),
+            .audioStart(format),
+            .audioChunk(Data([0, 1, 2, 3])),
+            .audioAbort(turnID: "turn-1", reason: "client interrupt"),
+            .turnInterrupted(turnID: "turn-1", reason: "turn interrupted"),
+        ])
+        let store = await connectedStore(client)
+        store.draft = "interrupt this"
+        let output = CoordinatorAudioOutput()
+        let coordinator = VoiceSessionCoordinator(
+            store: store,
+            input: CoordinatorSpeechInput(),
+            output: output
+        )
+
+        await coordinator.sendDraft()
+
+        XCTAssertEqual(coordinator.state, .interrupted)
+        if case .failed = coordinator.state {
+            XCTFail("An intentional interruption must not be reported as playback failure")
+        }
+        let operations = await output.operations()
+        XCTAssertTrue(operations.contains(.stop))
+        XCTAssertFalse(operations.contains(.finish))
+        XCTAssertEqual(store.messages.last?.text, "partial response")
+    }
+
+    @MainActor
     func testTypedDraftSendsSlashCommandAndPlaysWAVResponse() async throws {
         let writer = WAVFallbackWriter()
         let format = AudioFormat(sampleRate: 24_000, channels: 1, sampleWidth: 2)
@@ -1306,16 +1401,26 @@ private final class CoordinatorHermesSessionClient: HermesSessionClient, @unchec
 }
 
 private actor InterruptibleCoordinatorHermesSessionClient: HermesSessionClient {
+    private let supportsInterrupt: Bool
     private(set) var connectCount = 0
     private(set) var disconnectCount = 0
+    private(set) var interruptCount = 0
     private(set) var sentTurns: [String] = []
     private var turnContinuation: AsyncThrowingStream<HermesEvent, Error>.Continuation?
     private var turnStarted = false
     private var turnStartWaiters: [CheckedContinuation<Void, Never>] = []
 
+    init(supportsInterrupt: Bool = false) {
+        self.supportsInterrupt = supportsInterrupt
+    }
+
     func connect() async throws -> SessionMetadata {
         connectCount += 1
-        return SessionMetadata(sessionID: "session-\(connectCount)", model: nil)
+        return SessionMetadata(
+            sessionID: "session-\(connectCount)",
+            model: nil,
+            capabilities: supportsInterrupt ? ["interrupt"] : []
+        )
     }
 
     func sendTurn(text: String) async -> AsyncThrowingStream<HermesEvent, Error> {
@@ -1326,6 +1431,7 @@ private actor InterruptibleCoordinatorHermesSessionClient: HermesSessionClient {
         turnStartWaiters.forEach { $0.resume() }
         turnStartWaiters.removeAll()
         continuation.yield(.messageStart)
+        continuation.yield(.textDelta("partial response"))
         continuation.yield(
             .speechTiming(
                 SpeechTiming(
@@ -1344,6 +1450,16 @@ private actor InterruptibleCoordinatorHermesSessionClient: HermesSessionClient {
         )
         continuation.yield(.audioChunk(Data([0, 1, 2, 3])))
         return stream
+    }
+
+    func interruptActiveTurn() async -> Bool {
+        guard supportsInterrupt else { return false }
+        interruptCount += 1
+        turnContinuation?.yield(.audioAbort(turnID: "turn-1", reason: "client interrupt"))
+        turnContinuation?.yield(.turnInterrupted(turnID: "turn-1", reason: "turn interrupted"))
+        turnContinuation?.finish()
+        turnContinuation = nil
+        return true
     }
 
     func disconnect() async {

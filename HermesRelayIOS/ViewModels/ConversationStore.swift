@@ -248,6 +248,14 @@ final class ConversationStore {
         guard isSending, let turnGeneration = activeTurnGeneration else { return false }
 
         interruptedTurnGeneration = turnGeneration
+        if await client.interruptActiveTurn() {
+            return true
+        }
+
+        // Older endpoints have no server-confirmed interruption. Preserve the
+        // existing close-and-reconnect fallback, and let sendTurn mark the
+        // submitted text unconfirmed rather than pretending Hermes stopped.
+        interruptedTurnGeneration = nil
         activeTurnGeneration = nil
         isExpectedDisconnect = true
         await client.disconnect()
@@ -383,8 +391,13 @@ final class ConversationStore {
         case .status(let text, _):
             activityText = text
         case .audioStart, .audioChunk, .audioEnd,
-             .audioFileStart, .audioFileChunk, .audioFileEnd, .speechTiming, .unknown:
+             .audioFileStart, .audioFileChunk, .audioFileEnd, .audioAbort,
+             .speechTiming, .unknown:
             break
+        case .turnInterrupted:
+            interruptedTurnGeneration = activeTurnGeneration
+            activeAssistantID = nil
+            activityText = nil
         case .messageComplete(_, _, let failureReason):
             if !failureReason.isEmpty {
                 transientError = failureReason

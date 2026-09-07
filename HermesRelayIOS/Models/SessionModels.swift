@@ -88,6 +88,17 @@ enum VoiceState: Equatable, Sendable {
 struct SessionMetadata: Equatable, Sendable {
     let sessionID: String
     let model: String?
+    let capabilities: [String]
+
+    init(sessionID: String, model: String?, capabilities: [String] = []) {
+        self.sessionID = sessionID
+        self.model = model
+        self.capabilities = capabilities
+    }
+
+    var supportsInterrupt: Bool {
+        capabilities.contains("interrupt")
+    }
 }
 
 struct AudioFormat: Equatable, Sendable {
@@ -167,6 +178,8 @@ enum HermesEvent: Equatable, Sendable {
     case audioFileStart(contentType: String)
     case audioFileChunk(Data)
     case audioFileEnd
+    case audioAbort(turnID: String, reason: String)
+    case turnInterrupted(turnID: String, reason: String)
     case speechTiming(SpeechTiming)
     case messageComplete(text: String, reasoning: String, failureReason: String)
     case turnComplete(turnID: String)

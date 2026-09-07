@@ -31,6 +31,11 @@ The current voice slice provides:
   levels, silence/noise/speech classification, throttling, and explicit safe
   unavailable states. These signals are the foundation for future opt-in
   hands-free barge-in; they do not enable hands-free mode by themselves.
+- Server-confirmed interruption for relays that advertise the `interrupt`
+  capability. The voice control sends one protocol-v1 interrupt for the active
+  turn, stops queued playback on `audio_abort`, and waits for
+  `turn_interrupted`; endpoints without that capability use the existing
+  close-and-reconnect path and keep the submitted turn marked unconfirmed.
 - The HUD consumes those activity signals to show live state and transcript
   transitions. The recent transcript rail follows streaming text until the
   user reads backward, then offers an explicit resume-live action. The existing
@@ -166,7 +171,14 @@ channel. The iOS client should preserve these boundaries:
 6. Capture and transcribe locally; do not upload microphone bytes to Hermes.
 7. Play only the declared signed 16-bit PCM stream and preserve visible text
    if playback fails.
-8. A relay that supports word-timed captions may send this optional event:
+8. A relay may advertise `interrupt` in `hello_ack.capabilities`. For an
+   active turn, the client may send a protocol-v1 `interrupt` with the turn
+   and session IDs. `audio_abort` stops local playback immediately, and
+   `turn_interrupted` confirms the server-side cancellation. If the capability
+   is absent or confirmation times out, the client falls back to closing and
+   reconnecting; it labels the submitted turn unconfirmed and never replays it
+   automatically.
+9. A relay that supports word-timed captions may send this optional event:
 
    ```json
    {

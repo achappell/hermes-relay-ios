@@ -49,8 +49,15 @@ store without a network connection.
 ### Transport
 
 - `Services/HermesSessionClient.swift` defines the async client contract.
-- The eventual WebSocket implementation will own JSON encoding/decoding,
-  reconnect policy, one-reader enforcement, and protocol diagnostics.
+- `Services/URLSessionHermesSessionClient.swift` owns JSON encoding/decoding,
+  hello capability negotiation, one-reader WebSocket receive loop, and
+  protocol diagnostics. It sends a server-confirmed interrupt only when the
+  connected `hello_ack` advertises the `interrupt` capability.
+- `audio_abort` is an intentional playback boundary. The client drains neither
+  stale audio nor stale text after `turn_interrupted`; it keeps the connection
+  for the next turn. A missing capability or missing confirmation uses the
+  legacy close-and-reconnect fallback and leaves the submitted turn
+  unconfirmed.
 - Views and the store must not parse raw protocol frames.
 
 ### Platform capabilities
@@ -70,7 +77,8 @@ store without a network connection.
   levels, classifies microphone silence/background noise/speech, and emits a
   throttled newest-snapshot stream. It carries no prompt, transcript, or raw
   PCM data. Permission, route, and lifecycle failures publish explicit safe
-  states; it does not itself arm hands-free mode or trigger interruption.
+  states; it does not itself arm hands-free mode or trigger interruption. The
+  voice control routes an explicit user interrupt through the coordinator.
 - `AmbientHUDPresentation` maps `VoiceState`, the current activity snapshot,
   provisional speech text, and persisted transcript records into one display
   state. The visualizer is presentation-only: it never infers a relay control

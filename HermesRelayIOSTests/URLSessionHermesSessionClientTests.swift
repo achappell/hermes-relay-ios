@@ -221,6 +221,130 @@ final class URLSessionHermesSessionClientTests: XCTestCase {
         await client.disconnect()
     }
 
+    func testInterruptSendsTheActiveTurnCommandAndWaitsForConfirmation() async throws {
+        let socket = FakeWebSocketConnection()
+        socket.enqueue(.text(json([
+            "type": "hello_ack",
+            "capabilities": ["text_stream", "interrupt"],
+        ])))
+        let encode: @Sendable ([String: Any]) -> String = { object in
+            let data = try! JSONSerialization.data(withJSONObject: object)
+            return String(decoding: data, as: UTF8.self)
+        }
+        socket.onSendText = { text in
+            guard let object = try? text.jsonObject(),
+                  object["type"] as? String == "interrupt",
+                  let turnID = object["turn_id"] as? String,
+                  let sessionID = object["session_id"] as? String else {
+                return
+            }
+            socket.enqueue(.text(encode([
+                "type": "audio_abort",
+                "turn_id": turnID,
+                "session_id": sessionID,
+                "error": "client interrupt",
+            ])))
+            socket.enqueue(.binary(Data([9, 8, 7, 6])))
+            socket.enqueue(.text(encode([
+                "type": "turn_interrupted",
+                "turn_id": turnID,
+                "session_id": sessionID,
+                "reason": "turn interrupted",
+            ])))
+        }
+        let client = try makeClient(socket: socket)
+        let metadata = try await client.connect()
+        XCTAssertEqual(metadata.capabilities, ["text_stream", "interrupt"])
+
+        let stream = await client.sendTurn(text: "stop this")
+        let interruptConfirmed = await client.interruptActiveTurn()
+        XCTAssertTrue(interruptConfirmed)
+
+        let events = try await collect(stream)
+        XCTAssertEqual(events.count, 2)
+        guard case .audioAbort(let turnID, let reason) = events[0] else {
+            return XCTFail("Expected typed audio abort")
+        }
+        XCTAssertFalse(turnID.isEmpty)
+        XCTAssertEqual(reason, "client interrupt")
+        guard case .turnInterrupted(let confirmedTurnID, let confirmedReason) = events[1] else {
+            return XCTFail("Expected typed interruption confirmation")
+        }
+        XCTAssertEqual(confirmedTurnID, turnID)
+        XCTAssertEqual(confirmedReason, "turn interrupted")
+
+        let interrupt = try XCTUnwrap(socket.sentTexts.last).jsonObject()
+        XCTAssertEqual(interrupt["type"] as? String, "interrupt")
+        XCTAssertEqual(interrupt["protocol_version"] as? Int, 1)
+        XCTAssertEqual(interrupt["session_id"] as? String, metadata.sessionID)
+        XCTAssertEqual(interrupt["turn_id"] as? String, turnID)
+
+        // A terminal interruption must not poison the still-connected reader
+        // if one stale binary frame was already buffered by the socket.
+        socket.enqueue(.text(encode([
+            "type": "text_delta",
+            "turn_id": turnID,
+            "text": "stale response",
+        ])))
+        socket.enqueue(.text(encode(["type": "turn_end", "turn_id": turnID])))
+        socket.enqueue(.binary(Data([0, 1, 2, 3])))
+        let nextStream = await client.sendTurn(text: "next turn")
+        socket.enqueue(.text(json(["type": "turn_end"])))
+        let nextEvents = try await collect(nextStream)
+        XCTAssertEqual(nextEvents.count, 1)
+        guard case .turnComplete = nextEvents[0] else {
+            return XCTFail("Expected the next turn to remain usable")
+        }
+        await client.disconnect()
+    }
+
+    func testInterruptCapabilityCanBeReadFromNestedHelloAckPayload() async throws {
+        let socket = FakeWebSocketConnection()
+        socket.enqueue(.text(json([
+            "type": "hello_ack",
+            "payload": ["capabilities": ["interrupt"]] as [String: Any],
+        ])))
+        let client = try makeClient(socket: socket)
+
+        let metadata = try await client.connect()
+
+        XCTAssertTrue(metadata.supportsInterrupt)
+        await client.disconnect()
+    }
+
+    func testInterruptConfirmationTimeoutFallsBackWithoutClosingTheSocket() async throws {
+        let socket = FakeWebSocketConnection()
+        socket.enqueue(.text(json(["type": "hello_ack", "capabilities": ["interrupt"]])))
+        let client = try makeClient(
+            socket: socket,
+            interruptionConfirmationTimeoutNanoseconds: 10_000_000
+        )
+        _ = try await client.connect()
+        let stream = await client.sendTurn(text: "timeout")
+
+        let interruptionConfirmed = await client.interruptActiveTurn()
+        XCTAssertFalse(interruptionConfirmed)
+        XCTAssertFalse(socket.closeCalled)
+        XCTAssertEqual(try XCTUnwrap(socket.sentTexts.last).jsonObject()["type"] as? String, "interrupt")
+        _ = stream
+        await client.disconnect()
+    }
+
+    func testInterruptCapabilityAbsentDoesNotSendAnInterrupt() async throws {
+        let socket = FakeWebSocketConnection()
+        socket.enqueue(.text(json(["type": "hello_ack", "capabilities": ["text_stream"]])))
+        let client = try makeClient(socket: socket)
+        _ = try await client.connect()
+
+        _ = await client.sendTurn(text: "legacy stop")
+
+        let interruptSent = await client.interruptActiveTurn()
+        XCTAssertFalse(interruptSent)
+        XCTAssertEqual(socket.sentTexts.count, 2)
+        XCTAssertEqual(try XCTUnwrap(socket.sentTexts.last).jsonObject()["type"] as? String, "turn")
+        await client.disconnect()
+    }
+
     func testConnectRejectsAnAckWithTheWrongType() async throws {
         let socket = FakeWebSocketConnection()
         socket.enqueue(.text(json(["type": "status", "text": "not an ack"])))
@@ -282,6 +406,35 @@ final class URLSessionHermesSessionClientTests: XCTestCase {
 
         XCTAssertEqual(events, [.textDelta("Hel"), .textDelta("lo"), .turnComplete(turnID: completedTurnID)])
 
+        await client.disconnect()
+    }
+
+    func testSendTurnIgnoresLateFramesForAnotherTurn() async throws {
+        let socket = FakeWebSocketConnection()
+        socket.enqueue(.text(json(["type": "hello_ack"])))
+        let client = try makeClient(socket: socket)
+        _ = try await client.connect()
+
+        let stream = await client.sendTurn(text: "current")
+        let turnID = try XCTUnwrap(socket.sentTexts.last?.jsonObject()["turn_id"] as? String)
+        socket.enqueue(.text(json([
+            "type": "text_delta",
+            "turn_id": "stale-turn",
+            "text": "stale response",
+        ])))
+        socket.enqueue(.text(json([
+            "type": "text_delta",
+            "turn_id": turnID,
+            "text": "fresh response",
+        ])))
+        socket.enqueue(.text(json(["type": "turn_end", "turn_id": turnID])))
+
+        let events = try await collect(stream)
+
+        XCTAssertEqual(events, [
+            .textDelta("fresh response"),
+            .turnComplete(turnID: turnID),
+        ])
         await client.disconnect()
     }
 
@@ -453,6 +606,7 @@ final class URLSessionHermesSessionClientTests: XCTestCase {
         socket: FakeWebSocketConnection? = nil,
         factory: FakeWebSocketConnectionFactory? = nil,
         sendTimeoutNanoseconds: UInt64 = 10_000_000_000,
+        interruptionConfirmationTimeoutNanoseconds: UInt64 = 2_000_000_000,
         onTransportDisconnected: (@MainActor @Sendable () -> Void)? = nil
     ) throws -> URLSessionHermesSessionClient {
         let profile = try RelayProfile(
@@ -472,6 +626,7 @@ final class URLSessionHermesSessionClientTests: XCTestCase {
             token: "test-token",
             socketFactory: selectedFactory,
             sendTimeoutNanoseconds: sendTimeoutNanoseconds,
+            interruptionConfirmationTimeoutNanoseconds: interruptionConfirmationTimeoutNanoseconds,
             onTransportDisconnected: onTransportDisconnected
         )
     }
@@ -620,6 +775,7 @@ private final class FakeWebSocketConnection: WebSocketConnection, @unchecked Sen
     private var nextReceiveError: Error?
     var sendDelayNanoseconds: UInt64?
     var onSend: (@Sendable () -> Void)?
+    var onSendText: (@Sendable (String) -> Void)?
     private(set) var sentTexts: [String] = []
     private(set) var closeCalled = false
 
@@ -629,6 +785,7 @@ private final class FakeWebSocketConnection: WebSocketConnection, @unchecked Sen
         }
         appendSentText(text)
         onSend?()
+        onSendText?(text)
     }
 
     func receive() async throws -> WebSocketFrame {

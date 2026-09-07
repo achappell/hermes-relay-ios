@@ -110,6 +110,35 @@ struct HermesEventNormalizer: Sendable {
             ]
         case "audio_file_end":
             return [.audioFileEnd]
+        case "audio_abort":
+            return [
+                .audioAbort(
+                    turnID: stringValue(for: "turn_id", in: payload)
+                        ?? stringValue(for: "turn_id", in: object)
+                        ?? turnID,
+                    reason: stringValue(for: "error", in: payload)
+                        ?? stringValue(for: "reason", in: payload)
+                        ?? stringValue(for: "message", in: payload)
+                        ?? stringValue(for: "error", in: object)
+                        ?? stringValue(for: "reason", in: object)
+                        ?? "audio stream aborted"
+                )
+            ]
+        case "turn_interrupted":
+            return [
+                .turnInterrupted(
+                    turnID: stringValue(for: "turn_id", in: payload)
+                        ?? stringValue(for: "turn_id", in: object)
+                        ?? turnID,
+                    reason: stringValue(for: "reason", in: payload)
+                        ?? stringValue(for: "error", in: payload)
+                        ?? stringValue(for: "message", in: payload)
+                        ?? stringValue(for: "reason", in: object)
+                        ?? stringValue(for: "error", in: object)
+                        ?? stringValue(for: "message", in: object)
+                        ?? "turn interrupted"
+                )
+            ]
         case "speech_timing":
             guard let timing = normalizeSpeechTiming(payload, turnID: turnID) else {
                 return [.unknown(type: type)]
