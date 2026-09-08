@@ -444,6 +444,7 @@ private struct AmbientVisualizer: View {
 struct TranscriptHistoryView: View {
     let messages: [TranscriptMessage]
     @Environment(\.dismiss) private var dismiss
+    private let exportFormatter = TranscriptExportFormatter()
 
     var body: some View {
         NavigationStack {
@@ -468,6 +469,31 @@ struct TranscriptHistoryView: View {
             .navigationBarTitleDisplayMode(.inline)
             #endif
             .toolbar {
+                ToolbarItem(placement: .primaryAction) {
+                    Menu {
+                        Button {
+                            TranscriptClipboard.copy(exportFormatter.plainText(for: messages))
+                        } label: {
+                            Label("Copy conversation", systemImage: "doc.on.doc")
+                        }
+
+                        ShareLink(
+                            item: exportFormatter.plainText(for: messages),
+                            preview: SharePreview("Conversation (plain text)")
+                        ) {
+                            Label("Share plain text", systemImage: "doc.plaintext")
+                        }
+
+                        ShareLink(
+                            item: exportFormatter.markdown(for: messages),
+                            preview: SharePreview("Conversation (Markdown)")
+                        ) {
+                            Label("Share Markdown", systemImage: "number")
+                        }
+                    } label: {
+                        Label("Export", systemImage: "square.and.arrow.up")
+                    }
+                }
                 ToolbarItem(placement: .cancellationAction) {
                     Button("Done") {
                         dismiss()

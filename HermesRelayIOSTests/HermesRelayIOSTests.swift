@@ -2,6 +2,77 @@ import XCTest
 @testable import HermesRelayIOS
 
 final class HermesRelayIOSTests: XCTestCase {
+    func testTranscriptExportPreservesRolesAndTimestampsInPlainTextAndMarkdown() {
+        let firstDate = Date(timeIntervalSince1970: 1_704_110_400)
+        let secondDate = firstDate.addingTimeInterval(61)
+        let messages = [
+            TranscriptMessage(id: UUID(uuidString: "AAAAAAAA-BBBB-CCCC-DDDD-EEEEEEEEEEEE")!, role: .user, text: "Hello Hermes", createdAt: firstDate),
+            TranscriptMessage(id: UUID(uuidString: "BBBBBBBB-CCCC-DDDD-EEEE-FFFFFFFFFFFF")!, role: .assistant, text: "Hello, Amanda.", createdAt: secondDate)
+        ]
+        let formatter = TranscriptExportFormatter(timeZone: TimeZone(secondsFromGMT: 0)!)
+
+        XCTAssertEqual(
+            formatter.plainText(for: messages),
+            "[2024-01-01 12:00:00 GMT] You\nHello Hermes\n\n[2024-01-01 12:01:01 GMT] Hermes\nHello, Amanda."
+        )
+        XCTAssertEqual(
+            formatter.markdown(for: messages),
+            "## Conversation\n\n### You — 2024-01-01 12:00:00 GMT\n\nHello Hermes\n\n### Hermes — 2024-01-01 12:01:01 GMT\n\nHello, Amanda."
+        )
+    }
+
+    func testEmptyTranscriptExportIsReadableAndContainsNoPlaceholderConversation() {
+        let formatter = TranscriptExportFormatter(timeZone: TimeZone(secondsFromGMT: 0)!)
+
+        XCTAssertEqual(formatter.plainText(for: []), "No conversation yet.")
+        XCTAssertEqual(formatter.markdown(for: []), "## Conversation\n\n_No conversation yet._")
+    }
+
+    func testTranscriptExportKeepsLongConversationBoundaries() {
+        let messages = (0..<100).map { index in
+            TranscriptMessage(
+                role: index.isMultiple(of: 2) ? .user : .assistant,
+                text: "Entry \(index): " + String(repeating: "detail ", count: 30)
+            )
+        }
+        let plainText = TranscriptExportFormatter(timeZone: TimeZone(secondsFromGMT: 0)!)
+            .plainText(for: messages)
+
+        XCTAssertEqual(plainText.components(separatedBy: "\n\n").count, 100)
+        XCTAssertTrue(plainText.hasPrefix("["))
+        XCTAssertTrue(plainText.contains("Entry 99:"))
+    }
+
+    func testLegacyTranscriptMessageDecodesWithoutTimestamp() throws {
+        let data = Data("{\"id\":\"AAAAAAAA-BBBB-CCCC-DDDD-EEEEEEEEEEEE\",\"role\":\"user\",\"text\":\"Legacy\"}".utf8)
+
+        let message = try JSONDecoder().decode(TranscriptMessage.self, from: data)
+
+        XCTAssertEqual(message.text, "Legacy")
+        XCTAssertNil(message.createdAt)
+    }
+
+    func testPromptHistoryIsBoundedAndRestoresTheDraftAtTheEnd() {
+        var history = PromptHistory(limit: 2)
+        history.record("first")
+        history.record("second")
+        history.record("third")
+
+        XCTAssertEqual(history.previous(currentDraft: "unsent"), "third")
+        XCTAssertEqual(history.previous(currentDraft: "ignored while browsing"), "second")
+        XCTAssertEqual(history.previous(currentDraft: "ignored at oldest"), "second")
+        XCTAssertEqual(history.next(), "third")
+        XCTAssertEqual(history.next(), "unsent")
+        XCTAssertEqual(history.next(), "unsent")
+    }
+
+    func testPromptHistoryReturnsNoEntryWhenEmpty() {
+        var history = PromptHistory(limit: 5)
+
+        XCTAssertNil(history.previous(currentDraft: "draft"))
+        XCTAssertNil(history.next())
+    }
+
     func testUnavailableClientExplainsMissingRelayConfiguration() async {
         do {
             _ = try await UnavailableHermesSessionClient().connect()
