@@ -2,6 +2,7 @@ import SwiftUI
 
 struct MessageBubble: View {
     let message: TranscriptMessage
+    private let exportFormatter = TranscriptExportFormatter()
 
     var body: some View {
         HStack(alignment: .bottom, spacing: 0) {
@@ -36,6 +37,20 @@ struct MessageBubble: View {
             tint: message.role.glassTint,
             fallbackColor: message.role.backgroundColor
         )
+        .contextMenu {
+            Button {
+                TranscriptClipboard.copy(exportFormatter.plainText(for: [message]))
+            } label: {
+                Label("Copy message", systemImage: "doc.on.doc")
+            }
+
+            ShareLink(
+                item: exportFormatter.markdown(for: [message]),
+                preview: SharePreview("Hermes conversation message")
+            ) {
+                Label("Share message", systemImage: "square.and.arrow.up")
+            }
+        }
     }
 }
 

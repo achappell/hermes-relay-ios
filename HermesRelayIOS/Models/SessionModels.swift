@@ -158,11 +158,33 @@ struct TranscriptMessage: Codable, Identifiable, Equatable, Sendable {
     let id: UUID
     let role: TranscriptRole
     var text: String
+    let createdAt: Date?
 
-    init(id: UUID = UUID(), role: TranscriptRole, text: String) {
+    init(
+        id: UUID = UUID(),
+        role: TranscriptRole,
+        text: String,
+        createdAt: Date? = Date()
+    ) {
         self.id = id
         self.role = role
         self.text = text
+        self.createdAt = createdAt
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case id
+        case role
+        case text
+        case createdAt
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        id = try container.decode(UUID.self, forKey: .id)
+        role = try container.decode(TranscriptRole.self, forKey: .role)
+        text = try container.decode(String.self, forKey: .text)
+        createdAt = try container.decodeIfPresent(Date.self, forKey: .createdAt)
     }
 }
 

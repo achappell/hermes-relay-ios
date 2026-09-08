@@ -6,6 +6,7 @@ struct ContentView: View {
     @State private var voiceCoordinator: VoiceSessionCoordinator
     @State private var showingConfiguration = false
     @State private var showingHistory = false
+    @State private var promptHistory = PromptHistory()
     @State private var hudModel: AmbientHUDModel
     @Environment(\.scenePhase) private var scenePhase
     @FocusState private var focusedField: FocusField?
@@ -164,6 +165,30 @@ struct ContentView: View {
             }
 
             HStack(alignment: .bottom, spacing: 8) {
+                Button {
+                    if let previous = promptHistory.previous(currentDraft: store.draft) {
+                        store.draft = previous
+                    }
+                } label: {
+                    Image(systemName: "chevron.up")
+                        .frame(width: 16, height: 16)
+                }
+                .disabled(promptHistory.isEmpty)
+                .accessibilityLabel("Previous prompt")
+                .relayGlassButtonStyle()
+
+                Button {
+                    if let next = promptHistory.next() {
+                        store.draft = next
+                    }
+                } label: {
+                    Image(systemName: "chevron.down")
+                        .frame(width: 16, height: 16)
+                }
+                .disabled(promptHistory.isEmpty)
+                .accessibilityLabel("Next prompt")
+                .relayGlassButtonStyle()
+
                 TextField("Message Hermes…", text: $store.draft, axis: .vertical)
                     .focused($focusedField, equals: .composer)
                     .textFieldStyle(.plain)
@@ -238,6 +263,7 @@ struct ContentView: View {
 
     private func sendDraftIfPossible() {
         guard canSend else { return }
+        promptHistory.record(store.draft)
         Task {
             await voiceCoordinator.sendDraft()
         }

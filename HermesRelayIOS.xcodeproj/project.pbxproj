@@ -46,6 +46,8 @@
 		A100000000000000000000AA /* ConversationStoreReconnectTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A100000000000000000000AB /* ConversationStoreReconnectTests.swift */; };
 		A100000000000000000000B0 /* RelayProfileCollection.swift in Sources */ = {isa = PBXBuildFile; fileRef = A100000000000000000000B1 /* RelayProfileCollection.swift */; };
 		A100000000000000000000B2 /* RelayConfigurationView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A100000000000000000000B3 /* RelayConfigurationView.swift */; };
+		A100000000000000000000B4 /* TranscriptExport.swift in Sources */ = {isa = PBXBuildFile; fileRef = A100000000000000000000B5 /* TranscriptExport.swift */; };
+		A100000000000000000000B6 /* PromptHistory.swift in Sources */ = {isa = PBXBuildFile; fileRef = A100000000000000000000B7 /* PromptHistory.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -102,6 +104,8 @@
 		A100000000000000000000AB /* ConversationStoreReconnectTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ConversationStoreReconnectTests.swift; sourceTree = "<group>"; };
 		A100000000000000000000B1 /* RelayProfileCollection.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RelayProfileCollection.swift; sourceTree = "<group>"; };
 		A100000000000000000000B3 /* RelayConfigurationView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RelayConfigurationView.swift; sourceTree = "<group>"; };
+		A100000000000000000000B5 /* TranscriptExport.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TranscriptExport.swift; sourceTree = "<group>"; };
+		A100000000000000000000B7 /* PromptHistory.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PromptHistory.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -200,6 +204,7 @@
 				A10000000000000000000034 /* SecureValueStore.swift */,
 				A10000000000000000000035 /* RelayConfigurationStore.swift */,
 				A1000000000000000000009C /* ConversationPersistence.swift */,
+				A100000000000000000000B5 /* TranscriptExport.swift */,
 			);
 			path = Services;
 			sourceTree = "<group>";
@@ -209,6 +214,7 @@
 			children = (
 				A10000000000000000000024 /* ConversationStore.swift */,
 				A10000000000000000000094 /* VoiceSessionCoordinator.swift */,
+				A100000000000000000000B7 /* PromptHistory.swift */,
 			);
 			path = ViewModels;
 			sourceTree = "<group>";
@@ -351,6 +357,8 @@
 				A100000000000000000000A2 /* AmbientHUD.swift in Sources */,
 				A100000000000000000000A4 /* RecentTranscriptRail.swift in Sources */,
 				A10000000000000000000099 /* ConversationPersistence.swift in Sources */,
+				A100000000000000000000B4 /* TranscriptExport.swift in Sources */,
+				A100000000000000000000B6 /* PromptHistory.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
