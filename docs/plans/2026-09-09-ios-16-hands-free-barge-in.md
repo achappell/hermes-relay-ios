@@ -31,7 +31,9 @@ barge-in is permitted only on an echo-safe headphone route.
       accepts the final recognition result, and restarts monitoring while the
       mode remains armed.
 - [x] Quiet monitoring stays active without proactively cycling the microphone;
-      actual recognizer termination restarts monitoring without submission.
+      actual recognizer termination restarts monitoring without submission. If
+      it occurs during an active phrase, the partial text is preserved and the
+      activity silence endpoint still owns turn completion.
 - [x] A non-empty recognition update can wake capture if the audio-level gate has
       not crossed its speech threshold.
 - [x] The silence endpoint tolerates a one-second conversational pause before

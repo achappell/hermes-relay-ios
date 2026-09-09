@@ -429,11 +429,14 @@ final class VoiceSessionCoordinator {
     private func handleHandsFreeStreamEnded() async {
         guard isHandsFreeArmed, !isFinishingHandsFreeInput else { return }
         handsFreeTask = nil
+        // Speech.framework can finalize a recognition window before the user
+        // has stopped speaking. Recognition lifetime is not the hands-free
+        // turn boundary; preserve the active phrase and let microphone
+        // silence end the capture.
         if isHandsFreeCaptureActive {
-            await finishHandsFreeCapture()
-        } else {
-            await restartHandsFreeStream()
+            handsFreeFinalText = nil
         }
+        await restartHandsFreeStream()
     }
 
     private func handleHandsFreeStreamError(_ error: Error) async {
@@ -442,10 +445,13 @@ final class VoiceSessionCoordinator {
         if let error = error as? SpeechInputError,
            error == .cancelled || error == .noSpeech {
             if isHandsFreeCaptureActive {
-                isHandsFreeCaptureActive = false
+                handsFreeStatus = .listening
+                // A recognizer request can fail even though the activity
+                // stream still has an open phrase. Keep the partial text and
+                // replace only the recognizer; silence remains the endpoint.
                 handsFreeFinalText = nil
-                provisionalText = ""
-                state = .idle
+                await restartHandsFreeStream()
+                return
             }
             handsFreeStatus = .armed
             await restartHandsFreeStream()

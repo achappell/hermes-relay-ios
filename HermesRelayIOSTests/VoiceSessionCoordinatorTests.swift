@@ -1546,6 +1546,86 @@ final class VoiceSessionCoordinatorTests: XCTestCase {
     }
 
     @MainActor
+    func testHandsFreeRecognizerTerminationDuringCaptureWaitsForSilence() async {
+        let handsFreeInput = CoordinatorHandsFreeInput()
+        let client = CoordinatorHermesSessionClient()
+        let store = await connectedStore(client)
+        let coordinator = VoiceSessionCoordinator(
+            store: store,
+            input: CoordinatorSpeechInput(),
+            output: CoordinatorAudioOutput(),
+            handsFreeInput: handsFreeInput,
+            handsFreeSilenceDurationNanoseconds: 20_000_000
+        )
+
+        await coordinator.toggleHandsFree()
+        await handsFreeInput.emit(.activity(handsFreeSnapshot(.speech)))
+        await handsFreeInput.emit(
+            .recognition(SpeechRecognitionUpdate(text: "First turn", isFinal: true))
+        )
+        for _ in 0..<20 { await Task.yield() }
+        XCTAssertTrue(coordinator.isHandsFreeCaptureActive)
+
+        // Speech.framework can end its recognition stream after a final
+        // result even while the activity endpoint is still open.
+        await handsFreeInput.endStream()
+        for _ in 0..<30 { await Task.yield() }
+
+        XCTAssertTrue(coordinator.isHandsFreeArmed)
+        XCTAssertTrue(coordinator.isHandsFreeCaptureActive)
+        XCTAssertEqual(coordinator.handsFreeStatus, .listening)
+        XCTAssertEqual(coordinator.provisionalText, "First turn")
+        XCTAssertEqual(client.sentTurns, [])
+        let finishCount = await handsFreeInput.finishCount()
+        XCTAssertEqual(finishCount, 0)
+
+        // A later recognition request must be allowed to replace the text
+        // from the request that terminated; the first request's final result
+        // is not the hands-free turn boundary.
+        await handsFreeInput.emit(
+            .recognition(SpeechRecognitionUpdate(text: "Complete first turn", isFinal: false))
+        )
+        await handsFreeInput.emit(.activity(handsFreeSnapshot(.silence)))
+        try? await Task.sleep(nanoseconds: 60_000_000)
+        XCTAssertEqual(client.sentTurns, ["Complete first turn"])
+
+        await coordinator.disableHandsFree()
+    }
+
+    @MainActor
+    func testHandsFreeNoSpeechDuringCapturePreservesPartialUntilSilence() async {
+        let handsFreeInput = CoordinatorHandsFreeInput()
+        let client = CoordinatorHermesSessionClient()
+        let store = await connectedStore(client)
+        let coordinator = VoiceSessionCoordinator(
+            store: store,
+            input: CoordinatorSpeechInput(),
+            output: CoordinatorAudioOutput(),
+            handsFreeInput: handsFreeInput,
+            handsFreeSilenceDurationNanoseconds: 1_000_000_000
+        )
+
+        await coordinator.toggleHandsFree()
+        await handsFreeInput.emit(.activity(handsFreeSnapshot(.speech)))
+        await handsFreeInput.emit(
+            .recognition(SpeechRecognitionUpdate(text: "First turn", isFinal: false))
+        )
+        for _ in 0..<20 { await Task.yield() }
+        XCTAssertTrue(coordinator.isHandsFreeCaptureActive)
+
+        await handsFreeInput.fail(with: .noSpeech)
+        for _ in 0..<30 { await Task.yield() }
+
+        XCTAssertTrue(coordinator.isHandsFreeArmed)
+        XCTAssertTrue(coordinator.isHandsFreeCaptureActive)
+        XCTAssertEqual(coordinator.handsFreeStatus, .listening)
+        XCTAssertEqual(coordinator.provisionalText, "First turn")
+        XCTAssertEqual(client.sentTurns, [])
+
+        await coordinator.disableHandsFree()
+    }
+
+    @MainActor
     func testHandsFreeRecognitionWakesCaptureWhenActivityGateMissesSpeech() async {
         let handsFreeInput = CoordinatorHandsFreeInput()
         let client = CoordinatorHermesSessionClient()
@@ -1959,6 +2039,11 @@ private actor CoordinatorHandsFreeInput: HandsFreeInput {
 
     func fail(with error: SpeechInputError) {
         continuation?.finish(throwing: error)
+        continuation = nil
+    }
+
+    func endStream() {
+        continuation?.finish()
         continuation = nil
     }
 }
