@@ -72,7 +72,7 @@ device/OS used.
    control. Confirm `Ready → Listening → Transcribing` and provisional text
    appear outside the committed transcript.
 5. Release after a non-empty recognition. Confirm exactly one user turn, one
-   streamed assistant boundary, and `Thinking → Buffering/Speaking → Ready`.
+   streamed assistant boundary, and `Thinking → Buffering/Speaking → Complete`.
    Confirm the response audio is heard when the device speaker route is valid.
 6. Start a later capture, then use Cancel. Confirm no turn is submitted, the
    provisional text is cleared, and any existing draft remains unchanged.

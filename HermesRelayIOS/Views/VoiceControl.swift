@@ -2,12 +2,7 @@ import SwiftUI
 
 enum VoiceControlInteractionPolicy {
     static func isResponseActive(_ state: VoiceState) -> Bool {
-        switch state {
-        case .thinking, .buffering, .speaking:
-            return true
-        default:
-            return false
-        }
+        state.isResponseActive
     }
 
     /// Stopping capture can remain in flight while the response starts.
@@ -21,12 +16,7 @@ struct VoiceControl: View {
     let coordinator: VoiceSessionCoordinator
 
     private var isCapturing: Bool {
-        switch coordinator.state {
-        case .listening, .transcribing:
-            return true
-        default:
-            return false
-        }
+        coordinator.state.isCaptureActive
     }
 
     private var isResponseActive: Bool {
@@ -68,12 +58,7 @@ struct VoiceControl: View {
         @State private var isActionInFlight = false
 
         private var isCapturing: Bool {
-            switch coordinator.state {
-            case .listening, .transcribing:
-                return true
-            default:
-                return false
-            }
+            coordinator.state.isCaptureActive
         }
 
         private var isResponseActive: Bool {

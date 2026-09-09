@@ -9,6 +9,7 @@ enum AmbientHUDMode: Equatable, Sendable {
     case thinking
     case buffering
     case speaking
+    case complete
     case interrupted
     case failed
 
@@ -26,6 +27,8 @@ enum AmbientHUDMode: Equatable, Sendable {
             self = .buffering
         case .speaking:
             self = .speaking
+        case .complete:
+            self = .complete
         case .interrupted:
             self = .interrupted
         case .failed:
@@ -47,6 +50,8 @@ enum AmbientHUDMode: Equatable, Sendable {
             return "Buffering"
         case .speaking:
             return "Speaking"
+        case .complete:
+            return "Complete"
         case .interrupted:
             return "Interrupted"
         case .failed:
@@ -68,6 +73,8 @@ enum AmbientHUDMode: Equatable, Sendable {
             return "arrow.down.circle"
         case .speaking:
             return "speaker.wave.2.fill"
+        case .complete:
+            return "checkmark.circle"
         case .interrupted:
             return "pause.circle"
         case .failed:
@@ -116,7 +123,7 @@ struct AmbientHUDPresentation: Equatable, Sendable {
         case .listening, .transcribing:
             caption = liveText.isEmpty ? latestUserText : liveText
             captionSource = caption == nil ? nil : .user
-        case .thinking, .buffering, .speaking:
+        case .thinking, .buffering, .speaking, .complete:
             if let latestHermesText {
                 caption = latestHermesText
                 captionSource = .hermes
@@ -136,6 +143,8 @@ struct AmbientHUDPresentation: Equatable, Sendable {
             intensity = activity.playbackActive
                 ? max(0.12, Double(activity.playbackLevel))
                 : 0.18
+        case .complete:
+            intensity = 0.10
         case .thinking:
             intensity = 0.24
         case .interrupted:
@@ -426,8 +435,11 @@ private struct AmbientVisualizer: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
-        TimelineView(.animation(minimumInterval: 1.0 / 30.0, paused: reduceMotion)) { context in
-            let phase = reduceMotion
+        TimelineView(.animation(
+            minimumInterval: 1.0 / 30.0,
+            paused: reduceMotion || !presentation.mode.isAnimated
+        )) { context in
+            let phase = reduceMotion || !presentation.mode.isAnimated
                 ? 0.0
                 : (sin(context.date.timeIntervalSinceReferenceDate * 2.0) + 1.0) / 2.0
             let intensity = CGFloat(presentation.intensity)
@@ -442,7 +454,7 @@ private struct AmbientVisualizer: View {
                 Image(systemName: presentation.mode.systemImage)
                     .font(.system(size: 34, weight: .semibold))
                     .foregroundStyle(.white)
-                    .symbolEffect(.pulse, options: .repeating, isActive: !reduceMotion && presentation.mode != .idle)
+                    .symbolEffect(.pulse, options: .repeating, isActive: !reduceMotion && presentation.mode.isAnimated)
             }
             .frame(width: 260, height: 260)
             .accessibilityElement(children: .ignore)
@@ -564,10 +576,21 @@ private extension AmbientHUDMode {
             return .indigo
         case .speaking:
             return .orange
+        case .complete:
+            return .green
         case .interrupted:
             return .yellow
         case .failed:
             return .red
+        }
+    }
+
+    var isAnimated: Bool {
+        switch self {
+        case .listening, .transcribing, .thinking, .buffering, .speaking:
+            return true
+        case .idle, .complete, .interrupted, .failed:
+            return false
         }
     }
 }

@@ -143,7 +143,7 @@ final class VoiceSessionCoordinatorTests: XCTestCase {
         await coordinator.endCaptureAndSend()
 
         XCTAssertEqual(client.sentTurns, ["Hello Hermes"])
-        XCTAssertEqual(coordinator.state, .idle)
+        XCTAssertEqual(coordinator.state, .complete)
         XCTAssertEqual(store.messages.map(\.role), [.user, .assistant])
         XCTAssertEqual(store.messages.last?.text, "Hello back")
         let operations = await output.operations()
@@ -152,6 +152,82 @@ final class VoiceSessionCoordinatorTests: XCTestCase {
             .append,
             .finish,
         ])
+    }
+
+    @MainActor
+    func testLateProcessingAndUnknownEventsDoNotRegressSpeaking() async {
+        let format = AudioFormat(sampleRate: 24_000, channels: 1, sampleWidth: 2)
+        let output = CoordinatorAudioOutput(
+            appendReadiness: .ready,
+            waitsForFinish: true
+        )
+        let client = CoordinatorHermesSessionClient(events: [
+            .messageStart,
+            .textDelta("A streamed answer."),
+            .audioStart(format),
+            .audioChunk(Data([0, 1, 2, 3])),
+            .status(text: "Still thinking", kind: nil),
+            .thinkingDelta("Still thinking"),
+            .unknown(type: "future.secret_event"),
+            .turnComplete(turnID: "turn-1"),
+            .audioEnd,
+        ])
+        let store = await connectedStore(client)
+        store.draft = "Ask Hermes"
+        let coordinator = VoiceSessionCoordinator(
+            store: store,
+            input: CoordinatorSpeechInput(),
+            output: output
+        )
+
+        let responseTask = Task { @MainActor in
+            await coordinator.sendDraft()
+        }
+        await output.waitUntilFinishRequested()
+
+        XCTAssertEqual(coordinator.state.label, "Speaking")
+
+        await output.allowFinish()
+        await responseTask.value
+        XCTAssertEqual(coordinator.state.label, "Complete")
+    }
+
+    @MainActor
+    func testLateProcessingAndUnknownEventsDoNotRegressBuffering() async {
+        let format = AudioFormat(sampleRate: 24_000, channels: 1, sampleWidth: 2)
+        let output = CoordinatorAudioOutput(
+            appendReadiness: .buffering,
+            waitsForFinish: true
+        )
+        let client = CoordinatorHermesSessionClient(events: [
+            .messageStart,
+            .textDelta("A buffered answer."),
+            .audioStart(format),
+            .audioChunk(Data([0, 1, 2, 3])),
+            .status(text: "Still thinking", kind: nil),
+            .thinkingDelta("Still thinking"),
+            .unknown(type: "future.secret_event"),
+            .turnComplete(turnID: "turn-1"),
+            .audioEnd,
+        ])
+        let store = await connectedStore(client)
+        store.draft = "Ask Hermes to buffer"
+        let coordinator = VoiceSessionCoordinator(
+            store: store,
+            input: CoordinatorSpeechInput(),
+            output: output
+        )
+
+        let responseTask = Task { @MainActor in
+            await coordinator.sendDraft()
+        }
+        await output.waitUntilFinishRequested()
+
+        XCTAssertEqual(coordinator.state.label, "Buffering")
+
+        await output.allowFinish()
+        await responseTask.value
+        XCTAssertEqual(coordinator.state.label, "Complete")
     }
 
     @MainActor
@@ -208,7 +284,10 @@ final class VoiceSessionCoordinatorTests: XCTestCase {
 
         await input.cancel()
         await endTask.value
-        XCTAssertEqual(coordinator.state, .idle)
+        XCTAssertEqual(
+            coordinator.state,
+            .failed("Audio playback failed. The response text is still available.")
+        )
     }
 
     @MainActor
@@ -235,7 +314,10 @@ final class VoiceSessionCoordinatorTests: XCTestCase {
 
         await input.allowFinish()
         await endTask.value
-        XCTAssertEqual(coordinator.state, .idle)
+        XCTAssertEqual(
+            coordinator.state,
+            .failed("Audio playback failed. The response text is still available.")
+        )
     }
 
     @MainActor
@@ -396,6 +478,66 @@ final class VoiceSessionCoordinatorTests: XCTestCase {
     }
 
     @MainActor
+    func testMessageCompletionFailurePreservesTextAndReportsFailure() async {
+        let format = AudioFormat(sampleRate: 24_000, channels: 1, sampleWidth: 2)
+        let output = CoordinatorAudioOutput()
+        let client = CoordinatorHermesSessionClient(events: [
+            .messageStart,
+            .textDelta("The text is still available."),
+            .audioStart(format),
+            .audioChunk(Data([0, 1, 2, 3])),
+            .messageComplete(
+                text: "The text is still available.",
+                reasoning: "",
+                failureReason: "Audio response unavailable."
+            ),
+            .turnComplete(turnID: "turn-1"),
+        ])
+        let store = await connectedStore(client)
+        store.draft = "Ask without audio"
+        let coordinator = VoiceSessionCoordinator(
+            store: store,
+            input: CoordinatorSpeechInput(),
+            output: output
+        )
+
+        await coordinator.sendDraft()
+
+        XCTAssertEqual(store.messages.last?.text, "The text is still available.")
+        XCTAssertEqual(coordinator.state.label, "Audio response unavailable.")
+        let operations = await output.operations()
+        XCTAssertTrue(operations.contains(.stop))
+        XCTAssertFalse(operations.contains(.finish))
+    }
+
+    @MainActor
+    func testTextWithoutAudioPreservesTheResponseAndReportsUnavailablePlayback() async {
+        let output = CoordinatorAudioOutput()
+        let client = CoordinatorHermesSessionClient(events: [
+            .messageStart,
+            .textDelta("A text-only response."),
+            .turnComplete(turnID: "turn-1"),
+        ])
+        let store = await connectedStore(client)
+        store.draft = "Ask for text"
+        let coordinator = VoiceSessionCoordinator(
+            store: store,
+            input: CoordinatorSpeechInput(),
+            output: output
+        )
+
+        await coordinator.sendDraft()
+
+        XCTAssertEqual(store.messages.last?.text, "A text-only response.")
+        XCTAssertEqual(
+            coordinator.state,
+            .failed("Audio playback failed. The response text is still available.")
+        )
+        let operations = await output.operations()
+        XCTAssertEqual(operations, [.stop])
+    }
+
+    @MainActor
     func testFinishPlaybackFailureKeepsAssistantTextVisible() async {
         let input = CoordinatorSpeechInput(finalUpdate: SpeechRecognitionUpdate(text: "Speak", isFinal: true))
         let output = CoordinatorAudioOutput(finishError: .outputFailed)
@@ -482,7 +624,7 @@ final class VoiceSessionCoordinatorTests: XCTestCase {
 
         await output.allowFinish()
         await responseTask.value
-        XCTAssertEqual(coordinator.state, .idle)
+        XCTAssertEqual(coordinator.state, .complete)
     }
 
     @MainActor
@@ -512,7 +654,7 @@ final class VoiceSessionCoordinatorTests: XCTestCase {
 
         await output.allowFinish()
         await responseTask.value
-        XCTAssertEqual(coordinator.state, .idle)
+        XCTAssertEqual(coordinator.state, .complete)
     }
 
     @MainActor
@@ -788,7 +930,7 @@ final class VoiceSessionCoordinatorTests: XCTestCase {
 
         XCTAssertEqual(client.sentTurns, ["/voice tts"])
         XCTAssertEqual(store.draft, "")
-        XCTAssertEqual(coordinator.state, .idle)
+        XCTAssertEqual(coordinator.state, .complete)
         XCTAssertEqual(
             coordinator.playbackDuration ?? -1,
             Double(4) / Double(format.sampleRate * format.channels * format.sampleWidth),
@@ -826,7 +968,7 @@ final class VoiceSessionCoordinatorTests: XCTestCase {
 
         XCTAssertEqual(client.sentTurns, ["Did this one arrive"])
         XCTAssertNil(store.unconfirmedTurnText)
-        XCTAssertEqual(coordinator.state, .idle)
+        XCTAssertEqual(coordinator.state, .complete)
         let operations = await output.operations()
         XCTAssertEqual(operations, [.start(format), .append, .finish])
     }
@@ -879,11 +1021,11 @@ final class VoiceSessionCoordinatorTests: XCTestCase {
 
         // The gap between paragraphs stays "Speaking": the answer is ongoing.
         XCTAssertEqual(recorder.statesAfterSegmentEnd, [.speaking, .speaking])
-        XCTAssertEqual(coordinator.state, .idle)
+        XCTAssertEqual(coordinator.state, .complete)
     }
 
     @MainActor
-    func testSingleSegmentAnswerStillEndsIdle() async {
+    func testSingleSegmentAnswerStillEndsComplete() async {
         let format = AudioFormat(sampleRate: 24_000, channels: 1, sampleWidth: 2)
         let output = CoordinatorAudioOutput()
         let client = CoordinatorHermesSessionClient(events: [
@@ -904,14 +1046,105 @@ final class VoiceSessionCoordinatorTests: XCTestCase {
 
         await coordinator.sendDraft()
 
-        XCTAssertEqual(coordinator.state, .idle)
+        XCTAssertEqual(coordinator.state.label, "Complete")
         let operations = await output.operations()
         XCTAssertEqual(operations, [.start(format), .append, .finish])
     }
 
+    @MainActor
+    func testFileAudioKeepsResponseActiveUntilFileDeliveryFinishes() async throws {
+        let writer = WAVFallbackWriter()
+        let format = AudioFormat(sampleRate: 24_000, channels: 1, sampleWidth: 2)
+        let wavURL = try writer.write(pcm: Data([0x01, 0x02, 0x03, 0x04]), format: format)
+        defer { try? FileManager.default.removeItem(at: wavURL) }
+
+        let output = StartGatedAudioOutput()
+        let client = CoordinatorHermesSessionClient(events: [
+            .messageStart,
+            .textDelta("File-backed answer."),
+            .audioFileStart(contentType: "audio/wav"),
+            .audioFileChunk(try Data(contentsOf: wavURL)),
+            .turnComplete(turnID: "turn-1"),
+            .audioFileEnd,
+        ])
+        let store = await connectedStore(client)
+        store.draft = "Ask with file audio"
+        let coordinator = VoiceSessionCoordinator(
+            store: store,
+            input: CoordinatorSpeechInput(),
+            output: output
+        )
+
+        let responseTask = Task { @MainActor in
+            await coordinator.sendDraft()
+        }
+        await output.waitUntilStartRequested()
+
+        XCTAssertEqual(coordinator.state.label, "Buffering")
+
+        await output.allowStart()
+        await output.waitUntilFinishRequested()
+        XCTAssertEqual(coordinator.state.label, "Speaking")
+
+        await output.allowFinish()
+        await responseTask.value
+        XCTAssertEqual(coordinator.state.label, "Complete")
+        XCTAssertEqual(store.messages.last?.text, "File-backed answer.")
+    }
+
+    @MainActor
+    func testTerminalStateIgnoresLateEventsAndKeepsTheDeliveredResponse() async {
+        let format = AudioFormat(sampleRate: 24_000, channels: 1, sampleWidth: 2)
+        let timing = SpeechTiming(
+            segmentID: "late-segment",
+            text: "late",
+            timingSource: .durationFallback,
+            audioOffset: 0,
+            duration: 0.1,
+            fallbackReason: .invalid,
+            words: []
+        )
+        let client = CoordinatorHermesSessionClient(events: [
+            .messageStart,
+            .textDelta("Delivered response."),
+            .audioStart(format),
+            .audioChunk(Data([0, 1, 2, 3])),
+            .audioEnd,
+            .turnComplete(turnID: "turn-1"),
+            .status(text: "late status", kind: nil),
+            .thinkingDelta("late thinking"),
+            .speechTiming(timing),
+            .error("late error"),
+            .audioAbort(turnID: "turn-1", reason: "late abort"),
+            .turnInterrupted(turnID: "turn-1", reason: "late interruption"),
+            .messageComplete(
+                text: "Delivered response.",
+                reasoning: "",
+                failureReason: "late failure"
+            ),
+            .textDelta(" invented tail"),
+            .unknown(type: "future.secret_event"),
+        ])
+        let store = await connectedStore(client)
+        store.draft = "Keep the settled response"
+        let coordinator = VoiceSessionCoordinator(
+            store: store,
+            input: CoordinatorSpeechInput(),
+            output: CoordinatorAudioOutput()
+        )
+
+        await coordinator.sendDraft()
+
+        XCTAssertEqual(coordinator.state, .complete)
+        XCTAssertEqual(store.messages.map(\.role), [.user, .assistant])
+        XCTAssertEqual(store.messages.last?.text, "Delivered response.")
+        XCTAssertNil(store.transientError)
+        XCTAssertTrue(coordinator.speechTimings.isEmpty)
+    }
+
     // Completion can arrive before the last segment's audio has drained.
     @MainActor
-    func testCompletionBeforeTheFinalSegmentStillEndsIdle() async {
+    func testCompletionBeforeTheFinalSegmentStillEndsComplete() async {
         let format = AudioFormat(sampleRate: 24_000, channels: 1, sampleWidth: 2)
         let client = CoordinatorHermesSessionClient(events: [
             .messageStart,
@@ -931,13 +1164,13 @@ final class VoiceSessionCoordinatorTests: XCTestCase {
 
         await coordinator.sendDraft()
 
-        XCTAssertEqual(coordinator.state, .idle)
+        XCTAssertEqual(coordinator.state, .complete)
     }
 
     // The end of the response stream is terminal: no further audio can arrive.
     // Requiring a trailing audio_end to leave Speaking left the HUD stuck.
     @MainActor
-    func testResponseEndsIdleWhenTheStreamClosesWithoutATrailingAudioEnd() async {
+    func testResponseEndsCompleteWhenTheStreamClosesWithoutATrailingAudioEnd() async {
         let format = AudioFormat(sampleRate: 24_000, channels: 1, sampleWidth: 2)
         let client = CoordinatorHermesSessionClient(events: [
             .messageStart,
@@ -958,7 +1191,7 @@ final class VoiceSessionCoordinatorTests: XCTestCase {
         await coordinator.beginCapture()
         await coordinator.endCaptureAndSend()
 
-        XCTAssertEqual(coordinator.state, .idle)
+        XCTAssertEqual(coordinator.state, .complete)
     }
 
     // IOS-32 instrumentation: one run must show whether the playback clock
@@ -1073,7 +1306,7 @@ final class VoiceSessionCoordinatorTests: XCTestCase {
         // finish() is what waits for the scheduled buffers to play out.
         let operations = await output.operations()
         XCTAssertEqual(operations, [.start(format), .append, .finish])
-        XCTAssertEqual(coordinator.state, .idle)
+        XCTAssertEqual(coordinator.state, .complete)
     }
 
     @MainActor
@@ -1428,6 +1661,69 @@ private actor CoordinatorAudioOutput: AudioOutput {
         if appendRequested { return }
         await withCheckedContinuation { continuation in
             appendRequestWaiters.append(continuation)
+        }
+    }
+
+    func allowFinish() {
+        finishWaiter?.resume()
+        finishWaiter = nil
+    }
+}
+
+private actor StartGatedAudioOutput: AudioOutput {
+    private var startRequested = false
+    private var startRequestWaiters: [CheckedContinuation<Void, Never>] = []
+    private var startWaiter: CheckedContinuation<Void, Never>?
+    private var finishRequested = false
+    private var finishRequestWaiters: [CheckedContinuation<Void, Never>] = []
+    private var finishWaiter: CheckedContinuation<Void, Never>?
+
+    func start(format: AudioFormat) async throws {
+        startRequested = true
+        for waiter in startRequestWaiters {
+            waiter.resume()
+        }
+        startRequestWaiters.removeAll()
+        await withCheckedContinuation { continuation in
+            startWaiter = continuation
+        }
+    }
+
+    func append(_ pcm: Data) async throws -> AudioPlaybackReadiness {
+        .ready
+    }
+
+    func finish() async throws {
+        finishRequested = true
+        for waiter in finishRequestWaiters {
+            waiter.resume()
+        }
+        finishRequestWaiters.removeAll()
+        await withCheckedContinuation { continuation in
+            finishWaiter = continuation
+        }
+    }
+
+    func stop() async {}
+
+    func playbackPosition() async -> TimeInterval? { nil }
+
+    func waitUntilStartRequested() async {
+        if startRequested { return }
+        await withCheckedContinuation { continuation in
+            startRequestWaiters.append(continuation)
+        }
+    }
+
+    func allowStart() {
+        startWaiter?.resume()
+        startWaiter = nil
+    }
+
+    func waitUntilFinishRequested() async {
+        if finishRequested { return }
+        await withCheckedContinuation { continuation in
+            finishRequestWaiters.append(continuation)
         }
     }
 

@@ -268,6 +268,33 @@ final class HermesEventNormalizerTests: XCTestCase {
         XCTAssertEqual(fallbackError, [.error("voice-session error")])
     }
 
+    func testMessageCompletionCarriesAnAudioFailureReasonWithoutInventingText() throws {
+        var normalizer = HermesEventNormalizer()
+
+        let events = try normalizer.normalizeJSON(
+            json([
+                "type": "message.complete",
+                "payload": [
+                    "text": "The text is still available.",
+                    "failure_reason": "Audio response unavailable.",
+                ] as [String: Any],
+            ]),
+            turnID: "turn-1"
+        )
+
+        XCTAssertEqual(
+            events,
+            [
+                .textDelta("The text is still available."),
+                .messageComplete(
+                    text: "The text is still available.",
+                    reasoning: "",
+                    failureReason: "Audio response unavailable."
+                ),
+            ]
+        )
+    }
+
     func testUnknownEventsAreContentSafe() throws {
         var normalizer = HermesEventNormalizer()
 

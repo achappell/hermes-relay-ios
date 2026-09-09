@@ -111,6 +111,7 @@ final class HermesRelayIOSTests: XCTestCase {
             (.thinking, "Thinking", "ellipsis"),
             (.speaking, "Speaking", "speaker.wave.2.fill"),
             (.buffering, "Buffering", "arrow.down.circle"),
+            (.complete, "Complete", "checkmark.circle"),
             (.interrupted, "Interrupted", "pause.circle"),
             (.failed("Audio playback failed."), "Audio playback failed.", "exclamationmark.triangle"),
         ]
@@ -119,6 +120,22 @@ final class HermesRelayIOSTests: XCTestCase {
             XCTAssertEqual(state.label, label)
             XCTAssertEqual(state.systemImage, systemImage)
         }
+    }
+
+    func testCompletePresentationIsSettledAndKeepsHermesText() {
+        let presentation = AmbientHUDPresentation(
+            voiceState: .complete,
+            activity: .safe,
+            provisionalText: "",
+            messages: [TranscriptMessage(role: .assistant, text: "The answer is ready.")]
+        )
+
+        XCTAssertEqual(presentation.mode, .complete)
+        XCTAssertEqual(presentation.caption, "The answer is ready.")
+        XCTAssertEqual(presentation.captionSource, .hermes)
+        XCTAssertEqual(presentation.intensity, 0.10, accuracy: 0.001)
+        XCTAssertEqual(presentation.accessibilityLabel, "Hermes complete")
+        XCTAssertFalse(VoiceControlInteractionPolicy.isResponseActive(.complete))
     }
 
     func testAmbientHUDProjectsVoiceStateAndAudioLevel() {

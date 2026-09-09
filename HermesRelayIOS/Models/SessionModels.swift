@@ -39,6 +39,7 @@ enum VoiceState: Equatable, Sendable {
     case thinking
     case speaking
     case buffering
+    case complete
     case interrupted
     case failed(String)
 
@@ -56,6 +57,8 @@ enum VoiceState: Equatable, Sendable {
             return "Speaking"
         case .buffering:
             return "Buffering"
+        case .complete:
+            return "Complete"
         case .interrupted:
             return "Interrupted"
         case .failed(let message):
@@ -77,10 +80,48 @@ enum VoiceState: Equatable, Sendable {
             return "speaker.wave.2.fill"
         case .buffering:
             return "arrow.down.circle"
+        case .complete:
+            return "checkmark.circle"
         case .interrupted:
             return "pause.circle"
         case .failed:
             return "exclamationmark.triangle"
+        }
+    }
+
+    var isCaptureActive: Bool {
+        switch self {
+        case .listening, .transcribing:
+            return true
+        default:
+            return false
+        }
+    }
+
+    var isResponseActive: Bool {
+        switch self {
+        case .thinking, .buffering, .speaking:
+            return true
+        default:
+            return false
+        }
+    }
+
+    var isOutputActive: Bool {
+        switch self {
+        case .buffering, .speaking:
+            return true
+        default:
+            return false
+        }
+    }
+
+    var isTerminal: Bool {
+        switch self {
+        case .complete, .interrupted, .failed:
+            return true
+        default:
+            return false
         }
     }
 }

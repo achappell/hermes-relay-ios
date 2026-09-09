@@ -53,6 +53,7 @@ final class ConversationStore {
     private var nextTurnGeneration: UInt64 = 0
     private var activeTurnGeneration: UInt64?
     private var interruptedTurnGeneration: UInt64?
+    private var interruptionConfirmedTurnGeneration: UInt64?
     // Recovery from an unexpected transport loss runs as a single task. A
     // second loss reported while it is running is the same outage, not a new
     // one, so it must not stack a second backoff ladder.
@@ -215,6 +216,8 @@ final class ConversationStore {
         activityText = nil
         transientError = nil
         turnCompleted = false
+        interruptedTurnGeneration = nil
+        interruptionConfirmedTurnGeneration = nil
         unconfirmedTurnText = nil
         nextTurnGeneration &+= 1
         let turnGeneration = nextTurnGeneration
@@ -259,6 +262,7 @@ final class ConversationStore {
         }
         let wasInterrupted = interruptedTurnGeneration == turnGeneration
         interruptedTurnGeneration = nil
+        interruptionConfirmedTurnGeneration = nil
         activeTurnGeneration = nil
         if wasInterrupted {
             isSending = false
@@ -289,6 +293,7 @@ final class ConversationStore {
         // existing close-and-reconnect fallback, and let sendTurn mark the
         // submitted text unconfirmed rather than pretending Hermes stopped.
         interruptedTurnGeneration = nil
+        interruptionConfirmedTurnGeneration = nil
         activeTurnGeneration = nil
         isExpectedDisconnect = true
         await client.disconnect()
@@ -400,6 +405,12 @@ final class ConversationStore {
     }
 
     private func apply(_ event: HermesEvent) {
+        // The transport can already have yielded frames when a terminal event
+        // arrives. Once a turn is complete or its interruption is confirmed,
+        // those frames are stale and must not create a second assistant
+        // message or append an error. Events already buffered before the
+        // confirmation remain valid and are allowed through.
+        guard !turnCompleted, interruptionConfirmedTurnGeneration == nil else { return }
         switch event {
         case .messageStart:
             let message = TranscriptMessage(role: .assistant, text: "")
@@ -431,6 +442,7 @@ final class ConversationStore {
             break
         case .turnInterrupted:
             interruptedTurnGeneration = activeTurnGeneration
+            interruptionConfirmedTurnGeneration = activeTurnGeneration
             activeAssistantID = nil
             activityText = nil
         case .messageComplete(_, _, let failureReason):
