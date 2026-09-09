@@ -1447,8 +1447,7 @@ final class VoiceSessionCoordinatorTests: XCTestCase {
             input: CoordinatorSpeechInput(),
             output: CoordinatorAudioOutput(),
             handsFreeInput: handsFreeInput,
-            handsFreeSilenceDurationNanoseconds: 0,
-            handsFreeNoSpeechTimeoutNanoseconds: 0
+            handsFreeSilenceDurationNanoseconds: 0
         )
 
         XCTAssertFalse(coordinator.isHandsFreeArmed)
@@ -1477,8 +1476,7 @@ final class VoiceSessionCoordinatorTests: XCTestCase {
             input: CoordinatorSpeechInput(),
             output: CoordinatorAudioOutput(),
             handsFreeInput: handsFreeInput,
-            handsFreeSilenceDurationNanoseconds: 0,
-            handsFreeNoSpeechTimeoutNanoseconds: 0
+            handsFreeSilenceDurationNanoseconds: 0
         )
 
         await coordinator.toggleHandsFree()
@@ -1495,7 +1493,7 @@ final class VoiceSessionCoordinatorTests: XCTestCase {
     }
 
     @MainActor
-    func testHandsFreeNoSpeechTimeoutClosesAndRestartsMonitoringWithoutSubmitting() async {
+    func testHandsFreeQuietMonitoringDoesNotCycleTheMicrophone() async {
         let handsFreeInput = CoordinatorHandsFreeInput()
         let client = CoordinatorHermesSessionClient()
         let store = await connectedStore(client)
@@ -1504,15 +1502,42 @@ final class VoiceSessionCoordinatorTests: XCTestCase {
             input: CoordinatorSpeechInput(),
             output: CoordinatorAudioOutput(),
             handsFreeInput: handsFreeInput,
-            handsFreeSilenceDurationNanoseconds: 0,
-            handsFreeNoSpeechTimeoutNanoseconds: 100_000_000
+            handsFreeSilenceDurationNanoseconds: 0
         )
 
         await coordinator.toggleHandsFree()
         try? await Task.sleep(nanoseconds: 250_000_000)
 
         let finishCount = await handsFreeInput.finishCount()
-        XCTAssertGreaterThanOrEqual(finishCount, 1)
+        XCTAssertEqual(finishCount, 0)
+        let startCount = await handsFreeInput.startCount()
+        XCTAssertEqual(startCount, 1)
+        XCTAssertEqual(client.sentTurns, [])
+        XCTAssertTrue(coordinator.isHandsFreeArmed)
+        XCTAssertEqual(coordinator.state, .idle)
+
+        await coordinator.disableHandsFree()
+    }
+
+    @MainActor
+    func testHandsFreeRecognizerTerminationRestartsMonitoringWithoutSubmitting() async {
+        let handsFreeInput = CoordinatorHandsFreeInput()
+        let client = CoordinatorHermesSessionClient()
+        let store = await connectedStore(client)
+        let coordinator = VoiceSessionCoordinator(
+            store: store,
+            input: CoordinatorSpeechInput(),
+            output: CoordinatorAudioOutput(),
+            handsFreeInput: handsFreeInput,
+            handsFreeSilenceDurationNanoseconds: 0
+        )
+
+        await coordinator.toggleHandsFree()
+        await handsFreeInput.fail(with: .noSpeech)
+        for _ in 0..<20 { await Task.yield() }
+
+        let startCount = await handsFreeInput.startCount()
+        XCTAssertEqual(startCount, 2)
         XCTAssertEqual(client.sentTurns, [])
         XCTAssertTrue(coordinator.isHandsFreeArmed)
         XCTAssertEqual(coordinator.state, .idle)
@@ -1530,8 +1555,7 @@ final class VoiceSessionCoordinatorTests: XCTestCase {
             input: CoordinatorSpeechInput(),
             output: CoordinatorAudioOutput(),
             handsFreeInput: handsFreeInput,
-            handsFreeSilenceDurationNanoseconds: 0,
-            handsFreeNoSpeechTimeoutNanoseconds: 0
+            handsFreeSilenceDurationNanoseconds: 0
         )
 
         await coordinator.toggleHandsFree()
@@ -1566,8 +1590,7 @@ final class VoiceSessionCoordinatorTests: XCTestCase {
             input: CoordinatorSpeechInput(),
             output: CoordinatorAudioOutput(),
             handsFreeInput: handsFreeInput,
-            handsFreeSilenceDurationNanoseconds: 0,
-            handsFreeNoSpeechTimeoutNanoseconds: 0
+            handsFreeSilenceDurationNanoseconds: 0
         )
 
         await coordinator.toggleHandsFree()
@@ -1597,8 +1620,7 @@ final class VoiceSessionCoordinatorTests: XCTestCase {
             input: CoordinatorSpeechInput(),
             output: CoordinatorAudioOutput(),
             handsFreeInput: handsFreeInput,
-            handsFreeSilenceDurationNanoseconds: 80_000_000,
-            handsFreeNoSpeechTimeoutNanoseconds: 0
+            handsFreeSilenceDurationNanoseconds: 80_000_000
         )
 
         await coordinator.toggleHandsFree()
@@ -1630,8 +1652,7 @@ final class VoiceSessionCoordinatorTests: XCTestCase {
             input: CoordinatorSpeechInput(),
             output: CoordinatorAudioOutput(),
             handsFreeInput: handsFreeInput,
-            handsFreeSilenceDurationNanoseconds: 1_000_000_000,
-            handsFreeNoSpeechTimeoutNanoseconds: 0
+            handsFreeSilenceDurationNanoseconds: 1_000_000_000
         )
 
         await coordinator.toggleHandsFree()
@@ -1665,8 +1686,7 @@ final class VoiceSessionCoordinatorTests: XCTestCase {
             output: CoordinatorAudioOutput(),
             handsFreeInput: handsFreeInput,
             routeSafetyProvider: FixedHandsFreeRouteSafetyProvider(.notEchoSafe),
-            handsFreeSilenceDurationNanoseconds: 0,
-            handsFreeNoSpeechTimeoutNanoseconds: 0
+            handsFreeSilenceDurationNanoseconds: 0
         )
 
         let responseTask = Task { await coordinator.sendDraft() }
@@ -1702,8 +1722,7 @@ final class VoiceSessionCoordinatorTests: XCTestCase {
             output: CoordinatorAudioOutput(),
             handsFreeInput: handsFreeInput,
             routeSafetyProvider: FixedHandsFreeRouteSafetyProvider(.echoSafe),
-            handsFreeSilenceDurationNanoseconds: 0,
-            handsFreeNoSpeechTimeoutNanoseconds: 0
+            handsFreeSilenceDurationNanoseconds: 0
         )
 
         let responseTask = Task { await coordinator.sendDraft() }
@@ -1795,6 +1814,11 @@ private actor CoordinatorHandsFreeInput: HandsFreeInput {
 
     func emit(_ event: HandsFreeInputEvent) {
         continuation?.yield(event)
+    }
+
+    func fail(with error: SpeechInputError) {
+        continuation?.finish(throwing: error)
+        continuation = nil
     }
 }
 

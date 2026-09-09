@@ -280,6 +280,20 @@ final class HermesRelayIOSTests: XCTestCase {
         XCTAssertEqual(presentation.accessibilityLabel, "Hermes speaking")
     }
 
+    func testAmbientHUDNamesArmedHandsFreeWaitingState() {
+        let presentation = AmbientHUDPresentation(
+            voiceState: .idle,
+            activity: .safe,
+            provisionalText: "",
+            messages: [],
+            isHandsFreeArmed: true
+        )
+
+        XCTAssertEqual(presentation.statusLabel, "Listening for speech")
+        XCTAssertEqual(presentation.emptyCaption, "Speak to begin")
+        XCTAssertEqual(presentation.accessibilityLabel, "Hermes listening for speech")
+    }
+
     func testAmbientHUDUsesLiveUserCaptionUntilHermesHasText() {
         let messages = [TranscriptMessage(role: .user, text: "What is next?")]
         let listening = AmbientHUDPresentation(

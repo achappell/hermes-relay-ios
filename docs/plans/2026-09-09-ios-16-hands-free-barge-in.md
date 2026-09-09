@@ -30,7 +30,10 @@ only on an echo-safe headphone route.
 - [x] Speech followed by the bounded silence endpoint submits one trimmed turn,
       accepts the final recognition result, and restarts monitoring while the
       mode remains armed.
-- [x] No-speech expiry closes and restarts monitoring without submission.
+- [x] Quiet monitoring stays active without proactively cycling the microphone;
+      actual recognizer termination restarts monitoring without submission.
+- [x] The armed waiting state presents "Listening for speech" instead of the
+      idle "Ready" label.
 - [x] Disarming cancels active capture, clears provisional text, and releases
       the microphone input.
 - [x] Permission and unavailable-input failures remain typed and actionable.

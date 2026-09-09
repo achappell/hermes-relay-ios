@@ -151,7 +151,8 @@ struct ContentView: View {
                 voiceState: voiceCoordinator.state,
                 activity: hudModel.snapshot,
                 provisionalText: voiceCoordinator.provisionalText,
-                messages: store.messages
+                messages: store.messages,
+                isHandsFreeArmed: voiceCoordinator.isHandsFreeArmed
             ),
             connectionState: store.connectionState,
             sessionStartedAt: store.sessionStartedAt,

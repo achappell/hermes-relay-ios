@@ -62,7 +62,6 @@ final class VoiceSessionCoordinator {
     nonisolated private let routeSafetyProvider: any HandsFreeAudioRouteSafetyProvider
     private let recognitionFinishTimeoutNanoseconds: UInt64
     private let handsFreeSilenceDurationNanoseconds: UInt64
-    private let handsFreeNoSpeechTimeoutNanoseconds: UInt64
     nonisolated private let captureStartGate = CaptureStartGate()
 
     private(set) var state: VoiceState = .idle
@@ -101,7 +100,6 @@ final class VoiceSessionCoordinator {
     private var playbackPositionTask: Task<Void, Never>?
     private var handsFreeTask: Task<Void, Never>?
     private var handsFreeSilenceTask: Task<Void, Never>?
-    private var handsFreeNoSpeechTask: Task<Void, Never>?
     private var handsFreeCaptureGeneration: UInt64 = 0
     private var handsFreeFinalText: String?
     private var isFinishingHandsFreeInput = false
@@ -117,8 +115,7 @@ final class VoiceSessionCoordinator {
         recognitionFinishTimeoutNanoseconds: UInt64 = 2_000_000_000,
         handsFreeInput: (any HandsFreeInput)? = nil,
         routeSafetyProvider: any HandsFreeAudioRouteSafetyProvider = SystemHandsFreeAudioRouteSafetyProvider(),
-        handsFreeSilenceDurationNanoseconds: UInt64 = 700_000_000,
-        handsFreeNoSpeechTimeoutNanoseconds: UInt64 = 5_000_000_000
+        handsFreeSilenceDurationNanoseconds: UInt64 = 700_000_000
     ) {
         self.store = store
         self.input = input
@@ -128,7 +125,6 @@ final class VoiceSessionCoordinator {
         self.routeSafetyProvider = routeSafetyProvider
         self.recognitionFinishTimeoutNanoseconds = recognitionFinishTimeoutNanoseconds
         self.handsFreeSilenceDurationNanoseconds = handsFreeSilenceDurationNanoseconds
-        self.handsFreeNoSpeechTimeoutNanoseconds = handsFreeNoSpeechTimeoutNanoseconds
     }
 
     func toggleHandsFree() async {
@@ -147,8 +143,6 @@ final class VoiceSessionCoordinator {
         handsFreeCaptureGeneration &+= 1
         handsFreeSilenceTask?.cancel()
         handsFreeSilenceTask = nil
-        handsFreeNoSpeechTask?.cancel()
-        handsFreeNoSpeechTask = nil
         handsFreeFinalText = nil
         isFinishingHandsFreeInput = true
 
@@ -222,8 +216,6 @@ final class VoiceSessionCoordinator {
         isHandsFreeCaptureActive = false
         handsFreeSilenceTask?.cancel()
         handsFreeSilenceTask = nil
-        handsFreeNoSpeechTask?.cancel()
-        handsFreeNoSpeechTask = nil
         handsFreeFinalText = nil
         provisionalText = ""
         handsFreeStatus = .failed(failure)
@@ -247,7 +239,6 @@ final class VoiceSessionCoordinator {
                 await self?.handleHandsFreeStreamError(error)
             }
         }
-        scheduleHandsFreeNoSpeechTimeout()
     }
 
     private func handleHandsFreeEvent(_ event: HandsFreeInputEvent) async {
@@ -269,8 +260,6 @@ final class VoiceSessionCoordinator {
             }
 
             if snapshot.microphoneActivity == .speech {
-                handsFreeNoSpeechTask?.cancel()
-                handsFreeNoSpeechTask = nil
                 handsFreeSilenceTask?.cancel()
                 handsFreeSilenceTask = nil
 
@@ -341,41 +330,10 @@ final class VoiceSessionCoordinator {
         }
     }
 
-    private func scheduleHandsFreeNoSpeechTimeout() {
-        guard handsFreeNoSpeechTimeoutNanoseconds > 0 else { return }
-        handsFreeNoSpeechTask?.cancel()
-        let generation = handsFreeCaptureGeneration
-        let duration = handsFreeNoSpeechTimeoutNanoseconds
-        handsFreeNoSpeechTask = Task { @MainActor [weak self] in
-            do {
-                try await Task.sleep(nanoseconds: duration)
-            } catch {
-                return
-            }
-            guard let self,
-                  self.isHandsFreeArmed,
-                  !self.isHandsFreeCaptureActive,
-                  self.handsFreeCaptureGeneration == generation else { return }
-            await self.expireHandsFreeNoSpeech()
-        }
-    }
-
-    private func expireHandsFreeNoSpeech() async {
-        guard isHandsFreeArmed, !isHandsFreeCaptureActive else { return }
-        if state.isResponseActive {
-            scheduleHandsFreeNoSpeechTimeout()
-            return
-        }
-        await finishHandsFreeInputAndWait()
-        await restartHandsFreeStream()
-    }
-
     private func finishHandsFreeCapture() async {
         guard isHandsFreeArmed, isHandsFreeCaptureActive else { return }
         handsFreeSilenceTask?.cancel()
         handsFreeSilenceTask = nil
-        handsFreeNoSpeechTask?.cancel()
-        handsFreeNoSpeechTask = nil
         handsFreeStatus = .transcribing
         state = .transcribing
 
@@ -401,7 +359,6 @@ final class VoiceSessionCoordinator {
 
         guard !text.isEmpty else {
             state = .idle
-            scheduleHandsFreeNoSpeechTimeout()
             return
         }
         guard let binding = store.verifiedTurnBinding else {
@@ -690,8 +647,6 @@ final class VoiceSessionCoordinator {
             handsFreeCaptureGeneration &+= 1
             handsFreeSilenceTask?.cancel()
             handsFreeSilenceTask = nil
-            handsFreeNoSpeechTask?.cancel()
-            handsFreeNoSpeechTask = nil
             handsFreeFinalText = nil
             provisionalText = ""
             finalText = nil

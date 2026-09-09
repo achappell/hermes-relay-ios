@@ -40,12 +40,18 @@ struct VoiceControl: View {
         coordinator.isHandsFreeCaptureActive
     }
 
+    private var isHandsFreeWaiting: Bool {
+        coordinator.isHandsFreeArmed && !isHandsFreeCaptureActive && !isResponseActive
+    }
+
     var body: some View {
         HStack(spacing: 12) {
             VStack(alignment: .leading, spacing: 2) {
                 Text(
                     isHandsFreeCaptureActive
                         ? "Hands-free listening"
+                        : isHandsFreeWaiting
+                        ? "Listening for speech"
                         : isCapturing
                         ? "Tap to stop"
                         : isResponseActive ? "Tap to interrupt" : "Tap to record"
