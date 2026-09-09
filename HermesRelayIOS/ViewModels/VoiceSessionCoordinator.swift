@@ -322,8 +322,10 @@ final class VoiceSessionCoordinator {
     }
 
     private func scheduleHandsFreeSilence() {
-        guard isHandsFreeCaptureActive else { return }
-        handsFreeSilenceTask?.cancel()
+        // Activity snapshots continue at the store's throttled cadence while
+        // the microphone remains quiet. Keep one endpoint clock for that
+        // quiet stretch; repeated non-speech snapshots must not postpone it.
+        guard isHandsFreeCaptureActive, handsFreeSilenceTask == nil else { return }
         let generation = handsFreeCaptureGeneration
         let duration = handsFreeSilenceDurationNanoseconds
         handsFreeSilenceTask = Task { @MainActor [weak self] in

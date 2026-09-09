@@ -1588,6 +1588,39 @@ final class VoiceSessionCoordinatorTests: XCTestCase {
     }
 
     @MainActor
+    func testHandsFreeRepeatedSilenceDoesNotResetTheEndpoint() async {
+        let handsFreeInput = CoordinatorHandsFreeInput()
+        let client = CoordinatorHermesSessionClient()
+        let store = await connectedStore(client)
+        let coordinator = VoiceSessionCoordinator(
+            store: store,
+            input: CoordinatorSpeechInput(),
+            output: CoordinatorAudioOutput(),
+            handsFreeInput: handsFreeInput,
+            handsFreeSilenceDurationNanoseconds: 80_000_000,
+            handsFreeNoSpeechTimeoutNanoseconds: 0
+        )
+
+        await coordinator.toggleHandsFree()
+        await handsFreeInput.emit(.activity(handsFreeSnapshot(.speech)))
+
+        let silenceTask = Task {
+            for _ in 0..<20 {
+                await handsFreeInput.emit(.activity(handsFreeSnapshot(.silence)))
+                try? await Task.sleep(nanoseconds: 20_000_000)
+            }
+        }
+        try? await Task.sleep(nanoseconds: 150_000_000)
+
+        let finishCount = await handsFreeInput.finishCount()
+        XCTAssertGreaterThanOrEqual(finishCount, 1)
+
+        silenceTask.cancel()
+        await silenceTask.value
+        await coordinator.disableHandsFree()
+    }
+
+    @MainActor
     func testDisarmingHandsFreeCancelsAnActiveCaptureAndReturnsToReady() async {
         let handsFreeInput = CoordinatorHandsFreeInput()
         let client = CoordinatorHermesSessionClient()
