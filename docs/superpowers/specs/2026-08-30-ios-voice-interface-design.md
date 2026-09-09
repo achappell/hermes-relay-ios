@@ -81,7 +81,7 @@ typed PCM events and stays off the main actor.
 `SessionModels.swift` should grow the typed values needed by the coordinator:
 
 - `VoiceState`: `idle`, `listening`, `transcribing`, `thinking`, `speaking`,
-  `buffering`, `interrupted`, and `failed(String)`;
+  `buffering`, `complete`, `interrupted`, and `failed(String)`;
 - `AudioFormat`: sample rate, channel count, and sample width;
 - `SpeechInput` for authorization, start, partial/final recognition, and
   cancellation;
@@ -115,8 +115,10 @@ raw WebSocket frames must not cross into the store or views.
    sends one protocol-v1 `interrupt`. `audio_abort` stops playback and clears
    pending audio immediately; `turn_interrupted` confirms the remote turn is
    over without reconnecting or creating a replacement turn.
-9. `turn_end` returns the coordinator to `idle`. Errors preserve the last safe
-   transcript/draft state and explain the next action.
+9. `turn_end` settles the coordinator on `complete` only after any described
+   audio has drained. Missing or failed audio preserves the text and reports
+   that playback is unavailable; errors preserve the last safe transcript/draft
+   state and explain the next action.
 
 ## Interaction and failure rules
 
@@ -211,7 +213,7 @@ testing.
 
 Integrate input, transport, transcript, and output into one coordinator and add
 a calm dedicated voice indicator for idle, listening, transcribing, thinking,
-speaking, buffering, interrupted, and failed states.
+speaking, buffering, complete, interrupted, and failed states.
 
 **Acceptance:** The interface has one obvious voice control, state transitions
 are legible without transcript noise, cancellation never strands a task, and a
@@ -219,7 +221,8 @@ completed response has one stable assistant boundary with no duplicate text.
 
 **Validation:** State-machine tests, fake end-to-end event sequences, UI tests
 for control availability and failure wording, and a device walkthrough of
-idle → listening → cancelled → ready plus idle → response → playback failure.
+idle → listening → cancelled → ready plus idle → response → complete or
+playback failure.
 
 ### IOS-07 — Recovery and local continuity
 

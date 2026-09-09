@@ -52,6 +52,7 @@ actor URLSessionHermesSessionClient: HermesSessionClient {
     private var interruptionTimeoutTask: Task<Void, Never>?
     private var audioStarted = false
     private var audioFileStarted = false
+    private var turnCompletionPending = false
     private var discardBinaryUntilAudioStart = false
     private var normalizer = HermesEventNormalizer()
 
@@ -121,6 +122,7 @@ actor URLSessionHermesSessionClient: HermesSessionClient {
         activeContinuation = continuation
         audioStarted = false
         audioFileStarted = false
+        turnCompletionPending = false
         normalizer = HermesEventNormalizer()
         let generation = transportGeneration
         continuation.onTermination = { [weak self] _ in
@@ -293,6 +295,11 @@ actor URLSessionHermesSessionClient: HermesSessionClient {
             case .audioFileEnd:
                 audioFileStarted = false
                 activeContinuation?.yield(event)
+                if turnCompletionPending {
+                    turnCompletionPending = false
+                    finishActiveTurn()
+                    return
+                }
             case .audioAbort:
                 audioStarted = false
                 audioFileStarted = false
@@ -310,7 +317,14 @@ actor URLSessionHermesSessionClient: HermesSessionClient {
                 return
             case .turnComplete:
                 activeContinuation?.yield(event)
-                finishActiveTurn()
+                if audioFileStarted {
+                    // File-backed audio may be delivered after the terminal
+                    // turn event. Keep the stream open until its bytes have
+                    // reached the coordinator.
+                    turnCompletionPending = true
+                } else {
+                    finishActiveTurn()
+                }
                 return
             default:
                 activeContinuation?.yield(event)
@@ -387,6 +401,7 @@ actor URLSessionHermesSessionClient: HermesSessionClient {
         resolveInterruption(confirmed: false)
         audioStarted = false
         audioFileStarted = false
+        turnCompletionPending = false
         discardBinaryUntilAudioStart = false
     }
 
@@ -402,6 +417,7 @@ actor URLSessionHermesSessionClient: HermesSessionClient {
         activeTurnID = nil
         audioStarted = false
         audioFileStarted = false
+        turnCompletionPending = false
     }
 
     private func helloJSON(sessionID: String) throws -> String {

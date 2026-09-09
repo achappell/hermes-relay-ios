@@ -33,6 +33,8 @@ final class VoiceSessionCoordinator {
     private var responseTask: Task<Void, Never>?
     private var playbackFailed = false
     private var audioStreamActive = false
+    private var audioFileStreamActive = false
+    private var audioDeliveryStarted = false
     private var audioFormat: AudioFormat?
     private var audioFileBuffer = Data()
     private var streamedAudioBytes = 0
@@ -126,6 +128,9 @@ final class VoiceSessionCoordinator {
         captureBinding = nil
 
         playbackFailed = false
+        audioDeliveryStarted = false
+        audioFileStreamActive = false
+        audioFileBuffer.removeAll(keepingCapacity: false)
         resetSpeechTiming()
         responseGeneration &+= 1
         let generation = responseGeneration
@@ -310,6 +315,8 @@ final class VoiceSessionCoordinator {
         await activeResponseTask.value
         responseTask = nil
         audioStreamActive = false
+        audioFileStreamActive = false
+        audioDeliveryStarted = false
         audioFileBuffer.removeAll(keepingCapacity: false)
         streamedAudioBytes = 0
         playbackFailed = false
@@ -327,6 +334,9 @@ final class VoiceSessionCoordinator {
         guard !store.draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
 
         playbackFailed = false
+        audioDeliveryStarted = false
+        audioFileStreamActive = false
+        audioFileBuffer.removeAll(keepingCapacity: false)
         resetSpeechTiming()
         responseGeneration &+= 1
         let generation = responseGeneration
@@ -353,6 +363,9 @@ final class VoiceSessionCoordinator {
         }
 
         playbackFailed = false
+        audioDeliveryStarted = false
+        audioFileStreamActive = false
+        audioFileBuffer.removeAll(keepingCapacity: false)
         resetSpeechTiming()
         responseGeneration &+= 1
         let generation = responseGeneration
@@ -415,7 +428,7 @@ final class VoiceSessionCoordinator {
         if !completed, !isFailed, state != .interrupted {
             state = .failed(store.transientError ?? "The voice turn could not be completed.")
         } else if completed, !isFailed, state != .interrupted {
-            await finishPlaybackAndEndResponse()
+            await finishPlaybackAndEndResponse(generation: generation)
         }
     }
 
@@ -423,11 +436,10 @@ final class VoiceSessionCoordinator {
         guard generation == responseGeneration, !Task.isCancelled else { return }
         switch event {
         case .thinkingDelta, .status:
-            if !playbackFailed {
-                state = .thinking
-            }
+            guard !playbackFailed, !state.isTerminal, !state.isOutputActive else { return }
+            state = .thinking
         case .audioStart(let format):
-            guard !playbackFailed else { return }
+            guard !playbackFailed, !state.isTerminal else { return }
             await diagnostics.record(
                 .segmentBoundary(
                     index: audioSegmentIndex,
@@ -436,6 +448,7 @@ final class VoiceSessionCoordinator {
                 )
             )
             audioFileBuffer.removeAll(keepingCapacity: false)
+            audioFileStreamActive = false
             audioStreamActive = true
             audioFormat = format
             streamedAudioBytes = 0
@@ -446,23 +459,28 @@ final class VoiceSessionCoordinator {
             state = .buffering
             do {
                 try await output.start(format: format)
+                guard isCurrentResponse(generation) else { return }
             } catch {
-                await handlePlaybackFailure()
+                await handlePlaybackFailure(generation: generation)
             }
         case .audioChunk(let pcm):
-            guard !playbackFailed else { return }
+            guard !playbackFailed, !state.isTerminal, audioStreamActive else { return }
             streamedAudioBytes += pcm.count
             await diagnostics.record(.chunkReceived(bytes: pcm.count))
             do {
                 let readiness = try await output.append(pcm)
+                guard isCurrentResponse(generation) else { return }
+                if !pcm.isEmpty {
+                    audioDeliveryStarted = true
+                }
                 if readiness == .ready {
                     state = .speaking
                 }
             } catch {
-                await handlePlaybackFailure()
+                await handlePlaybackFailure(generation: generation)
             }
         case .audioEnd:
-            guard !playbackFailed else { return }
+            guard !playbackFailed, !state.isTerminal, audioStreamActive else { return }
             await diagnostics.record(.streamEnded(bytes: streamedAudioBytes))
             await diagnostics.record(
                 .segmentBoundary(
@@ -474,25 +492,35 @@ final class VoiceSessionCoordinator {
             audioSegmentIndex += 1
             do {
                 try await output.finish()
+                guard isCurrentResponse(generation) else { return }
                 audioStreamActive = false
                 finalizePlaybackDuration()
                 if turnDidComplete {
-                    endResponse()
+                    if audioDeliveryStarted {
+                        endResponse()
+                    } else {
+                        await handlePlaybackFailure(generation: generation)
+                    }
                 }
             } catch {
-                await handlePlaybackFailure()
+                await handlePlaybackFailure(generation: generation)
             }
         case .audioFileStart:
-            guard !playbackFailed else { return }
+            guard !playbackFailed, !state.isTerminal else { return }
             audioFileBuffer.removeAll(keepingCapacity: true)
+            audioFileStreamActive = true
             state = .buffering
         case .audioFileChunk(let fileData):
-            guard !playbackFailed else { return }
+            guard !playbackFailed, audioFileStreamActive else { return }
             audioFileBuffer.append(fileData)
         case .audioFileEnd:
-            guard !playbackFailed else { return }
+            guard !playbackFailed, audioFileStreamActive else { return }
             do {
                 let decoded = try WAVAudioDecoder().decode(audioFileBuffer)
+                guard !decoded.pcm.isEmpty else {
+                    await handlePlaybackFailure(generation: generation)
+                    return
+                }
                 audioFileBuffer.removeAll(keepingCapacity: false)
                 playbackDuration = Self.audioDuration(
                     byteCount: decoded.pcm.count,
@@ -500,31 +528,54 @@ final class VoiceSessionCoordinator {
                 )
                 isPlaybackDurationFinal = playbackDuration != nil
                 try await output.start(format: decoded.format)
+                guard isCurrentResponse(generation) else { return }
                 let readiness = try await output.append(decoded.pcm)
+                guard isCurrentResponse(generation) else { return }
+                audioDeliveryStarted = true
                 if readiness == .ready {
                     startPlaybackPositionObservation(generation: generation)
                     state = .speaking
                 }
                 try await output.finish()
+                guard isCurrentResponse(generation) else { return }
+                audioFileStreamActive = false
                 if turnDidComplete {
                     endResponse()
                 }
             } catch {
-                await handlePlaybackFailure()
+                await handlePlaybackFailure(generation: generation)
             }
         case .turnComplete:
+            guard !playbackFailed, !state.isTerminal else { return }
             turnDidComplete = true
-            if !isFailed, !audioStreamActive {
-                endResponse()
+            if !isFailed, !audioStreamActive, !audioFileStreamActive {
+                if audioDeliveryStarted {
+                    endResponse()
+                } else {
+                    await handlePlaybackFailure(generation: generation)
+                }
             }
         case .error(let message):
+            guard !playbackFailed, !state.isTerminal else { return }
+            playbackFailed = true
+            audioStreamActive = false
+            audioFileStreamActive = false
+            audioDeliveryStarted = false
+            audioFileBuffer.removeAll(keepingCapacity: false)
+            stopPlaybackPositionObservation()
+            await output.stop()
+            guard isCurrentResponse(generation, allowingPlaybackFailure: true) else { return }
             state = .failed(message)
         case .audioAbort:
-            await stopInterruptedPlayback()
+            guard !state.isTerminal else { return }
+            await stopInterruptedPlayback(generation: generation)
         case .turnInterrupted:
-            await stopInterruptedPlayback()
+            guard !state.isTerminal else { return }
+            await stopInterruptedPlayback(generation: generation)
+            guard generation == responseGeneration, !Task.isCancelled else { return }
             state = .interrupted
         case .speechTiming(let timing):
+            guard !state.isTerminal else { return }
             await diagnostics.record(
                 .speechTimingReceived(
                     segmentIndex: audioSegmentIndex,
@@ -535,6 +586,7 @@ final class VoiceSessionCoordinator {
                     fallbackReason: timing.fallbackReason.map { String(describing: $0) }
                 )
             )
+            guard isCurrentResponse(generation) else { return }
             if let index = speechTimings.firstIndex(where: { $0.segmentID == timing.segmentID }) {
                 speechTimings[index] = timing
             } else {
@@ -546,14 +598,30 @@ final class VoiceSessionCoordinator {
                 }
                 return lhs.audioOffset < rhs.audioOffset
             }
-        case .messageStart, .textDelta, .textReplace, .messageComplete, .unknown:
+        case .messageComplete(_, _, let failureReason):
+            guard !state.isTerminal else { return }
+            let reason = failureReason.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !reason.isEmpty else { return }
+            playbackFailed = true
+            audioStreamActive = false
+            audioFileStreamActive = false
+            audioDeliveryStarted = false
+            audioFileBuffer.removeAll(keepingCapacity: false)
+            stopPlaybackPositionObservation()
+            await output.stop()
+            guard isCurrentResponse(generation, allowingPlaybackFailure: true) else { return }
+            state = .failed(reason)
+        case .messageStart, .textDelta, .textReplace, .unknown:
             break
         }
     }
 
-    private func stopInterruptedPlayback() async {
+    private func stopInterruptedPlayback(generation: UInt64) async {
         await output.stop()
+        guard generation == responseGeneration, !Task.isCancelled else { return }
         audioStreamActive = false
+        audioFileStreamActive = false
+        audioDeliveryStarted = false
         audioFileBuffer.removeAll(keepingCapacity: false)
         streamedAudioBytes = 0
         playbackFailed = false
@@ -572,8 +640,9 @@ final class VoiceSessionCoordinator {
         guard generation == responseGeneration, !Task.isCancelled else { return }
         if !completed, !isFailed, state != .interrupted {
             state = .failed(store.transientError ?? "The text turn could not be completed.")
+            audioFileBuffer.removeAll(keepingCapacity: false)
         } else if completed, !isFailed, state != .interrupted {
-            await finishPlaybackAndEndResponse()
+            await finishPlaybackAndEndResponse(generation: generation)
         }
     }
 
@@ -582,28 +651,54 @@ final class VoiceSessionCoordinator {
     /// audio is *coming*, not that the answer has been *heard*. Drain what is
     /// already scheduled before going quiet — `finish()` returns once the
     /// buffers have actually played out.
-    private func finishPlaybackAndEndResponse() async {
+    private func finishPlaybackAndEndResponse(generation: UInt64) async {
         if audioStreamActive {
             audioStreamActive = false
             do {
                 try await output.finish()
+                guard isCurrentResponse(generation) else { return }
                 finalizePlaybackDuration()
             } catch {
-                await handlePlaybackFailure()
+                await handlePlaybackFailure(generation: generation)
                 return
             }
+        }
+        if audioFileStreamActive {
+            await handlePlaybackFailure(generation: generation)
+            return
+        }
+        guard isCurrentResponse(generation) else { return }
+        guard audioDeliveryStarted else {
+            await handlePlaybackFailure(generation: generation)
+            return
         }
         endResponse()
     }
 
-    private func handlePlaybackFailure() async {
+    private func handlePlaybackFailure(generation: UInt64) async {
+        guard generation == responseGeneration,
+              !Task.isCancelled,
+              !state.isTerminal else { return }
         playbackFailed = true
         audioStreamActive = false
+        audioFileStreamActive = false
+        audioDeliveryStarted = false
         audioFileBuffer.removeAll(keepingCapacity: false)
         stopPlaybackPositionObservation()
         await diagnostics.record(.playbackFailed)
         await output.stop()
+        guard isCurrentResponse(generation, allowingPlaybackFailure: true) else { return }
         state = .failed("Audio playback failed. The response text is still available.")
+    }
+
+    private func isCurrentResponse(
+        _ generation: UInt64,
+        allowingPlaybackFailure: Bool = false
+    ) -> Bool {
+        guard generation == responseGeneration,
+              !Task.isCancelled,
+              !state.isTerminal else { return false }
+        return allowingPlaybackFailure || !playbackFailed
     }
 
     private var isFailed: Bool {
@@ -630,11 +725,11 @@ final class VoiceSessionCoordinator {
     }
 
     /// The answer is finished: audio has drained and the relay has confirmed
-    /// the turn. Only then does the clock stop and the HUD go quiet.
+    /// the turn. Only then does the clock stop and the HUD settle on Complete.
     private func endResponse() {
         guard !isFailed, state != .interrupted else { return }
         stopPlaybackPositionObservation()
-        state = .idle
+        state = .complete
     }
 
     private func stopPlaybackPositionObservation() {

@@ -25,6 +25,7 @@ struct VoiceStatusView: View {
 
     private var stateColor: Color {
         if case .failed = state { return .red }
+        if state == .complete { return .green }
         if state == .idle { return .secondary }
         return .accentColor
     }

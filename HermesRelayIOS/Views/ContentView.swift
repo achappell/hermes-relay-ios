@@ -109,7 +109,7 @@ struct ContentView: View {
             profileName: store.activeProfileDisplayName,
             transcriptMessages: store.messages,
             provisionalText: voiceCoordinator.provisionalText,
-            isResponseActive: store.isSending,
+            isResponseActive: voiceCoordinator.state.isResponseActive,
             activeAssistantID: store.activeAssistantID,
             voiceCoordinator: voiceCoordinator,
             speechTimings: voiceCoordinator.speechTimings,

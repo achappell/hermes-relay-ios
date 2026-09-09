@@ -468,16 +468,19 @@ final class URLSessionHermesSessionClientTests: XCTestCase {
         let stream = await client.sendTurn(text: "/voice tts")
         socket.enqueue(.text(json(["type": "audio_file_start", "content_type": "audio/wav"])))
         socket.enqueue(.binary(Data([0, 1, 2, 3])))
-        socket.enqueue(.text(json(["type": "audio_file_end"])))
         socket.enqueue(.text(json(["type": "turn_end"])))
+        // Hermes can announce turn completion before the file boundary. The
+        // transport must keep the typed stream open until that file is
+        // delivered, or the coordinator cannot play the response.
+        socket.enqueue(.text(json(["type": "audio_file_end"])))
 
         let events = try await collect(stream)
 
         XCTAssertEqual(events, [
             .audioFileStart(contentType: "audio/wav"),
             .audioFileChunk(Data([0, 1, 2, 3])),
-            .audioFileEnd,
             .turnComplete(turnID: try XCTUnwrap(socket.sentTexts.last?.jsonObject()["turn_id"] as? String)),
+            .audioFileEnd,
         ])
 
         await client.disconnect()
