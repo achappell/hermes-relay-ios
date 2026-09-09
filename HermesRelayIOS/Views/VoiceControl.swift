@@ -5,6 +5,10 @@ enum VoiceControlInteractionPolicy {
         state.isResponseActive
     }
 
+    static func isVisible(isComposerFocused: Bool, state: VoiceState) -> Bool {
+        !isComposerFocused || isResponseActive(state) || state.isCaptureActive
+    }
+
     /// Stopping capture can remain in flight while the response starts.
     /// Response states must stay tappable so that action can be interrupted.
     static func isDisabled(isActionInFlight: Bool, state: VoiceState) -> Bool {

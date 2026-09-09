@@ -1,5 +1,9 @@
 import SwiftUI
 
+#if os(iOS)
+import UIKit
+#endif
+
 @MainActor
 struct ContentView: View {
     @State private var store: ConversationStore
@@ -53,6 +57,24 @@ struct ContentView: View {
         store.connectionState.isConnected
             && !store.isSending
             && !store.draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+
+    private var applicationSettingsURL: URL? {
+        #if os(iOS)
+        return URL(string: UIApplication.openSettingsURLString)
+        #else
+        return nil
+        #endif
+    }
+
+    static func shouldShowVoiceInterface(
+        isComposerFocused: Bool,
+        state: VoiceState
+    ) -> Bool {
+        VoiceControlInteractionPolicy.isVisible(
+            isComposerFocused: isComposerFocused,
+            state: state
+        )
     }
 
     var body: some View {
@@ -130,7 +152,8 @@ struct ContentView: View {
             },
             onShowHistory: {
                 showingHistory = true
-            }
+            },
+            settingsURL: applicationSettingsURL
         )
     }
 
@@ -255,7 +278,10 @@ struct ContentView: View {
 
     private var bottomControls: some View {
         VStack(spacing: 0) {
-            if focusedField == nil {
+            if Self.shouldShowVoiceInterface(
+                isComposerFocused: focusedField != nil,
+                state: voiceCoordinator.state
+            ) {
                 voiceInterface
             }
             composer
@@ -265,6 +291,7 @@ struct ContentView: View {
     private func sendDraftIfPossible() {
         guard canSend else { return }
         promptHistory.record(store.draft)
+        focusedField = nil
         Task {
             await voiceCoordinator.sendDraft()
         }

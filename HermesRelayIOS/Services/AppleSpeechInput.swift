@@ -92,9 +92,13 @@ actor AppleSpeechInput: SpeechInput {
             recognitionTask = recognizer.recognitionTask(with: request) { [weak self] result, error in
                 let text = result?.bestTranscription.formattedString
                 let isFinal = result?.isFinal ?? false
-                let didFail = error != nil
+                let recognitionError = error.map { Self.mapRecognitionError($0) }
                 Task {
-                    await self?.handleRecognition(text: text, isFinal: isFinal, didFail: didFail)
+                    await self?.handleRecognition(
+                        text: text,
+                        isFinal: isFinal,
+                        error: recognitionError
+                    )
                 }
             }
             installConfigurationObserver()
@@ -138,13 +142,37 @@ actor AppleSpeechInput: SpeechInput {
         }
     }
 
-    private func handleRecognition(text: String?, isFinal: Bool, didFail: Bool) async {
+    #if DEBUG
+    func makeTestingRecognitionStream() -> AsyncThrowingStream<SpeechRecognitionUpdate, Error> {
+        let (stream, continuation) = AsyncThrowingStream<SpeechRecognitionUpdate, Error>.makeStream()
+        activeContinuation = continuation
+        return stream
+    }
+
+    func handleRecognitionForTesting(
+        text: String?,
+        isFinal: Bool,
+        error: SpeechInputError?
+    ) async {
+        await handleRecognition(text: text, isFinal: isFinal, error: error)
+    }
+    #endif
+
+    private func handleRecognition(
+        text: String?,
+        isFinal: Bool,
+        error: SpeechInputError?
+    ) async {
         guard let continuation = activeContinuation else { return }
-        if didFail {
-            continuation.finish(throwing: SpeechInputError.captureFailed)
+        if let error {
+            continuation.finish(throwing: error)
             activeContinuation = nil
             stopResources()
-            await activityReporter.reportMicrophoneUnavailable()
+            if error == .noSpeech {
+                await activityReporter.reportMicrophoneEnded()
+            } else {
+                await activityReporter.reportMicrophoneUnavailable()
+            }
             return
         }
         if let text, !text.isEmpty {
@@ -156,6 +184,16 @@ actor AppleSpeechInput: SpeechInput {
             stopResources()
             await activityReporter.reportMicrophoneEnded()
         }
+    }
+
+    static func mapRecognitionError(_ error: Error) -> SpeechInputError {
+        let error = error as NSError
+        // Speech reports a stopped empty capture as this assistant error rather
+        // than as a successful empty result.
+        if error.domain == "kAFAssistantErrorDomain", error.code == 1110 {
+            return .noSpeech
+        }
+        return .captureFailed
     }
 
     private func installConfigurationObserver() {

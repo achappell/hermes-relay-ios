@@ -12,3 +12,7 @@
 - source_spec: `_bmad-output/implementation-artifacts/spec-1-2-render-honest-ios-turn-phases.md`
   summary: Bound buffered audio-file memory before accepting arbitrarily large fallback payloads.
   evidence: `audioFileBuffer` still accumulates every `audio_file_chunk` until `audio_file_end`; this pre-existing transport/output boundary requires an explicit product limit and failure policy beyond the current slice.
+
+## Deferred from: code review of hermes-relay-ios-review-spec.XXXXXX.XV2EBX33l3 (2026-09-09)
+
+- macOS permission failures expose a typed Settings action, but the shared macOS `ContentView` supplies no Settings URL; defer until macOS permission-recovery UX and URL handling are explicitly scoped.

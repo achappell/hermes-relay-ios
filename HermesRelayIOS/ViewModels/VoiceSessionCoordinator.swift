@@ -30,6 +30,7 @@ final class VoiceSessionCoordinator {
 
     private var finalText: String?
     private var captureTask: Task<Void, Never>?
+    private var captureFinishTask: Task<Void, Never>?
     private var responseTask: Task<Void, Never>?
     private var playbackFailed = false
     private var audioStreamActive = false
@@ -60,6 +61,8 @@ final class VoiceSessionCoordinator {
     }
 
     nonisolated func beginCapture() async {
+        await waitForCaptureFinish()
+
         let binding: HermesTurnBinding? = await MainActor.run { [weak self] in
             guard let self else { return nil }
             guard self.captureTask == nil, self.responseTask == nil else { return nil }
@@ -144,9 +147,15 @@ final class VoiceSessionCoordinator {
     private func requestInputFinish() {
         let input = self.input
 
-        Task.detached(priority: .userInitiated) {
+        captureFinishTask = Task.detached(priority: .userInitiated) {
             await input.finish()
         }
+    }
+
+    private func waitForCaptureFinish() async {
+        guard let captureFinishTask else { return }
+        await captureFinishTask.value
+        self.captureFinishTask = nil
     }
 
     private func applyCaptureStart(_ result: CaptureStartResult) {
@@ -177,7 +186,7 @@ final class VoiceSessionCoordinator {
             switch failure {
             case .permission(let authorization):
                 captureBinding = nil
-                state = .failed(permissionMessage(for: authorization))
+                state = .failed(.permission(authorization))
             case .input(let error):
                 captureBinding = nil
                 state = .failed(error.localizedDescription)
@@ -212,6 +221,12 @@ final class VoiceSessionCoordinator {
             }
             return .started(stream)
         } catch let error as SpeechInputError {
+            if error == .notAuthorized {
+                let currentAuthorization = await input.authorization()
+                if currentAuthorization != .authorized {
+                    return .failed(.permission(currentAuthorization))
+                }
+            }
             return .failed(.input(error))
         } catch {
             return .failed(.input(.captureFailed))
@@ -394,7 +409,20 @@ final class VoiceSessionCoordinator {
                 }
             }
         } catch let error as SpeechInputError {
-            if error != .cancelled {
+            switch error {
+            case .cancelled:
+                return
+            case .noSpeech:
+                await MainActor.run { [weak self] in
+                    guard let self else { return }
+                    self.captureTask = nil
+                    self.captureBinding = nil
+                    self.provisionalText = ""
+                    self.finalText = nil
+                    self.captureFailureMessage = nil
+                    self.state = .idle
+                }
+            default:
                 let message = error.localizedDescription
                 await MainActor.run { [weak self] in
                     self?.captureTask = nil
@@ -771,20 +799,6 @@ final class VoiceSessionCoordinator {
         return Double(byteCount / bytesPerFrame) / Double(format.sampleRate)
     }
 
-    private func permissionMessage(for authorization: SpeechAuthorization) -> String {
-        switch authorization {
-        case .microphoneDenied:
-            return "Microphone access is denied. Allow microphone and speech recognition access in Settings."
-        case .speechDenied:
-            return "Speech recognition access is denied. Allow speech recognition access in Settings."
-        case .restricted:
-            return "Speech recognition is restricted on this device. Check Screen Time or device management settings."
-        case .notDetermined:
-            return "Microphone and speech recognition access is required for voice turns."
-        case .authorized:
-            return ""
-        }
-    }
 }
 
 private enum CaptureStartFailure: Sendable {

@@ -99,6 +99,8 @@ enum AmbientCaptionSource: Equatable, Sendable {
 
 struct AmbientHUDPresentation: Equatable, Sendable {
     let mode: AmbientHUDMode
+    let failureMessage: String?
+    let failureAction: VoiceFailureAction?
     let caption: String?
     let captionSource: AmbientCaptionSource?
     let intensity: Double
@@ -110,6 +112,8 @@ struct AmbientHUDPresentation: Equatable, Sendable {
         messages: [TranscriptMessage]
     ) {
         mode = AmbientHUDMode(voiceState: voiceState)
+        failureMessage = voiceState.failure?.message
+        failureAction = voiceState.failure?.action
 
         let latestUserText = messages.reversed()
             .first { $0.role == .user && !$0.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }?
@@ -207,6 +211,7 @@ final class AmbientHUDModel {
 }
 
 struct AmbientHUDView: View {
+    @Environment(\.openURL) private var openURL
     let presentation: AmbientHUDPresentation
     let connectionState: ConnectionState
     let sessionStartedAt: Date?
@@ -227,6 +232,7 @@ struct AmbientHUDView: View {
     let onConfigure: () -> Void
     let onConnect: () -> Void
     let onShowHistory: () -> Void
+    let settingsURL: URL?
 
     init(
         presentation: AmbientHUDPresentation,
@@ -248,7 +254,8 @@ struct AmbientHUDView: View {
         onResendUnconfirmedTurn: @escaping () -> Void,
         onConfigure: @escaping () -> Void,
         onConnect: @escaping () -> Void,
-        onShowHistory: @escaping () -> Void
+        onShowHistory: @escaping () -> Void,
+        settingsURL: URL? = nil
     ) {
         self.presentation = presentation
         self.connectionState = connectionState
@@ -270,10 +277,28 @@ struct AmbientHUDView: View {
         self.onConfigure = onConfigure
         self.onConnect = onConnect
         self.onShowHistory = onShowHistory
+        self.settingsURL = settingsURL
     }
 
     private var liveProvisionalText: String {
         voiceCoordinator?.provisionalText ?? provisionalText
+    }
+
+    @MainActor
+    static func settingsRecoveryURL(
+        for presentation: AmbientHUDPresentation,
+        suppliedURL: URL?
+    ) -> URL? {
+        guard presentation.failureAction == .openSettings else { return nil }
+        return suppliedURL
+    }
+
+    @MainActor
+    static func openSettingsAction(
+        url: URL,
+        openURL: OpenURLAction
+    ) -> () -> Void {
+        { openURL(url) }
     }
 
     var body: some View {
@@ -288,10 +313,16 @@ struct AmbientHUDView: View {
 
             AmbientVisualizer(presentation: presentation)
 
-            Text(presentation.mode.label)
-                .font(.headline.weight(.semibold))
-                .foregroundStyle(presentation.mode.tint)
-                .accessibilityHidden(true)
+            VStack(spacing: 8) {
+                Text(presentation.mode.label)
+                    .font(.headline.weight(.semibold))
+                    .foregroundStyle(presentation.mode.tint)
+                    .accessibilityHidden(true)
+
+                if let failureMessage = presentation.failureMessage {
+                    failureNotice(message: failureMessage)
+                }
+            }
 
             Spacer(minLength: 20)
 
@@ -315,6 +346,31 @@ struct AmbientHUDView: View {
             .ignoresSafeArea()
         }
         .accessibilityElement(children: .contain)
+    }
+
+    private func failureNotice(message: String) -> some View {
+        VStack(spacing: 8) {
+            Text(message)
+                .font(.footnote)
+                .foregroundStyle(.secondary)
+                .multilineTextAlignment(.center)
+                .accessibilityIdentifier("voice-failure-message")
+
+            if let recoveryURL = Self.settingsRecoveryURL(
+                for: presentation,
+                suppliedURL: settingsURL
+            ) {
+                Button(
+                    "Open Settings",
+                    action: Self.openSettingsAction(url: recoveryURL, openURL: openURL)
+                )
+                .font(.footnote.weight(.semibold))
+                .relayGlassButtonStyle()
+                .accessibilityIdentifier("open-settings-button")
+            }
+        }
+        .frame(maxWidth: 360)
+        .padding(.horizontal, 12)
     }
 
     /// A turn that was in flight when the transport died is never replayed
