@@ -32,6 +32,44 @@ enum ConnectionState: Equatable, Sendable {
     }
 }
 
+enum VoiceFailureAction: Equatable, Sendable {
+    case openSettings
+}
+
+enum VoiceFailure: Equatable, Sendable {
+    case message(String)
+    case permission(SpeechAuthorization)
+
+    var message: String {
+        switch self {
+        case .message(let message):
+            return message
+        case .permission(let authorization):
+            switch authorization {
+            case .microphoneDenied:
+                return "Microphone access is denied. Allow microphone and speech recognition access in Settings."
+            case .speechDenied:
+                return "Speech recognition access is denied. Allow speech recognition access in Settings."
+            case .restricted:
+                return "Speech recognition is restricted on this device. Check Screen Time or device management settings."
+            case .notDetermined:
+                return "Microphone and speech recognition access is required for voice turns."
+            case .authorized:
+                return ""
+            }
+        }
+    }
+
+    var action: VoiceFailureAction? {
+        switch self {
+        case .message:
+            return nil
+        case .permission:
+            return .openSettings
+        }
+    }
+}
+
 enum VoiceState: Equatable, Sendable {
     case idle
     case listening
@@ -41,7 +79,16 @@ enum VoiceState: Equatable, Sendable {
     case buffering
     case complete
     case interrupted
-    case failed(String)
+    case failed(VoiceFailure)
+
+    static func failed(_ message: String) -> VoiceState {
+        .failed(.message(message))
+    }
+
+    var failure: VoiceFailure? {
+        guard case .failed(let failure) = self else { return nil }
+        return failure
+    }
 
     var label: String {
         switch self {
@@ -61,8 +108,8 @@ enum VoiceState: Equatable, Sendable {
             return "Complete"
         case .interrupted:
             return "Interrupted"
-        case .failed(let message):
-            return message
+        case .failed(let failure):
+            return failure.message
         }
     }
 

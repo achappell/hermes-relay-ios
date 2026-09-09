@@ -449,7 +449,7 @@ final class VoiceSessionCoordinatorTests: XCTestCase {
 
         XCTAssertEqual(
             coordinator.state,
-            .failed("Microphone access is denied. Allow microphone and speech recognition access in Settings.")
+            .failed(.permission(.microphoneDenied))
         )
     }
 
@@ -467,7 +467,7 @@ final class VoiceSessionCoordinatorTests: XCTestCase {
 
         XCTAssertEqual(
             coordinator.state,
-            .failed("Speech recognition access is denied. Allow speech recognition access in Settings.")
+            .failed(.permission(.speechDenied))
         )
     }
 

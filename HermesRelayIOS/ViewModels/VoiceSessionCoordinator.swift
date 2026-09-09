@@ -177,7 +177,7 @@ final class VoiceSessionCoordinator {
             switch failure {
             case .permission(let authorization):
                 captureBinding = nil
-                state = .failed(permissionMessage(for: authorization))
+                state = .failed(.permission(authorization))
             case .input(let error):
                 captureBinding = nil
                 state = .failed(error.localizedDescription)
@@ -771,20 +771,6 @@ final class VoiceSessionCoordinator {
         return Double(byteCount / bytesPerFrame) / Double(format.sampleRate)
     }
 
-    private func permissionMessage(for authorization: SpeechAuthorization) -> String {
-        switch authorization {
-        case .microphoneDenied:
-            return "Microphone access is denied. Allow microphone and speech recognition access in Settings."
-        case .speechDenied:
-            return "Speech recognition access is denied. Allow speech recognition access in Settings."
-        case .restricted:
-            return "Speech recognition is restricted on this device. Check Screen Time or device management settings."
-        case .notDetermined:
-            return "Microphone and speech recognition access is required for voice turns."
-        case .authorized:
-            return ""
-        }
-    }
 }
 
 private enum CaptureStartFailure: Sendable {

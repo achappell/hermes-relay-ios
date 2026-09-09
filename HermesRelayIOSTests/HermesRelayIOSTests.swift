@@ -122,6 +122,27 @@ final class HermesRelayIOSTests: XCTestCase {
         }
     }
 
+    func testPermissionFailureKeepsActionableSettingsPresentation() {
+        let message = "Microphone access is denied. Allow microphone and speech recognition access in Settings."
+        let presentation = AmbientHUDPresentation(
+            voiceState: .failed(.permission(.microphoneDenied)),
+            activity: .safe,
+            provisionalText: "",
+            messages: []
+        )
+
+        XCTAssertEqual(presentation.failureMessage, message)
+        XCTAssertEqual(presentation.failureAction, .openSettings)
+    }
+
+    func testVoiceControlRemainsVisibleForActiveResponseWhenComposerWasFocused() {
+        XCTAssertTrue(VoiceControlInteractionPolicy.isVisible(isComposerFocused: true, state: .thinking))
+        XCTAssertTrue(VoiceControlInteractionPolicy.isVisible(isComposerFocused: true, state: .buffering))
+        XCTAssertTrue(VoiceControlInteractionPolicy.isVisible(isComposerFocused: true, state: .speaking))
+        XCTAssertFalse(VoiceControlInteractionPolicy.isVisible(isComposerFocused: true, state: .idle))
+        XCTAssertTrue(VoiceControlInteractionPolicy.isVisible(isComposerFocused: false, state: .idle))
+    }
+
     func testCompletePresentationIsSettledAndKeepsHermesText() {
         let presentation = AmbientHUDPresentation(
             voiceState: .complete,
