@@ -101,6 +101,16 @@ struct SessionMetadata: Equatable, Sendable {
     }
 }
 
+/// The verified connection identity that owns a user-initiated turn.
+///
+/// A session ID is always required. The profile ID is optional so injected
+/// clients used by previews and deterministic tests can still participate in
+/// the same binding rule without inventing configuration state.
+struct HermesTurnBinding: Equatable, Sendable {
+    let profileID: UUID?
+    let sessionID: String
+}
+
 struct AudioFormat: Equatable, Sendable {
     let sampleRate: Int
     let channels: Int

@@ -201,6 +201,7 @@ struct AmbientHUDView: View {
     let presentation: AmbientHUDPresentation
     let connectionState: ConnectionState
     let sessionStartedAt: Date?
+    let profileName: String?
     let transcriptMessages: [TranscriptMessage]
     let provisionalText: String
     let isResponseActive: Bool
@@ -217,6 +218,50 @@ struct AmbientHUDView: View {
     let onConfigure: () -> Void
     let onConnect: () -> Void
     let onShowHistory: () -> Void
+
+    init(
+        presentation: AmbientHUDPresentation,
+        connectionState: ConnectionState,
+        sessionStartedAt: Date?,
+        profileName: String? = nil,
+        transcriptMessages: [TranscriptMessage],
+        provisionalText: String,
+        isResponseActive: Bool,
+        activeAssistantID: UUID?,
+        voiceCoordinator: VoiceSessionCoordinator?,
+        speechTimings: [SpeechTiming],
+        playbackDuration: TimeInterval?,
+        playbackPosition: TimeInterval?,
+        isPlaybackDurationFinal: Bool,
+        hasTranscript: Bool,
+        canConfigure: Bool,
+        unconfirmedTurnText: String?,
+        onResendUnconfirmedTurn: @escaping () -> Void,
+        onConfigure: @escaping () -> Void,
+        onConnect: @escaping () -> Void,
+        onShowHistory: @escaping () -> Void
+    ) {
+        self.presentation = presentation
+        self.connectionState = connectionState
+        self.sessionStartedAt = sessionStartedAt
+        self.profileName = profileName
+        self.transcriptMessages = transcriptMessages
+        self.provisionalText = provisionalText
+        self.isResponseActive = isResponseActive
+        self.activeAssistantID = activeAssistantID
+        self.voiceCoordinator = voiceCoordinator
+        self.speechTimings = speechTimings
+        self.playbackDuration = playbackDuration
+        self.playbackPosition = playbackPosition
+        self.isPlaybackDurationFinal = isPlaybackDurationFinal
+        self.hasTranscript = hasTranscript
+        self.canConfigure = canConfigure
+        self.unconfirmedTurnText = unconfirmedTurnText
+        self.onResendUnconfirmedTurn = onResendUnconfirmedTurn
+        self.onConfigure = onConfigure
+        self.onConnect = onConnect
+        self.onShowHistory = onShowHistory
+    }
 
     private var liveProvisionalText: String {
         voiceCoordinator?.provisionalText ?? provisionalText
@@ -304,9 +349,9 @@ struct AmbientHUDView: View {
                     .frame(width: 8, height: 8)
 
                 VStack(alignment: .leading, spacing: 2) {
-                    Text("Hermes Relay")
+                    Text(profileName ?? "No Profile selected")
                         .font(.subheadline.weight(.semibold))
-                    Text("\(connectionState.label) · \(SessionDurationFormatter.string(startedAt: sessionStartedAt, now: context.date))")
+                    Text("Hermes Profile · \(connectionState.label) · \(SessionDurationFormatter.string(startedAt: sessionStartedAt, now: context.date))")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
@@ -334,7 +379,7 @@ struct AmbientHUDView: View {
             .relayGlass(cornerRadius: 20)
             .accessibilityElement(children: .combine)
             .accessibilityLabel(
-                "Hermes Relay, \(connectionState.label), session duration \(SessionDurationFormatter.string(startedAt: sessionStartedAt, now: context.date))"
+                "Hermes Profile \(profileName ?? "not selected"), \(connectionState.label), session duration \(SessionDurationFormatter.string(startedAt: sessionStartedAt, now: context.date))"
             )
         }
     }
