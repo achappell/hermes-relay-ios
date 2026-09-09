@@ -34,6 +34,8 @@ barge-in is permitted only on an echo-safe headphone route.
       actual recognizer termination restarts monitoring without submission.
 - [x] A non-empty recognition update can wake capture if the audio-level gate has
       not crossed its speech threshold.
+- [x] The silence endpoint tolerates a one-second conversational pause before
+      ending the capture.
 - [x] The armed waiting state presents "Listening for speech" instead of the
       idle "Ready" label.
 - [x] Disarming cancels active capture, clears provisional text, and releases

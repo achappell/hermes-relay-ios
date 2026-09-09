@@ -115,7 +115,7 @@ final class VoiceSessionCoordinator {
         recognitionFinishTimeoutNanoseconds: UInt64 = 2_000_000_000,
         handsFreeInput: (any HandsFreeInput)? = nil,
         routeSafetyProvider: any HandsFreeAudioRouteSafetyProvider = SystemHandsFreeAudioRouteSafetyProvider(),
-        handsFreeSilenceDurationNanoseconds: UInt64 = 700_000_000
+        handsFreeSilenceDurationNanoseconds: UInt64 = 1_500_000_000
     ) {
         self.store = store
         self.input = input
