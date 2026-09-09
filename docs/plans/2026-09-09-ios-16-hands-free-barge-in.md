@@ -3,10 +3,10 @@
 ## Outcome
 
 The iOS client can be explicitly armed for hands-free conversation without
-opening the microphone at launch. Speech activity starts one local capture,
-silence ends it, and the existing verified Hermes turn path submits at most one
-turn for that capture. While Hermes responds, automatic barge-in is permitted
-only on an echo-safe headphone route.
+opening the microphone at launch. Speech activity or a recognized speech update
+starts one local capture, silence ends it, and the existing verified Hermes turn
+path submits at most one turn for that capture. While Hermes responds, automatic
+barge-in is permitted only on an echo-safe headphone route.
 
 ## Boundaries
 
@@ -32,6 +32,8 @@ only on an echo-safe headphone route.
       mode remains armed.
 - [x] Quiet monitoring stays active without proactively cycling the microphone;
       actual recognizer termination restarts monitoring without submission.
+- [x] A non-empty recognition update can wake capture if the audio-level gate has
+      not crossed its speech threshold.
 - [x] The armed waiting state presents "Listening for speech" instead of the
       idle "Ready" label.
 - [x] Disarming cancels active capture, clears provisional text, and releases

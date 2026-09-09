@@ -1546,6 +1546,32 @@ final class VoiceSessionCoordinatorTests: XCTestCase {
     }
 
     @MainActor
+    func testHandsFreeRecognitionWakesCaptureWhenActivityGateMissesSpeech() async {
+        let handsFreeInput = CoordinatorHandsFreeInput()
+        let client = CoordinatorHermesSessionClient()
+        let store = await connectedStore(client)
+        let coordinator = VoiceSessionCoordinator(
+            store: store,
+            input: CoordinatorSpeechInput(),
+            output: CoordinatorAudioOutput(),
+            handsFreeInput: handsFreeInput,
+            handsFreeSilenceDurationNanoseconds: 1_000_000_000
+        )
+
+        await coordinator.toggleHandsFree()
+        await handsFreeInput.emit(
+            .recognition(SpeechRecognitionUpdate(text: "Hello Hermes", isFinal: false))
+        )
+        for _ in 0..<20 { await Task.yield() }
+
+        XCTAssertTrue(coordinator.isHandsFreeCaptureActive)
+        XCTAssertEqual(coordinator.state, .listening)
+        XCTAssertEqual(coordinator.provisionalText, "Hello Hermes")
+
+        await coordinator.disableHandsFree()
+    }
+
+    @MainActor
     func testHandsFreePermissionFailureNamesTheRequiredAction() async {
         let handsFreeInput = CoordinatorHandsFreeInput(authorization: .microphoneDenied)
         let client = CoordinatorHermesSessionClient()

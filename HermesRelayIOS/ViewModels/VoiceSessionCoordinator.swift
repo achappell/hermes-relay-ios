@@ -262,22 +262,7 @@ final class VoiceSessionCoordinator {
             if snapshot.microphoneActivity == .speech {
                 handsFreeSilenceTask?.cancel()
                 handsFreeSilenceTask = nil
-
-                if state.isResponseActive {
-                    let route = state.isOutputActive
-                        ? await routeSafetyProvider.currentSafety()
-                        : .echoSafe
-                    guard isHandsFreeArmed else { return }
-                    guard HandsFreeBargeInPolicy.shouldInterrupt(state: state, route: route) else {
-                        handsFreeStatus = .blockedByAudioRoute
-                        return
-                    }
-                    guard await interruptActiveTurn() else { return }
-                }
-
-                if !isHandsFreeCaptureActive {
-                    beginHandsFreeCapture()
-                }
+                _ = await startHandsFreeCaptureIfNeeded()
             } else if isHandsFreeCaptureActive {
                 scheduleHandsFreeSilence()
             } else if handsFreeStatus == .blockedByAudioRoute,
@@ -286,13 +271,33 @@ final class VoiceSessionCoordinator {
             }
 
         case .recognition(let update):
-            guard isHandsFreeCaptureActive else { return }
             guard !update.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
+            guard await startHandsFreeCaptureIfNeeded() else { return }
             provisionalText = update.text
             if update.isFinal {
                 handsFreeFinalText = update.text
             }
         }
+    }
+
+    private func startHandsFreeCaptureIfNeeded() async -> Bool {
+        guard isHandsFreeArmed else { return false }
+        if state.isResponseActive, !isHandsFreeCaptureActive {
+            let route = state.isOutputActive
+                ? await routeSafetyProvider.currentSafety()
+                : .echoSafe
+            guard isHandsFreeArmed else { return false }
+            guard HandsFreeBargeInPolicy.shouldInterrupt(state: state, route: route) else {
+                handsFreeStatus = .blockedByAudioRoute
+                return false
+            }
+            guard await interruptActiveTurn() else { return false }
+        }
+
+        if !isHandsFreeCaptureActive {
+            beginHandsFreeCapture()
+        }
+        return isHandsFreeCaptureActive
     }
 
     private func beginHandsFreeCapture() {
