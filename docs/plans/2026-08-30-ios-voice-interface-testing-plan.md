@@ -1,5 +1,10 @@
 # iOS Voice Interface Testing Plan
 
+> For Epic 1 sign-off, run the physical-device checks in this document as
+> part of the single combined pass in
+> [`2026-09-09-epic-1-ios-device-validation-plan.md`](2026-09-09-epic-1-ios-device-validation-plan.md).
+> Do not track a separate device walkthrough for each story.
+
 This plan validates the native voice path without recording credentials,
 prompts, responses, microphone captures, PCM bytes, or other private content.
 Use a locally configured relay profile and Keychain token. Do not paste either

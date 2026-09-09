@@ -67,7 +67,7 @@ context:
 - `VoiceState.complete` is a stable presentation state reached only after `turnComplete` and all active PCM/file output have drained. Capture and response activity now derive from shared state predicates rather than view-local switches.
 - PCM and file-backed audio are tracked independently; a terminal turn event waits for either stream to finish. A non-empty `messageComplete.failureReason` stops playback, preserves the store-owned assistant text, and reports the failure without presenting Speaking.
 - The Hermes wire contract is unchanged. The URLSession transport now keeps a file-backed turn stream open when `turnComplete` precedes `audioFileEnd`; stale processing hints are ignored after output begins, and unknown or differently identified events remain content-safe and cannot mutate the active turn.
-- Local verification used the installed Xcode 26.5 SDK with signing disabled because the unsigned local test/app run lacks the Keychain entitlement. The simulator smoke launch therefore showed a content-safe Keychain entitlement diagnostic; it showed `Not connected` and `Ready`, and did not attempt a turn. A signed credentialed device walkthrough remains required for microphone, Keychain, and live playback behavior.
+- Local verification used the installed Xcode 26.5 SDK with signing disabled because the unsigned local test/app run lacks the Keychain entitlement. The simulator smoke launch therefore showed a content-safe Keychain entitlement diagnostic; it showed `Not connected` and `Ready`, and did not attempt a turn. The combined Epic 1 iOS device validation pass remains required for microphone, Keychain, speaker-route, and live playback behavior; see `docs/plans/2026-09-09-epic-1-ios-device-validation-plan.md`.
 
 ## Spec Change Log
 
@@ -84,7 +84,7 @@ context:
 - BH-09 — `medium`, `patch` — The file test's output completed immediately and did not prove the drain boundary; `StartGatedAudioOutput` now gates `finish`, and the test asserts `Speaking` before release and `Complete` afterward.
 - BH-10 — `medium`, `patch` — Existing turn-complete-only fixtures encoded a successful no-audio turn; they now expect playback-unavailable failure, and the explicit text-only test verifies the transcript remains visible.
 - BH-11 — `low`, `patch` — Local design and smoke documentation still described successful response completion as `idle`/`Ready`; both now document `Complete` and the playback-failure branch.
-- BH-12 — `medium`, `defer` — Validation on the available Xcode 26.5 SDK cannot establish the repository's Xcode 26.6-or-newer baseline; the environment limitation and required signed device rerun are recorded in `deferred-work.md`.
+- BH-12 — `medium`, `defer` — Validation on the available Xcode 26.5 SDK cannot establish the repository's Xcode 26.6-or-newer baseline; the environment limitation and combined Epic 1 device pass are recorded in `deferred-work.md`.
 - VG-01 — `medium`, `patch` — The prior late-event test covered `Speaking` only; a matching `Buffering` fixture now proves status/thinking hints cannot regress an output that has not reported readiness.
 - VG-02 — `medium`, `patch` — The failure test had no active output to stop; it now starts and appends audio, then asserts `stop` occurred and `finish` did not.
 - VG-03 — `medium`, `patch` — The file fixture did not gate playback drain, and the real URLSession client closed its stream at `turnComplete`; the fixture now gates `finish`, while transport completion is deferred until `audioFileEnd`.
