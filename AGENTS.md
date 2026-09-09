@@ -11,15 +11,37 @@ GitHub Project #3 is the task queue:
 
 https://github.com/users/achappell/projects/3/views/2
 
-IOS-01 is the current vertical slice. Keep one iOS slice active at a time and
-move it through `Inbox` → `Ready` → `Building` → `Verify` → `Done`. Keep the
-built-in status aligned: `Todo` for planned work, `In Progress` for active or
-verification work, and `Done` only after validation and merge.
+The board determines the active iOS slice; `IOS-01` is the completed
+foundation baseline. Keep one active slice per iOS workstream and move it
+through `Inbox` → `Ready` → `Building` → `Verify` → `Done`. The iOS and TUI
+repositories may have independent cards in `Building` at the same time;
+shared contract or protocol work remains a prerequisite when both clients
+depend on it. Keep the built-in status aligned: `Todo` for planned work,
+`In Progress` for active or verification work, and `Done` only after validation
+and merge.
 
 Every substantive change needs a project item with an outcome, acceptance
 criteria, UX expectation, and validation scenario. Record implementation and
 validation evidence on the item. Split follow-ups instead of expanding one
 slice into a grab bag.
+
+## Product planning authority
+
+Durable Hermes Home product intent and cross-repository reconciliation are
+canonical in the Personal Vault hub:
+
+`~/Documents/Vaults/Personal Vault/projects/hermes-home/hermes-home.md`
+
+Read the hub and its relevant source notes before using BMAD for a new slice.
+Use GitHub Project #3 for actionable scope, priority, ownership, dependencies,
+and workflow state. Use this repository's local BMAD runtime for delivery; do
+not copy `_bmad/` or tool configuration from `hermes-relay-tui`. Existing local
+architecture and workflow notes remain implementation context, not a second
+product PRD. See [`docs/bmad-upstream.md`](docs/bmad-upstream.md).
+
+Product or shared-behaviour decisions discovered during implementation flow
+back to the hub. `IOS-*` cards belong here; `TUI-*`/`HOME-*` cards belong in
+`hermes-relay-tui`.
 
 ## Product boundary
 

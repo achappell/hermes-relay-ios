@@ -19,3 +19,6 @@ Secrets.xcconfig
 # Local audio captures
 Recordings/
 Audio/
+
+# BMAD personal configuration
+_bmad/config.user.toml
