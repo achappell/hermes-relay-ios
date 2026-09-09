@@ -321,6 +321,42 @@ final class VoiceSessionCoordinatorTests: XCTestCase {
     }
 
     @MainActor
+    func testNewCaptureWaitsForPreviousSpeechFinishToComplete() async {
+        let input = NoSpeechBlockingFinishCoordinatorSpeechInput()
+        let client = CoordinatorHermesSessionClient()
+        let store = await connectedStore(client)
+        let coordinator = VoiceSessionCoordinator(
+            store: store,
+            input: input,
+            output: CoordinatorAudioOutput()
+        )
+
+        await coordinator.beginCapture()
+
+        let endTask = Task { @MainActor in
+            await coordinator.endCaptureAndSend()
+        }
+        await input.waitUntilFinishStarted()
+        await endTask.value
+
+        let beginTask = Task { @MainActor in
+            await coordinator.beginCapture()
+        }
+        try? await Task.sleep(nanoseconds: 100_000_000)
+
+        let startsBeforeRelease = await input.startCount()
+        XCTAssertEqual(startsBeforeRelease, 1)
+
+        await input.allowFinish()
+        await beginTask.value
+
+        let startsAfterRelease = await input.startCount()
+        XCTAssertEqual(startsAfterRelease, 2)
+        XCTAssertEqual(coordinator.state, .listening)
+        await coordinator.cancelCapture()
+    }
+
+    @MainActor
     func testCancelSubmitsNothingAndPreservesTheDraft() async {
         let input = CoordinatorSpeechInput()
         let output = CoordinatorAudioOutput()
@@ -407,6 +443,34 @@ final class VoiceSessionCoordinatorTests: XCTestCase {
     }
 
     @MainActor
+    func testUnexpectedNoSpeechResetsCaptureAndAllowsRetryWithoutSendingPartialText() async {
+        let input = CoordinatorSpeechInput()
+        let client = CoordinatorHermesSessionClient()
+        let store = await connectedStore(client)
+        let coordinator = VoiceSessionCoordinator(
+            store: store,
+            input: input,
+            output: CoordinatorAudioOutput()
+        )
+
+        await coordinator.beginCapture()
+        await input.emit(SpeechRecognitionUpdate(text: "Partial phrase", isFinal: false))
+        await input.emitError(.noSpeech)
+        for _ in 0..<3 { await Task.yield() }
+
+        XCTAssertEqual(coordinator.state, .idle)
+        XCTAssertEqual(coordinator.provisionalText, "")
+        XCTAssertEqual(client.sentTurns, [])
+
+        await coordinator.beginCapture()
+
+        let startCount = await input.startCount()
+        XCTAssertEqual(startCount, 2)
+        XCTAssertEqual(coordinator.state, .listening)
+        await coordinator.cancelCapture()
+    }
+
+    @MainActor
     func testCancelDuringCaptureStartDoesNotEnterListening() async {
         let input = DelayedStartCoordinatorSpeechInput(
             finalUpdate: SpeechRecognitionUpdate(text: "Do not send this", isFinal: true)
@@ -468,6 +532,24 @@ final class VoiceSessionCoordinatorTests: XCTestCase {
         XCTAssertEqual(
             coordinator.state,
             .failed(.permission(.speechDenied))
+        )
+    }
+
+    @MainActor
+    func testPermissionRevokedDuringStartPreservesSettingsRecovery() async {
+        let input = AuthorizationRaceCoordinatorSpeechInput()
+        let store = await connectedStore(CoordinatorHermesSessionClient())
+        let coordinator = VoiceSessionCoordinator(
+            store: store,
+            input: input,
+            output: CoordinatorAudioOutput()
+        )
+
+        await coordinator.beginCapture()
+
+        XCTAssertEqual(
+            coordinator.state,
+            .failed(.permission(.microphoneDenied))
         )
     }
 
@@ -1401,6 +1483,11 @@ private actor CoordinatorSpeechInput: SpeechInput {
     func emit(_ update: SpeechRecognitionUpdate) {
         continuation?.yield(update)
     }
+
+    func emitError(_ error: SpeechInputError) {
+        continuation?.finish(throwing: error)
+        continuation = nil
+    }
 }
 
 private actor FailingAfterPartialCoordinatorSpeechInput: SpeechInput {
@@ -1563,6 +1650,88 @@ private actor BlockingFinishCoordinatorSpeechInput: SpeechInput {
         continuation?.finish(throwing: SpeechInputError.cancelled)
         continuation = nil
     }
+}
+
+private actor NoSpeechBlockingFinishCoordinatorSpeechInput: SpeechInput {
+    private var continuation: AsyncThrowingStream<SpeechRecognitionUpdate, Error>.Continuation?
+    private var finishStarted = false
+    private var finishStartWaiters: [CheckedContinuation<Void, Never>] = []
+    private var finishReleaseWaiter: CheckedContinuation<Void, Never>?
+    private var starts = 0
+
+    func authorization() async -> SpeechAuthorization { .authorized }
+
+    func requestAuthorization() async -> SpeechAuthorization { .authorized }
+
+    func start() async throws -> AsyncThrowingStream<SpeechRecognitionUpdate, Error> {
+        starts += 1
+        let (stream, continuation) = AsyncThrowingStream<SpeechRecognitionUpdate, Error>.makeStream()
+        self.continuation = continuation
+        return stream
+    }
+
+    func startCount() -> Int {
+        starts
+    }
+
+    func waitUntilFinishStarted() async {
+        if finishStarted { return }
+        await withCheckedContinuation { continuation in
+            finishStartWaiters.append(continuation)
+        }
+    }
+
+    func finish() async {
+        finishStarted = true
+        for waiter in finishStartWaiters {
+            waiter.resume()
+        }
+        finishStartWaiters.removeAll()
+        continuation?.finish(throwing: SpeechInputError.noSpeech)
+        continuation = nil
+
+        await withCheckedContinuation { continuation in
+            finishReleaseWaiter = continuation
+        }
+    }
+
+    func allowFinish() {
+        finishReleaseWaiter?.resume()
+        finishReleaseWaiter = nil
+    }
+
+    func cancel() async {
+        finishReleaseWaiter?.resume()
+        finishReleaseWaiter = nil
+        continuation?.finish(throwing: SpeechInputError.cancelled)
+        continuation = nil
+    }
+}
+
+private actor AuthorizationRaceCoordinatorSpeechInput: SpeechInput {
+    private var authorizationResults: [SpeechAuthorization] = [
+        .authorized,
+        .microphoneDenied,
+    ]
+
+    func authorization() async -> SpeechAuthorization {
+        if authorizationResults.count > 1 {
+            return authorizationResults.removeFirst()
+        }
+        return authorizationResults[0]
+    }
+
+    func requestAuthorization() async -> SpeechAuthorization {
+        .microphoneDenied
+    }
+
+    func start() async throws -> AsyncThrowingStream<SpeechRecognitionUpdate, Error> {
+        throw SpeechInputError.notAuthorized
+    }
+
+    func finish() async {}
+
+    func cancel() async {}
 }
 
 @MainActor

@@ -142,6 +142,22 @@ actor AppleSpeechInput: SpeechInput {
         }
     }
 
+    #if DEBUG
+    func makeTestingRecognitionStream() -> AsyncThrowingStream<SpeechRecognitionUpdate, Error> {
+        let (stream, continuation) = AsyncThrowingStream<SpeechRecognitionUpdate, Error>.makeStream()
+        activeContinuation = continuation
+        return stream
+    }
+
+    func handleRecognitionForTesting(
+        text: String?,
+        isFinal: Bool,
+        error: SpeechInputError?
+    ) async {
+        await handleRecognition(text: text, isFinal: isFinal, error: error)
+    }
+    #endif
+
     private func handleRecognition(
         text: String?,
         isFinal: Bool,

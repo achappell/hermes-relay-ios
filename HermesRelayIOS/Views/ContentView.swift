@@ -67,6 +67,16 @@ struct ContentView: View {
         #endif
     }
 
+    static func shouldShowVoiceInterface(
+        isComposerFocused: Bool,
+        state: VoiceState
+    ) -> Bool {
+        VoiceControlInteractionPolicy.isVisible(
+            isComposerFocused: isComposerFocused,
+            state: state
+        )
+    }
+
     var body: some View {
         NavigationStack {
             ambientHUD
@@ -268,7 +278,7 @@ struct ContentView: View {
 
     private var bottomControls: some View {
         VStack(spacing: 0) {
-            if VoiceControlInteractionPolicy.isVisible(
+            if Self.shouldShowVoiceInterface(
                 isComposerFocused: focusedField != nil,
                 state: voiceCoordinator.state
             ) {

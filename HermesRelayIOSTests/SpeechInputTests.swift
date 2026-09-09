@@ -109,6 +109,28 @@ final class SpeechInputTests: XCTestCase {
         )
     }
 
+    func testAppleSpeechNoSpeechFinishesStreamAndReportsMicrophoneEnded() async throws {
+        let activityStore = AudioActivityStore()
+        let input = AppleSpeechInput(activityReporter: activityStore)
+        let stream = await input.makeTestingRecognitionStream()
+
+        await input.handleRecognitionForTesting(
+            text: nil,
+            isFinal: false,
+            error: .noSpeech
+        )
+
+        do {
+            _ = try await collect(stream)
+            XCTFail("No-speech recognition must terminate the stream with its typed error")
+        } catch let error as SpeechInputError {
+            XCTAssertEqual(error, .noSpeech)
+        }
+
+        let snapshot = await activityStore.currentSnapshot()
+        XCTAssertEqual(snapshot.microphoneActivity, .silence)
+    }
+
     private func collect(
         _ stream: AsyncThrowingStream<SpeechRecognitionUpdate, Error>
     ) async throws -> [SpeechRecognitionUpdate] {

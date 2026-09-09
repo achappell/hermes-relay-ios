@@ -284,6 +284,23 @@ struct AmbientHUDView: View {
         voiceCoordinator?.provisionalText ?? provisionalText
     }
 
+    @MainActor
+    static func settingsRecoveryURL(
+        for presentation: AmbientHUDPresentation,
+        suppliedURL: URL?
+    ) -> URL? {
+        guard presentation.failureAction == .openSettings else { return nil }
+        return suppliedURL
+    }
+
+    @MainActor
+    static func openSettingsAction(
+        url: URL,
+        openURL: OpenURLAction
+    ) -> () -> Void {
+        { openURL(url) }
+    }
+
     var body: some View {
         VStack(spacing: 0) {
             sessionHeader
@@ -339,11 +356,14 @@ struct AmbientHUDView: View {
                 .multilineTextAlignment(.center)
                 .accessibilityIdentifier("voice-failure-message")
 
-            if let settingsURL,
-               presentation.failureAction == .openSettings {
-                Button("Open Settings") {
-                    openURL(settingsURL)
-                }
+            if let recoveryURL = Self.settingsRecoveryURL(
+                for: presentation,
+                suppliedURL: settingsURL
+            ) {
+                Button(
+                    "Open Settings",
+                    action: Self.openSettingsAction(url: recoveryURL, openURL: openURL)
+                )
                 .font(.footnote.weight(.semibold))
                 .relayGlassButtonStyle()
                 .accessibilityIdentifier("open-settings-button")

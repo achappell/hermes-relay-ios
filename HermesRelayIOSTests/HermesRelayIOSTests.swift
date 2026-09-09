@@ -1,4 +1,5 @@
 import XCTest
+import SwiftUI
 @testable import HermesRelayIOS
 
 final class HermesRelayIOSTests: XCTestCase {
@@ -135,12 +136,87 @@ final class HermesRelayIOSTests: XCTestCase {
         XCTAssertEqual(presentation.failureAction, .openSettings)
     }
 
+    @MainActor
+    func testAmbientHUDSettingsRecoveryActionUsesSuppliedURL() {
+        let presentation = AmbientHUDPresentation(
+            voiceState: .failed(.permission(.microphoneDenied)),
+            activity: .safe,
+            provisionalText: "",
+            messages: []
+        )
+        let settingsURL = URL(string: "app-settings:")!
+
+        XCTAssertEqual(
+            AmbientHUDView.settingsRecoveryURL(
+                for: presentation,
+                suppliedURL: settingsURL
+            ),
+            settingsURL
+        )
+
+        let recorder = OpenURLRecorder()
+        let openURL = OpenURLAction { url in
+            recorder.openedURL = url
+            return .handled
+        }
+        let action = AmbientHUDView.openSettingsAction(
+            url: settingsURL,
+            openURL: openURL
+        )
+        action()
+
+        XCTAssertEqual(recorder.openedURL, settingsURL)
+        XCTAssertNil(
+            AmbientHUDView.settingsRecoveryURL(
+                for: presentation,
+                suppliedURL: nil
+            )
+        )
+
+        let messagePresentation = AmbientHUDPresentation(
+            voiceState: .failed("Capture failed"),
+            activity: .safe,
+            provisionalText: "",
+            messages: []
+        )
+        XCTAssertNil(
+            AmbientHUDView.settingsRecoveryURL(
+                for: messagePresentation,
+                suppliedURL: settingsURL
+            )
+        )
+    }
+
     func testVoiceControlRemainsVisibleForActiveResponseWhenComposerWasFocused() {
         XCTAssertTrue(VoiceControlInteractionPolicy.isVisible(isComposerFocused: true, state: .thinking))
         XCTAssertTrue(VoiceControlInteractionPolicy.isVisible(isComposerFocused: true, state: .buffering))
         XCTAssertTrue(VoiceControlInteractionPolicy.isVisible(isComposerFocused: true, state: .speaking))
+        XCTAssertTrue(VoiceControlInteractionPolicy.isVisible(isComposerFocused: true, state: .listening))
+        XCTAssertTrue(VoiceControlInteractionPolicy.isVisible(isComposerFocused: true, state: .transcribing))
         XCTAssertFalse(VoiceControlInteractionPolicy.isVisible(isComposerFocused: true, state: .idle))
         XCTAssertTrue(VoiceControlInteractionPolicy.isVisible(isComposerFocused: false, state: .idle))
+    }
+
+    @MainActor
+    func testContentViewKeepsVoiceInterfaceVisibleDuringFocusedCapture() {
+        XCTAssertTrue(
+            ContentView.shouldShowVoiceInterface(
+                isComposerFocused: true,
+                state: .listening
+            )
+        )
+        XCTAssertTrue(
+            ContentView.shouldShowVoiceInterface(
+                isComposerFocused: true,
+                state: .transcribing
+            )
+        )
+        XCTAssertFalse(
+            ContentView.shouldShowVoiceInterface(
+                isComposerFocused: true,
+                state: .idle
+            )
+        )
     }
 
     func testCompletePresentationIsSettledAndKeepsHermesText() {
@@ -1012,4 +1088,8 @@ final class HermesRelayIOSTests: XCTestCase {
             )
         )
     }
+}
+
+private final class OpenURLRecorder: @unchecked Sendable {
+    var openedURL: URL?
 }
