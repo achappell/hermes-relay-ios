@@ -156,8 +156,7 @@ protocol AudioActivityReporter: Sendable {
 actor AudioActivityStore: AudioActivityReporter {
     private let classifier: AudioActivityClassifier
     private let minimumEmissionIntervalNanoseconds: UInt64
-    private let stream: AsyncStream<AudioActivitySnapshot>
-    private let continuation: AsyncStream<AudioActivitySnapshot>.Continuation
+    private var snapshotContinuations: [UUID: AsyncStream<AudioActivitySnapshot>.Continuation] = [:]
 
     private var snapshot = AudioActivitySnapshot.safe
     private var lastEmissionAt: UInt64?
@@ -171,16 +170,25 @@ actor AudioActivityStore: AudioActivityReporter {
     ) {
         self.classifier = classifier
         self.minimumEmissionIntervalNanoseconds = minimumEmissionIntervalNanoseconds
-        let (stream, continuation) = AsyncStream<AudioActivitySnapshot>.makeStream(
-            bufferingPolicy: .bufferingNewest(1)
-        )
-        self.stream = stream
-        self.continuation = continuation
-        continuation.yield(.safe)
     }
 
     func snapshots() -> AsyncStream<AudioActivitySnapshot> {
-        stream
+        let subscriberID = UUID()
+        let (stream, continuation) = AsyncStream<AudioActivitySnapshot>.makeStream(
+            bufferingPolicy: .bufferingNewest(1)
+        )
+        snapshotContinuations[subscriberID] = continuation
+        continuation.onTermination = { [weak self] _ in
+            Task {
+                await self?.removeSnapshotSubscriber(subscriberID)
+            }
+        }
+        continuation.yield(snapshot)
+        return stream
+    }
+
+    private func removeSnapshotSubscriber(_ subscriberID: UUID) {
+        snapshotContinuations.removeValue(forKey: subscriberID)
     }
 
     func currentSnapshot() -> AudioActivitySnapshot {
@@ -243,7 +251,9 @@ actor AudioActivityStore: AudioActivityReporter {
         guard stateChanged || intervalElapsed else { return nil }
 
         lastEmissionAt = timestampNanoseconds
-        continuation.yield(snapshot)
+        for continuation in snapshotContinuations.values {
+            continuation.yield(snapshot)
+        }
         return snapshot
     }
 

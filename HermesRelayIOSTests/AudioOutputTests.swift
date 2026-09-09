@@ -308,6 +308,23 @@ final class AudioOutputTests: XCTestCase {
         XCTAssertEqual(current, emitted)
     }
 
+    func testAudioActivityStoreBroadcastsSnapshotsToEachSubscriber() async {
+        let store = AudioActivityStore(minimumEmissionIntervalNanoseconds: 0)
+        let first = AudioActivitySnapshotReader(await store.snapshots())
+        let second = AudioActivitySnapshotReader(await store.snapshots())
+
+        let firstInitial = await nextSnapshot(from: first)
+        let secondInitial = await nextSnapshot(from: second)
+        XCTAssertEqual(firstInitial, .safe)
+        XCTAssertEqual(secondInitial, .safe)
+
+        let emitted = await store.ingest(.microphone(level: 0.12), at: 0)
+        let firstUpdate = await nextSnapshot(from: first)
+        let secondUpdate = await nextSnapshot(from: second)
+        XCTAssertEqual(firstUpdate, emitted)
+        XCTAssertEqual(secondUpdate, emitted)
+    }
+
     func testActivityReportingOutputPublishesPlaybackLevelsAndSafeEnd() async throws {
         let reporter = RecordingAudioActivityReporter()
         let output = AudioActivityReportingOutput(
@@ -339,6 +356,36 @@ final class AudioOutputTests: XCTestCase {
             | UInt32(data[offset + 1]) << 8
             | UInt32(data[offset + 2]) << 16
             | UInt32(data[offset + 3]) << 24
+    }
+
+    private func nextSnapshot(
+        from reader: AudioActivitySnapshotReader,
+        timeoutNanoseconds: UInt64 = 250_000_000
+    ) async -> AudioActivitySnapshot? {
+        await withTaskGroup(of: AudioActivitySnapshot?.self) { group in
+            group.addTask {
+                await reader.next()
+            }
+            group.addTask {
+                try? await Task.sleep(nanoseconds: timeoutNanoseconds)
+                return nil
+            }
+            let result = await group.next() ?? nil
+            group.cancelAll()
+            return result
+        }
+    }
+}
+
+private final class AudioActivitySnapshotReader: @unchecked Sendable {
+    private var iterator: AsyncStream<AudioActivitySnapshot>.Iterator
+
+    init(_ stream: AsyncStream<AudioActivitySnapshot>) {
+        iterator = stream.makeAsyncIterator()
+    }
+
+    func next() async -> AudioActivitySnapshot? {
+        await iterator.next()
     }
 }
 
