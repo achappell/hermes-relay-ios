@@ -30,8 +30,9 @@ The current voice slice provides:
 - Content-safe microphone and inbound-playback activity signals with normalized
   levels, silence/noise/speech classification, throttling, and explicit safe
   unavailable states. On iOS, the user may explicitly arm hands-free mode;
-  speech boundaries submit one turn at a time and never wake the microphone at
-  launch.
+  speech boundaries submit one turn at a time and never arm at launch;
+  background noise cannot end an active capture, and Hermes playback cannot
+  wake a follow-up turn.
 - Server-confirmed interruption for relays that advertise the `interrupt`
   capability. The voice control sends one protocol-v1 interrupt for the active
   turn, stops queued playback on `audio_abort`, and waits for

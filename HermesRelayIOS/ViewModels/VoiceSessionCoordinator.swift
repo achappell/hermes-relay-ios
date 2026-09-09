@@ -103,6 +103,10 @@ final class VoiceSessionCoordinator {
     private var handsFreeCaptureGeneration: UInt64 = 0
     private var handsFreeFinalText: String?
     private var isFinishingHandsFreeInput = false
+    // A response can remain in Speech.framework's recognition stream after
+    // playback ends. A fresh activity event may establish the next turn on
+    // any route; recognition-only wake after a response requires headphones.
+    private var handsFreeWakeSuppressed = false
     // Event handlers may outlive a cancelled response task, so every response
     // is allowed to mutate state only while its generation is current.
     private var responseGeneration: UInt64 = 0
@@ -144,6 +148,7 @@ final class VoiceSessionCoordinator {
         handsFreeSilenceTask?.cancel()
         handsFreeSilenceTask = nil
         handsFreeFinalText = nil
+        handsFreeWakeSuppressed = false
         isFinishingHandsFreeInput = true
 
         if let handsFreeInput {
@@ -195,6 +200,7 @@ final class VoiceSessionCoordinator {
             handsFreeStatus = .armed
             isHandsFreeCaptureActive = false
             handsFreeFinalText = nil
+            handsFreeWakeSuppressed = false
             startHandsFreeStream(stream)
         } catch let error as SpeechInputError {
             if error == .notAuthorized {
@@ -262,17 +268,36 @@ final class VoiceSessionCoordinator {
             if snapshot.microphoneActivity == .speech {
                 handsFreeSilenceTask?.cancel()
                 handsFreeSilenceTask = nil
+                // Activity is a fresh wake signal, including after a
+                // response. The route check inside the helper protects
+                // automatic barge-in while output is still active.
                 _ = await startHandsFreeCaptureIfNeeded()
-            } else if isHandsFreeCaptureActive {
-                scheduleHandsFreeSilence()
-            } else if handsFreeStatus == .blockedByAudioRoute,
-                      !snapshot.playbackActive {
-                handsFreeStatus = .armed
+            } else {
+                if snapshot.microphoneActivity == .silence,
+                   isHandsFreeCaptureActive {
+                    scheduleHandsFreeSilence()
+                } else if snapshot.microphoneActivity == .backgroundNoise {
+                    // Noise is evidence that the user may still be speaking;
+                    // it must not begin or preserve a false endpoint clock.
+                    handsFreeSilenceTask?.cancel()
+                    handsFreeSilenceTask = nil
+                }
+                if handsFreeStatus == .blockedByAudioRoute,
+                   !snapshot.playbackActive {
+                    handsFreeStatus = .armed
+                }
             }
 
         case .recognition(let update):
             guard !update.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
+            if !isHandsFreeCaptureActive {
+                if !state.isResponseActive, handsFreeWakeSuppressed {
+                    let route = await routeSafetyProvider.currentSafety()
+                    guard route == .echoSafe else { return }
+                }
+            }
             guard await startHandsFreeCaptureIfNeeded() else { return }
+            guard !state.isResponseActive else { return }
             provisionalText = update.text
             if update.isFinal {
                 handsFreeFinalText = update.text
@@ -282,7 +307,7 @@ final class VoiceSessionCoordinator {
 
     private func startHandsFreeCaptureIfNeeded() async -> Bool {
         guard isHandsFreeArmed else { return false }
-        if state.isResponseActive, !isHandsFreeCaptureActive {
+        if state.isResponseActive {
             let route = state.isOutputActive
                 ? await routeSafetyProvider.currentSafety()
                 : .echoSafe
@@ -296,6 +321,9 @@ final class VoiceSessionCoordinator {
 
         if !isHandsFreeCaptureActive {
             beginHandsFreeCapture()
+        }
+        if isHandsFreeCaptureActive {
+            handsFreeWakeSuppressed = false
         }
         return isHandsFreeCaptureActive
     }
@@ -512,6 +540,11 @@ final class VoiceSessionCoordinator {
         binding: HermesTurnBinding
     ) async {
         guard responseTask == nil, captureTask == nil else { return }
+        if isHandsFreeArmed {
+            handsFreeWakeSuppressed = true
+            handsFreeFinalText = nil
+            provisionalText = ""
+        }
         playbackFailed = false
         audioDeliveryStarted = false
         audioFileStreamActive = false
@@ -741,6 +774,9 @@ final class VoiceSessionCoordinator {
             return false
         }
 
+        if isHandsFreeArmed {
+            handsFreeWakeSuppressed = false
+        }
         return true
     }
 

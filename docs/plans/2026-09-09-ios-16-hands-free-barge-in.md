@@ -36,6 +36,11 @@ barge-in is permitted only on an echo-safe headphone route.
       not crossed its speech threshold.
 - [x] The silence endpoint tolerates a one-second conversational pause before
       ending the capture.
+- [x] Background noise keeps an active capture open and cancels a pending
+      silence endpoint; only classified silence can end the turn.
+- [x] Recognition text from Hermes playback cannot wake or resubmit a second
+      turn on the built-in speaker; a fresh speech-activity event opens the
+      next capture window, while recognizer-only wake remains headphone-safe.
 - [x] The armed waiting state presents "Listening for speech" instead of the
       idle "Ready" label.
 - [x] Disarming cancels active capture, clears provisional text, and releases

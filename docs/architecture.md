@@ -78,10 +78,11 @@ store without a network connection.
   throttled newest-snapshot stream. It carries no prompt, transcript, or raw
   PCM data. Permission, route, and lifecycle failures publish explicit safe
   states. The iOS voice coordinator owns explicit hands-free arming, endpoint
-  timing, and one-turn submission; automatic barge-in is allowed only when the
-  active playback route is classified as echo-safe. The built-in speaker and
-  unknown routes remain blocked, while the existing voice control still routes
-  an explicit user interrupt through the coordinator.
+  timing, one-turn submission, and post-response echo suppression; background
+  noise does not end an active capture. Automatic barge-in is allowed only
+  when the active playback route is classified as echo-safe. The built-in
+  speaker and unknown routes remain blocked, while the existing voice control
+  still routes an explicit user interrupt through the coordinator.
 - `AmbientHUDPresentation` maps `VoiceState`, the current activity snapshot,
   provisional speech text, and persisted transcript records into one display
   state. The visualizer is presentation-only: it never infers a relay control

@@ -1637,6 +1637,61 @@ final class VoiceSessionCoordinatorTests: XCTestCase {
     }
 
     @MainActor
+    func testHandsFreeDoesNotResubmitHermesResponseAsTheNextTurn() async {
+        let handsFreeInput = CoordinatorHandsFreeInput()
+        let client = CoordinatorHermesSessionClient(events: [
+            .messageStart,
+            .textDelta("Answer"),
+            .audioStart(AudioFormat(sampleRate: 24_000, channels: 1, sampleWidth: 2)),
+            .audioChunk(Data([0, 1])),
+            .audioEnd,
+            .turnComplete(turnID: "turn-1"),
+        ])
+        let store = await connectedStore(client)
+        let coordinator = VoiceSessionCoordinator(
+            store: store,
+            input: CoordinatorSpeechInput(),
+            output: CoordinatorAudioOutput(),
+            handsFreeInput: handsFreeInput,
+            routeSafetyProvider: FixedHandsFreeRouteSafetyProvider(.notEchoSafe),
+            handsFreeSilenceDurationNanoseconds: 0
+        )
+
+        await coordinator.toggleHandsFree()
+        await handsFreeInput.emit(.activity(handsFreeSnapshot(.speech)))
+        await handsFreeInput.emit(
+            .recognition(SpeechRecognitionUpdate(text: "First question", isFinal: true))
+        )
+        await handsFreeInput.emit(.activity(handsFreeSnapshot(.silence)))
+        for _ in 0..<60 { await Task.yield() }
+
+        XCTAssertEqual(client.sentTurns, ["First question"])
+        XCTAssertEqual(coordinator.state, .complete)
+
+        // This is the text Speech.framework can produce from Hermes's own
+        // answer after playback. It must not wake a second turn by itself.
+        await handsFreeInput.emit(.activity(handsFreeSnapshot(.silence)))
+        for _ in 0..<20 { await Task.yield() }
+        await handsFreeInput.emit(
+            .recognition(SpeechRecognitionUpdate(text: "Hermes answer", isFinal: true))
+        )
+        await handsFreeInput.emit(.activity(handsFreeSnapshot(.silence)))
+        for _ in 0..<60 { await Task.yield() }
+
+        XCTAssertEqual(client.sentTurns, ["First question"])
+        XCTAssertTrue(coordinator.isHandsFreeArmed)
+        XCTAssertFalse(coordinator.isHandsFreeCaptureActive)
+
+        // A real post-response speech-activity event still opens the next
+        // capture window, even though recognizer-only wake remains suppressed.
+        await handsFreeInput.emit(.activity(handsFreeSnapshot(.speech)))
+        for _ in 0..<100 { await Task.yield() }
+        XCTAssertTrue(coordinator.isHandsFreeCaptureActive)
+
+        await coordinator.disableHandsFree()
+    }
+
+    @MainActor
     func testHandsFreeAllowsAOneSecondPauseBeforeEndingCapture() async {
         let handsFreeInput = CoordinatorHandsFreeInput()
         let client = CoordinatorHermesSessionClient()
@@ -1660,6 +1715,38 @@ final class VoiceSessionCoordinatorTests: XCTestCase {
         XCTAssertEqual(finishCount, 0)
         XCTAssertTrue(coordinator.isHandsFreeCaptureActive)
         XCTAssertEqual(coordinator.handsFreeStatus, .listening)
+
+        await coordinator.disableHandsFree()
+    }
+
+    @MainActor
+    func testHandsFreeBackgroundNoiseDoesNotEndAnActiveCapture() async {
+        let handsFreeInput = CoordinatorHandsFreeInput()
+        let client = CoordinatorHermesSessionClient()
+        let store = await connectedStore(client)
+        let coordinator = VoiceSessionCoordinator(
+            store: store,
+            input: CoordinatorSpeechInput(),
+            output: CoordinatorAudioOutput(),
+            handsFreeInput: handsFreeInput,
+            handsFreeSilenceDurationNanoseconds: 100_000_000
+        )
+
+        await coordinator.toggleHandsFree()
+        await handsFreeInput.emit(.activity(handsFreeSnapshot(.speech)))
+        for _ in 0..<20 { await Task.yield() }
+        XCTAssertTrue(coordinator.isHandsFreeCaptureActive)
+        await handsFreeInput.emit(.activity(handsFreeSnapshot(.backgroundNoise)))
+        await handsFreeInput.emit(
+            .recognition(SpeechRecognitionUpdate(text: "Still talking", isFinal: false))
+        )
+        for _ in 0..<10 { await Task.yield() }
+        XCTAssertEqual(coordinator.provisionalText, "Still talking")
+        try? await Task.sleep(nanoseconds: 250_000_000)
+
+        let finishCount = await handsFreeInput.finishCount()
+        XCTAssertEqual(finishCount, 0)
+        XCTAssertTrue(coordinator.isHandsFreeCaptureActive)
 
         await coordinator.disableHandsFree()
     }
