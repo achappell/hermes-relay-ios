@@ -37,16 +37,33 @@ struct ContentView: View {
             _voiceCoordinator = State(initialValue: voiceCoordinator)
         } else {
             let diagnostics = AudioPlaybackDiagnosticsFactory.make()
+            let audioSessionCoordinator = AppleAudioSessionCoordinator()
+            let speechInput = AppleSpeechInput(
+                activityReporter: activityStore,
+                audioSessionCoordinator: audioSessionCoordinator
+            )
+            #if os(iOS)
+            let handsFreeInput: (any HandsFreeInput)? = SpeechBackedHandsFreeInput(
+                speechInput: speechInput,
+                activityStore: activityStore
+            )
+            #else
+            let handsFreeInput: (any HandsFreeInput)? = nil
+            #endif
             _voiceCoordinator = State(initialValue: VoiceSessionCoordinator(
                 store: store,
-                input: AppleSpeechInput(activityReporter: activityStore),
+                input: speechInput,
                 output: RecoveringAudioOutput(
                     liveOutput: AudioActivityReportingOutput(
-                        wrapped: AppleAudioOutput(diagnostics: diagnostics),
+                        wrapped: AppleAudioOutput(
+                            diagnostics: diagnostics,
+                            audioSessionCoordinator: audioSessionCoordinator
+                        ),
                         reporter: activityStore
                     )
                 ),
-                diagnostics: diagnostics
+                diagnostics: diagnostics,
+                handsFreeInput: handsFreeInput
             ))
         }
         self.configurationStore = configurationStore
@@ -69,11 +86,13 @@ struct ContentView: View {
 
     static func shouldShowVoiceInterface(
         isComposerFocused: Bool,
-        state: VoiceState
+        state: VoiceState,
+        isHandsFreeArmed: Bool = false
     ) -> Bool {
         VoiceControlInteractionPolicy.isVisible(
             isComposerFocused: isComposerFocused,
-            state: state
+            state: state,
+            isHandsFreeArmed: isHandsFreeArmed
         )
     }
 
@@ -93,10 +112,18 @@ struct ContentView: View {
             }
             .onDisappear {
                 hudModel.stop()
+                Task { await voiceCoordinator.disableHandsFree() }
             }
             .onChange(of: scenePhase) { _, newPhase in
-                guard newPhase == .active else { return }
-                Task { await store.autoConnectIfNeeded() }
+                if newPhase == .active {
+                    Task { await store.autoConnectIfNeeded() }
+                } else {
+                    Task { await voiceCoordinator.disableHandsFree() }
+                }
+            }
+            .onChange(of: store.connectionState) { _, newState in
+                guard newState != .connected else { return }
+                Task { await voiceCoordinator.disableHandsFree() }
             }
         }
         .sheet(isPresented: $showingConfiguration) {
@@ -280,7 +307,8 @@ struct ContentView: View {
         VStack(spacing: 0) {
             if Self.shouldShowVoiceInterface(
                 isComposerFocused: focusedField != nil,
-                state: voiceCoordinator.state
+                state: voiceCoordinator.state,
+                isHandsFreeArmed: voiceCoordinator.isHandsFreeArmed
             ) {
                 voiceInterface
             }

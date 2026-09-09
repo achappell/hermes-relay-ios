@@ -197,6 +197,30 @@ final class HermesRelayIOSTests: XCTestCase {
         XCTAssertTrue(VoiceControlInteractionPolicy.isVisible(isComposerFocused: false, state: .idle))
     }
 
+    func testHandsFreeControlRemainsVisibleWhileComposerIsFocused() {
+        XCTAssertTrue(
+            VoiceControlInteractionPolicy.isVisible(
+                isComposerFocused: true,
+                state: .idle,
+                isHandsFreeArmed: true
+            )
+        )
+        XCTAssertFalse(
+            VoiceControlInteractionPolicy.isDisabled(
+                isActionInFlight: false,
+                state: .speaking,
+                isHandsFreeArmed: true
+            )
+        )
+        XCTAssertTrue(
+            VoiceControlInteractionPolicy.isDisabled(
+                isActionInFlight: false,
+                state: .idle,
+                isHandsFreeArmed: true
+            )
+        )
+    }
+
     @MainActor
     func testContentViewKeepsVoiceInterfaceVisibleDuringFocusedCapture() {
         XCTAssertTrue(

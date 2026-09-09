@@ -10,16 +10,20 @@ actor AppleSpeechInput: SpeechInput {
     private var recognitionRequest: SFSpeechAudioBufferRecognitionRequest?
     private var activeContinuation: AsyncThrowingStream<SpeechRecognitionUpdate, Error>.Continuation?
     private let activityReporter: any AudioActivityReporter
+    private let audioSessionCoordinator: AppleAudioSessionCoordinator
     private let finalResultGraceNanoseconds: UInt64
     private var configurationObserver: AudioEngineConfigurationObserver?
+    private var interruptionObserver: AudioInterruptionObserver?
 
     init(
         locale: Locale = Locale(identifier: "en-US"),
         finalResultGraceNanoseconds: UInt64 = 1_000_000_000,
-        activityReporter: any AudioActivityReporter = NoopAudioActivityReporter()
+        activityReporter: any AudioActivityReporter = NoopAudioActivityReporter(),
+        audioSessionCoordinator: AppleAudioSessionCoordinator = AppleAudioSessionCoordinator()
     ) {
         recognizer = SFSpeechRecognizer(locale: locale)
         self.activityReporter = activityReporter
+        self.audioSessionCoordinator = audioSessionCoordinator
         self.finalResultGraceNanoseconds = finalResultGraceNanoseconds
     }
 
@@ -65,11 +69,7 @@ actor AppleSpeechInput: SpeechInput {
         }
 
         do {
-            #if os(iOS)
-            let audioSession = AVAudioSession.sharedInstance()
-            try audioSession.setCategory(.record, mode: .measurement, options: .duckOthers)
-            try audioSession.setActive(true, options: .notifyOthersOnDeactivation)
-            #endif
+            try await audioSessionCoordinator.activateInput()
 
             let inputNode = audioEngine.inputNode
             let recordingFormat = inputNode.outputFormat(forBus: 0)
@@ -102,9 +102,12 @@ actor AppleSpeechInput: SpeechInput {
                 }
             }
             installConfigurationObserver()
+            #if os(iOS)
+            installAudioInterruptionObserver()
+            #endif
             return stream
         } catch {
-            stopResources()
+            await stopResources()
             await activityReporter.reportMicrophoneUnavailable()
             continuation.finish(throwing: SpeechInputError.captureFailed)
             throw SpeechInputError.captureFailed
@@ -115,7 +118,7 @@ actor AppleSpeechInput: SpeechInput {
         let wasActive = activeContinuation != nil
         activeContinuation?.finish(throwing: SpeechInputError.cancelled)
         activeContinuation = nil
-        stopResources()
+        await stopResources()
         if wasActive {
             await activityReporter.reportMicrophoneEnded()
         }
@@ -137,7 +140,7 @@ actor AppleSpeechInput: SpeechInput {
         if activeContinuation != nil {
             activeContinuation?.finish()
             activeContinuation = nil
-            stopResources()
+            await stopResources()
             await activityReporter.reportMicrophoneEnded()
         }
     }
@@ -167,7 +170,7 @@ actor AppleSpeechInput: SpeechInput {
         if let error {
             continuation.finish(throwing: error)
             activeContinuation = nil
-            stopResources()
+            await stopResources()
             if error == .noSpeech {
                 await activityReporter.reportMicrophoneEnded()
             } else {
@@ -181,7 +184,7 @@ actor AppleSpeechInput: SpeechInput {
         if isFinal {
             continuation.finish()
             activeContinuation = nil
-            stopResources()
+            await stopResources()
             await activityReporter.reportMicrophoneEnded()
         }
     }
@@ -217,11 +220,11 @@ actor AppleSpeechInput: SpeechInput {
         if audioEngine.inputNode.inputFormat(forBus: 0).channelCount == 0 {
             activeContinuation?.finish(throwing: SpeechInputError.captureFailed)
             activeContinuation = nil
-            stopResources()
+            await stopResources()
         }
     }
 
-    private func stopResources() {
+    private func stopResources() async {
         audioEngine.inputNode.removeTap(onBus: 0)
         if audioEngine.isRunning {
             audioEngine.stop()
@@ -231,13 +234,39 @@ actor AppleSpeechInput: SpeechInput {
         recognitionRequest = nil
         recognitionTask = nil
 
-        #if os(iOS)
-        try? AVAudioSession.sharedInstance().setActive(
-            false,
-            options: .notifyOthersOnDeactivation
-        )
-        #endif
+        if let interruptionObserver {
+            NotificationCenter.default.removeObserver(interruptionObserver.token)
+            self.interruptionObserver = nil
+        }
+        await audioSessionCoordinator.deactivateInput()
     }
+
+    #if os(iOS)
+    private func installAudioInterruptionObserver() {
+        guard interruptionObserver == nil else { return }
+        let token = NotificationCenter.default.addObserver(
+            forName: AVAudioSession.interruptionNotification,
+            object: AVAudioSession.sharedInstance(),
+            queue: nil
+        ) { [weak self] notification in
+            guard let rawType = notification.userInfo?[AVAudioSessionInterruptionTypeKey] as? UInt,
+                  let type = AVAudioSession.InterruptionType(rawValue: rawType),
+                  type == .began else { return }
+            Task {
+                await self?.handleAudioInterruption()
+            }
+        }
+        interruptionObserver = AudioInterruptionObserver(token)
+    }
+
+    private func handleAudioInterruption() async {
+        guard activeContinuation != nil else { return }
+        activeContinuation?.finish(throwing: SpeechInputError.captureFailed)
+        activeContinuation = nil
+        await stopResources()
+        await activityReporter.reportMicrophoneUnavailable()
+    }
+    #endif
 
     static func resolveAuthorization(
         speech: SFSpeechRecognizerAuthorizationStatus,
@@ -281,10 +310,21 @@ actor AppleSpeechInput: SpeechInput {
         if let configurationObserver {
             NotificationCenter.default.removeObserver(configurationObserver.token)
         }
+        if let interruptionObserver {
+            NotificationCenter.default.removeObserver(interruptionObserver.token)
+        }
     }
 }
 
 private final class AudioEngineConfigurationObserver: @unchecked Sendable {
+    let token: NSObjectProtocol
+
+    init(_ token: NSObjectProtocol) {
+        self.token = token
+    }
+}
+
+private final class AudioInterruptionObserver: @unchecked Sendable {
     let token: NSObjectProtocol
 
     init(_ token: NSObjectProtocol) {

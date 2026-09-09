@@ -1410,6 +1410,289 @@ final class VoiceSessionCoordinatorTests: XCTestCase {
         XCTAssertEqual(coordinator.state, .complete)
     }
 
+    func testHandsFreeBargeInRequiresAnEchoSafeAudioRoute() {
+        XCTAssertTrue(
+            HandsFreeBargeInPolicy.shouldInterrupt(
+                state: .speaking,
+                route: .echoSafe
+            )
+        )
+        XCTAssertFalse(
+            HandsFreeBargeInPolicy.shouldInterrupt(
+                state: .speaking,
+                route: .notEchoSafe
+            )
+        )
+        XCTAssertFalse(
+            HandsFreeBargeInPolicy.shouldInterrupt(
+                state: .speaking,
+                route: .unknown
+            )
+        )
+        XCTAssertTrue(
+            HandsFreeBargeInPolicy.shouldInterrupt(
+                state: .thinking,
+                route: .notEchoSafe
+            )
+        )
+    }
+
+    @MainActor
+    func testHandsFreeDoesNotStartUntilExplicitlyArmed() async {
+        let handsFreeInput = CoordinatorHandsFreeInput()
+        let client = CoordinatorHermesSessionClient()
+        let store = await connectedStore(client)
+        let coordinator = VoiceSessionCoordinator(
+            store: store,
+            input: CoordinatorSpeechInput(),
+            output: CoordinatorAudioOutput(),
+            handsFreeInput: handsFreeInput,
+            handsFreeSilenceDurationNanoseconds: 0,
+            handsFreeNoSpeechTimeoutNanoseconds: 0
+        )
+
+        XCTAssertFalse(coordinator.isHandsFreeArmed)
+        let initialStartCount = await handsFreeInput.startCount()
+        XCTAssertEqual(initialStartCount, 0)
+
+        await coordinator.toggleHandsFree()
+
+        XCTAssertTrue(coordinator.isHandsFreeArmed)
+        XCTAssertEqual(coordinator.handsFreeStatus, .armed)
+        let armedStartCount = await handsFreeInput.startCount()
+        XCTAssertEqual(armedStartCount, 1)
+
+        await coordinator.disableHandsFree()
+        XCTAssertFalse(coordinator.isHandsFreeArmed)
+        XCTAssertEqual(coordinator.handsFreeStatus, .disarmed)
+    }
+
+    @MainActor
+    func testHandsFreeSilenceAndBackgroundNoiseNeverSubmitATurn() async {
+        let handsFreeInput = CoordinatorHandsFreeInput()
+        let client = CoordinatorHermesSessionClient()
+        let store = await connectedStore(client)
+        let coordinator = VoiceSessionCoordinator(
+            store: store,
+            input: CoordinatorSpeechInput(),
+            output: CoordinatorAudioOutput(),
+            handsFreeInput: handsFreeInput,
+            handsFreeSilenceDurationNanoseconds: 0,
+            handsFreeNoSpeechTimeoutNanoseconds: 0
+        )
+
+        await coordinator.toggleHandsFree()
+        await handsFreeInput.emit(.activity(handsFreeSnapshot(.silence)))
+        await handsFreeInput.emit(.activity(handsFreeSnapshot(.backgroundNoise)))
+        for _ in 0..<10 { await Task.yield() }
+
+        XCTAssertEqual(coordinator.state, .idle)
+        XCTAssertEqual(client.sentTurns, [])
+        let finishCount = await handsFreeInput.finishCount()
+        XCTAssertEqual(finishCount, 0)
+
+        await coordinator.disableHandsFree()
+    }
+
+    @MainActor
+    func testHandsFreeNoSpeechTimeoutClosesAndRestartsMonitoringWithoutSubmitting() async {
+        let handsFreeInput = CoordinatorHandsFreeInput()
+        let client = CoordinatorHermesSessionClient()
+        let store = await connectedStore(client)
+        let coordinator = VoiceSessionCoordinator(
+            store: store,
+            input: CoordinatorSpeechInput(),
+            output: CoordinatorAudioOutput(),
+            handsFreeInput: handsFreeInput,
+            handsFreeSilenceDurationNanoseconds: 0,
+            handsFreeNoSpeechTimeoutNanoseconds: 100_000_000
+        )
+
+        await coordinator.toggleHandsFree()
+        try? await Task.sleep(nanoseconds: 250_000_000)
+
+        let finishCount = await handsFreeInput.finishCount()
+        XCTAssertGreaterThanOrEqual(finishCount, 1)
+        XCTAssertEqual(client.sentTurns, [])
+        XCTAssertTrue(coordinator.isHandsFreeArmed)
+        XCTAssertEqual(coordinator.state, .idle)
+
+        await coordinator.disableHandsFree()
+    }
+
+    @MainActor
+    func testHandsFreePermissionFailureNamesTheRequiredAction() async {
+        let handsFreeInput = CoordinatorHandsFreeInput(authorization: .microphoneDenied)
+        let client = CoordinatorHermesSessionClient()
+        let store = await connectedStore(client)
+        let coordinator = VoiceSessionCoordinator(
+            store: store,
+            input: CoordinatorSpeechInput(),
+            output: CoordinatorAudioOutput(),
+            handsFreeInput: handsFreeInput,
+            handsFreeSilenceDurationNanoseconds: 0,
+            handsFreeNoSpeechTimeoutNanoseconds: 0
+        )
+
+        await coordinator.toggleHandsFree()
+
+        XCTAssertFalse(coordinator.isHandsFreeArmed)
+        XCTAssertEqual(
+            coordinator.handsFreeStatus,
+            .failed(.permission(.microphoneDenied))
+        )
+        XCTAssertEqual(
+            coordinator.state,
+            .failed(.permission(.microphoneDenied))
+        )
+    }
+
+    @MainActor
+    func testHandsFreeSpeechSubmitsOneTurnAfterSilenceAndKeepsMonitoring() async {
+        let handsFreeInput = CoordinatorHandsFreeInput(
+            finishUpdate: SpeechRecognitionUpdate(text: "Final Hermes", isFinal: true)
+        )
+        let client = CoordinatorHermesSessionClient(events: [
+            .messageStart,
+            .textDelta("Answer"),
+            .audioStart(AudioFormat(sampleRate: 24_000, channels: 1, sampleWidth: 2)),
+            .audioChunk(Data([0, 1])),
+            .audioEnd,
+            .turnComplete(turnID: "turn-1"),
+        ])
+        let store = await connectedStore(client)
+        let coordinator = VoiceSessionCoordinator(
+            store: store,
+            input: CoordinatorSpeechInput(),
+            output: CoordinatorAudioOutput(),
+            handsFreeInput: handsFreeInput,
+            handsFreeSilenceDurationNanoseconds: 0,
+            handsFreeNoSpeechTimeoutNanoseconds: 0
+        )
+
+        await coordinator.toggleHandsFree()
+        await handsFreeInput.emit(.activity(handsFreeSnapshot(.speech)))
+        await handsFreeInput.emit(
+            .recognition(SpeechRecognitionUpdate(text: "  Hello Hermes  ", isFinal: false))
+        )
+        await handsFreeInput.emit(.activity(handsFreeSnapshot(.silence)))
+        for _ in 0..<30 { await Task.yield() }
+
+        XCTAssertEqual(client.sentTurns, ["Final Hermes"])
+        XCTAssertEqual(coordinator.state, .complete)
+        XCTAssertTrue(coordinator.isHandsFreeArmed)
+        let startCount = await handsFreeInput.startCount()
+        XCTAssertGreaterThanOrEqual(startCount, 2)
+
+        await coordinator.disableHandsFree()
+    }
+
+    @MainActor
+    func testDisarmingHandsFreeCancelsAnActiveCaptureAndReturnsToReady() async {
+        let handsFreeInput = CoordinatorHandsFreeInput()
+        let client = CoordinatorHermesSessionClient()
+        let store = await connectedStore(client)
+        let coordinator = VoiceSessionCoordinator(
+            store: store,
+            input: CoordinatorSpeechInput(),
+            output: CoordinatorAudioOutput(),
+            handsFreeInput: handsFreeInput,
+            handsFreeSilenceDurationNanoseconds: 1_000_000_000,
+            handsFreeNoSpeechTimeoutNanoseconds: 0
+        )
+
+        await coordinator.toggleHandsFree()
+        await handsFreeInput.emit(.activity(handsFreeSnapshot(.speech)))
+        await handsFreeInput.emit(
+            .recognition(SpeechRecognitionUpdate(text: "Draft", isFinal: false))
+        )
+        for _ in 0..<10 { await Task.yield() }
+        XCTAssertTrue(coordinator.isHandsFreeCaptureActive)
+
+        await coordinator.disableHandsFree()
+
+        let cancelCount = await handsFreeInput.cancelCount()
+        XCTAssertGreaterThanOrEqual(cancelCount, 1)
+        XCTAssertFalse(coordinator.isHandsFreeArmed)
+        XCTAssertFalse(coordinator.isHandsFreeCaptureActive)
+        XCTAssertEqual(coordinator.state, .idle)
+        XCTAssertEqual(coordinator.provisionalText, "")
+    }
+
+    @MainActor
+    func testHandsFreeBargeInStaysBlockedOnAnUnsafePlaybackRoute() async {
+        let handsFreeInput = CoordinatorHandsFreeInput()
+        let client = InterruptibleCoordinatorHermesSessionClient(supportsInterrupt: true)
+        let store = ConversationStore(client: client)
+        await store.connect()
+        store.draft = "Start the answer"
+        let coordinator = VoiceSessionCoordinator(
+            store: store,
+            input: CoordinatorSpeechInput(),
+            output: CoordinatorAudioOutput(),
+            handsFreeInput: handsFreeInput,
+            routeSafetyProvider: FixedHandsFreeRouteSafetyProvider(.notEchoSafe),
+            handsFreeSilenceDurationNanoseconds: 0,
+            handsFreeNoSpeechTimeoutNanoseconds: 0
+        )
+
+        let responseTask = Task { await coordinator.sendDraft() }
+        await client.waitUntilTurnStarted()
+        for _ in 0..<20 { await Task.yield() }
+        XCTAssertEqual(coordinator.state, .speaking)
+        await coordinator.toggleHandsFree()
+        await handsFreeInput.emit(
+            .activity(handsFreeSnapshot(.speech, playbackActive: true))
+        )
+        for _ in 0..<20 { await Task.yield() }
+
+        let interruptCount = await client.interruptCount
+        XCTAssertEqual(interruptCount, 0)
+        XCTAssertEqual(coordinator.handsFreeStatus, .blockedByAudioRoute)
+        XCTAssertEqual(coordinator.state, .speaking)
+
+        await coordinator.disableHandsFree()
+        _ = await coordinator.interruptActiveTurn()
+        await responseTask.value
+    }
+
+    @MainActor
+    func testHandsFreeBargeInInterruptsSafelyAndStartsOneNewCapture() async {
+        let handsFreeInput = CoordinatorHandsFreeInput()
+        let client = InterruptibleCoordinatorHermesSessionClient(supportsInterrupt: true)
+        let store = ConversationStore(client: client)
+        await store.connect()
+        store.draft = "Start the answer"
+        let coordinator = VoiceSessionCoordinator(
+            store: store,
+            input: CoordinatorSpeechInput(),
+            output: CoordinatorAudioOutput(),
+            handsFreeInput: handsFreeInput,
+            routeSafetyProvider: FixedHandsFreeRouteSafetyProvider(.echoSafe),
+            handsFreeSilenceDurationNanoseconds: 0,
+            handsFreeNoSpeechTimeoutNanoseconds: 0
+        )
+
+        let responseTask = Task { await coordinator.sendDraft() }
+        await client.waitUntilTurnStarted()
+        for _ in 0..<20 { await Task.yield() }
+        XCTAssertEqual(coordinator.state, .speaking)
+
+        await coordinator.toggleHandsFree()
+        await handsFreeInput.emit(
+            .activity(handsFreeSnapshot(.speech, playbackActive: true))
+        )
+        for _ in 0..<30 { await Task.yield() }
+
+        let interruptCount = await client.interruptCount
+        XCTAssertEqual(interruptCount, 1)
+        XCTAssertEqual(coordinator.state, .listening)
+        XCTAssertTrue(coordinator.isHandsFreeCaptureActive)
+
+        await coordinator.disableHandsFree()
+        await responseTask.value
+    }
+
     @MainActor
     private func connectedStore(_ client: CoordinatorHermesSessionClient) async -> ConversationStore {
         client.connectResult = .success(SessionMetadata(sessionID: "session-1", model: nil))
@@ -1417,6 +1700,105 @@ final class VoiceSessionCoordinatorTests: XCTestCase {
         await store.connect()
         return store
     }
+}
+
+private actor CoordinatorHandsFreeInput: HandsFreeInput {
+    private let authorizationResult: SpeechAuthorization
+    private let finishUpdate: SpeechRecognitionUpdate?
+    private var continuation: AsyncThrowingStream<HandsFreeInputEvent, Error>.Continuation?
+    private var starts = 0
+    private var finishes = 0
+    private var cancels = 0
+
+    init(
+        authorization: SpeechAuthorization = .authorized,
+        finishUpdate: SpeechRecognitionUpdate? = nil
+    ) {
+        authorizationResult = authorization
+        self.finishUpdate = finishUpdate
+    }
+
+    func authorization() async -> SpeechAuthorization {
+        authorizationResult
+    }
+
+    func requestAuthorization() async -> SpeechAuthorization {
+        authorizationResult
+    }
+
+    func start() async throws -> AsyncThrowingStream<HandsFreeInputEvent, Error> {
+        starts += 1
+        let (stream, continuation) = AsyncThrowingStream<HandsFreeInputEvent, Error>.makeStream()
+        self.continuation = continuation
+        return stream
+    }
+
+    func startCount() -> Int {
+        starts
+    }
+
+    func finishCount() -> Int {
+        finishes
+    }
+
+    func cancelCount() -> Int {
+        cancels
+    }
+
+    func finish() async {
+        finishes += 1
+        if let finishUpdate {
+            continuation?.yield(.recognition(finishUpdate))
+        }
+        continuation?.finish()
+        continuation = nil
+    }
+
+    func cancel() async {
+        cancels += 1
+        continuation?.finish(throwing: SpeechInputError.cancelled)
+        continuation = nil
+    }
+
+    func emit(_ event: HandsFreeInputEvent) {
+        continuation?.yield(event)
+    }
+}
+
+private struct FixedHandsFreeRouteSafetyProvider: HandsFreeAudioRouteSafetyProvider {
+    let safety: HandsFreeAudioRouteSafety
+
+    init(_ safety: HandsFreeAudioRouteSafety) {
+        self.safety = safety
+    }
+
+    func currentSafety() async -> HandsFreeAudioRouteSafety {
+        safety
+    }
+}
+
+private func handsFreeSnapshot(
+    _ activity: MicrophoneActivity,
+    playbackActive: Bool = false
+) -> AudioActivitySnapshot {
+    let microphoneLevel: Float
+    switch activity {
+    case .silence:
+        microphoneLevel = 0
+    case .backgroundNoise:
+        microphoneLevel = 0.04
+    case .speech:
+        microphoneLevel = 0.20
+    case .unavailable:
+        microphoneLevel = 0
+    }
+
+    return AudioActivitySnapshot(
+        microphoneLevel: microphoneLevel,
+        microphoneActivity: activity,
+        playbackLevel: playbackActive ? 0.8 : 0,
+        playbackActive: playbackActive
+    )
 }
 
 private final class ObservationFlag: @unchecked Sendable {

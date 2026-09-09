@@ -5,6 +5,7 @@ actor AppleAudioOutput: AudioOutput {
     private let engine = AVAudioEngine()
     private let playerNode = AVAudioPlayerNode()
     private let diagnostics: any AudioPlaybackDiagnostics
+    private let audioSessionCoordinator: AppleAudioSessionCoordinator
     private let playbackDrain = AudioPlaybackDrain()
     private var audioFormat: AVAudioFormat?
     private var pcmFrameAccumulator: PCMFrameAccumulator?
@@ -13,9 +14,11 @@ actor AppleAudioOutput: AudioOutput {
     private var playbackStarted = false
 
     init(
-        diagnostics: any AudioPlaybackDiagnostics = NoopAudioPlaybackDiagnostics()
+        diagnostics: any AudioPlaybackDiagnostics = NoopAudioPlaybackDiagnostics(),
+        audioSessionCoordinator: AppleAudioSessionCoordinator = AppleAudioSessionCoordinator()
     ) {
         self.diagnostics = diagnostics
+        self.audioSessionCoordinator = audioSessionCoordinator
         engine.attach(playerNode)
     }
 
@@ -34,9 +37,7 @@ actor AppleAudioOutput: AudioOutput {
 
         do {
             #if os(iOS)
-            let audioSession = AVAudioSession.sharedInstance()
-            try audioSession.setCategory(.playback, mode: .spokenAudio, options: .duckOthers)
-            try audioSession.setActive(true)
+            try await audioSessionCoordinator.activateOutput()
             #endif
 
             engine.connect(playerNode, to: engine.mainMixerNode, format: avFormat)
@@ -168,11 +169,6 @@ actor AppleAudioOutput: AudioOutput {
         engine.disconnectNodeOutput(playerNode)
         audioFormat = nil
 
-        #if os(iOS)
-        try? AVAudioSession.sharedInstance().setActive(
-            false,
-            options: .notifyOthersOnDeactivation
-        )
-        #endif
+        await audioSessionCoordinator.deactivateOutput()
     }
 }

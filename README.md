@@ -29,8 +29,9 @@ The current voice slice provides:
   metadata is absent or invalid.
 - Content-safe microphone and inbound-playback activity signals with normalized
   levels, silence/noise/speech classification, throttling, and explicit safe
-  unavailable states. These signals are the foundation for future opt-in
-  hands-free barge-in; they do not enable hands-free mode by themselves.
+  unavailable states. On iOS, the user may explicitly arm hands-free mode;
+  speech boundaries submit one turn at a time and never wake the microphone at
+  launch.
 - Server-confirmed interruption for relays that advertise the `interrupt`
   capability. The voice control sends one protocol-v1 interrupt for the active
   turn, stops queued playback on `audio_abort`, and waits for
@@ -38,9 +39,11 @@ The current voice slice provides:
   close-and-reconnect path and keep the submitted turn marked unconfirmed.
 - The HUD consumes those activity signals to show live state and transcript
   transitions. The recent transcript rail follows streaming text until the
-  user reads backward, then offers an explicit resume-live action. The existing
-  push-to-talk control remains the capture path; opt-in hands-free mode and
-  automatic barge-in remain a later slice.
+  user reads backward, then offers an explicit resume-live action. Hands-free
+  mode remains visibly armed across response phases, but automatic barge-in is
+  enabled only on an echo-safe headphone route; the built-in speaker stays
+  protected from self-triggering. Push-to-talk remains available as the
+  explicit capture path when hands-free is disarmed.
 - Opt-in, content-safe playback diagnostics for comparing stream arrival with
   first-buffer scheduling.
 - Local transcript/draft persistence and an explicit unconfirmed-turn marker;

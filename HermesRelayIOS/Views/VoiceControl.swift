@@ -5,14 +5,23 @@ enum VoiceControlInteractionPolicy {
         state.isResponseActive
     }
 
-    static func isVisible(isComposerFocused: Bool, state: VoiceState) -> Bool {
-        !isComposerFocused || isResponseActive(state) || state.isCaptureActive
+    static func isVisible(
+        isComposerFocused: Bool,
+        state: VoiceState,
+        isHandsFreeArmed: Bool = false
+    ) -> Bool {
+        !isComposerFocused || isResponseActive(state) || state.isCaptureActive || isHandsFreeArmed
     }
 
     /// Stopping capture can remain in flight while the response starts.
     /// Response states must stay tappable so that action can be interrupted.
-    static func isDisabled(isActionInFlight: Bool, state: VoiceState) -> Bool {
-        isActionInFlight && !isResponseActive(state)
+    static func isDisabled(
+        isActionInFlight: Bool,
+        state: VoiceState,
+        isHandsFreeArmed: Bool = false
+    ) -> Bool {
+        (isActionInFlight && !isResponseActive(state))
+            || (isHandsFreeArmed && !isResponseActive(state))
     }
 }
 
@@ -27,15 +36,27 @@ struct VoiceControl: View {
         VoiceControlInteractionPolicy.isResponseActive(coordinator.state)
     }
 
+    private var isHandsFreeCaptureActive: Bool {
+        coordinator.isHandsFreeCaptureActive
+    }
+
     var body: some View {
         HStack(spacing: 12) {
             VStack(alignment: .leading, spacing: 2) {
                 Text(
-                    isCapturing
+                    isHandsFreeCaptureActive
+                        ? "Hands-free listening"
+                        : isCapturing
                         ? "Tap to stop"
                         : isResponseActive ? "Tap to interrupt" : "Tap to record"
                 )
                     .font(.subheadline.weight(.semibold))
+
+                #if os(iOS)
+                Text(coordinator.handsFreeStatus.label)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                #endif
             }
 
             Spacer(minLength: 8)
@@ -54,6 +75,15 @@ struct VoiceControl: View {
                 tint: isCapturing ? .accentColor : isResponseActive ? .orange : nil,
                 interactive: false
             )
+
+            #if os(iOS)
+            HandsFreeButton(coordinator: coordinator)
+                .frame(width: 44, height: 44)
+                .relayCircleGlass(
+                    tint: coordinator.isHandsFreeArmed ? .accentColor : nil,
+                    interactive: false
+                )
+            #endif
         }
     }
 
@@ -88,7 +118,8 @@ struct VoiceControl: View {
             .disabled(
                 VoiceControlInteractionPolicy.isDisabled(
                     isActionInFlight: isActionInFlight,
-                    state: coordinator.state
+                    state: coordinator.state,
+                    isHandsFreeArmed: coordinator.isHandsFreeArmed
                 )
             )
             .accessibilityLabel("Voice control")
@@ -117,10 +148,59 @@ struct VoiceControl: View {
                 if shouldEndCapture {
                     await coordinator.endCaptureAndSend()
                 } else if shouldInterruptResponse {
-                    await coordinator.interruptAndBeginCapture()
+                    if coordinator.isHandsFreeArmed {
+                        _ = await coordinator.interruptActiveTurn()
+                    } else {
+                        await coordinator.interruptAndBeginCapture()
+                    }
                 } else {
                     await coordinator.beginCapture()
                 }
+                isActionInFlight = false
+            }
+        }
+    }
+
+    struct HandsFreeButton: View {
+        let coordinator: VoiceSessionCoordinator
+        @State private var isActionInFlight = false
+
+        var body: some View {
+            Button(action: toggleHandsFree) {
+                Image(systemName: coordinator.handsFreeStatus.systemImage)
+                    .font(.headline)
+                    .foregroundStyle(coordinator.isHandsFreeArmed ? .white : .primary)
+                    .frame(width: 44, height: 44)
+                    .contentShape(Circle())
+                    .background {
+                        if coordinator.isHandsFreeArmed {
+                            Circle().fill(Color.accentColor)
+                        }
+                    }
+            }
+            .buttonStyle(.plain)
+            .disabled(
+                isActionInFlight
+                    || (coordinator.state.isCaptureActive && !coordinator.isHandsFreeCaptureActive)
+            )
+            .accessibilityLabel("Hands-free mode")
+            .accessibilityValue(
+                coordinator.isHandsFreeArmed
+                    ? coordinator.handsFreeStatus.label
+                    : "Off"
+            )
+            .accessibilityHint(
+                coordinator.isHandsFreeArmed
+                    ? "Tap to stop hands-free listening."
+                    : "Tap to enable hands-free listening."
+            )
+        }
+
+        private func toggleHandsFree() {
+            guard !isActionInFlight else { return }
+            isActionInFlight = true
+            Task { @MainActor in
+                await coordinator.toggleHandsFree()
                 isActionInFlight = false
             }
         }
