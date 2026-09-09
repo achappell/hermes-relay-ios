@@ -90,6 +90,25 @@ final class SpeechInputTests: XCTestCase {
         )
     }
 
+    func testNoSpeechRecognitionErrorIsClassifiedSeparately() {
+        let error = NSError(domain: "kAFAssistantErrorDomain", code: 1110)
+
+        XCTAssertEqual(
+            AppleSpeechInput.mapRecognitionError(error),
+            .noSpeech
+        )
+        XCTAssertEqual(
+            AppleSpeechInput.mapRecognitionError(SpeechInputError.captureFailed),
+            .captureFailed
+        )
+        XCTAssertEqual(
+            AppleSpeechInput.mapRecognitionError(
+                NSError(domain: "kAFAssistantErrorDomain", code: 1101)
+            ),
+            .captureFailed
+        )
+    }
+
     private func collect(
         _ stream: AsyncThrowingStream<SpeechRecognitionUpdate, Error>
     ) async throws -> [SpeechRecognitionUpdate] {

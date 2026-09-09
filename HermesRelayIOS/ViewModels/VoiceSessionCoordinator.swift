@@ -394,7 +394,7 @@ final class VoiceSessionCoordinator {
                 }
             }
         } catch let error as SpeechInputError {
-            if error != .cancelled {
+            if error != .cancelled, error != .noSpeech {
                 let message = error.localizedDescription
                 await MainActor.run { [weak self] in
                     self?.captureTask = nil

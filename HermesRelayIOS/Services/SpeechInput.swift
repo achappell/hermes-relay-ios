@@ -16,6 +16,7 @@ struct SpeechRecognitionUpdate: Equatable, Sendable {
 enum SpeechInputError: LocalizedError, Equatable, Sendable {
     case notAuthorized
     case captureFailed
+    case noSpeech
     case cancelled
 
     var errorDescription: String? {
@@ -24,6 +25,8 @@ enum SpeechInputError: LocalizedError, Equatable, Sendable {
             return "Microphone and speech recognition permission are required for voice turns."
         case .captureFailed:
             return "The voice capture could not be started."
+        case .noSpeech:
+            return "No speech was detected."
         case .cancelled:
             return "The voice capture was cancelled."
         }

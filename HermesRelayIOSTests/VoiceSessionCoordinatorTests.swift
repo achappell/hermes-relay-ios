@@ -388,6 +388,25 @@ final class VoiceSessionCoordinatorTests: XCTestCase {
     }
 
     @MainActor
+    func testNoSpeechCaptureReturnsToReadyWithoutSubmittingOrReportingFailure() async {
+        let input = CoordinatorSpeechInput(finishError: .noSpeech)
+        let client = CoordinatorHermesSessionClient()
+        let store = await connectedStore(client)
+        let coordinator = VoiceSessionCoordinator(
+            store: store,
+            input: input,
+            output: CoordinatorAudioOutput()
+        )
+
+        await coordinator.beginCapture()
+        await coordinator.endCaptureAndSend()
+
+        XCTAssertEqual(coordinator.state, .idle)
+        XCTAssertNil(store.transientError)
+        XCTAssertEqual(client.sentTurns, [])
+    }
+
+    @MainActor
     func testCancelDuringCaptureStartDoesNotEnterListening() async {
         let input = DelayedStartCoordinatorSpeechInput(
             finalUpdate: SpeechRecognitionUpdate(text: "Do not send this", isFinal: true)
@@ -1329,15 +1348,18 @@ private final class ObservationFlag: @unchecked Sendable {
 private actor CoordinatorSpeechInput: SpeechInput {
     private let authorizationResult: SpeechAuthorization
     private let finalUpdate: SpeechRecognitionUpdate?
+    private let finishError: SpeechInputError?
     private var continuation: AsyncThrowingStream<SpeechRecognitionUpdate, Error>.Continuation?
     private var starts = 0
 
     init(
         authorization: SpeechAuthorization = .authorized,
-        finalUpdate: SpeechRecognitionUpdate? = nil
+        finalUpdate: SpeechRecognitionUpdate? = nil,
+        finishError: SpeechInputError? = nil
     ) {
         authorizationResult = authorization
         self.finalUpdate = finalUpdate
+        self.finishError = finishError
     }
 
     func authorization() async -> SpeechAuthorization {
@@ -1360,10 +1382,14 @@ private actor CoordinatorSpeechInput: SpeechInput {
     }
 
     func finish() async {
-        if let finalUpdate {
+        if let finishError {
+            continuation?.finish(throwing: finishError)
+        } else if let finalUpdate {
             continuation?.yield(finalUpdate)
+            continuation?.finish()
+        } else {
+            continuation?.finish()
         }
-        continuation?.finish()
         continuation = nil
     }
 
