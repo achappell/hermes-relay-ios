@@ -72,12 +72,17 @@ actor AppleSpeechInput: SpeechInput {
             try await audioSessionCoordinator.activateInput()
 
             let inputNode = audioEngine.inputNode
-            let recordingFormat = inputNode.outputFormat(forBus: 0)
-            guard recordingFormat.channelCount > 0 else {
+            // The input scope reports the hardware format. During a route
+            // change the output scope can briefly retain a stale client format
+            // (for example, 48 kHz while the hardware is 16 kHz). Input nodes
+            // do not convert between those formats, so using the stale output
+            // format makes installTap throw an uncaught Core Audio exception.
+            let hardwareFormat = inputNode.inputFormat(forBus: 0)
+            guard hardwareFormat.sampleRate > 0, hardwareFormat.channelCount > 0 else {
                 throw SpeechInputError.captureFailed
             }
             let activityReporter = self.activityReporter
-            inputNode.installTap(onBus: 0, bufferSize: 1024, format: recordingFormat) { buffer, _ in
+            inputNode.installTap(onBus: 0, bufferSize: 1024, format: hardwareFormat) { buffer, _ in
                 let level = PCMActivityAnalyzer.normalizedRMS(buffer)
                 Task {
                     await activityReporter.reportMicrophone(level: level)
