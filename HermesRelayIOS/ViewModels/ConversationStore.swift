@@ -18,12 +18,32 @@ final class ConversationStore {
     var connectionState: ConnectionState = .disconnected
     var sessionMetadata: SessionMetadata?
     var sessionStartedAt: Date?
+    private(set) var activeProfileID: UUID?
+    private(set) var activeProfileDisplayName: String?
     var messages: [TranscriptMessage] = []
     var draft = ""
     var transientError: String?
     var activityText: String?
     var isSending = false
     var unconfirmedTurnText: String?
+
+    /// A turn may begin only from a connection that completed the Hermes
+    /// handshake. `connectionState` alone is deliberately insufficient: the
+    /// metadata is the proof that `hello_ack` was accepted.
+    var verifiedTurnBinding: HermesTurnBinding? {
+        guard connectionState.isConnected, let sessionMetadata else { return nil }
+        return HermesTurnBinding(
+            profileID: activeProfileID,
+            sessionID: sessionMetadata.sessionID
+        )
+    }
+
+    var turnUnavailableMessage: String {
+        if configurationStore != nil, activeProfileDisplayName == nil {
+            return "Select a Hermes Profile before starting a voice turn."
+        }
+        return "Connect to the Hermes relay before starting a voice turn."
+    }
 
     private(set) var activeAssistantID: UUID?
     private var turnCompleted = false
@@ -79,9 +99,13 @@ final class ConversationStore {
 
         do {
             guard let profile = try await configurationStore.loadProfile() else {
+                activeProfileID = nil
+                activeProfileDisplayName = nil
                 transientError = "Configure a Hermes relay profile before connecting."
                 return false
             }
+            activeProfileID = profile.id
+            activeProfileDisplayName = profile.displayName
             guard let token = try await configurationStore.loadToken() else {
                 transientError = "Add a Hermes relay token before connecting."
                 return false
@@ -103,6 +127,10 @@ final class ConversationStore {
             transientError = error.localizedDescription
             return false
         }
+    }
+
+    func isCurrentTurnBinding(_ binding: HermesTurnBinding) -> Bool {
+        verifiedTurnBinding == binding
     }
 
     func autoConnectIfNeeded() async {
@@ -144,7 +172,7 @@ final class ConversationStore {
         // field does not look stuck while Hermes is working. If the turn
         // fails, restore the original text unless the user has already
         // started editing a new draft.
-        let shouldClearDraft = connectionState.isConnected && !isSending
+        let shouldClearDraft = verifiedTurnBinding != nil && !isSending
         if shouldClearDraft {
             draft = ""
         }
@@ -160,16 +188,21 @@ final class ConversationStore {
     @discardableResult
     func sendTurn(
         text: String,
+        expectedBinding: HermesTurnBinding? = nil,
         eventHandler: (@MainActor @Sendable (HermesEvent) async -> Void)? = nil
     ) async -> Bool {
         let text = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !text.isEmpty else { return false }
-        guard connectionState.isConnected else {
+        guard let currentBinding = verifiedTurnBinding else {
             if draft.isEmpty {
                 draft = text
             }
             transientError = "Connect to the Hermes relay before sending."
             await persistConversation()
+            return false
+        }
+        guard expectedBinding == nil || expectedBinding == currentBinding else {
+            transientError = "The selected Hermes Profile changed. Start a new turn."
             return false
         }
         guard !isSending else {
@@ -290,6 +323,8 @@ final class ConversationStore {
         draft = ""
         unconfirmedTurnText = nil
         activeAssistantID = nil
+        activeProfileID = nil
+        activeProfileDisplayName = nil
         transientError = nil
 
         guard await loadConfiguredClient() else { return }

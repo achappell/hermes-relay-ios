@@ -298,6 +298,7 @@ final class ConversationStoreTransportTests: XCTestCase {
         XCTAssertEqual(factory.openCount, 1)
         XCTAssertEqual(store.connectionState, .connected)
         XCTAssertEqual(socket.sentTexts.count, 1)
+        XCTAssertEqual(store.activeProfileDisplayName, "Test iPhone")
 
         await socket.close()
     }

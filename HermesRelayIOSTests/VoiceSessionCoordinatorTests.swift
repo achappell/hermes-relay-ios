@@ -4,6 +4,55 @@ import XCTest
 @testable import HermesRelayIOS
 
 final class VoiceSessionCoordinatorTests: XCTestCase {
+    @MainActor
+    func testVoiceCaptureFailsClosedBeforeMicrophoneWhenSessionIsNotVerified() async {
+        let input = CoordinatorSpeechInput()
+        let client = CoordinatorHermesSessionClient()
+        let store = ConversationStore(client: client)
+        let coordinator = VoiceSessionCoordinator(
+            store: store,
+            input: input,
+            output: CoordinatorAudioOutput()
+        )
+
+        await coordinator.beginCapture()
+
+        XCTAssertEqual(
+            coordinator.state,
+            .failed("Connect to the Hermes relay before starting a voice turn.")
+        )
+        let startCount = await input.startCount()
+        XCTAssertEqual(startCount, 0)
+        XCTAssertEqual(client.sentTurns, [])
+        XCTAssertTrue(store.messages.isEmpty)
+    }
+
+    @MainActor
+    func testCaptureDoesNotSubmitAfterVerifiedSessionChanges() async {
+        let input = CoordinatorSpeechInput()
+        let client = CoordinatorHermesSessionClient()
+        let store = await connectedStore(client)
+        let coordinator = VoiceSessionCoordinator(
+            store: store,
+            input: input,
+            output: CoordinatorAudioOutput()
+        )
+
+        await coordinator.beginCapture()
+        await input.emit(SpeechRecognitionUpdate(text: "Do not retarget", isFinal: false))
+        store.sessionMetadata = SessionMetadata(sessionID: "replacement-session", model: nil)
+
+        await coordinator.endCaptureAndSend()
+
+        XCTAssertEqual(
+            coordinator.state,
+            .failed("The selected Hermes Profile changed. Start a new turn.")
+        )
+        XCTAssertEqual(store.transientError, "The selected Hermes Profile changed. Start a new turn.")
+        XCTAssertEqual(client.sentTurns, [])
+        XCTAssertTrue(store.messages.isEmpty)
+    }
+
     func testVoiceControlRemainsEnabledToInterruptAfterCaptureActionStarted() {
         XCTAssertTrue(
             VoiceControlInteractionPolicy.isDisabled(
@@ -1048,6 +1097,7 @@ private actor CoordinatorSpeechInput: SpeechInput {
     private let authorizationResult: SpeechAuthorization
     private let finalUpdate: SpeechRecognitionUpdate?
     private var continuation: AsyncThrowingStream<SpeechRecognitionUpdate, Error>.Continuation?
+    private var starts = 0
 
     init(
         authorization: SpeechAuthorization = .authorized,
@@ -1066,9 +1116,14 @@ private actor CoordinatorSpeechInput: SpeechInput {
     }
 
     func start() async throws -> AsyncThrowingStream<SpeechRecognitionUpdate, Error> {
+        starts += 1
         let (stream, continuation) = AsyncThrowingStream<SpeechRecognitionUpdate, Error>.makeStream()
         self.continuation = continuation
         return stream
+    }
+
+    func startCount() -> Int {
+        starts
     }
 
     func finish() async {

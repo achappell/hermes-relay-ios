@@ -37,6 +37,7 @@ final class VoiceSessionCoordinator {
     private var audioFileBuffer = Data()
     private var streamedAudioBytes = 0
     private var captureFailureMessage: String?
+    private var captureBinding: HermesTurnBinding?
     private var playbackPositionTask: Task<Void, Never>?
     // Event handlers may outlive a cancelled response task, so every response
     // is allowed to mutate state only while its generation is current.
@@ -57,11 +58,21 @@ final class VoiceSessionCoordinator {
     }
 
     nonisolated func beginCapture() async {
-        let canStart = await MainActor.run { [weak self] in
-            guard let self else { return false }
-            return self.captureTask == nil && self.responseTask == nil
+        let binding: HermesTurnBinding? = await MainActor.run { [weak self] in
+            guard let self else { return nil }
+            guard self.captureTask == nil, self.responseTask == nil else { return nil }
+            guard let binding = self.store.verifiedTurnBinding else {
+                let message = self.store.turnUnavailableMessage
+                self.store.transientError = message
+                self.state = .failed(message)
+                return nil
+            }
+            return binding
         }
-        guard canStart, let startRequest = await captureStartGate.begin(input: input) else { return }
+        guard let binding, let startRequest = await captureStartGate.begin(input: input) else { return }
+        await MainActor.run { [weak self] in
+            self?.captureBinding = binding
+        }
 
         let result = await startRequest.task.value
         guard await captureStartGate.isCurrent(startRequest.id) else { return }
@@ -87,6 +98,7 @@ final class VoiceSessionCoordinator {
         if let captureFailureMessage {
             provisionalText = ""
             finalText = nil
+            captureBinding = nil
             state = .failed(captureFailureMessage)
             self.captureFailureMessage = nil
             return
@@ -98,16 +110,27 @@ final class VoiceSessionCoordinator {
         finalText = nil
 
         guard !text.isEmpty else {
+            captureBinding = nil
             state = .idle
             return
         }
+
+        guard let binding = captureBinding,
+              store.isCurrentTurnBinding(binding) else {
+            captureBinding = nil
+            let message = "The selected Hermes Profile changed. Start a new turn."
+            store.transientError = message
+            state = .failed(message)
+            return
+        }
+        captureBinding = nil
 
         playbackFailed = false
         resetSpeechTiming()
         responseGeneration &+= 1
         let generation = responseGeneration
         responseTask = Task { [weak self] in
-            await self?.submitVoiceTurn(text, generation: generation)
+            await self?.submitVoiceTurn(text, binding: binding, generation: generation)
         }
         await responseTask?.value
         responseTask = nil
@@ -130,6 +153,15 @@ final class VoiceSessionCoordinator {
 
         switch result {
         case .started(let stream):
+            guard let binding = captureBinding,
+                  store.isCurrentTurnBinding(binding) else {
+                captureBinding = nil
+                let message = "The selected Hermes Profile changed. Start a new turn."
+                store.transientError = message
+                state = .failed(message)
+                Task { await input.cancel() }
+                return
+            }
             provisionalText = ""
             finalText = nil
             state = .listening
@@ -139,8 +171,10 @@ final class VoiceSessionCoordinator {
         case .failed(let failure):
             switch failure {
             case .permission(let authorization):
+                captureBinding = nil
                 state = .failed(permissionMessage(for: authorization))
             case .input(let error):
+                captureBinding = nil
                 state = .failed(error.localizedDescription)
             }
         }
@@ -209,6 +243,7 @@ final class VoiceSessionCoordinator {
     func cancelCapture() async {
         if await captureStartGate.cancel() {
             await input.cancel()
+            captureBinding = nil
             provisionalText = ""
             finalText = nil
             captureFailureMessage = nil
@@ -221,6 +256,7 @@ final class VoiceSessionCoordinator {
         captureTask.cancel()
         await captureTask.value
         self.captureTask = nil
+        captureBinding = nil
         provisionalText = ""
         finalText = nil
         captureFailureMessage = nil
@@ -309,13 +345,19 @@ final class VoiceSessionCoordinator {
         guard captureTask == nil, responseTask == nil else { return }
         guard let text = store.unconfirmedTurnText?.trimmingCharacters(in: .whitespacesAndNewlines),
               !text.isEmpty else { return }
+        guard let binding = store.verifiedTurnBinding else {
+            let message = store.turnUnavailableMessage
+            store.transientError = message
+            state = .failed(message)
+            return
+        }
 
         playbackFailed = false
         resetSpeechTiming()
         responseGeneration &+= 1
         let generation = responseGeneration
         responseTask = Task { [weak self] in
-            await self?.submitVoiceTurn(text, generation: generation)
+            await self?.submitVoiceTurn(text, binding: binding, generation: generation)
         }
         await responseTask?.value
         responseTask = nil
@@ -357,12 +399,16 @@ final class VoiceSessionCoordinator {
         }
     }
 
-    private func submitVoiceTurn(_ text: String, generation: UInt64) async {
+    private func submitVoiceTurn(
+        _ text: String,
+        binding: HermesTurnBinding,
+        generation: UInt64
+    ) async {
         guard generation == responseGeneration, !Task.isCancelled else { return }
         turnDidComplete = false
         audioSegmentIndex = 0
         state = .thinking
-        let completed = await store.sendTurn(text: text) { [weak self] event in
+        let completed = await store.sendTurn(text: text, expectedBinding: binding) { [weak self] event in
             await self?.handle(event, generation: generation)
         }
         guard generation == responseGeneration, !Task.isCancelled else { return }

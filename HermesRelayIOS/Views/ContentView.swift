@@ -106,6 +106,7 @@ struct ContentView: View {
             ),
             connectionState: store.connectionState,
             sessionStartedAt: store.sessionStartedAt,
+            profileName: store.activeProfileDisplayName,
             transcriptMessages: store.messages,
             provisionalText: voiceCoordinator.provisionalText,
             isResponseActive: store.isSending,
