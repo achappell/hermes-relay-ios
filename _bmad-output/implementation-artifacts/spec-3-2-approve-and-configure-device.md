@@ -118,17 +118,23 @@ not cross the seam.
 - Added deterministic Debug administration behavior behind
   -HermesRelayDeviceDiscoveryFixture; no raw Device Credential bytes cross the
   seam or appear in tests, fixtures, logs, or source.
+- Added an application-support JSON DeviceSetupDraftStore keyed by Device ID.
+  Cancel and system dismissal preserve only the incomplete Room, Wake Mapping,
+  and wizard-step draft; Resume rehydrates it without making the Device active.
+  Ready deletes the draft after an exact-ID configuration receipt, while an
+  explicit, confirmed Discard removes it without touching approval.
 - Approval and setup behavior is injected from the app through the existing
   iOS Device discovery flow. macOS receives no Device UI or transport.
 
 ## Verification
 
-- Focused DeviceDiscoveryTests: 32 passed, 0 failed, 0 skipped.
-- Full iOS Simulator suite: 277 passed, 0 failed, 0 skipped.
+- Focused DeviceDiscoveryTests: 39 passed, 0 failed, 0 skipped.
+- Full iOS Simulator suite: 284 passed, 0 failed, 0 skipped.
 - macOS Debug build: exited 0.
-- iOS Simulator Release build: exited 0.
-- Debug Simulator smoke on iPhone 17 Pro: connected Hallway Puck, approved
-  it, confirmed Setup pending · Inactive, completed Room and Wake Mappings,
-  and confirmed Ready; the UI showed Hallway Puck as approved and active while
-  Study Display remained unconfigured.
+- iOS Simulator Debug build: succeeded.
+- Debug Simulator smoke on iPhone 17 Pro: connected and approved Hallway Puck,
+  entered Room and Wake Mappings, cancelled, and observed Resume setup with
+  the saved fields. After relaunching the app, the fixture still required a
+  fresh approval; re-approving Hallway Puck rehydrated the saved draft. The
+  confirmed Discard action removed the draft and restored Set up.
 - git diff --check: clean.

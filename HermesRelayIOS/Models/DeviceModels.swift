@@ -62,7 +62,7 @@ enum DeviceSetupStatus: String, Codable, Equatable, Sendable {
     }
 }
 
-enum DeviceSetupStep: Equatable, Sendable {
+enum DeviceSetupStep: String, Codable, Equatable, Sendable {
     case room
     case wakeMappings
     case ready
@@ -103,6 +103,25 @@ struct DeviceWakeMapping: Identifiable, Codable, Equatable, Hashable, Sendable {
 
     var normalizedProfileIdentifier: String {
         profileIdentifier.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+}
+
+struct DeviceSetupDraft: Codable, Equatable, Sendable {
+    let deviceID: String
+    let room: String
+    let wakeMappings: [DeviceWakeMapping]
+    let step: DeviceSetupStep
+
+    init(
+        deviceID: String,
+        room: String,
+        wakeMappings: [DeviceWakeMapping],
+        step: DeviceSetupStep
+    ) {
+        self.deviceID = deviceID
+        self.room = room
+        self.wakeMappings = wakeMappings
+        self.step = step
     }
 }
 

@@ -66,6 +66,7 @@ struct RelayConfigurationView: View {
     let conversationDirectory: URL?
     let deviceDiscoveryClient: any DeviceDiscoveryClient
     let deviceAdministrationClient: any DeviceAdministrationClient
+    let deviceSetupDraftStore: any DeviceSetupDraftStore
     let onSaved: @MainActor () async -> Void
 
     @Environment(\.dismiss) private var dismiss
@@ -87,6 +88,7 @@ struct RelayConfigurationView: View {
         conversationDirectory: URL? = nil,
         deviceDiscoveryClient: any DeviceDiscoveryClient = UnavailableDeviceDiscoveryClient(),
         deviceAdministrationClient: any DeviceAdministrationClient = UnavailableDeviceAdministrationClient(),
+        deviceSetupDraftStore: any DeviceSetupDraftStore = NoopDeviceSetupDraftStore(),
         onSaved: @escaping @MainActor () async -> Void = {}
     ) {
         self.configurationStore = configurationStore
@@ -94,6 +96,7 @@ struct RelayConfigurationView: View {
         self.conversationDirectory = conversationDirectory
         self.deviceDiscoveryClient = deviceDiscoveryClient
         self.deviceAdministrationClient = deviceAdministrationClient
+        self.deviceSetupDraftStore = deviceSetupDraftStore
         self.onSaved = onSaved
         _draft = State(initialValue: RelayConfigurationDraft(identity: .current()))
         _listModel = State(
@@ -271,7 +274,8 @@ struct RelayConfigurationView: View {
             .sheet(isPresented: $showingDeviceDiscovery) {
                 DeviceDiscoveryView(
                     client: deviceDiscoveryClient,
-                    administrationClient: deviceAdministrationClient
+                    administrationClient: deviceAdministrationClient,
+                    draftStore: deviceSetupDraftStore
                 )
             }
             #endif

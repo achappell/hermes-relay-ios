@@ -6,6 +6,7 @@ import SwiftUI
 struct DeviceDiscoveryView: View {
     let client: any DeviceDiscoveryClient
     let administrationClient: any DeviceAdministrationClient
+    let draftStore: any DeviceSetupDraftStore
 
     @Environment(\.dismiss) private var dismiss
     @State private var model: DeviceDiscoveryModel
@@ -14,14 +15,17 @@ struct DeviceDiscoveryView: View {
 
     init(
         client: any DeviceDiscoveryClient,
-        administrationClient: any DeviceAdministrationClient = UnavailableDeviceAdministrationClient()
+        administrationClient: any DeviceAdministrationClient = UnavailableDeviceAdministrationClient(),
+        draftStore: any DeviceSetupDraftStore = NoopDeviceSetupDraftStore()
     ) {
         self.client = client
         self.administrationClient = administrationClient
+        self.draftStore = draftStore
         _model = State(
             initialValue: DeviceDiscoveryModel(
                 client: client,
-                administrationClient: administrationClient
+                administrationClient: administrationClient,
+                draftStore: draftStore
             )
         )
     }
@@ -53,6 +57,7 @@ struct DeviceDiscoveryView: View {
                     } else {
                         ForEach(model.approvedDevices) { device in
                             let setupStatus = model.setupStatus(for: device)
+                            let hasSetupDraft = model.hasSetupDraft(for: device)
                             if setupStatus == .pending {
                                 Button {
                                     setupDevice = device
@@ -61,7 +66,8 @@ struct DeviceDiscoveryView: View {
                                         device: device,
                                         connectionState: nil,
                                         isInteractive: true,
-                                        setupStatus: setupStatus
+                                        setupStatus: setupStatus,
+                                        hasSetupDraft: hasSetupDraft
                                     )
                                 }
                                 .buttonStyle(.plain)
@@ -74,7 +80,8 @@ struct DeviceDiscoveryView: View {
                                     device: device,
                                     connectionState: nil,
                                     isInteractive: false,
-                                    setupStatus: setupStatus
+                                    setupStatus: setupStatus,
+                                    hasSetupDraft: hasSetupDraft
                                 )
                             }
                         }
@@ -98,7 +105,8 @@ struct DeviceDiscoveryView: View {
                                         device: device,
                                         connectionState: connectionState,
                                         isInteractive: true,
-                                        setupStatus: nil
+                                        setupStatus: nil,
+                                        hasSetupDraft: false
                                     )
                                 }
                                 .buttonStyle(.plain)
@@ -199,10 +207,13 @@ struct DeviceDiscoveryView: View {
         .sheet(isPresented: $isManualPairingPresented) {
             ManualDevicePairingView(model: model)
         }
-        .sheet(item: $setupDevice) { device in
+        .sheet(item: $setupDevice, onDismiss: {
+            Task { await model.refreshSetupDrafts() }
+        }) { device in
             DeviceSetupView(
                 device: device,
-                administrationClient: administrationClient
+                administrationClient: administrationClient,
+                draftStore: draftStore
             ) {
                 model.markReady(device)
             }
@@ -216,6 +227,7 @@ private struct DeviceDiscoveryRow: View {
     let connectionState: DeviceConnectionState?
     let isInteractive: Bool
     let setupStatus: DeviceSetupStatus?
+    let hasSetupDraft: Bool
 
     private var deviceIcon: String {
         switch device.kind {
@@ -237,7 +249,7 @@ private struct DeviceDiscoveryRow: View {
 
     private var actionLabel: String {
         if let setupStatus, !setupStatus.isActive {
-            return "Set up"
+            return hasSetupDraft ? "Resume setup" : "Set up"
         }
         guard let connectionState else { return "" }
         switch connectionState {
@@ -301,23 +313,29 @@ private struct DeviceDiscoveryRow: View {
 private struct DeviceSetupView: View {
     let device: HouseholdDevice
     let administrationClient: any DeviceAdministrationClient
+    let draftStore: any DeviceSetupDraftStore
     let onReady: @MainActor () -> Void
 
     @Environment(\.dismiss) private var dismiss
     @State private var model: DeviceSetupModel
+    @State private var isDiscardConfirmationPresented = false
+    @State private var shouldPreserveDraftOnDisappear = true
 
     init(
         device: HouseholdDevice,
         administrationClient: any DeviceAdministrationClient,
+        draftStore: any DeviceSetupDraftStore,
         onReady: @escaping @MainActor () -> Void
     ) {
         self.device = device
         self.administrationClient = administrationClient
+        self.draftStore = draftStore
         self.onReady = onReady
         _model = State(
             initialValue: DeviceSetupModel(
                 device: device,
-                administrationClient: administrationClient
+                administrationClient: administrationClient,
+                draftStore: draftStore
             )
         )
     }
@@ -332,7 +350,11 @@ private struct DeviceSetupView: View {
                         "Approved, but inactive until setup is complete.",
                         systemImage: "lock.shield"
                     )
-                    Text("Set up \(device.displayName) in this order: Room, Wake Mappings, then Ready.")
+                    Text(
+                        model.hasDraft
+                            ? "Resume this saved setup draft. It remains inactive until Ready."
+                            : "Set up \(device.displayName) in this order: Room, Wake Mappings, then Ready."
+                    )
                         .font(.footnote)
                         .foregroundStyle(.secondary)
                 } header: {
@@ -363,11 +385,52 @@ private struct DeviceSetupView: View {
             .navigationTitle("Set Up Device")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
-                ToolbarItem(placement: .cancellationAction) {
-                    Button("Cancel") {
-                        dismiss()
+                ToolbarItem(placement: .secondaryAction) {
+                    if model.hasDraft {
+                        Button("Discard setup", role: .destructive) {
+                            isDiscardConfirmationPresented = true
+                        }
+                        .disabled(model.isLoadingDraft || model.isSavingDraft || model.isPublishing)
                     }
                 }
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Cancel") {
+                        Task {
+                            if await model.preserveDraft() {
+                                shouldPreserveDraftOnDisappear = false
+                                dismiss()
+                            }
+                        }
+                    }
+                    .disabled(model.isLoadingDraft || model.isSavingDraft || model.isPublishing)
+                }
+            }
+            .confirmationDialog(
+                "Discard saved setup?",
+                isPresented: $isDiscardConfirmationPresented,
+                titleVisibility: .visible
+            ) {
+                Button("Discard Setup", role: .destructive) {
+                    Task {
+                        if await model.discardDraft() {
+                            shouldPreserveDraftOnDisappear = false
+                            dismiss()
+                        }
+                    }
+                }
+                Button("Cancel", role: .cancel) {}
+            } message: {
+                Text(
+                    "The saved Room and Wake Mappings will be removed. "
+                        + "The Device remains inactive."
+                )
+            }
+            .task {
+                await model.loadDraft()
+            }
+            .onDisappear {
+                guard shouldPreserveDraftOnDisappear else { return }
+                Task { await model.preserveDraft() }
             }
         }
     }

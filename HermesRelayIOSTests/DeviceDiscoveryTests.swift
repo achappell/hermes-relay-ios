@@ -63,6 +63,224 @@ final class DeviceDiscoveryTests: XCTestCase {
         }
     }
 
+    func testDeviceSetupDraftStoreRoundTripsDraftByDeviceID() async throws {
+        let fileURL = temporaryDraftFileURL()
+        defer { try? FileManager.default.removeItem(at: fileURL.deletingLastPathComponent()) }
+        let store = JSONDeviceSetupDraftStore(fileURL: fileURL)
+        let draft = DeviceSetupDraft(
+            deviceID: "approved-puck",
+            room: "Hallway",
+            wakeMappings: [
+                DeviceWakeMapping(
+                    wakePhrase: "Hey Missy",
+                    profileIdentifier: "missy"
+                )
+            ],
+            step: .ready
+        )
+
+        try await store.save(draft)
+        let loaded = try await store.load(for: draft.deviceID)
+
+        XCTAssertEqual(loaded, draft)
+    }
+
+    func testDeviceSetupDraftStoreReplacesMatchingDeviceAndRetainsOthers() async throws {
+        let fileURL = temporaryDraftFileURL()
+        defer { try? FileManager.default.removeItem(at: fileURL.deletingLastPathComponent()) }
+        let store = JSONDeviceSetupDraftStore(fileURL: fileURL)
+        let first = DeviceSetupDraft(
+            deviceID: "approved-puck",
+            room: "Kitchen",
+            wakeMappings: [],
+            step: .room
+        )
+        let second = DeviceSetupDraft(
+            deviceID: "second-device",
+            room: "Study",
+            wakeMappings: [],
+            step: .room
+        )
+        let replacement = DeviceSetupDraft(
+            deviceID: first.deviceID,
+            room: "Hallway",
+            wakeMappings: [],
+            step: .wakeMappings
+        )
+
+        try await store.save(first)
+        try await store.save(second)
+        try await store.save(replacement)
+
+        let loaded = try await store.loadAll()
+        let loadedFirst = try await store.load(for: first.deviceID)
+        let loadedSecond = try await store.load(for: second.deviceID)
+
+        XCTAssertEqual(loaded.map(\.deviceID), ["approved-puck", "second-device"])
+        XCTAssertEqual(loadedFirst, replacement)
+        XCTAssertEqual(loadedSecond, second)
+    }
+
+    func testDeviceSetupDraftStoreDeletesOnlyRequestedDraft() async throws {
+        let fileURL = temporaryDraftFileURL()
+        defer { try? FileManager.default.removeItem(at: fileURL.deletingLastPathComponent()) }
+        let store = JSONDeviceSetupDraftStore(fileURL: fileURL)
+        let first = DeviceSetupDraft(
+            deviceID: "approved-puck",
+            room: "Kitchen",
+            wakeMappings: [],
+            step: .room
+        )
+        let second = DeviceSetupDraft(
+            deviceID: "second-device",
+            room: "Study",
+            wakeMappings: [],
+            step: .room
+        )
+
+        try await store.save(first)
+        try await store.save(second)
+        try await store.delete(deviceID: first.deviceID)
+
+        let deleted = try await store.load(for: first.deviceID)
+        let remaining = try await store.load(for: second.deviceID)
+        XCTAssertNil(deleted)
+        XCTAssertEqual(remaining, second)
+    }
+
+    func testDeviceSetupDraftSurvivesCancelAndResumesAtLastStep() async throws {
+        let fileURL = temporaryDraftFileURL()
+        defer { try? FileManager.default.removeItem(at: fileURL.deletingLastPathComponent()) }
+        let store = JSONDeviceSetupDraftStore(fileURL: fileURL)
+        let mapping = DeviceWakeMapping(
+            wakePhrase: "Hey Missy",
+            profileIdentifier: "missy"
+        )
+        let first = DeviceSetupModel(
+            device: approvedSetupDevice,
+            administrationClient: FakeDeviceAdministrationClient(),
+            draftStore: store
+        )
+        await first.loadDraft()
+        first.room = " Hallway "
+        XCTAssertTrue(first.continueFromRoom())
+        first.wakeMappings = [mapping]
+        XCTAssertTrue(first.continueFromMappings())
+
+        let preserved = await first.preserveDraft()
+        XCTAssertTrue(preserved)
+
+        let resumed = DeviceSetupModel(
+            device: approvedSetupDevice,
+            administrationClient: FakeDeviceAdministrationClient(),
+            draftStore: store
+        )
+        await resumed.loadDraft()
+
+        XCTAssertTrue(resumed.hasDraft)
+        XCTAssertEqual(resumed.step, .ready)
+        XCTAssertEqual(resumed.room, "Hallway")
+        XCTAssertEqual(resumed.wakeMappings, [mapping])
+        XCTAssertFalse(resumed.isActive)
+    }
+
+    func testDiscardedDeviceSetupDraftDoesNotResume() async throws {
+        let fileURL = temporaryDraftFileURL()
+        defer { try? FileManager.default.removeItem(at: fileURL.deletingLastPathComponent()) }
+        let store = JSONDeviceSetupDraftStore(fileURL: fileURL)
+        let setup = DeviceSetupModel(
+            device: approvedSetupDevice,
+            administrationClient: FakeDeviceAdministrationClient(),
+            draftStore: store
+        )
+        setup.room = "Hallway"
+        let preserved = await setup.preserveDraft()
+        XCTAssertTrue(preserved)
+
+        let discarded = await setup.discardDraft()
+        XCTAssertTrue(discarded)
+
+        let resumed = DeviceSetupModel(
+            device: approvedSetupDevice,
+            administrationClient: FakeDeviceAdministrationClient(),
+            draftStore: store
+        )
+        await resumed.loadDraft()
+
+        XCTAssertFalse(resumed.hasDraft)
+        XCTAssertEqual(resumed.step, .room)
+        XCTAssertTrue(resumed.room.isEmpty)
+        XCTAssertTrue(resumed.wakeMappings.isEmpty)
+        XCTAssertFalse(resumed.isActive)
+    }
+
+    func testSuccessfulDeviceSetupRemovesSavedDraftAndBecomesActive() async throws {
+        let fileURL = temporaryDraftFileURL()
+        defer { try? FileManager.default.removeItem(at: fileURL.deletingLastPathComponent()) }
+        let store = JSONDeviceSetupDraftStore(fileURL: fileURL)
+        let setup = DeviceSetupModel(
+            device: approvedSetupDevice,
+            administrationClient: FakeDeviceAdministrationClient(),
+            draftStore: store
+        )
+        setup.room = "Kitchen"
+        XCTAssertTrue(setup.continueFromRoom())
+        setup.wakeMappings = [
+            DeviceWakeMapping(wakePhrase: "Hey Missy", profileIdentifier: "missy")
+        ]
+        XCTAssertTrue(setup.continueFromMappings())
+        let preserved = await setup.preserveDraft()
+        XCTAssertTrue(preserved)
+
+        let completed = await setup.confirmReady()
+
+        XCTAssertTrue(completed)
+        XCTAssertTrue(setup.isActive)
+        XCTAssertEqual(setup.step, .complete)
+        XCTAssertFalse(setup.hasDraft)
+        let deleted = try await store.load(for: setup.device.id)
+        XCTAssertNil(deleted)
+    }
+
+    func testDiscoveryRehydratesSavedDraftAsPendingWithoutPromotingUnconfiguredDevice() async throws {
+        let fileURL = temporaryDraftFileURL()
+        defer { try? FileManager.default.removeItem(at: fileURL.deletingLastPathComponent()) }
+        let store = JSONDeviceSetupDraftStore(fileURL: fileURL)
+        let approved = approvedSetupDevice
+        try await store.save(
+            DeviceSetupDraft(
+                deviceID: approved.id,
+                room: "Kitchen",
+                wakeMappings: [],
+                step: .room
+            )
+        )
+        let unexpectedUnconfigured = HouseholdDevice(
+            id: "unconfigured-puck",
+            displayName: "New Puck",
+            kind: .puck,
+            trustState: .unconfigured
+        )
+        let client = FakeDeviceDiscoveryClient(
+            snapshot: DeviceDiscoverySnapshot(
+                approvedDevices: [approved],
+                unconfiguredDevices: [unexpectedUnconfigured]
+            )
+        )
+        let model = DeviceDiscoveryModel(
+            client: client,
+            draftStore: store
+        )
+
+        await model.discover()
+
+        XCTAssertEqual(model.approvedDevices, [approved])
+        XCTAssertEqual(model.discoveredDevices, [unexpectedUnconfigured])
+        XCTAssertEqual(model.setupStatus(for: approved), .pending)
+        XCTAssertTrue(model.hasSetupDraft(for: approved))
+        XCTAssertFalse(model.isActive(approved))
+    }
+
     func testApprovalRequiresAConfirmedConnectionAndKeepsCandidateUnapproved() async {
         let candidate = HouseholdDevice(
             id: "unconfigured-puck",
@@ -339,6 +557,12 @@ final class DeviceDiscoveryTests: XCTestCase {
             kind: .puck,
             trustState: .approved
         )
+    }
+
+    private func temporaryDraftFileURL() -> URL {
+        FileManager.default.temporaryDirectory
+            .appendingPathComponent("HermesDeviceSetupTests-\(UUID().uuidString)")
+            .appendingPathComponent("device-setup-drafts.json")
     }
 
     func testDiscoveryKeepsUnconfiguredDevicesSeparateFromApprovedDevices() async {
