@@ -1,3 +1,4 @@
+import Foundation
 import Observation
 
 @MainActor
@@ -5,6 +6,7 @@ import Observation
 final class DeviceDiscoveryModel {
     private(set) var approvedDevices: [HouseholdDevice] = []
     private(set) var discoveredDevices: [HouseholdDevice] = []
+    private(set) var isApproving = false
     private(set) var isDiscovering = false
     private(set) var errorMessage: String?
     private(set) var isManualFallbackAvailable = false
@@ -12,12 +14,22 @@ final class DeviceDiscoveryModel {
     var manualIdentifier = ""
     private(set) var isPairingManually = false
     private var connectionStates: [String: DeviceConnectionState] = [:]
+    private var setupStatuses: [String: DeviceSetupStatus] = [:]
+    private var setupDrafts: [String: DeviceSetupDraft] = [:]
     private var discoveryRequestID = 0
 
     private let client: any DeviceDiscoveryClient
+    private let administrationClient: any DeviceAdministrationClient
+    private let draftStore: any DeviceSetupDraftStore
 
-    init(client: any DeviceDiscoveryClient) {
+    init(
+        client: any DeviceDiscoveryClient,
+        administrationClient: any DeviceAdministrationClient = UnavailableDeviceAdministrationClient(),
+        draftStore: any DeviceSetupDraftStore = NoopDeviceSetupDraftStore()
+    ) {
         self.client = client
+        self.administrationClient = administrationClient
+        self.draftStore = draftStore
     }
 
     func discover() async {
@@ -41,8 +53,13 @@ final class DeviceDiscoveryModel {
         do {
             let snapshot = try await client.discover()
             guard discoveryRequestID == requestID else { return }
+            let draftLoadError = await loadSetupDrafts()
+            guard discoveryRequestID == requestID else { return }
+            let locallyApproved = approvedDevices.filter {
+                setupStatuses[$0.id] != nil
+            }
             let approved = uniqueDevices(
-                snapshot.approvedDevices,
+                snapshot.approvedDevices + locallyApproved,
                 withTrustState: .approved
             )
             let approvedIDs = Set(approved.map(\.id))
@@ -51,7 +68,7 @@ final class DeviceDiscoveryModel {
                 withTrustState: .unconfigured
             ).filter { !approvedIDs.contains($0.id) }
 
-            errorMessage = nil
+            errorMessage = draftLoadError
             approvedDevices = approved
             discoveredDevices = discovered
             let discoveredIDs = Set(discovered.map(\.id))
@@ -147,6 +164,86 @@ final class DeviceDiscoveryModel {
         connectionStates[device.id] ?? .idle
     }
 
+    func setupStatus(for device: HouseholdDevice) -> DeviceSetupStatus? {
+        setupStatuses[device.id] ?? (setupDrafts[device.id] == nil ? nil : .pending)
+    }
+
+    func hasSetupDraft(for device: HouseholdDevice) -> Bool {
+        setupDrafts[device.id] != nil
+    }
+
+    func refreshSetupDrafts() async {
+        errorMessage = await loadSetupDrafts()
+    }
+
+    func approvedDevice(for device: HouseholdDevice) -> HouseholdDevice? {
+        approvedDevices.first { $0.id == device.id }
+    }
+
+    func isActive(_ device: HouseholdDevice) -> Bool {
+        setupStatuses[device.id]?.isActive == true
+    }
+
+    func markReady(_ device: HouseholdDevice) {
+        guard setupStatus(for: device) == .pending else { return }
+        setupStatuses[device.id] = .ready
+        setupDrafts.removeValue(forKey: device.id)
+        statusMessage = "\(device.displayName) is ready and active."
+    }
+
+    func approve(_ device: HouseholdDevice) async -> Bool {
+        guard connectionState(for: device) == .connected else {
+            errorMessage = "Confirm the Device connection before approving it."
+            return false
+        }
+        guard let currentDevice = discoveredDevices.first(where: { $0.id == device.id }),
+              currentDevice.trustState == .unconfigured
+        else {
+            errorMessage = DeviceDiscoveryError.deviceNotFound.userMessage
+            return false
+        }
+        guard !isApproving else { return false }
+
+        isApproving = true
+        errorMessage = nil
+        statusMessage = nil
+        let requestID = discoveryRequestID
+        defer { isApproving = false }
+
+        do {
+            let receipt = try await administrationClient.approve(currentDevice)
+            guard requestID == discoveryRequestID,
+                  discoveredDevices.contains(where: {
+                      $0.id == currentDevice.id && $0.trustState == .unconfigured
+                  })
+            else { return false }
+            guard receipt.deviceID == currentDevice.id else {
+                throw DeviceAdministrationError.unexpectedResponse
+            }
+
+            let approvedDevice = HouseholdDevice(
+                id: currentDevice.id,
+                displayName: currentDevice.displayName,
+                kind: currentDevice.kind,
+                trustState: .approved
+            )
+            approvedDevices.append(approvedDevice)
+            discoveredDevices.removeAll { $0.id == currentDevice.id }
+            connectionStates.removeValue(forKey: currentDevice.id)
+            setupStatuses[currentDevice.id] = .pending
+            statusMessage = "\(currentDevice.displayName) approved. Setup is incomplete and the Device remains inactive."
+            return true
+        } catch let error as DeviceAdministrationError {
+            guard requestID == discoveryRequestID else { return false }
+            errorMessage = error.userMessage
+            return false
+        } catch {
+            guard requestID == discoveryRequestID else { return false }
+            errorMessage = DeviceAdministrationError.approvalFailed.userMessage
+            return false
+        }
+    }
+
     func connect(to device: HouseholdDevice) async {
         guard !isDiscovering else {
             errorMessage = DeviceDiscoveryError.discoveryInProgress.userMessage
@@ -190,5 +287,240 @@ final class DeviceDiscoveryModel {
             errorMessage = DeviceDiscoveryError.connectionFailed.userMessage
             isManualFallbackAvailable = client.supportsManualPairing
         }
+    }
+
+    private func loadSetupDrafts() async -> String? {
+        do {
+            let drafts = try await draftStore.loadAll()
+            setupDrafts = drafts.reduce(into: [:]) { result, draft in
+                result[draft.deviceID] = draft
+            }
+            return nil
+        } catch {
+            setupDrafts = [:]
+            return "Saved Device setup drafts could not be loaded. Try again."
+        }
+    }
+}
+
+@MainActor
+@Observable
+final class DeviceSetupModel {
+    let device: HouseholdDevice
+    private let administrationClient: any DeviceAdministrationClient
+    private let draftStore: any DeviceSetupDraftStore
+
+    private(set) var step: DeviceSetupStep = .room
+    private(set) var errorMessage: String?
+    private(set) var isPublishing = false
+    private(set) var isActive = false
+    private(set) var hasDraft = false
+    private(set) var isLoadingDraft = false
+    private(set) var isSavingDraft = false
+    private var didLoadDraft = false
+    var room = ""
+    var wakeMappings: [DeviceWakeMapping] = []
+
+    init(
+        device: HouseholdDevice,
+        administrationClient: any DeviceAdministrationClient,
+        draftStore: any DeviceSetupDraftStore = NoopDeviceSetupDraftStore()
+    ) {
+        self.device = device
+        self.administrationClient = administrationClient
+        self.draftStore = draftStore
+    }
+
+    func loadDraft() async {
+        guard !didLoadDraft else { return }
+        didLoadDraft = true
+        isLoadingDraft = true
+        defer { isLoadingDraft = false }
+
+        do {
+            guard let draft = try await draftStore.load(for: device.id) else {
+                return
+            }
+            room = draft.room
+            wakeMappings = draft.wakeMappings
+            step = draft.step == .complete ? .ready : draft.step
+            hasDraft = true
+            errorMessage = nil
+        } catch {
+            errorMessage = "The saved Device setup draft could not be loaded. Try again."
+        }
+    }
+
+    @discardableResult
+    func preserveDraft() async -> Bool {
+        guard step != .complete else { return true }
+        guard !isSavingDraft else { return false }
+
+        isSavingDraft = true
+        defer { isSavingDraft = false }
+        let draft = DeviceSetupDraft(
+            deviceID: device.id,
+            room: room.trimmingCharacters(in: .whitespacesAndNewlines),
+            wakeMappings: normalizedWakeMappings,
+            step: step
+        )
+
+        do {
+            try await draftStore.save(draft)
+            hasDraft = true
+            return true
+        } catch {
+            errorMessage = "The Device setup draft could not be saved. Try again."
+            return false
+        }
+    }
+
+    @discardableResult
+    func discardDraft() async -> Bool {
+        guard !isSavingDraft else { return false }
+
+        isSavingDraft = true
+        defer { isSavingDraft = false }
+
+        do {
+            try await draftStore.delete(deviceID: device.id)
+            room = ""
+            wakeMappings = []
+            step = .room
+            hasDraft = false
+            errorMessage = nil
+            return true
+        } catch {
+            errorMessage = "The Device setup draft could not be discarded. Try again."
+            return false
+        }
+    }
+
+    @discardableResult
+    func continueFromRoom() -> Bool {
+        let normalizedRoom = room.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !normalizedRoom.isEmpty else {
+            errorMessage = "Assign this Device to a Room."
+            return false
+        }
+
+        room = normalizedRoom
+        errorMessage = nil
+        step = .wakeMappings
+        return true
+    }
+
+    func addWakeMapping() {
+        wakeMappings.append(DeviceWakeMapping())
+        errorMessage = nil
+    }
+
+    func removeWakeMapping(id: UUID) {
+        wakeMappings.removeAll { $0.id == id }
+        errorMessage = nil
+    }
+
+    func editWakeMappings() {
+        guard step == .ready else { return }
+        step = .wakeMappings
+        errorMessage = nil
+    }
+
+    func returnToRoom() {
+        guard step == .wakeMappings else { return }
+        step = .room
+        errorMessage = nil
+    }
+
+    @discardableResult
+    func continueFromMappings() -> Bool {
+        if let validationMessage = setupValidationMessage() {
+            errorMessage = validationMessage
+            return false
+        }
+
+        wakeMappings = wakeMappings.map { mapping in
+            var normalized = mapping
+            normalized.wakePhrase = mapping.wakePhrase.trimmingCharacters(
+                in: .whitespacesAndNewlines
+            )
+            normalized.profileIdentifier = mapping.normalizedProfileIdentifier
+            return normalized
+        }
+        errorMessage = nil
+        step = .ready
+        return true
+    }
+
+    func confirmReady() async -> Bool {
+        guard step == .ready, !isPublishing else { return false }
+        if let validationMessage = setupValidationMessage() {
+            errorMessage = validationMessage
+            return false
+        }
+
+        isPublishing = true
+        errorMessage = nil
+        defer { isPublishing = false }
+
+        let configuration = DeviceSetupConfiguration(
+            deviceID: device.id,
+            room: room.trimmingCharacters(in: .whitespacesAndNewlines),
+            wakeMappings: normalizedWakeMappings
+        )
+
+        do {
+            let receipt = try await administrationClient.configure(configuration)
+            guard receipt.deviceID == device.id else {
+                throw DeviceAdministrationError.unexpectedResponse
+            }
+
+            do {
+                try await draftStore.delete(deviceID: device.id)
+                hasDraft = false
+            } catch {
+                hasDraft = true
+                errorMessage = "Device is ready, but its saved setup draft could not be cleared."
+            }
+            isActive = true
+            step = .complete
+            return true
+        } catch let error as DeviceAdministrationError {
+            errorMessage = error.userMessage
+            return false
+        } catch {
+            errorMessage = DeviceAdministrationError.configurationFailed.userMessage
+            return false
+        }
+    }
+
+    private var normalizedWakeMappings: [DeviceWakeMapping] {
+        wakeMappings.map { mapping in
+            var normalized = mapping
+            normalized.wakePhrase = mapping.wakePhrase.trimmingCharacters(
+                in: .whitespacesAndNewlines
+            )
+            normalized.profileIdentifier = mapping.normalizedProfileIdentifier
+            return normalized
+        }
+    }
+
+    private func setupValidationMessage() -> String? {
+        let normalizedRoom = room.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !normalizedRoom.isEmpty else {
+            return "Assign this Device to a Room."
+        }
+        guard !wakeMappings.isEmpty else {
+            return "Add at least one Wake Mapping."
+        }
+        guard wakeMappings.allSatisfy(\.hasValidValues) else {
+            return "Each Wake Mapping needs a wake phrase and Hermes Profile identifier."
+        }
+
+        var seenPhrases = Set<String>()
+        guard wakeMappings.allSatisfy({ seenPhrases.insert($0.normalizedWakePhrase).inserted }) else {
+            return "Each Wake Mapping must use a unique wake phrase."
+        }
+        return nil
     }
 }

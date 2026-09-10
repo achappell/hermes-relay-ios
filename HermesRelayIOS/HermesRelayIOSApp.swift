@@ -6,6 +6,8 @@ struct HermesRelayIOSApp: App {
     @State private var store: ConversationStore
     private let configuration: RelayConfigurationStore
     private let deviceDiscoveryClient: any DeviceDiscoveryClient
+    private let deviceAdministrationClient: any DeviceAdministrationClient
+    private let deviceSetupDraftStore: any DeviceSetupDraftStore
     private let appDirectory: URL
 
     init() {
@@ -38,6 +40,8 @@ struct HermesRelayIOSApp: App {
         // physical Device share a settled discovery/handshake contract. A
         // Debug-only launch argument selects the deterministic UI fixture.
         self.deviceDiscoveryClient = DeviceDiscoveryClientFactory.make()
+        self.deviceAdministrationClient = DeviceAdministrationClientFactory.make()
+        self.deviceSetupDraftStore = DeviceSetupDraftStoreFactory.make(in: appDirectory)
     }
 
     var body: some Scene {
@@ -46,7 +50,9 @@ struct HermesRelayIOSApp: App {
                 store: store,
                 configurationStore: configuration,
                 conversationDirectory: appDirectory,
-                deviceDiscoveryClient: deviceDiscoveryClient
+                deviceDiscoveryClient: deviceDiscoveryClient,
+                deviceAdministrationClient: deviceAdministrationClient,
+                deviceSetupDraftStore: deviceSetupDraftStore
             )
                 .task {
                     // Hand the pre-profiles conversation to whichever profile
