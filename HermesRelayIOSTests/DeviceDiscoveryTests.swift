@@ -7,6 +7,43 @@ import UIKit
 
 @MainActor
 final class DeviceDiscoveryTests: XCTestCase {
+    func testDebugFixtureProvidesMixedDevicesAndDeterministicConnectionOutcomes() async throws {
+        let client = DeviceDiscoveryClientFactory.make(
+            arguments: [DeviceDiscoveryClientFactory.fixtureLaunchArgument]
+        )
+
+        let snapshot = try await client.discover()
+
+        XCTAssertEqual(snapshot.approvedDevices.map(\.id), ["approved-kitchen-display"])
+        XCTAssertEqual(
+            snapshot.unconfiguredDevices.map(\.id),
+            ["unconfigured-hallway-puck", "unconfigured-study-display"]
+        )
+
+        let successfulReceipt = try await client.connect(to: snapshot.unconfiguredDevices[0])
+        XCTAssertEqual(successfulReceipt.deviceID, "unconfigured-hallway-puck")
+
+        do {
+            _ = try await client.connect(to: snapshot.unconfiguredDevices[1])
+            XCTFail("The second fixture candidate should exercise the failure state")
+        } catch let error as DeviceDiscoveryError {
+            XCTAssertEqual(error, .connectionFailed)
+        }
+    }
+
+    func testDeviceDiscoveryFactoryDefaultsToUnavailableWithoutFixtureArgument() async {
+        let client = DeviceDiscoveryClientFactory.make(arguments: [])
+
+        do {
+            _ = try await client.discover()
+            XCTFail("The shipped default must not claim to discover Devices")
+        } catch let error as DeviceDiscoveryError {
+            XCTAssertEqual(error, .lanUnavailable)
+        } catch {
+            XCTFail("Unexpected error: \(error)")
+        }
+    }
+
     func testDiscoveryKeepsUnconfiguredDevicesSeparateFromApprovedDevices() async {
         let approved = HouseholdDevice(
             id: "approved-display",

@@ -35,8 +35,9 @@ struct HermesRelayIOSApp: App {
         self.appDirectory = appDirectory
         self.configuration = configuration
         // Device discovery stays behind the typed seam until Hermes and the
-        // physical Device share a settled discovery/handshake contract.
-        self.deviceDiscoveryClient = UnavailableDeviceDiscoveryClient()
+        // physical Device share a settled discovery/handshake contract. A
+        // Debug-only launch argument selects the deterministic UI fixture.
+        self.deviceDiscoveryClient = DeviceDiscoveryClientFactory.make()
     }
 
     var body: some Scene {
