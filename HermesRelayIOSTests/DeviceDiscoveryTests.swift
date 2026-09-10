@@ -1,0 +1,799 @@
+import XCTest
+#if os(iOS)
+import SwiftUI
+import UIKit
+#endif
+@testable import HermesRelayIOS
+
+@MainActor
+final class DeviceDiscoveryTests: XCTestCase {
+    func testDiscoveryKeepsUnconfiguredDevicesSeparateFromApprovedDevices() async {
+        let approved = HouseholdDevice(
+            id: "approved-display",
+            displayName: "Kitchen Display",
+            kind: .display,
+            trustState: .approved
+        )
+        let discovered = HouseholdDevice(
+            id: "unconfigured-puck",
+            displayName: "New Puck",
+            kind: .puck,
+            trustState: .unconfigured
+        )
+        let secondDiscovered = HouseholdDevice(
+            id: "unconfigured-display",
+            displayName: "New Display",
+            kind: .display,
+            trustState: .unconfigured
+        )
+        let client = FakeDeviceDiscoveryClient(
+            snapshot: DeviceDiscoverySnapshot(
+                approvedDevices: [approved],
+                unconfiguredDevices: [discovered, secondDiscovered]
+            )
+        )
+        let model = DeviceDiscoveryModel(client: client)
+
+        await model.discover()
+
+        XCTAssertEqual(model.approvedDevices, [approved])
+        XCTAssertEqual(model.discoveredDevices, [discovered, secondDiscovered])
+        XCTAssertEqual(model.discoveredDevices.first?.trustState, .unconfigured)
+        XCTAssertNil(model.errorMessage)
+    }
+
+    func testDiscoveryDropsMisclassifiedAndDuplicateDevices() async {
+        let approved = HouseholdDevice(
+            id: "approved-display",
+            displayName: "Kitchen Display",
+            kind: .display,
+            trustState: .approved
+        )
+        let duplicateCandidate = HouseholdDevice(
+            id: "unconfigured-puck",
+            displayName: "New Puck",
+            kind: .puck,
+            trustState: .unconfigured
+        )
+        let misclassifiedApproved = HouseholdDevice(
+            id: "bad-approved",
+            displayName: "Unknown Approved Device",
+            kind: .puck,
+            trustState: .unconfigured
+        )
+        let misclassifiedCandidate = HouseholdDevice(
+            id: "bad-candidate",
+            displayName: "Already Approved Device",
+            kind: .display,
+            trustState: .approved
+        )
+        let client = FakeDeviceDiscoveryClient(
+            snapshot: DeviceDiscoverySnapshot(
+                approvedDevices: [approved, misclassifiedApproved],
+                unconfiguredDevices: [
+                    duplicateCandidate,
+                    duplicateCandidate,
+                    misclassifiedCandidate
+                ]
+            )
+        )
+        let model = DeviceDiscoveryModel(client: client)
+
+        await model.discover()
+
+        XCTAssertEqual(model.approvedDevices, [approved])
+        XCTAssertEqual(model.discoveredDevices, [duplicateCandidate])
+    }
+
+    func testDiscoveryDropsDeviceWithEmptyIdentifier() async {
+        let malformed = HouseholdDevice(
+            id: "",
+            displayName: "Unnamed Puck",
+            kind: .puck,
+            trustState: .unconfigured
+        )
+        let client = FakeDeviceDiscoveryClient(
+            snapshot: DeviceDiscoverySnapshot(
+                approvedDevices: [],
+                unconfiguredDevices: [malformed]
+            )
+        )
+        let model = DeviceDiscoveryModel(client: client)
+
+        await model.discover()
+
+        XCTAssertTrue(model.discoveredDevices.isEmpty)
+    }
+
+    func testConnectingThenSuccessKeepsCandidateUnconfiguredAndOutOfApprovedDevices() async {
+        let approved = HouseholdDevice(
+            id: "approved-display",
+            displayName: "Kitchen Display",
+            kind: .display,
+            trustState: .approved
+        )
+        let discovered = HouseholdDevice(
+            id: "unconfigured-puck",
+            displayName: "New Puck",
+            kind: .puck,
+            trustState: .unconfigured
+        )
+        let client = FakeDeviceDiscoveryClient(
+            snapshot: DeviceDiscoverySnapshot(
+                approvedDevices: [approved],
+                unconfiguredDevices: [discovered]
+            ),
+            holdConnection: true
+        )
+        let model = DeviceDiscoveryModel(client: client)
+        await model.discover()
+
+        let connectionTask = Task {
+            await model.connect(to: discovered)
+        }
+        await client.waitUntilConnectCalled()
+
+        XCTAssertEqual(model.connectionState(for: discovered), .connecting)
+        XCTAssertEqual(model.discoveredDevices, [discovered])
+        XCTAssertEqual(model.approvedDevices, [approved])
+
+        await client.releaseConnection()
+        await connectionTask.value
+
+        XCTAssertEqual(model.connectionState(for: discovered), .connected)
+        XCTAssertEqual(model.discoveredDevices, [discovered])
+        XCTAssertEqual(model.approvedDevices, [approved])
+        XCTAssertEqual(
+            model.statusMessage,
+            "New Puck responded. It remains unconfigured."
+        )
+        let sideEffects = await client.sideEffectCounts()
+        XCTAssertEqual(sideEffects, .zero)
+    }
+
+    func testLANUnavailableLeavesCandidatesInertAndEnablesManualFallback() async {
+        let client = FakeDeviceDiscoveryClient(
+            discoverError: .lanUnavailable
+        )
+        let model = DeviceDiscoveryModel(client: client)
+
+        await model.discover()
+
+        XCTAssertEqual(
+            model.errorMessage,
+            "Device discovery is unavailable. Try manual pairing."
+        )
+        XCTAssertTrue(model.isManualFallbackAvailable)
+        XCTAssertTrue(model.discoveredDevices.isEmpty)
+        XCTAssertTrue(model.approvedDevices.isEmpty)
+    }
+
+    func testUnavailableProductionAdapterDoesNotOfferAnUnsupportedFallback() async {
+        let model = DeviceDiscoveryModel(client: UnavailableDeviceDiscoveryClient())
+
+        await model.discover()
+
+        XCTAssertEqual(
+            model.errorMessage,
+            "Device discovery is not configured yet. Try again when a Device transport is available."
+        )
+        XCTAssertFalse(model.isManualFallbackAvailable)
+    }
+
+    func testManualPairingIdentifiesUnconfiguredCandidateWithoutApproval() async {
+        let candidate = HouseholdDevice(
+            id: "unconfigured-puck",
+            displayName: "New Puck",
+            kind: .puck,
+            trustState: .unconfigured
+        )
+        let client = FakeDeviceDiscoveryClient(
+            discoverError: .lanUnavailable,
+            manualDevice: candidate
+        )
+        let model = DeviceDiscoveryModel(client: client)
+        await model.discover()
+        model.manualIdentifier = "unconfigured-puck"
+
+        let identified = await model.submitManualPairing()
+
+        XCTAssertTrue(identified)
+        XCTAssertEqual(model.discoveredDevices, [candidate])
+        XCTAssertTrue(model.approvedDevices.isEmpty)
+        XCTAssertEqual(model.connectionState(for: candidate), .idle)
+        XCTAssertEqual(
+            model.statusMessage,
+            "New Puck found. It remains unconfigured."
+        )
+        let manualIdentifiers = await client.manualIdentifiers()
+        XCTAssertEqual(manualIdentifiers, ["unconfigured-puck"])
+    }
+
+    func testManualPairingRejectsBlankIdentifierWithoutCallingClient() async {
+        let client = FakeDeviceDiscoveryClient()
+        let model = DeviceDiscoveryModel(client: client)
+        model.manualIdentifier = " \n\t "
+
+        let identified = await model.submitManualPairing()
+
+        XCTAssertFalse(identified)
+        XCTAssertEqual(model.errorMessage, "Enter a valid Device identifier.")
+        let manualIdentifiers = await client.manualIdentifiers()
+        XCTAssertTrue(manualIdentifiers.isEmpty)
+    }
+
+    func testManualPairingRejectsADeviceDifferentFromRequestedIdentifier() async {
+        let differentDevice = HouseholdDevice(
+            id: "other-puck",
+            displayName: "Other Puck",
+            kind: .puck,
+            trustState: .unconfigured
+        )
+        let client = FakeDeviceDiscoveryClient(manualDevice: differentDevice)
+        let model = DeviceDiscoveryModel(client: client)
+        model.manualIdentifier = "requested-puck"
+
+        let identified = await model.submitManualPairing()
+
+        XCTAssertFalse(identified)
+        XCTAssertEqual(
+            model.errorMessage,
+            "The Device identity could not be verified. Try again."
+        )
+        XCTAssertTrue(model.discoveredDevices.isEmpty)
+        XCTAssertTrue(model.approvedDevices.isEmpty)
+    }
+
+    func testManualPairingRejectsAnAlreadyApprovedIdentity() async {
+        let approved = HouseholdDevice(
+            id: "approved-display",
+            displayName: "Kitchen Display",
+            kind: .display,
+            trustState: .approved
+        )
+        let client = FakeDeviceDiscoveryClient(
+            snapshot: DeviceDiscoverySnapshot(
+                approvedDevices: [approved],
+                unconfiguredDevices: []
+            ),
+            manualDevice: HouseholdDevice(
+                id: approved.id,
+                displayName: approved.displayName,
+                kind: approved.kind,
+                trustState: .unconfigured
+            )
+        )
+        let model = DeviceDiscoveryModel(client: client)
+        await model.discover()
+        model.manualIdentifier = approved.id
+
+        let identified = await model.submitManualPairing()
+
+        XCTAssertFalse(identified)
+        XCTAssertEqual(model.approvedDevices, [approved])
+        XCTAssertTrue(model.discoveredDevices.isEmpty)
+        XCTAssertEqual(
+            model.errorMessage,
+            "The Device identity could not be verified. Try again."
+        )
+    }
+
+    func testApprovedDeviceCannotBeSelectedForUnconfiguredConnection() async {
+        let approved = HouseholdDevice(
+            id: "approved-display",
+            displayName: "Kitchen Display",
+            kind: .display,
+            trustState: .approved
+        )
+        let client = FakeDeviceDiscoveryClient(
+            snapshot: DeviceDiscoverySnapshot(
+                approvedDevices: [approved],
+                unconfiguredDevices: []
+            )
+        )
+        let model = DeviceDiscoveryModel(client: client)
+        await model.discover()
+
+        await model.connect(to: approved)
+
+        XCTAssertEqual(
+            model.errorMessage,
+            "That Device could not be found. Try discovery again."
+        )
+        let connectCallCount = await client.connectCallCountValue()
+        XCTAssertEqual(connectCallCount, 0)
+    }
+
+    func testConnectionFailureKeepsCandidateUnconfiguredAndOffersRecovery() async {
+        let approved = HouseholdDevice(
+            id: "approved-display",
+            displayName: "Kitchen Display",
+            kind: .display,
+            trustState: .approved
+        )
+        let candidate = HouseholdDevice(
+            id: "unconfigured-puck",
+            displayName: "New Puck",
+            kind: .puck,
+            trustState: .unconfigured
+        )
+        let client = FakeDeviceDiscoveryClient(
+            snapshot: DeviceDiscoverySnapshot(
+                approvedDevices: [approved],
+                unconfiguredDevices: [candidate]
+            ),
+            connectionError: .connectionFailed
+        )
+        let model = DeviceDiscoveryModel(client: client)
+        await model.discover()
+
+        await model.connect(to: candidate)
+
+        XCTAssertEqual(
+            model.connectionState(for: candidate),
+            .failed(.connectionFailed)
+        )
+        XCTAssertEqual(
+            model.errorMessage,
+            "The Device could not be connected. Try again."
+        )
+        XCTAssertTrue(model.isManualFallbackAvailable)
+        XCTAssertEqual(model.discoveredDevices, [candidate])
+        XCTAssertEqual(model.approvedDevices, [approved])
+    }
+
+    func testConnectionUsesStableDeviceIDWhenCandidatePresentationChanges() async {
+        let discovered = HouseholdDevice(
+            id: "unconfigured-puck",
+            displayName: "New Puck",
+            kind: .puck,
+            trustState: .unconfigured
+        )
+        let refreshedPresentation = HouseholdDevice(
+            id: discovered.id,
+            displayName: "New Puck in Hallway",
+            kind: .puck,
+            trustState: .unconfigured
+        )
+        let client = FakeDeviceDiscoveryClient(
+            snapshot: DeviceDiscoverySnapshot(
+                approvedDevices: [],
+                unconfiguredDevices: [discovered]
+            )
+        )
+        let model = DeviceDiscoveryModel(client: client)
+        await model.discover()
+
+        await model.connect(to: refreshedPresentation)
+
+        XCTAssertEqual(model.connectionState(for: discovered), .connected)
+        XCTAssertNil(model.errorMessage)
+        XCTAssertEqual(model.discoveredDevices, [discovered])
+    }
+
+    func testMismatchedConnectionReceiptFailsClosedWithoutPromotion() async {
+        let candidate = HouseholdDevice(
+            id: "unconfigured-puck",
+            displayName: "New Puck",
+            kind: .puck,
+            trustState: .unconfigured
+        )
+        let client = FakeDeviceDiscoveryClient(
+            snapshot: DeviceDiscoverySnapshot(
+                approvedDevices: [],
+                unconfiguredDevices: [candidate]
+            ),
+            receiptDeviceID: "different-device"
+        )
+        let model = DeviceDiscoveryModel(client: client)
+        await model.discover()
+
+        await model.connect(to: candidate)
+
+        XCTAssertEqual(
+            model.connectionState(for: candidate),
+            .failed(.unexpectedResponse)
+        )
+        XCTAssertEqual(
+            model.errorMessage,
+            "The Device identity could not be verified. Try again."
+        )
+        XCTAssertEqual(model.discoveredDevices, [candidate])
+        XCTAssertTrue(model.approvedDevices.isEmpty)
+        XCTAssertFalse(model.isManualFallbackAvailable)
+    }
+
+    func testDiscoveryExcludesAnApprovedIdentityReturnedAsUnconfigured() async {
+        let approved = HouseholdDevice(
+            id: "shared-device-id",
+            displayName: "Kitchen Display",
+            kind: .display,
+            trustState: .approved
+        )
+        let misclassified = HouseholdDevice(
+            id: approved.id,
+            displayName: approved.displayName,
+            kind: approved.kind,
+            trustState: .unconfigured
+        )
+        let client = FakeDeviceDiscoveryClient(
+            snapshot: DeviceDiscoverySnapshot(
+                approvedDevices: [approved],
+                unconfiguredDevices: [misclassified]
+            )
+        )
+        let model = DeviceDiscoveryModel(client: client)
+
+        await model.discover()
+
+        XCTAssertEqual(model.approvedDevices, [approved])
+        XCTAssertTrue(model.discoveredDevices.isEmpty)
+    }
+
+    func testLatestDiscoveryWinsWhenRequestsOverlap() async {
+        let olderDevice = HouseholdDevice(
+            id: "older-device",
+            displayName: "Older Device",
+            kind: .puck,
+            trustState: .unconfigured
+        )
+        let newerDevice = HouseholdDevice(
+            id: "newer-device",
+            displayName: "Newer Device",
+            kind: .display,
+            trustState: .unconfigured
+        )
+        let client = SequencedDeviceDiscoveryClient()
+        let model = DeviceDiscoveryModel(client: client)
+
+        let firstDiscovery = Task { await model.discover() }
+        await client.waitUntilCallCount(1)
+        let secondDiscovery = Task { await model.discover() }
+        await client.waitUntilCallCount(2)
+
+        await client.release(
+            call: 2,
+            snapshot: DeviceDiscoverySnapshot(
+                approvedDevices: [],
+                unconfiguredDevices: [newerDevice]
+            )
+        )
+        await client.release(
+            call: 1,
+            snapshot: DeviceDiscoverySnapshot(
+                approvedDevices: [],
+                unconfiguredDevices: [olderDevice]
+            )
+        )
+        await firstDiscovery.value
+        await secondDiscovery.value
+
+        XCTAssertEqual(model.discoveredDevices, [newerDevice])
+        XCTAssertFalse(model.isDiscovering)
+    }
+
+    func testConnectionDoesNotStartWhileDiscoveryIsRefreshing() async {
+        let candidate = HouseholdDevice(
+            id: "unconfigured-puck",
+            displayName: "New Puck",
+            kind: .puck,
+            trustState: .unconfigured
+        )
+        let client = RefreshingDeviceDiscoveryClient(
+            snapshot: DeviceDiscoverySnapshot(
+                approvedDevices: [],
+                unconfiguredDevices: [candidate]
+            )
+        )
+        let model = DeviceDiscoveryModel(client: client)
+        await model.discover()
+
+        let refresh = Task { await model.discover() }
+        await client.waitUntilRefreshStarts()
+
+        await model.connect(to: candidate)
+
+        XCTAssertEqual(
+            model.errorMessage,
+            "Finish Device discovery before connecting."
+        )
+        let connectCallCount = await client.connectCallCountValue()
+        XCTAssertEqual(connectCallCount, 0)
+
+        await client.releaseRefresh()
+        await refresh.value
+
+        XCTAssertNil(model.errorMessage)
+    }
+
+    func testLateConnectionResultIsIgnoredAfterRefreshRemovesCandidate() async {
+        let candidate = HouseholdDevice(
+            id: "unconfigured-puck",
+            displayName: "New Puck",
+            kind: .puck,
+            trustState: .unconfigured
+        )
+        let client = RefreshingConnectionDiscoveryClient(
+            initialSnapshot: DeviceDiscoverySnapshot(
+                approvedDevices: [],
+                unconfiguredDevices: [candidate]
+            )
+        )
+        let model = DeviceDiscoveryModel(client: client)
+        await model.discover()
+
+        let connection = Task { await model.connect(to: candidate) }
+        await client.waitUntilConnectStarts()
+
+        await model.discover()
+        await client.releaseConnection()
+        await connection.value
+
+        XCTAssertTrue(model.discoveredDevices.isEmpty)
+        XCTAssertNotEqual(model.connectionState(for: candidate), .connected)
+    }
+
+    func testDiscoveryCancellationDoesNotBecomeAUserFacingFailure() async {
+        let model = DeviceDiscoveryModel(client: CancellationDeviceDiscoveryClient())
+
+        await model.discover()
+
+        XCTAssertNil(model.errorMessage)
+        XCTAssertFalse(model.isDiscovering)
+        XCTAssertTrue(model.approvedDevices.isEmpty)
+        XCTAssertTrue(model.discoveredDevices.isEmpty)
+    }
+
+    #if os(iOS)
+    func testDeviceDiscoveryViewHostsWithDeterministicClient() {
+        let candidate = HouseholdDevice(
+            id: "unconfigured-puck",
+            displayName: "New Puck",
+            kind: .puck,
+            trustState: .unconfigured
+        )
+        let client = FakeDeviceDiscoveryClient(
+            snapshot: DeviceDiscoverySnapshot(
+                approvedDevices: [],
+                unconfiguredDevices: [candidate]
+            )
+        )
+        let controller = UIHostingController(
+            rootView: DeviceDiscoveryView(client: client)
+        )
+
+        controller.loadViewIfNeeded()
+        controller.view.layoutIfNeeded()
+
+        XCTAssertNotNil(controller.view)
+    }
+    #endif
+}
+
+private struct DeviceDiscoverySideEffectCounts: Equatable, Sendable {
+    let approvals: Int
+    let credentials: Int
+    let captures: Int
+    let hermesTurns: Int
+
+    static let zero = DeviceDiscoverySideEffectCounts(
+        approvals: 0,
+        credentials: 0,
+        captures: 0,
+        hermesTurns: 0
+    )
+}
+
+private actor FakeDeviceDiscoveryClient: DeviceDiscoveryClient {
+    let snapshot: DeviceDiscoverySnapshot
+    let discoverError: DeviceDiscoveryError?
+    let manualDevice: HouseholdDevice?
+    let connectionError: DeviceDiscoveryError?
+    let receiptDeviceID: String?
+    let holdConnection: Bool
+    private var connectCallCount = 0
+    private var connectionContinuation: CheckedContinuation<Void, Never>?
+    private let sideEffects = DeviceDiscoverySideEffectCounts.zero
+
+    init(
+        snapshot: DeviceDiscoverySnapshot = DeviceDiscoverySnapshot(
+            approvedDevices: [],
+            unconfiguredDevices: []
+        ),
+        discoverError: DeviceDiscoveryError? = nil,
+        manualDevice: HouseholdDevice? = nil,
+        connectionError: DeviceDiscoveryError? = nil,
+        receiptDeviceID: String? = nil,
+        holdConnection: Bool = false
+    ) {
+        self.snapshot = snapshot
+        self.discoverError = discoverError
+        self.manualDevice = manualDevice
+        self.connectionError = connectionError
+        self.receiptDeviceID = receiptDeviceID
+        self.holdConnection = holdConnection
+    }
+
+    func discover() async throws -> DeviceDiscoverySnapshot {
+        if let discoverError {
+            throw discoverError
+        }
+        return snapshot
+    }
+
+    func connect(to device: HouseholdDevice) async throws -> DeviceConnectionReceipt {
+        connectCallCount += 1
+        if let connectionError {
+            throw connectionError
+        }
+        if holdConnection {
+            await withCheckedContinuation { continuation in
+                connectionContinuation = continuation
+            }
+        }
+        return DeviceConnectionReceipt(deviceID: receiptDeviceID ?? device.id)
+    }
+
+    func waitUntilConnectCalled() async {
+        while connectCallCount == 0 {
+            await Task.yield()
+        }
+    }
+
+    func connectCallCountValue() -> Int {
+        connectCallCount
+    }
+
+    func sideEffectCounts() -> DeviceDiscoverySideEffectCounts {
+        sideEffects
+    }
+
+    func releaseConnection() {
+        connectionContinuation?.resume()
+        connectionContinuation = nil
+    }
+
+    func identifyManually(_ identifier: String) async throws -> HouseholdDevice {
+        requestedManualIdentifiers.append(identifier)
+        if let manualDevice {
+            return manualDevice
+        }
+        throw DeviceDiscoveryError.manualPairingUnavailable
+    }
+
+    private var requestedManualIdentifiers: [String] = []
+
+    func manualIdentifiers() -> [String] {
+        requestedManualIdentifiers
+    }
+}
+
+private actor SequencedDeviceDiscoveryClient: DeviceDiscoveryClient {
+    private var callCount = 0
+    private var continuations: [Int: CheckedContinuation<DeviceDiscoverySnapshot, Never>] = [:]
+
+    func discover() async throws -> DeviceDiscoverySnapshot {
+        callCount += 1
+        let call = callCount
+        return await withCheckedContinuation { continuation in
+            continuations[call] = continuation
+        }
+    }
+
+    func connect(to device: HouseholdDevice) async throws -> DeviceConnectionReceipt {
+        DeviceConnectionReceipt(deviceID: device.id)
+    }
+
+    func identifyManually(_ identifier: String) async throws -> HouseholdDevice {
+        throw DeviceDiscoveryError.manualPairingUnavailable
+    }
+
+    func waitUntilCallCount(_ expected: Int) async {
+        while callCount < expected {
+            await Task.yield()
+        }
+    }
+
+    func release(call: Int, snapshot: DeviceDiscoverySnapshot) {
+        continuations.removeValue(forKey: call)?.resume(returning: snapshot)
+    }
+}
+
+private actor RefreshingDeviceDiscoveryClient: DeviceDiscoveryClient {
+    let snapshot: DeviceDiscoverySnapshot
+    private var discoverCallCount = 0
+    private var refreshContinuation: CheckedContinuation<DeviceDiscoverySnapshot, Never>?
+    private var connectCallCount = 0
+
+    init(snapshot: DeviceDiscoverySnapshot) {
+        self.snapshot = snapshot
+    }
+
+    func discover() async throws -> DeviceDiscoverySnapshot {
+        discoverCallCount += 1
+        guard discoverCallCount > 1 else { return snapshot }
+        return await withCheckedContinuation { continuation in
+            refreshContinuation = continuation
+        }
+    }
+
+    func connect(to device: HouseholdDevice) async throws -> DeviceConnectionReceipt {
+        connectCallCount += 1
+        return DeviceConnectionReceipt(deviceID: device.id)
+    }
+
+    func identifyManually(_ identifier: String) async throws -> HouseholdDevice {
+        throw DeviceDiscoveryError.manualPairingUnavailable
+    }
+
+    func waitUntilRefreshStarts() async {
+        while discoverCallCount < 2 {
+            await Task.yield()
+        }
+    }
+
+    func releaseRefresh() {
+        refreshContinuation?.resume(returning: snapshot)
+        refreshContinuation = nil
+    }
+
+    func connectCallCountValue() -> Int {
+        connectCallCount
+    }
+}
+
+private actor RefreshingConnectionDiscoveryClient: DeviceDiscoveryClient {
+    let initialSnapshot: DeviceDiscoverySnapshot
+    private var discoverCallCount = 0
+    private var connectionContinuation: CheckedContinuation<Void, Never>?
+    private var didStartConnection = false
+
+    init(initialSnapshot: DeviceDiscoverySnapshot) {
+        self.initialSnapshot = initialSnapshot
+    }
+
+    func discover() async throws -> DeviceDiscoverySnapshot {
+        discoverCallCount += 1
+        guard discoverCallCount == 1 else {
+            return DeviceDiscoverySnapshot(approvedDevices: [], unconfiguredDevices: [])
+        }
+        return initialSnapshot
+    }
+
+    func connect(to device: HouseholdDevice) async throws -> DeviceConnectionReceipt {
+        didStartConnection = true
+        await withCheckedContinuation { continuation in
+            connectionContinuation = continuation
+        }
+        return DeviceConnectionReceipt(deviceID: device.id)
+    }
+
+    func identifyManually(_ identifier: String) async throws -> HouseholdDevice {
+        throw DeviceDiscoveryError.manualPairingUnavailable
+    }
+
+    func waitUntilConnectStarts() async {
+        while !didStartConnection {
+            await Task.yield()
+        }
+    }
+
+    func releaseConnection() {
+        connectionContinuation?.resume()
+        connectionContinuation = nil
+    }
+}
+
+private struct CancellationDeviceDiscoveryClient: DeviceDiscoveryClient {
+    func discover() async throws -> DeviceDiscoverySnapshot {
+        throw CancellationError()
+    }
+
+    func connect(to device: HouseholdDevice) async throws -> DeviceConnectionReceipt {
+        throw CancellationError()
+    }
+
+    func identifyManually(_ identifier: String) async throws -> HouseholdDevice {
+        throw CancellationError()
+    }
+}

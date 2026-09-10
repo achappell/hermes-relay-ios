@@ -48,6 +48,11 @@
 		A100000000000000000000B2 /* RelayConfigurationView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A100000000000000000000B3 /* RelayConfigurationView.swift */; };
 		A100000000000000000000B4 /* TranscriptExport.swift in Sources */ = {isa = PBXBuildFile; fileRef = A100000000000000000000B5 /* TranscriptExport.swift */; };
 		A100000000000000000000B6 /* PromptHistory.swift in Sources */ = {isa = PBXBuildFile; fileRef = A100000000000000000000B7 /* PromptHistory.swift */; };
+		A100000000000000000000C0 /* DeviceDiscoveryTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A100000000000000000000C1 /* DeviceDiscoveryTests.swift */; };
+		A100000000000000000000C2 /* DeviceModels.swift in Sources */ = {isa = PBXBuildFile; fileRef = A100000000000000000000C3 /* DeviceModels.swift */; };
+		A100000000000000000000C4 /* DeviceDiscoveryClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = A100000000000000000000C5 /* DeviceDiscoveryClient.swift */; };
+		A100000000000000000000C6 /* DeviceDiscoveryModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = A100000000000000000000C7 /* DeviceDiscoveryModel.swift */; };
+		A100000000000000000000C8 /* DeviceDiscoveryView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A100000000000000000000C9 /* DeviceDiscoveryView.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -106,6 +111,11 @@
 		A100000000000000000000B3 /* RelayConfigurationView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RelayConfigurationView.swift; sourceTree = "<group>"; };
 		A100000000000000000000B5 /* TranscriptExport.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TranscriptExport.swift; sourceTree = "<group>"; };
 		A100000000000000000000B7 /* PromptHistory.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PromptHistory.swift; sourceTree = "<group>"; };
+		A100000000000000000000C1 /* DeviceDiscoveryTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DeviceDiscoveryTests.swift; sourceTree = "<group>"; };
+		A100000000000000000000C3 /* DeviceModels.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DeviceModels.swift; sourceTree = "<group>"; };
+		A100000000000000000000C5 /* DeviceDiscoveryClient.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DeviceDiscoveryClient.swift; sourceTree = "<group>"; };
+		A100000000000000000000C7 /* DeviceDiscoveryModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DeviceDiscoveryModel.swift; sourceTree = "<group>"; };
+		A100000000000000000000C9 /* DeviceDiscoveryView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DeviceDiscoveryView.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -164,6 +174,7 @@
 				A10000000000000000000093 /* VoiceSessionCoordinatorTests.swift */,
 				A1000000000000000000009A /* ConversationPersistenceTests.swift */,
 				A1000000000000000000009B /* RecoveryTests.swift */,
+				A100000000000000000000C1 /* DeviceDiscoveryTests.swift */,
 			);
 			path = HermesRelayIOSTests;
 			sourceTree = "<group>";
@@ -183,6 +194,7 @@
 				A10000000000000000000022 /* SessionModels.swift */,
 				A100000000000000000000B1 /* RelayProfileCollection.swift */,
 				A10000000000000000000033 /* RelayProfile.swift */,
+				A100000000000000000000C3 /* DeviceModels.swift */,
 			);
 			path = Models;
 			sourceTree = "<group>";
@@ -205,6 +217,7 @@
 				A10000000000000000000035 /* RelayConfigurationStore.swift */,
 				A1000000000000000000009C /* ConversationPersistence.swift */,
 				A100000000000000000000B5 /* TranscriptExport.swift */,
+				A100000000000000000000C5 /* DeviceDiscoveryClient.swift */,
 			);
 			path = Services;
 			sourceTree = "<group>";
@@ -215,6 +228,7 @@
 				A10000000000000000000024 /* ConversationStore.swift */,
 				A10000000000000000000094 /* VoiceSessionCoordinator.swift */,
 				A100000000000000000000B7 /* PromptHistory.swift */,
+				A100000000000000000000C7 /* DeviceDiscoveryModel.swift */,
 			);
 			path = ViewModels;
 			sourceTree = "<group>";
@@ -222,6 +236,7 @@
 		A10000000000000000000067 /* Views */ = {
 			isa = PBXGroup;
 			children = (
+				A100000000000000000000C9 /* DeviceDiscoveryView.swift */,
 				A100000000000000000000B3 /* RelayConfigurationView.swift */,
 				A10000000000000000000025 /* ContentView.swift */,
 				A10000000000000000000026 /* MessageBubble.swift */,
@@ -359,6 +374,10 @@
 				A10000000000000000000099 /* ConversationPersistence.swift in Sources */,
 				A100000000000000000000B4 /* TranscriptExport.swift in Sources */,
 				A100000000000000000000B6 /* PromptHistory.swift in Sources */,
+				A100000000000000000000C2 /* DeviceModels.swift in Sources */,
+				A100000000000000000000C4 /* DeviceDiscoveryClient.swift in Sources */,
+				A100000000000000000000C6 /* DeviceDiscoveryModel.swift in Sources */,
+				A100000000000000000000C8 /* DeviceDiscoveryView.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -378,6 +397,7 @@
 				A1000000000000000000008F /* VoiceSessionCoordinatorTests.swift in Sources */,
 				A10000000000000000000097 /* ConversationPersistenceTests.swift in Sources */,
 				A10000000000000000000098 /* RecoveryTests.swift in Sources */,
+				A100000000000000000000C0 /* DeviceDiscoveryTests.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -435,6 +455,7 @@
 				INFOPLIST_FILE = "HermesRelayIOS/Development-Info.plist";
 				INFOPLIST_KEY_CFBundleDisplayName = "Hermes Relay";
 				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.productivity";
+				INFOPLIST_KEY_NSLocalNetworkUsageDescription = "Hermes uses your private network to discover household Devices and connect to configured relays.";
 				INFOPLIST_KEY_NSMicrophoneUsageDescription = "Hermes uses the microphone for push-to-talk voice turns.";
 				INFOPLIST_KEY_NSSpeechRecognitionUsageDescription = "Hermes uses speech recognition to turn a voice turn into text.";
 				INFOPLIST_KEY_UISupportedInterfaceOrientations = "UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight UIInterfaceOrientationPortrait UIInterfaceOrientationPortraitUpsideDown";
@@ -471,6 +492,7 @@
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_KEY_CFBundleDisplayName = "Hermes Relay";
 				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.productivity";
+				INFOPLIST_KEY_NSLocalNetworkUsageDescription = "Hermes uses your private network to discover household Devices and connect to configured relays.";
 				INFOPLIST_KEY_NSMicrophoneUsageDescription = "Hermes uses the microphone for push-to-talk voice turns.";
 				INFOPLIST_KEY_NSSpeechRecognitionUsageDescription = "Hermes uses speech recognition to turn a voice turn into text.";
 				INFOPLIST_KEY_UISupportedInterfaceOrientations = "UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight UIInterfaceOrientationPortrait UIInterfaceOrientationPortraitUpsideDown";

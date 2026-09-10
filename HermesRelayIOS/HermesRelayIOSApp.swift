@@ -5,6 +5,7 @@ import SwiftUI
 struct HermesRelayIOSApp: App {
     @State private var store: ConversationStore
     private let configuration: RelayConfigurationStore
+    private let deviceDiscoveryClient: any DeviceDiscoveryClient
     private let appDirectory: URL
 
     init() {
@@ -33,6 +34,9 @@ struct HermesRelayIOSApp: App {
         )
         self.appDirectory = appDirectory
         self.configuration = configuration
+        // Device discovery stays behind the typed seam until Hermes and the
+        // physical Device share a settled discovery/handshake contract.
+        self.deviceDiscoveryClient = UnavailableDeviceDiscoveryClient()
     }
 
     var body: some Scene {
@@ -40,7 +44,8 @@ struct HermesRelayIOSApp: App {
             ContentView(
                 store: store,
                 configurationStore: configuration,
-                conversationDirectory: appDirectory
+                conversationDirectory: appDirectory,
+                deviceDiscoveryClient: deviceDiscoveryClient
             )
                 .task {
                     // Hand the pre-profiles conversation to whichever profile
