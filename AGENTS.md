@@ -5,25 +5,39 @@ intentional iOS and macOS targets. It is a separate product repository from
 `hermes-relay-tui`; keep the two repositories independently buildable and do
 not copy terminal-specific UI assumptions into the Apple client.
 
-## Task management
+## Task management — local BMad mode
 
-GitHub Project #3 is the task queue:
+Amanda has explicitly paused GitHub Project #3 while the local BMad surface
+reconciliation is completed. Until she explicitly reopens the board, do not
+inspect, query, create, edit, move, delete, or reconcile Project #3 items.
 
-https://github.com/users/achappell/projects/3/views/2
+The shared coverage and prioritization aid is
+[`../hermes-relay-tui/_bmad-output/implementation-artifacts/surface-coverage-matrix.md`](../hermes-relay-tui/_bmad-output/implementation-artifacts/surface-coverage-matrix.md).
+Read it before answering "what's next" or beginning substantive story work.
+It records evidence across the iOS app, ReSpeaker Puck, ESP32 display, iPad
+kiosk, TUI, and Python/Svelte webview; it does not replace this repository's
+local story artifacts or the Personal Vault's product intent.
 
-The board determines the active iOS slice; `IOS-01` is the completed
-foundation baseline. Keep one active slice per iOS workstream and move it
-through `Inbox` → `Ready` → `Building` → `Verify` → `Done`. The iOS and TUI
-repositories may have independent cards in `Building` at the same time;
-shared contract or protocol work remains a prerequisite when both clients
-depend on it. Keep the built-in status aligned: `Todo` for planned work,
-`In Progress` for active or verification work, and `Done` only after validation
-and merge.
+While the board is paused:
 
-Every substantive change needs a project item with an outcome, acceptance
-criteria, UX expectation, and validation scenario. Record implementation and
-validation evidence on the item. Split follow-ups instead of expanding one
-slice into a grab bag.
+- Keep one active slice per iOS workstream and use this repository's local
+  BMad artifacts to record its scope, acceptance criteria, validation, and
+  status.
+- Finish an `In review` slice whose build or validation gate is close and that
+  unlocks later stories before opening a new slice.
+- Then choose an open story with the strongest useful coverage across incomplete
+  surfaces and settled prerequisites, keeping the work a small, verifiable
+  vertical slice.
+- Treat `Implemented` as surface-level evidence, `In review` as unfinished
+  review/validation/build work, and `Foundation` as support that does not close
+  the story. Do not mark a story complete because another surface is complete.
+- Do not create a duplicate backlog in `docs/plans/`; select from the existing
+  BMad epic/story set and record prioritization decisions in local artifacts.
+
+When Amanda explicitly reopens board work, restore the Project #3 procedure
+before choosing a board-scoped task: verify the credential with `gh auth
+status`, inspect the board, and reconcile it with the matrix and local
+artifacts. Never print token values.
 
 ## Product planning authority
 
@@ -33,11 +47,12 @@ canonical in the Personal Vault hub:
 `~/Documents/Vaults/Personal Vault/projects/hermes-home/hermes-home.md`
 
 Read the hub and its relevant source notes before using BMAD for a new slice.
-Use GitHub Project #3 for actionable scope, priority, ownership, dependencies,
-and workflow state. Use this repository's local BMAD runtime for delivery; do
-not copy `_bmad/` or tool configuration from `hermes-relay-tui`. Existing local
-architecture and workflow notes remain implementation context, not a second
-product PRD. See [`docs/bmad-upstream.md`](docs/bmad-upstream.md).
+While GitHub Project work is paused, use the surface coverage matrix for
+cross-repository coverage, and use this repository's local BMAD runtime and
+artifacts for delivery scope and status. Do not copy `_bmad/` or tool
+configuration from `hermes-relay-tui`, and do not create a second matrix or
+product PRD. Existing local architecture and workflow notes remain
+implementation context. See [`docs/bmad-upstream.md`](docs/bmad-upstream.md).
 
 Product or shared-behaviour decisions discovered during implementation flow
 back to the hub. `IOS-*` cards belong here; `TUI-*`/`HOME-*` cards belong in
@@ -58,9 +73,12 @@ The current protocol facts come from the sibling TUI:
   activity, audio, error, and completion events.
 - Binary WebSocket frames are signed 16-bit PCM audio after `audio_start`
   describes the stream.
-- The protocol currently has no explicit remote interrupt operation.
+- A relay may advertise the protocol-v1 `interrupt` capability. When it does,
+  the iOS client may send one interrupt for the active turn and consume
+  `audio_abort`/`turn_interrupted`; legacy or unconfirmed interruption falls
+  back to bounded close/reconnect and marks the turn unconfirmed.
 - The iOS client must not invent upload, remote undo, usage, compression, or
-  server-side interruption operations before Hermes exposes them.
+  other server operations before Hermes exposes them.
 
 ## Security
 
