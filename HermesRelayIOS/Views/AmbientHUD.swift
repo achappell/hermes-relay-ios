@@ -99,6 +99,7 @@ enum AmbientCaptionSource: Equatable, Sendable {
 
 struct AmbientHUDPresentation: Equatable, Sendable {
     let mode: AmbientHUDMode
+    let isHandsFreeArmed: Bool
     let failureMessage: String?
     let failureAction: VoiceFailureAction?
     let caption: String?
@@ -109,9 +110,11 @@ struct AmbientHUDPresentation: Equatable, Sendable {
         voiceState: VoiceState,
         activity: AudioActivitySnapshot,
         provisionalText: String,
-        messages: [TranscriptMessage]
+        messages: [TranscriptMessage],
+        isHandsFreeArmed: Bool = false
     ) {
         mode = AmbientHUDMode(voiceState: voiceState)
+        self.isHandsFreeArmed = isHandsFreeArmed
         failureMessage = voiceState.failure?.message
         failureAction = voiceState.failure?.action
 
@@ -160,8 +163,22 @@ struct AmbientHUDPresentation: Equatable, Sendable {
         }
     }
 
+    var statusLabel: String {
+        if mode == .idle, isHandsFreeArmed {
+            return "Listening for speech"
+        }
+        return mode.label
+    }
+
+    var emptyCaption: String {
+        if mode == .idle {
+            return isHandsFreeArmed ? "Speak to begin" : "Tap the microphone to begin"
+        }
+        return mode.label
+    }
+
     var accessibilityLabel: String {
-        "Hermes " + mode.label.lowercased()
+        "Hermes " + statusLabel.lowercased()
     }
 }
 
@@ -314,7 +331,7 @@ struct AmbientHUDView: View {
             AmbientVisualizer(presentation: presentation)
 
             VStack(spacing: 8) {
-                Text(presentation.mode.label)
+                Text(presentation.statusLabel)
                     .font(.headline.weight(.semibold))
                     .foregroundStyle(presentation.mode.tint)
                     .accessibilityHidden(true)
@@ -459,7 +476,7 @@ struct AmbientHUDView: View {
 
         return VStack(spacing: 10) {
             if projection.entries.isEmpty {
-                Text(presentation.mode == .idle ? "Tap the microphone to begin" : presentation.mode.label)
+                Text(presentation.emptyCaption)
                     .font(.callout)
                     .foregroundStyle(.secondary)
                     .multilineTextAlignment(.center)
@@ -515,7 +532,7 @@ private struct AmbientVisualizer: View {
             .frame(width: 260, height: 260)
             .accessibilityElement(children: .ignore)
             .accessibilityLabel(presentation.accessibilityLabel)
-            .accessibilityValue(presentation.mode.label)
+            .accessibilityValue(presentation.statusLabel)
         }
     }
 

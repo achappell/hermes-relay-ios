@@ -197,6 +197,30 @@ final class HermesRelayIOSTests: XCTestCase {
         XCTAssertTrue(VoiceControlInteractionPolicy.isVisible(isComposerFocused: false, state: .idle))
     }
 
+    func testHandsFreeControlRemainsVisibleWhileComposerIsFocused() {
+        XCTAssertTrue(
+            VoiceControlInteractionPolicy.isVisible(
+                isComposerFocused: true,
+                state: .idle,
+                isHandsFreeArmed: true
+            )
+        )
+        XCTAssertFalse(
+            VoiceControlInteractionPolicy.isDisabled(
+                isActionInFlight: false,
+                state: .speaking,
+                isHandsFreeArmed: true
+            )
+        )
+        XCTAssertTrue(
+            VoiceControlInteractionPolicy.isDisabled(
+                isActionInFlight: false,
+                state: .idle,
+                isHandsFreeArmed: true
+            )
+        )
+    }
+
     @MainActor
     func testContentViewKeepsVoiceInterfaceVisibleDuringFocusedCapture() {
         XCTAssertTrue(
@@ -254,6 +278,20 @@ final class HermesRelayIOSTests: XCTestCase {
         XCTAssertEqual(presentation.captionSource, .hermes)
         XCTAssertEqual(presentation.intensity, 0.81, accuracy: 0.001)
         XCTAssertEqual(presentation.accessibilityLabel, "Hermes speaking")
+    }
+
+    func testAmbientHUDNamesArmedHandsFreeWaitingState() {
+        let presentation = AmbientHUDPresentation(
+            voiceState: .idle,
+            activity: .safe,
+            provisionalText: "",
+            messages: [],
+            isHandsFreeArmed: true
+        )
+
+        XCTAssertEqual(presentation.statusLabel, "Listening for speech")
+        XCTAssertEqual(presentation.emptyCaption, "Speak to begin")
+        XCTAssertEqual(presentation.accessibilityLabel, "Hermes listening for speech")
     }
 
     func testAmbientHUDUsesLiveUserCaptionUntilHermesHasText() {

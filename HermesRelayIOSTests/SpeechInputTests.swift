@@ -131,6 +131,32 @@ final class SpeechInputTests: XCTestCase {
         XCTAssertEqual(snapshot.microphoneActivity, .silence)
     }
 
+    func testSpeechBackedHandsFreeInputMergesActivityAndRecognition() async throws {
+        let activityStore = AudioActivityStore(minimumEmissionIntervalNanoseconds: 0)
+        let speechInput = FakeSpeechInput(authorization: .authorized)
+        let handsFreeInput = SpeechBackedHandsFreeInput(
+            speechInput: speechInput,
+            activityStore: activityStore
+        )
+        let stream = try await handsFreeInput.start()
+
+        await activityStore.reportMicrophone(level: 0.20)
+        speechInput.emit(SpeechRecognitionUpdate(text: "Hello", isFinal: false))
+        for _ in 0..<5 { await Task.yield() }
+        await handsFreeInput.finish()
+
+        let events = try await collectHandsFree(stream)
+        XCTAssertTrue(events.contains(.activity(AudioActivitySnapshot(
+            microphoneLevel: 0.20,
+            microphoneActivity: .speech,
+            playbackLevel: 0,
+            playbackActive: false
+        ))))
+        XCTAssertTrue(events.contains(.recognition(
+            SpeechRecognitionUpdate(text: "Hello", isFinal: false)
+        )))
+    }
+
     private func collect(
         _ stream: AsyncThrowingStream<SpeechRecognitionUpdate, Error>
     ) async throws -> [SpeechRecognitionUpdate] {
@@ -139,6 +165,16 @@ final class SpeechInputTests: XCTestCase {
             updates.append(update)
         }
         return updates
+    }
+
+    private func collectHandsFree(
+        _ stream: AsyncThrowingStream<HandsFreeInputEvent, Error>
+    ) async throws -> [HandsFreeInputEvent] {
+        var events: [HandsFreeInputEvent] = []
+        for try await event in stream {
+            events.append(event)
+        }
+        return events
     }
 }
 

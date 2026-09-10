@@ -50,6 +50,93 @@ struct AudioActivitySnapshot: Equatable, Sendable {
     )
 }
 
+enum HandsFreeAudioRouteSafety: Equatable, Sendable {
+    case echoSafe
+    case notEchoSafe
+    case unknown
+}
+
+/// Keeps the microphone alive while hands-free mode listens during playback.
+/// The two platform adapters share this lease so one of them cannot deactivate
+/// the audio session out from under the other.
+actor AppleAudioSessionCoordinator {
+    private var inputActive = false
+    private var outputActive = false
+
+    func activateInput() throws {
+        #if os(iOS)
+        let session = AVAudioSession.sharedInstance()
+        try session.setCategory(
+            .playAndRecord,
+            mode: .measurement,
+            options: [.defaultToSpeaker, .allowBluetoothHFP, .allowBluetoothA2DP, .duckOthers]
+        )
+        try session.setActive(true, options: .notifyOthersOnDeactivation)
+        #endif
+        inputActive = true
+    }
+
+    func activateOutput() throws {
+        #if os(iOS)
+        let session = AVAudioSession.sharedInstance()
+        try session.setCategory(
+            .playAndRecord,
+            mode: .spokenAudio,
+            options: [.defaultToSpeaker, .allowBluetoothHFP, .allowBluetoothA2DP, .duckOthers]
+        )
+        try session.setActive(true)
+        #endif
+        outputActive = true
+    }
+
+    func deactivateInput() {
+        inputActive = false
+        deactivateIfUnused()
+    }
+
+    func deactivateOutput() {
+        outputActive = false
+        deactivateIfUnused()
+    }
+
+    private func deactivateIfUnused() {
+        guard !inputActive, !outputActive else { return }
+        #if os(iOS)
+        try? AVAudioSession.sharedInstance().setActive(
+            false,
+            options: .notifyOthersOnDeactivation
+        )
+        #endif
+    }
+}
+
+protocol HandsFreeAudioRouteSafetyProvider: Sendable {
+    func currentSafety() async -> HandsFreeAudioRouteSafety
+}
+
+struct SystemHandsFreeAudioRouteSafetyProvider: HandsFreeAudioRouteSafetyProvider {
+    func currentSafety() async -> HandsFreeAudioRouteSafety {
+        #if os(iOS)
+        let outputPorts = AVAudioSession.sharedInstance().currentRoute.outputs
+        guard !outputPorts.isEmpty else { return .unknown }
+
+        // The built-in speaker and remote speakers are not safe for automatic
+        // barge-in: the microphone can hear Hermes and wake the next turn.
+        let isEchoSafe = outputPorts.allSatisfy { port in
+            switch port.portType {
+            case .headphones, .bluetoothHFP, .bluetoothLE:
+                return true
+            default:
+                return false
+            }
+        }
+        return isEchoSafe ? .echoSafe : .notEchoSafe
+        #else
+        return .unknown
+        #endif
+    }
+}
+
 enum AudioActivityEvent: Equatable, Sendable {
     case microphone(level: Float)
     case microphoneUnavailable
@@ -69,8 +156,7 @@ protocol AudioActivityReporter: Sendable {
 actor AudioActivityStore: AudioActivityReporter {
     private let classifier: AudioActivityClassifier
     private let minimumEmissionIntervalNanoseconds: UInt64
-    private let stream: AsyncStream<AudioActivitySnapshot>
-    private let continuation: AsyncStream<AudioActivitySnapshot>.Continuation
+    private var snapshotContinuations: [UUID: AsyncStream<AudioActivitySnapshot>.Continuation] = [:]
 
     private var snapshot = AudioActivitySnapshot.safe
     private var lastEmissionAt: UInt64?
@@ -84,16 +170,25 @@ actor AudioActivityStore: AudioActivityReporter {
     ) {
         self.classifier = classifier
         self.minimumEmissionIntervalNanoseconds = minimumEmissionIntervalNanoseconds
-        let (stream, continuation) = AsyncStream<AudioActivitySnapshot>.makeStream(
-            bufferingPolicy: .bufferingNewest(1)
-        )
-        self.stream = stream
-        self.continuation = continuation
-        continuation.yield(.safe)
     }
 
     func snapshots() -> AsyncStream<AudioActivitySnapshot> {
-        stream
+        let subscriberID = UUID()
+        let (stream, continuation) = AsyncStream<AudioActivitySnapshot>.makeStream(
+            bufferingPolicy: .bufferingNewest(1)
+        )
+        snapshotContinuations[subscriberID] = continuation
+        continuation.onTermination = { [weak self] _ in
+            Task {
+                await self?.removeSnapshotSubscriber(subscriberID)
+            }
+        }
+        continuation.yield(snapshot)
+        return stream
+    }
+
+    private func removeSnapshotSubscriber(_ subscriberID: UUID) {
+        snapshotContinuations.removeValue(forKey: subscriberID)
     }
 
     func currentSnapshot() -> AudioActivitySnapshot {
@@ -156,7 +251,9 @@ actor AudioActivityStore: AudioActivityReporter {
         guard stateChanged || intervalElapsed else { return nil }
 
         lastEmissionAt = timestampNanoseconds
-        continuation.yield(snapshot)
+        for continuation in snapshotContinuations.values {
+            continuation.yield(snapshot)
+        }
         return snapshot
     }
 

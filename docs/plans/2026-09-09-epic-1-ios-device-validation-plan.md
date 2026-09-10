@@ -58,6 +58,10 @@ live relay, and user-visible lifecycle work together.
    HUD does not return to Ready before delivery finishes.
 5. If the relay emits multiple response segments, confirm they remain one
    assistant response with no duplicate or invented text.
+6. With hands-free explicitly armed, let the response finish and say nothing
+   for several seconds. Confirm Hermes does not receive its own response as a
+   second user turn. After the quiet window, speak a new phrase and confirm
+   that phrase creates exactly one new turn.
 
 ### 4. Honest failure and fallback paths — Story 1.2
 
