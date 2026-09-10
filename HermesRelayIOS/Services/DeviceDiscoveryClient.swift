@@ -68,3 +68,78 @@ struct UnavailableDeviceDiscoveryClient: DeviceDiscoveryClient {
         throw DeviceDiscoveryError.manualPairingUnavailable
     }
 }
+
+/// Selects the shipped unavailable adapter unless a Debug-only simulator
+/// fixture is explicitly requested. The fixture is a visual verification aid;
+/// it is not a production discovery transport.
+enum DeviceDiscoveryClientFactory {
+    static let fixtureLaunchArgument = "-HermesRelayDeviceDiscoveryFixture"
+
+    static func make(
+        arguments: [String] = ProcessInfo.processInfo.arguments
+    ) -> any DeviceDiscoveryClient {
+        #if DEBUG
+        if arguments.contains(fixtureLaunchArgument) {
+            return DebugDeviceDiscoveryFixtureClient()
+        }
+        #endif
+
+        return UnavailableDeviceDiscoveryClient()
+    }
+}
+
+#if DEBUG
+private struct DebugDeviceDiscoveryFixtureClient: DeviceDiscoveryClient {
+    let supportsManualPairing = true
+
+    private let approvedDevice = HouseholdDevice(
+        id: "approved-kitchen-display",
+        displayName: "Kitchen Display",
+        kind: .display,
+        trustState: .approved
+    )
+    private let successfulCandidate = HouseholdDevice(
+        id: "unconfigured-hallway-puck",
+        displayName: "Hallway Puck",
+        kind: .puck,
+        trustState: .unconfigured
+    )
+    private let failingCandidate = HouseholdDevice(
+        id: "unconfigured-study-display",
+        displayName: "Study Display",
+        kind: .display,
+        trustState: .unconfigured
+    )
+
+    func discover() async throws -> DeviceDiscoverySnapshot {
+        DeviceDiscoverySnapshot(
+            approvedDevices: [approvedDevice],
+            unconfiguredDevices: [successfulCandidate, failingCandidate]
+        )
+    }
+
+    func connect(to device: HouseholdDevice) async throws -> DeviceConnectionReceipt {
+        try await Task.sleep(nanoseconds: 750_000_000)
+
+        switch device.id {
+        case successfulCandidate.id:
+            return DeviceConnectionReceipt(deviceID: device.id)
+        case failingCandidate.id:
+            throw DeviceDiscoveryError.connectionFailed
+        default:
+            throw DeviceDiscoveryError.deviceNotFound
+        }
+    }
+
+    func identifyManually(_ identifier: String) async throws -> HouseholdDevice {
+        switch identifier {
+        case successfulCandidate.id:
+            return successfulCandidate
+        case failingCandidate.id:
+            return failingCandidate
+        default:
+            throw DeviceDiscoveryError.deviceNotFound
+        }
+    }
+}
+#endif

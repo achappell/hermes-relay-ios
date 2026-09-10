@@ -18,13 +18,10 @@
   summary: Define the Device-side acknowledgement and observable success semantics for identity connection.
   evidence: The iOS model exposes explicit connecting/success states, while external acknowledgement must come from the future Device transport and cannot be fabricated by this client slice.
 
-- source_spec: `_bmad-output/implementation-artifacts/spec-3-1-discover-unconfigured-devices.md`
-  summary: Run the interactive iOS Devices smoke plan with approved and unconfigured candidates.
-  evidence: Deterministic model tests and an iOS hosting test cover the state boundary, and the simulator ran the automated suite; interactive visual verification remains pending because the shipped app still has no production fake-client injection path.
-
 ## Resolved on 2026-09-09
 
 - Epic 1 iOS physical-device validation pass for Stories 1.1 and 1.2 completed. Evidence is recorded in `docs/plans/2026-09-09-epic-1-ios-device-validation-plan.md` and the IOS-36, IOS-29, and IOS-37 Project #3 cards. Deterministic tests remain authoritative for speaker/WAV fallback and late-event timing branches that were not observed live.
+- DEVICE-01 interactive iOS Devices smoke completed with the Debug fixture on the iPhone 17 Pro / iOS 26.5 simulator. The approved/unconfigured split, successful identity confirmation without promotion, connection failure with retry, and manual identification without approval were observed; the transient connecting state remains covered by deterministic tests. The production discovery adapter remains unavailable by design until the shared Device transport contract exists.
 
 ## Deferred from: code review of hermes-relay-ios-review-spec.XXXXXX.XV2EBX33l3 (2026-09-09)
 

@@ -77,6 +77,7 @@ context:
 - `DeviceDiscoveryModel` validates stable identifiers, filters misclassified and colliding identities, rejects mismatched manual/connection responses, guards overlapping discovery and stale connection completions, and treats cancellation as non-user-facing.
 - The client contract documents a read-only identity boundary. Deterministic fakes expose approval, credential, capture, and Hermes-turn counters; the inert-guard tests assert that all remain zero.
 - Added the iOS local-network usage declaration in the plist and both target configurations. Relay bearer-token storage, voice capture, Hermes turns, and macOS UI remain outside this slice.
+- Added a Debug-only `-HermesRelayDeviceDiscoveryFixture` launch path for simulator smoke validation. It supplies one approved Device and two unconfigured candidates with deterministic success, failure, retry, and manual-identification outcomes; Release builds continue to use the unavailable production adapter.
 
 ## Spec Change Log
 
@@ -129,5 +130,12 @@ Discovery is a transport observation, not a trust transition. The model therefor
 - `xcodebuild -quiet -project HermesRelayIOS.xcodeproj -scheme HermesRelayIOS -destination 'platform=macOS' CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO build` -- macOS target build succeeded.
 - `git diff --check` plus the changed-file credential/audio/signing-artifact scan passed.
 
-**Manual checks (if no CLI):**
-- Interactive iOS Settings smoke remains deferred: the simulator ran automated tests, but no interactive visual inspection was performed and the shipped app has no production fake-client injection path. Deterministic model coverage and an iOS `UIHostingController` construction test passed; the deferred-work entry records the remaining manual check.
+**Manual checks:**
+- Interactive iOS Settings smoke completed on an iPhone 17 Pro running iOS 26.5 with the Debug fixture launch argument. Configure relay → Manage household Devices showed one approved Kitchen Display and two separate unconfigured/inert candidates. Identifying Hallway Puck rendered `Connection confirmed` and `Hallway Puck responded. It remains unconfigured.`; it stayed in Discovered Devices and never moved to Approved Devices. Identifying Study Display rendered the actionable `Retry` state and connection failure message. Manual pairing accepted `unconfigured-study-display` and returned `Study Display found. It remains unconfigured.` The transient `.connecting` state remains covered by deterministic model tests; no approval, setup, ready, credential, capture, or Hermes-turn UI effect occurred. The unsigned simulator also showed the pre-existing Keychain entitlement diagnostic in the conversation shell; it did not affect the Devices flow.
+
+**Verification update — 2026-09-09:**
+- `xcodebuild` through XcodeBuildMCP with `-only-testing:HermesRelayIOSTests/DeviceDiscoveryTests` -- 22 Device Discovery tests passed.
+- XcodeBuildMCP full iOS simulator XCTest run -- 267 tests passed, 0 failed.
+- `xcodebuild` macOS target build -- succeeded; Xcode emitted only its existing destination/build-number warnings.
+- `xcodebuild` Release iOS simulator build -- succeeded, confirming the Debug fixture does not prevent the production configuration from compiling.
+- XcodeBuildMCP Debug build/run with `-HermesRelayDeviceDiscoveryFixture` -- iOS simulator app build and launch succeeded; the observed states are recorded above.
