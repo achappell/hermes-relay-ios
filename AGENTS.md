@@ -11,12 +11,13 @@ Amanda has explicitly paused GitHub Project #3 while the local BMad surface
 reconciliation is completed. Until she explicitly reopens the board, do not
 inspect, query, create, edit, move, delete, or reconcile Project #3 items.
 
-The shared coverage and prioritization aid is
-[`../hermes-relay-tui/_bmad-output/implementation-artifacts/surface-coverage-matrix.md`](../hermes-relay-tui/_bmad-output/implementation-artifacts/surface-coverage-matrix.md).
-Read it before answering "what's next" or beginning substantive story work.
-It records evidence across the iOS app, ReSpeaker Puck, ESP32 display, iPad
-kiosk, TUI, and Python/Svelte webview; it does not replace this repository's
-local story artifacts or the Personal Vault's product intent.
+The shared surface coverage index (kept at the historical
+[`../hermes-relay-tui/_bmad-output/implementation-artifacts/surface-coverage-matrix.md`](../hermes-relay-tui/_bmad-output/implementation-artifacts/surface-coverage-matrix.md)
+path) is a thin cross-repository view of applicability, evidence, and shared
+dependencies. Read it before answering "what's next" or beginning substantive
+story work. It is not a backlog, story specification, or formal status
+authority; this repository's local story artifacts own iOS delivery scope and
+closure, and the Personal Vault owns durable product intent.
 
 While the board is paused:
 
@@ -28,9 +29,15 @@ While the board is paused:
 - Then choose an open story with the strongest useful coverage across incomplete
   surfaces and settled prerequisites, keeping the work a small, verifiable
   vertical slice.
-- Treat `Implemented` as surface-level evidence, `In review` as unfinished
-  review/validation/build work, and `Foundation` as support that does not close
-  the story. Do not mark a story complete because another surface is complete.
+- Treat `Implemented`, `In review`, `Foundation`, `Open`, and `N/A` in the
+  shared index as evidence or applicability labels only. Use the local iOS
+  story specification, context, validation record, and review state for formal
+  status and closure. Never mark an iOS story complete because another surface
+  is complete.
+- Follow the surface story ID from the index to the shared surface-specific
+  map in `../hermes-relay-tui/_bmad-output/planning-artifacts/epics.md` and
+  then to the owning iOS artifact. Do not duplicate acceptance criteria or
+  create a second cross-repository matrix in this repository.
 - Do not create a duplicate backlog in `docs/plans/`; select from the existing
   BMad epic/story set and record prioritization decisions in local artifacts.
 
@@ -47,12 +54,15 @@ canonical in the Personal Vault hub:
 `~/Documents/Vaults/Personal Vault/projects/hermes-home/hermes-home.md`
 
 Read the hub and its relevant source notes before using BMAD for a new slice.
-While GitHub Project work is paused, use the surface coverage matrix for
-cross-repository coverage, and use this repository's local BMAD runtime and
-artifacts for delivery scope and status. Do not copy `_bmad/` or tool
-configuration from `hermes-relay-tui`, and do not create a second matrix or
-product PRD. Existing local architecture and workflow notes remain
-implementation context. See [`docs/bmad-upstream.md`](docs/bmad-upstream.md).
+While GitHub Project work is paused, use the surface coverage index for
+cross-repository applicability, evidence, and dependencies, and use this
+repository's local BMAD runtime and artifacts for iOS delivery scope, status,
+and validation. The shared surface-specific story identities live in
+`hermes-relay-tui/_bmad-output/planning-artifacts/epics.md`; do not copy them
+into a second local epic map. Do not copy `_bmad/` or tool configuration from
+`hermes-relay-tui`, and do not create a second matrix or product PRD. Existing
+local architecture and workflow notes remain implementation context. See
+[`docs/bmad-upstream.md`](docs/bmad-upstream.md).
 
 Product or shared-behaviour decisions discovered during implementation flow
 back to the hub. `IOS-*` cards belong here; `TUI-*`/`HOME-*` cards belong in
