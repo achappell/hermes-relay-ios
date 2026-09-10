@@ -64,6 +64,7 @@ struct RelayConfigurationView: View {
     /// connected rather than only which one is selected.
     let connectionState: ConnectionState
     let conversationDirectory: URL?
+    let deviceDiscoveryClient: any DeviceDiscoveryClient
     let onSaved: @MainActor () async -> Void
 
     @Environment(\.dismiss) private var dismiss
@@ -74,6 +75,7 @@ struct RelayConfigurationView: View {
     @State private var statusMessage: String?
     @State private var didLoad = false
     @State private var listModel: RelayProfileListModel
+    @State private var showingDeviceDiscovery = false
     /// Which saved profile the form is editing. Nil means the form is
     /// composing a new one, so saving must not overwrite the active profile.
     @State private var editingProfileID: UUID?
@@ -82,11 +84,13 @@ struct RelayConfigurationView: View {
         configurationStore: RelayConfigurationStore,
         connectionState: ConnectionState = .disconnected,
         conversationDirectory: URL? = nil,
+        deviceDiscoveryClient: any DeviceDiscoveryClient = UnavailableDeviceDiscoveryClient(),
         onSaved: @escaping @MainActor () async -> Void = {}
     ) {
         self.configurationStore = configurationStore
         self.connectionState = connectionState
         self.conversationDirectory = conversationDirectory
+        self.deviceDiscoveryClient = deviceDiscoveryClient
         self.onSaved = onSaved
         _draft = State(initialValue: RelayConfigurationDraft(identity: .current()))
         _listModel = State(
@@ -150,6 +154,24 @@ struct RelayConfigurationView: View {
                         Text("The checked profile is the one Connect uses.")
                     }
                 }
+
+                #if os(iOS)
+                Section {
+                    Button {
+                        showingDeviceDiscovery = true
+                    } label: {
+                        Label(
+                            "Manage household Devices",
+                            systemImage: "dot.radiowaves.left.and.right"
+                        )
+                    }
+                    Text("Discover a Device before approving it.")
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                } header: {
+                    Text("Household Devices")
+                }
+                #endif
 
                 Section {
                     TextField("Endpoint", text: $draft.endpoint)
@@ -242,6 +264,11 @@ struct RelayConfigurationView: View {
                     }
                 }
             }
+            #if os(iOS)
+            .sheet(isPresented: $showingDeviceDiscovery) {
+                DeviceDiscoveryView(client: deviceDiscoveryClient)
+            }
+            #endif
             .overlay {
                 if isLoading {
                     ProgressView("Loading configuration…")

@@ -16,6 +16,7 @@ struct ContentView: View {
     @FocusState private var focusedField: FocusField?
     private let configurationStore: RelayConfigurationStore?
     private let conversationDirectory: URL?
+    private let deviceDiscoveryClient: any DeviceDiscoveryClient
     private let activityStore: AudioActivityStore
 
     private enum FocusField: Hashable {
@@ -27,6 +28,7 @@ struct ContentView: View {
         voiceCoordinator: VoiceSessionCoordinator? = nil,
         configurationStore: RelayConfigurationStore? = nil,
         conversationDirectory: URL? = nil,
+        deviceDiscoveryClient: any DeviceDiscoveryClient = UnavailableDeviceDiscoveryClient(),
         activityStore providedActivityStore: AudioActivityStore? = nil
     ) {
         _store = State(initialValue: store)
@@ -68,6 +70,7 @@ struct ContentView: View {
         }
         self.configurationStore = configurationStore
         self.conversationDirectory = conversationDirectory
+        self.deviceDiscoveryClient = deviceDiscoveryClient
     }
 
     private var canSend: Bool {
@@ -131,7 +134,8 @@ struct ContentView: View {
                 RelayConfigurationView(
                     configurationStore: configurationStore,
                     connectionState: store.connectionState,
-                    conversationDirectory: conversationDirectory
+                    conversationDirectory: conversationDirectory,
+                    deviceDiscoveryClient: deviceDiscoveryClient
                 ) {
                     // The selected profile may have changed, so reconnect to
                     // whichever relay is now active rather than only reloading

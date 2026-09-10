@@ -34,7 +34,7 @@
 		</dict>
 	</dict>
 	<key>NSLocalNetworkUsageDescription</key>
-	<string>Hermes connects to your configured relay on a private network.</string>
+	<string>Hermes uses your private network to discover household Devices and connect to configured relays.</string>
 	<key>NSMicrophoneUsageDescription</key>
 	<string>Hermes uses the microphone for push-to-talk voice turns.</string>
 	<key>NSSpeechRecognitionUsageDescription</key>
