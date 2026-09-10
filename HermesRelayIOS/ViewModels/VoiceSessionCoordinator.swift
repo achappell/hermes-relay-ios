@@ -290,6 +290,12 @@ final class VoiceSessionCoordinator {
 
         case .recognition(let update):
             guard !update.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
+            // Recognition is also evidence that the user is still speaking.
+            // This matters when a queued or synthetic silence snapshot arrives
+            // after capture has started; it must not be allowed to end the
+            // phrase while Speech.framework is still producing text.
+            handsFreeSilenceTask?.cancel()
+            handsFreeSilenceTask = nil
             if !isHandsFreeCaptureActive {
                 if !state.isResponseActive, handsFreeWakeSuppressed {
                     let route = await routeSafetyProvider.currentSafety()

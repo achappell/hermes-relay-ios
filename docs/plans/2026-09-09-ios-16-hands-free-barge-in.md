@@ -37,7 +37,8 @@ barge-in is permitted only on an echo-safe headphone route.
 - [x] A non-empty recognition update can wake capture if the audio-level gate has
       not crossed its speech threshold.
 - [x] The silence endpoint tolerates a one-second conversational pause before
-      ending the capture.
+      ending the capture, and non-empty recognition cancels a stale endpoint
+      timer while the phrase is still being transcribed.
 - [x] Background noise keeps an active capture open and cancels a pending
       silence endpoint; only classified silence can end the turn.
 - [x] Recognition text from Hermes playback cannot wake or resubmit a second
