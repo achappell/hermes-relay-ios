@@ -32,6 +32,26 @@ enum DeviceDiscoveryError: Error, Equatable, Sendable {
     }
 }
 
+enum DeviceAdministrationError: Error, Equatable, Sendable {
+    case approvalFailed
+    case configurationFailed
+    case unexpectedResponse
+    case transportUnavailable
+
+    var userMessage: String {
+        switch self {
+        case .approvalFailed:
+            "The Device could not be approved. Try again."
+        case .configurationFailed:
+            "The Device setup could not be saved. Try again."
+        case .unexpectedResponse:
+            "The Device identity could not be verified. Try again."
+        case .transportUnavailable:
+            "Device administration is not configured yet. Try again when a Device transport is available."
+        }
+    }
+}
+
 /// Adapter boundary for physical Device identity discovery.
 ///
 /// Implementations must keep discovery and connection side-effect free: these
@@ -47,6 +67,18 @@ protocol DeviceDiscoveryClient: Sendable {
     /// after the shared Device handshake has confirmed the requested ID.
     func connect(to device: HouseholdDevice) async throws -> DeviceConnectionReceipt
     func identifyManually(_ identifier: String) async throws -> HouseholdDevice
+}
+
+/// Adapter boundary for the trust transition and ordered setup that follows
+/// identity discovery. A successful approval receipt asserts that the future
+/// adapter provisioned an individual revocable credential; no secret bytes are
+/// returned to the app model. Configuration is not active until its receipt
+/// confirms the complete Room and Wake Mapping publish.
+protocol DeviceAdministrationClient: Sendable {
+    func approve(_ device: HouseholdDevice) async throws -> DeviceApprovalReceipt
+    func configure(
+        _ configuration: DeviceSetupConfiguration
+    ) async throws -> DeviceConfigurationReceipt
 }
 
 extension DeviceDiscoveryClient {
@@ -69,6 +101,18 @@ struct UnavailableDeviceDiscoveryClient: DeviceDiscoveryClient {
     }
 }
 
+struct UnavailableDeviceAdministrationClient: DeviceAdministrationClient {
+    func approve(_ device: HouseholdDevice) async throws -> DeviceApprovalReceipt {
+        throw DeviceAdministrationError.transportUnavailable
+    }
+
+    func configure(
+        _ configuration: DeviceSetupConfiguration
+    ) async throws -> DeviceConfigurationReceipt {
+        throw DeviceAdministrationError.transportUnavailable
+    }
+}
+
 /// Selects the shipped unavailable adapter unless a Debug-only simulator
 /// fixture is explicitly requested. The fixture is a visual verification aid;
 /// it is not a production discovery transport.
@@ -85,6 +129,20 @@ enum DeviceDiscoveryClientFactory {
         #endif
 
         return UnavailableDeviceDiscoveryClient()
+    }
+}
+
+enum DeviceAdministrationClientFactory {
+    static func make(
+        arguments: [String] = ProcessInfo.processInfo.arguments
+    ) -> any DeviceAdministrationClient {
+        #if DEBUG
+        if arguments.contains(DeviceDiscoveryClientFactory.fixtureLaunchArgument) {
+            return DebugDeviceAdministrationFixtureClient()
+        }
+        #endif
+
+        return UnavailableDeviceAdministrationClient()
     }
 }
 
@@ -140,6 +198,33 @@ private struct DebugDeviceDiscoveryFixtureClient: DeviceDiscoveryClient {
         default:
             throw DeviceDiscoveryError.deviceNotFound
         }
+    }
+}
+
+private struct DebugDeviceAdministrationFixtureClient: DeviceAdministrationClient {
+    private let supportedDeviceIDs = [
+        "unconfigured-hallway-puck",
+        "unconfigured-study-display"
+    ]
+
+    func approve(_ device: HouseholdDevice) async throws -> DeviceApprovalReceipt {
+        try await Task.sleep(nanoseconds: 500_000_000)
+        guard supportedDeviceIDs.contains(device.id),
+              device.trustState == .unconfigured
+        else {
+            throw DeviceAdministrationError.approvalFailed
+        }
+        return DeviceApprovalReceipt(deviceID: device.id)
+    }
+
+    func configure(
+        _ configuration: DeviceSetupConfiguration
+    ) async throws -> DeviceConfigurationReceipt {
+        try await Task.sleep(nanoseconds: 500_000_000)
+        guard supportedDeviceIDs.contains(configuration.deviceID) else {
+            throw DeviceAdministrationError.configurationFailed
+        }
+        return DeviceConfigurationReceipt(deviceID: configuration.deviceID)
     }
 }
 #endif

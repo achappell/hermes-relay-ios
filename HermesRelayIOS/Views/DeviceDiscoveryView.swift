@@ -5,17 +5,30 @@ import SwiftUI
 @MainActor
 struct DeviceDiscoveryView: View {
     let client: any DeviceDiscoveryClient
+    let administrationClient: any DeviceAdministrationClient
 
     @Environment(\.dismiss) private var dismiss
     @State private var model: DeviceDiscoveryModel
     @State private var isManualPairingPresented = false
+    @State private var setupDevice: HouseholdDevice?
 
-    init(client: any DeviceDiscoveryClient) {
+    init(
+        client: any DeviceDiscoveryClient,
+        administrationClient: any DeviceAdministrationClient = UnavailableDeviceAdministrationClient()
+    ) {
         self.client = client
-        _model = State(initialValue: DeviceDiscoveryModel(client: client))
+        self.administrationClient = administrationClient
+        _model = State(
+            initialValue: DeviceDiscoveryModel(
+                client: client,
+                administrationClient: administrationClient
+            )
+        )
     }
 
     var body: some View {
+        @Bindable var model = model
+
         NavigationStack {
             List {
                 Section {
@@ -39,11 +52,31 @@ struct DeviceDiscoveryView: View {
                             .foregroundStyle(.secondary)
                     } else {
                         ForEach(model.approvedDevices) { device in
-                            DeviceDiscoveryRow(
-                                device: device,
-                                connectionState: nil,
-                                isInteractive: false
-                            )
+                            let setupStatus = model.setupStatus(for: device)
+                            if setupStatus == .pending {
+                                Button {
+                                    setupDevice = device
+                                } label: {
+                                    DeviceDiscoveryRow(
+                                        device: device,
+                                        connectionState: nil,
+                                        isInteractive: true,
+                                        setupStatus: setupStatus
+                                    )
+                                }
+                                .buttonStyle(.plain)
+                                .accessibilityIdentifier("approved-device-\(device.id)")
+                                .accessibilityHint(
+                                    "Continue Room and Wake Mapping setup. The Device remains inactive until Ready."
+                                )
+                            } else {
+                                DeviceDiscoveryRow(
+                                    device: device,
+                                    connectionState: nil,
+                                    isInteractive: false,
+                                    setupStatus: setupStatus
+                                )
+                            }
                         }
                     }
                 }
@@ -57,21 +90,46 @@ struct DeviceDiscoveryView: View {
                             let rowAccessibilityIdentifier = "device-\(device.id)"
                             let connectionState = model.connectionState(for: device)
                             let isConnecting = connectionState == .connecting
-                            Button {
-                                Task { await model.connect(to: device) }
-                            } label: {
-                                DeviceDiscoveryRow(
-                                    device: device,
-                                    connectionState: connectionState,
-                                    isInteractive: true
+                            VStack(alignment: .leading, spacing: 8) {
+                                Button {
+                                    Task { await model.connect(to: device) }
+                                } label: {
+                                    DeviceDiscoveryRow(
+                                        device: device,
+                                        connectionState: connectionState,
+                                        isInteractive: true,
+                                        setupStatus: nil
+                                    )
+                                }
+                                .buttonStyle(.plain)
+                                .disabled(isConnecting || model.isApproving)
+                                .accessibilityIdentifier(rowAccessibilityIdentifier)
+                                .accessibilityHint(
+                                    "Connects only to identify this Device. It remains unconfigured."
                                 )
+
+                                if connectionState == .connected {
+                                    Button {
+                                        Task {
+                                            if await model.approve(device),
+                                               let approvedDevice = model.approvedDevice(for: device) {
+                                                setupDevice = approvedDevice
+                                            }
+                                        }
+                                    } label: {
+                                        Label(
+                                            "Approve and configure",
+                                            systemImage: "checkmark.shield"
+                                        )
+                                        .font(.subheadline.weight(.semibold))
+                                    }
+                                    .disabled(model.isApproving)
+                                    .accessibilityIdentifier("approve-device-\(device.id)")
+                                    .accessibilityHint(
+                                        "Approves this Device, then opens Room and Wake Mapping setup."
+                                    )
+                                }
                             }
-                            .buttonStyle(.plain)
-                            .disabled(isConnecting)
-                            .accessibilityIdentifier(rowAccessibilityIdentifier)
-                            .accessibilityHint(
-                                "Connects only to identify this Device. It remains unconfigured."
-                            )
                         }
                     }
                 } header: {
@@ -141,6 +199,14 @@ struct DeviceDiscoveryView: View {
         .sheet(isPresented: $isManualPairingPresented) {
             ManualDevicePairingView(model: model)
         }
+        .sheet(item: $setupDevice) { device in
+            DeviceSetupView(
+                device: device,
+                administrationClient: administrationClient
+            ) {
+                model.markReady(device)
+            }
+        }
     }
 }
 
@@ -149,6 +215,7 @@ private struct DeviceDiscoveryRow: View {
     let device: HouseholdDevice
     let connectionState: DeviceConnectionState?
     let isInteractive: Bool
+    let setupStatus: DeviceSetupStatus?
 
     private var deviceIcon: String {
         switch device.kind {
@@ -169,6 +236,9 @@ private struct DeviceDiscoveryRow: View {
     }
 
     private var actionLabel: String {
+        if let setupStatus, !setupStatus.isActive {
+            return "Set up"
+        }
         guard let connectionState else { return "" }
         switch connectionState {
         case .idle:
@@ -201,6 +271,12 @@ private struct DeviceDiscoveryRow: View {
                         .font(.footnote)
                         .foregroundStyle(.secondary)
                 }
+
+                if let setupStatus {
+                    Label(setupStatus.label, systemImage: setupStatus.isActive ? "checkmark.circle.fill" : "pause.circle")
+                        .font(.footnote)
+                        .foregroundStyle(setupStatus.isActive ? .green : .secondary)
+                }
             }
 
             Spacer(minLength: 8)
@@ -218,6 +294,227 @@ private struct DeviceDiscoveryRow: View {
             }
         }
         .padding(.vertical, 4)
+    }
+}
+
+@MainActor
+private struct DeviceSetupView: View {
+    let device: HouseholdDevice
+    let administrationClient: any DeviceAdministrationClient
+    let onReady: @MainActor () -> Void
+
+    @Environment(\.dismiss) private var dismiss
+    @State private var model: DeviceSetupModel
+
+    init(
+        device: HouseholdDevice,
+        administrationClient: any DeviceAdministrationClient,
+        onReady: @escaping @MainActor () -> Void
+    ) {
+        self.device = device
+        self.administrationClient = administrationClient
+        self.onReady = onReady
+        _model = State(
+            initialValue: DeviceSetupModel(
+                device: device,
+                administrationClient: administrationClient
+            )
+        )
+    }
+
+    var body: some View {
+        @Bindable var model = model
+
+        NavigationStack {
+            Form {
+                Section {
+                    Label(
+                        "Approved, but inactive until setup is complete.",
+                        systemImage: "lock.shield"
+                    )
+                    Text("Set up \(device.displayName) in this order: Room, Wake Mappings, then Ready.")
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                } header: {
+                    Text("Setup pending")
+                }
+
+                switch model.step {
+                case .room:
+                    DeviceSetupRoomStep(model: model)
+                case .wakeMappings:
+                    DeviceSetupWakeMappingsStep(model: model)
+                case .ready:
+                    DeviceSetupReadyStep(model: model) {
+                        onReady()
+                        dismiss()
+                    }
+                case .complete:
+                    DeviceSetupCompleteStep(device: device)
+                }
+
+                if let errorMessage = model.errorMessage {
+                    Section {
+                        Label(errorMessage, systemImage: "exclamationmark.triangle")
+                            .foregroundStyle(.red)
+                    }
+                }
+            }
+            .navigationTitle("Set Up Device")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Cancel") {
+                        dismiss()
+                    }
+                }
+            }
+        }
+    }
+}
+
+@MainActor
+private struct DeviceSetupRoomStep: View {
+    @Bindable var model: DeviceSetupModel
+
+    var body: some View {
+        Section {
+            TextField("Room name", text: $model.room)
+                .textInputAutocapitalization(.words)
+
+            Button("Continue to Wake Mappings") {
+                model.continueFromRoom()
+            }
+        } header: {
+            Text("1. Room")
+        } footer: {
+            Text("A Device remains inactive until the complete setup is confirmed.")
+        }
+    }
+}
+
+@MainActor
+private struct DeviceSetupWakeMappingsStep: View {
+    @Bindable var model: DeviceSetupModel
+
+    var body: some View {
+        Section {
+            if model.wakeMappings.isEmpty {
+                Text("Add at least one Wake Mapping.")
+                    .foregroundStyle(.secondary)
+            } else {
+                ForEach($model.wakeMappings) { $mapping in
+                    VStack(alignment: .leading, spacing: 8) {
+                        TextField("Wake phrase", text: $mapping.wakePhrase)
+                            .textInputAutocapitalization(.sentences)
+                        TextField(
+                            "Hermes Profile identifier",
+                            text: $mapping.profileIdentifier
+                        )
+                        .autocorrectionDisabled()
+                        .textInputAutocapitalization(.never)
+                        .keyboardType(.asciiCapable)
+
+                        Button("Remove mapping", role: .destructive) {
+                            model.removeWakeMapping(id: mapping.id)
+                        }
+                        .font(.footnote)
+                    }
+                    .accessibilityElement(children: .contain)
+                    .accessibilityLabel("Wake Mapping")
+                }
+            }
+
+            Button {
+                model.addWakeMapping()
+            } label: {
+                Label("Add Wake Mapping", systemImage: "plus")
+            }
+
+            Button("Review setup") {
+                model.continueFromMappings()
+            }
+
+            Button("Back to Room") {
+                model.returnToRoom()
+            }
+        } header: {
+            Text("2. Wake Mappings")
+        } footer: {
+            Text("Each wake phrase must be unique and point to one Hermes Profile identifier.")
+        }
+    }
+}
+
+@MainActor
+private struct DeviceSetupReadyStep: View {
+    let model: DeviceSetupModel
+    let onReady: @MainActor () -> Void
+
+    init(
+        model: DeviceSetupModel,
+        onReady: @escaping @MainActor () -> Void
+    ) {
+        self.model = model
+        self.onReady = onReady
+    }
+
+    var body: some View {
+        Section {
+            LabeledContent("Room", value: model.room)
+
+            ForEach(model.wakeMappings) { mapping in
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(mapping.wakePhrase)
+                        .font(.headline)
+                    Text("Profile: \(mapping.profileIdentifier)")
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
+                }
+                .accessibilityElement(children: .combine)
+            }
+
+            Button("Edit Wake Mappings") {
+                model.editWakeMappings()
+            }
+        } header: {
+            Text("3. Ready")
+        } footer: {
+            Text("Confirm only when this Device should become an active household doorway.")
+        }
+
+        Section {
+            Button {
+                Task {
+                    if await model.confirmReady() {
+                        onReady()
+                    }
+                }
+            } label: {
+                if model.isPublishing {
+                    ProgressView("Making Device ready…")
+                } else {
+                    Text("Mark Device Ready")
+                }
+            }
+            .disabled(model.isPublishing)
+            .buttonStyle(.borderedProminent)
+        }
+    }
+}
+
+@MainActor
+private struct DeviceSetupCompleteStep: View {
+    let device: HouseholdDevice
+
+    var body: some View {
+        Section {
+            Label(
+                "\(device.displayName) is ready and active.",
+                systemImage: "checkmark.circle.fill"
+            )
+            .foregroundStyle(.green)
+        }
     }
 }
 

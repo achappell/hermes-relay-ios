@@ -44,6 +44,303 @@ final class DeviceDiscoveryTests: XCTestCase {
         }
     }
 
+    func testDeviceAdministrationFactoryDefaultsToUnavailableWithoutFixtureArgument() async {
+        let client = DeviceAdministrationClientFactory.make(arguments: [])
+        let device = HouseholdDevice(
+            id: "unconfigured-puck",
+            displayName: "New Puck",
+            kind: .puck,
+            trustState: .unconfigured
+        )
+
+        do {
+            _ = try await client.approve(device)
+            XCTFail("The shipped default must not claim to approve Devices")
+        } catch let error as DeviceAdministrationError {
+            XCTAssertEqual(error, .transportUnavailable)
+        } catch {
+            XCTFail("Unexpected error: \(error)")
+        }
+    }
+
+    func testApprovalRequiresAConfirmedConnectionAndKeepsCandidateUnapproved() async {
+        let candidate = HouseholdDevice(
+            id: "unconfigured-puck",
+            displayName: "New Puck",
+            kind: .puck,
+            trustState: .unconfigured
+        )
+        let discoveryClient = FakeDeviceDiscoveryClient(
+            snapshot: DeviceDiscoverySnapshot(
+                approvedDevices: [],
+                unconfiguredDevices: [candidate]
+            )
+        )
+        let administrationClient = FakeDeviceAdministrationClient()
+        let model = DeviceDiscoveryModel(
+            client: discoveryClient,
+            administrationClient: administrationClient
+        )
+        await model.discover()
+
+        let approved = await model.approve(candidate)
+
+        XCTAssertFalse(approved)
+        XCTAssertEqual(
+            model.errorMessage,
+            "Confirm the Device connection before approving it."
+        )
+        XCTAssertTrue(model.approvedDevices.isEmpty)
+        XCTAssertEqual(model.discoveredDevices, [candidate])
+        let approvalCount = await administrationClient.approvalCount()
+        XCTAssertEqual(approvalCount, 0)
+    }
+
+    func testApprovalMovesConnectedCandidateToAuthorizedSetupPendingState() async {
+        let candidate = HouseholdDevice(
+            id: "unconfigured-puck",
+            displayName: "New Puck",
+            kind: .puck,
+            trustState: .unconfigured
+        )
+        let discoveryClient = FakeDeviceDiscoveryClient(
+            snapshot: DeviceDiscoverySnapshot(
+                approvedDevices: [],
+                unconfiguredDevices: [candidate]
+            )
+        )
+        let administrationClient = FakeDeviceAdministrationClient()
+        let model = DeviceDiscoveryModel(
+            client: discoveryClient,
+            administrationClient: administrationClient
+        )
+        await model.discover()
+        await model.connect(to: candidate)
+
+        let approved = await model.approve(candidate)
+
+        XCTAssertTrue(approved)
+        XCTAssertEqual(
+            model.approvedDevices,
+            [
+                HouseholdDevice(
+                    id: candidate.id,
+                    displayName: candidate.displayName,
+                    kind: candidate.kind,
+                    trustState: .approved
+                )
+            ]
+        )
+        XCTAssertTrue(model.discoveredDevices.isEmpty)
+        XCTAssertEqual(model.setupStatus(for: candidate), .pending)
+        XCTAssertFalse(model.isActive(candidate))
+        let approvalCount = await administrationClient.approvalCount()
+        XCTAssertEqual(approvalCount, 1)
+    }
+
+    func testMismatchedApprovalReceiptFailsClosedWithoutPromotion() async {
+        let candidate = HouseholdDevice(
+            id: "unconfigured-puck",
+            displayName: "New Puck",
+            kind: .puck,
+            trustState: .unconfigured
+        )
+        let discoveryClient = FakeDeviceDiscoveryClient(
+            snapshot: DeviceDiscoverySnapshot(
+                approvedDevices: [],
+                unconfiguredDevices: [candidate]
+            )
+        )
+        let administrationClient = FakeDeviceAdministrationClient(
+            approvalReceiptDeviceID: "different-device"
+        )
+        let model = DeviceDiscoveryModel(
+            client: discoveryClient,
+            administrationClient: administrationClient
+        )
+        await model.discover()
+        await model.connect(to: candidate)
+
+        let approved = await model.approve(candidate)
+
+        XCTAssertFalse(approved)
+        XCTAssertEqual(
+            model.errorMessage,
+            "The Device identity could not be verified. Try again."
+        )
+        XCTAssertTrue(model.approvedDevices.isEmpty)
+        XCTAssertEqual(model.discoveredDevices, [candidate])
+        XCTAssertNil(model.setupStatus(for: candidate))
+    }
+
+    func testSetupRequiresRoomAndAtLeastOneWakeMappingBeforeAdvancing() async {
+        let setup = DeviceSetupModel(
+            device: approvedSetupDevice,
+            administrationClient: FakeDeviceAdministrationClient()
+        )
+
+        XCTAssertFalse(setup.continueFromRoom())
+        XCTAssertEqual(setup.step, .room)
+        XCTAssertEqual(setup.errorMessage, "Assign this Device to a Room.")
+
+        setup.room = "Kitchen"
+        XCTAssertTrue(setup.continueFromRoom())
+        XCTAssertEqual(setup.step, .wakeMappings)
+
+        XCTAssertFalse(setup.continueFromMappings())
+        XCTAssertEqual(setup.step, .wakeMappings)
+        XCTAssertEqual(setup.errorMessage, "Add at least one Wake Mapping.")
+    }
+
+    func testSetupRejectsDuplicateWakePhrasesBeforePublishing() async {
+        let administrationClient = FakeDeviceAdministrationClient()
+        let setup = DeviceSetupModel(
+            device: approvedSetupDevice,
+            administrationClient: administrationClient
+        )
+        setup.room = "Kitchen"
+        XCTAssertTrue(setup.continueFromRoom())
+        setup.wakeMappings = [
+            DeviceWakeMapping(wakePhrase: "Hey Missy", profileIdentifier: "missy"),
+            DeviceWakeMapping(wakePhrase: " hey missy ", profileIdentifier: "other")
+        ]
+
+        XCTAssertFalse(setup.continueFromMappings())
+        XCTAssertEqual(setup.step, .wakeMappings)
+        XCTAssertEqual(
+            setup.errorMessage,
+            "Each Wake Mapping must use a unique wake phrase."
+        )
+        let configurationCount = await administrationClient.configurationCount()
+        XCTAssertEqual(configurationCount, 0)
+    }
+
+    func testValidSetupPublishesOnlyAfterReadyConfirmation() async {
+        let administrationClient = FakeDeviceAdministrationClient()
+        let setup = DeviceSetupModel(
+            device: approvedSetupDevice,
+            administrationClient: administrationClient
+        )
+        setup.room = "Kitchen"
+        XCTAssertTrue(setup.continueFromRoom())
+        let mapping = DeviceWakeMapping(
+            wakePhrase: "Hey Missy",
+            profileIdentifier: "missy"
+        )
+        setup.wakeMappings = [mapping]
+
+        XCTAssertTrue(setup.continueFromMappings())
+        XCTAssertEqual(setup.step, .ready)
+        let configurationCountBeforePublish = await administrationClient.configurationCount()
+        XCTAssertEqual(configurationCountBeforePublish, 0)
+
+        let completed = await setup.confirmReady()
+
+        XCTAssertTrue(completed)
+        XCTAssertEqual(setup.step, .complete)
+        XCTAssertNil(setup.errorMessage)
+        let configurationCountAfterPublish = await administrationClient.configurationCount()
+        XCTAssertEqual(configurationCountAfterPublish, 1)
+        let lastConfiguration = await administrationClient.lastConfiguration()
+        XCTAssertEqual(
+            lastConfiguration,
+            DeviceSetupConfiguration(
+                deviceID: approvedSetupDevice.id,
+                room: "Kitchen",
+                wakeMappings: [mapping]
+            )
+        )
+    }
+
+    func testMismatchedConfigurationReceiptLeavesDeviceInactive() async {
+        let administrationClient = FakeDeviceAdministrationClient(
+            configurationReceiptDeviceID: "different-device"
+        )
+        let setup = DeviceSetupModel(
+            device: approvedSetupDevice,
+            administrationClient: administrationClient
+        )
+        setup.room = "Kitchen"
+        XCTAssertTrue(setup.continueFromRoom())
+        setup.wakeMappings = [
+            DeviceWakeMapping(wakePhrase: "Hey Missy", profileIdentifier: "missy")
+        ]
+        XCTAssertTrue(setup.continueFromMappings())
+
+        let completed = await setup.confirmReady()
+
+        XCTAssertFalse(completed)
+        XCTAssertEqual(setup.step, .ready)
+        XCTAssertEqual(
+            setup.errorMessage,
+            "The Device identity could not be verified. Try again."
+        )
+        XCTAssertFalse(setup.isActive)
+    }
+
+    func testFailedConfigurationLeavesDeviceReadyAndInactive() async {
+        let administrationClient = FakeDeviceAdministrationClient(
+            configurationError: .configurationFailed
+        )
+        let setup = DeviceSetupModel(
+            device: approvedSetupDevice,
+            administrationClient: administrationClient
+        )
+        setup.room = "Kitchen"
+        XCTAssertTrue(setup.continueFromRoom())
+        setup.wakeMappings = [
+            DeviceWakeMapping(wakePhrase: "Hey Missy", profileIdentifier: "missy")
+        ]
+        XCTAssertTrue(setup.continueFromMappings())
+
+        let completed = await setup.confirmReady()
+
+        XCTAssertFalse(completed)
+        XCTAssertEqual(setup.step, .ready)
+        XCTAssertEqual(
+            setup.errorMessage,
+            "The Device setup could not be saved. Try again."
+        )
+        XCTAssertFalse(setup.isActive)
+        let configurationCount = await administrationClient.configurationCount()
+        XCTAssertEqual(configurationCount, 0)
+    }
+
+    func testReadyConfirmationRevalidatesSetupBeforePublishing() async {
+        let administrationClient = FakeDeviceAdministrationClient()
+        let setup = DeviceSetupModel(
+            device: approvedSetupDevice,
+            administrationClient: administrationClient
+        )
+        setup.room = "Kitchen"
+        XCTAssertTrue(setup.continueFromRoom())
+        setup.wakeMappings = [
+            DeviceWakeMapping(wakePhrase: "Hey Missy", profileIdentifier: "missy")
+        ]
+        XCTAssertTrue(setup.continueFromMappings())
+        setup.wakeMappings[0].wakePhrase = " "
+
+        let completed = await setup.confirmReady()
+
+        XCTAssertFalse(completed)
+        XCTAssertEqual(setup.step, .ready)
+        XCTAssertEqual(
+            setup.errorMessage,
+            "Each Wake Mapping needs a wake phrase and Hermes Profile identifier."
+        )
+        let configurationCount = await administrationClient.configurationCount()
+        XCTAssertEqual(configurationCount, 0)
+    }
+
+    private var approvedSetupDevice: HouseholdDevice {
+        HouseholdDevice(
+            id: "approved-puck",
+            displayName: "Kitchen Puck",
+            kind: .puck,
+            trustState: .approved
+        )
+    }
+
     func testDiscoveryKeepsUnconfiguredDevicesSeparateFromApprovedDevices() async {
         let approved = HouseholdDevice(
             id: "approved-display",
@@ -702,6 +999,59 @@ private actor FakeDeviceDiscoveryClient: DeviceDiscoveryClient {
 
     func manualIdentifiers() -> [String] {
         requestedManualIdentifiers
+    }
+}
+
+private actor FakeDeviceAdministrationClient: DeviceAdministrationClient {
+    let approvalError: DeviceAdministrationError?
+    let configurationError: DeviceAdministrationError?
+    let approvalReceiptDeviceID: String?
+    let configurationReceiptDeviceID: String?
+    private var approvals = 0
+    private var configurations: [DeviceSetupConfiguration] = []
+
+    init(
+        approvalError: DeviceAdministrationError? = nil,
+        configurationError: DeviceAdministrationError? = nil,
+        approvalReceiptDeviceID: String? = nil,
+        configurationReceiptDeviceID: String? = nil
+    ) {
+        self.approvalError = approvalError
+        self.configurationError = configurationError
+        self.approvalReceiptDeviceID = approvalReceiptDeviceID
+        self.configurationReceiptDeviceID = configurationReceiptDeviceID
+    }
+
+    func approve(_ device: HouseholdDevice) async throws -> DeviceApprovalReceipt {
+        approvals += 1
+        if let approvalError {
+            throw approvalError
+        }
+        return DeviceApprovalReceipt(deviceID: approvalReceiptDeviceID ?? device.id)
+    }
+
+    func configure(
+        _ configuration: DeviceSetupConfiguration
+    ) async throws -> DeviceConfigurationReceipt {
+        if let configurationError {
+            throw configurationError
+        }
+        configurations.append(configuration)
+        return DeviceConfigurationReceipt(
+            deviceID: configurationReceiptDeviceID ?? configuration.deviceID
+        )
+    }
+
+    func approvalCount() -> Int {
+        approvals
+    }
+
+    func configurationCount() -> Int {
+        configurations.count
+    }
+
+    func lastConfiguration() -> DeviceSetupConfiguration? {
+        configurations.last
     }
 }
 

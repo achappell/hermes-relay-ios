@@ -65,6 +65,7 @@ struct RelayConfigurationView: View {
     let connectionState: ConnectionState
     let conversationDirectory: URL?
     let deviceDiscoveryClient: any DeviceDiscoveryClient
+    let deviceAdministrationClient: any DeviceAdministrationClient
     let onSaved: @MainActor () async -> Void
 
     @Environment(\.dismiss) private var dismiss
@@ -85,12 +86,14 @@ struct RelayConfigurationView: View {
         connectionState: ConnectionState = .disconnected,
         conversationDirectory: URL? = nil,
         deviceDiscoveryClient: any DeviceDiscoveryClient = UnavailableDeviceDiscoveryClient(),
+        deviceAdministrationClient: any DeviceAdministrationClient = UnavailableDeviceAdministrationClient(),
         onSaved: @escaping @MainActor () async -> Void = {}
     ) {
         self.configurationStore = configurationStore
         self.connectionState = connectionState
         self.conversationDirectory = conversationDirectory
         self.deviceDiscoveryClient = deviceDiscoveryClient
+        self.deviceAdministrationClient = deviceAdministrationClient
         self.onSaved = onSaved
         _draft = State(initialValue: RelayConfigurationDraft(identity: .current()))
         _listModel = State(
@@ -266,7 +269,10 @@ struct RelayConfigurationView: View {
             }
             #if os(iOS)
             .sheet(isPresented: $showingDeviceDiscovery) {
-                DeviceDiscoveryView(client: deviceDiscoveryClient)
+                DeviceDiscoveryView(
+                    client: deviceDiscoveryClient,
+                    administrationClient: deviceAdministrationClient
+                )
             }
             #endif
             .overlay {

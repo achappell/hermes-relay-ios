@@ -44,6 +44,85 @@ struct DeviceDiscoverySnapshot: Equatable, Sendable {
     let unconfiguredDevices: [HouseholdDevice]
 }
 
+enum DeviceSetupStatus: String, Codable, Equatable, Sendable {
+    case pending
+    case ready
+
+    var label: String {
+        switch self {
+        case .pending:
+            "Setup pending · Inactive"
+        case .ready:
+            "Ready"
+        }
+    }
+
+    var isActive: Bool {
+        self == .ready
+    }
+}
+
+enum DeviceSetupStep: Equatable, Sendable {
+    case room
+    case wakeMappings
+    case ready
+    case complete
+}
+
+struct DeviceWakeMapping: Identifiable, Codable, Equatable, Hashable, Sendable {
+    let id: UUID
+    var wakePhrase: String
+    var profileIdentifier: String
+
+    init(
+        id: UUID = UUID(),
+        wakePhrase: String = "",
+        profileIdentifier: String = ""
+    ) {
+        self.id = id
+        self.wakePhrase = wakePhrase
+        self.profileIdentifier = profileIdentifier
+    }
+
+    var normalizedWakePhrase: String {
+        wakePhrase.trimmingCharacters(in: .whitespacesAndNewlines)
+            .split(whereSeparator: \.isWhitespace)
+            .joined(separator: " ")
+            .folding(
+                options: [.caseInsensitive, .diacriticInsensitive],
+                locale: Locale(identifier: "en_US_POSIX")
+            )
+    }
+
+    var hasValidValues: Bool {
+        let normalizedProfile = normalizedProfileIdentifier
+        return !normalizedWakePhrase.isEmpty
+            && !normalizedProfile.isEmpty
+            && !normalizedProfile.contains(where: \.isWhitespace)
+    }
+
+    var normalizedProfileIdentifier: String {
+        profileIdentifier.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+}
+
+struct DeviceSetupConfiguration: Equatable, Sendable {
+    let deviceID: String
+    let room: String
+    let wakeMappings: [DeviceWakeMapping]
+}
+
+struct DeviceApprovalReceipt: Equatable, Sendable {
+    /// A successful receipt means the future adapter provisioned the
+    /// individually scoped credential. Raw credential material never crosses
+    /// this boundary.
+    let deviceID: String
+}
+
+struct DeviceConfigurationReceipt: Equatable, Sendable {
+    let deviceID: String
+}
+
 /// Adapter-provided result after the shared Device handshake confirms the
 /// requested identity. This slice does not define that handshake or create
 /// credentials; the unavailable production adapter intentionally never emits
