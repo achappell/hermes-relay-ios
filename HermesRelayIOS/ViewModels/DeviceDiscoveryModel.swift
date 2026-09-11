@@ -7,6 +7,7 @@ final class DeviceDiscoveryModel {
     private(set) var approvedDevices: [HouseholdDevice] = []
     private(set) var discoveredDevices: [HouseholdDevice] = []
     private(set) var isApproving = false
+    private(set) var isVerifying = false
     private(set) var isDiscovering = false
     private(set) var errorMessage: String?
     private(set) var isManualFallbackAvailable = false
@@ -95,6 +96,7 @@ final class DeviceDiscoveryModel {
                 connectionStates[device.id] = .idle
             }
             statusMessage = nil
+            await verifyConfiguredDevices(approved, requestID: requestID)
         } catch is CancellationError {
             return
         } catch let error as DeviceDiscoveryError {
@@ -191,7 +193,7 @@ final class DeviceDiscoveryModel {
 
     func setupStatus(for device: HouseholdDevice) -> DeviceSetupStatus? {
         if let configurationState = configurationStates[device.id] {
-            return configurationState.pendingConfiguration == nil ? .ready : .updatePending
+            return setupStatus(for: configurationState)
         }
         return setupStatuses[device.id] ?? (setupDrafts[device.id] == nil ? nil : .pending)
     }
@@ -204,6 +206,7 @@ final class DeviceDiscoveryModel {
         let draftError = await loadSetupDrafts()
         let configurationError = await loadConfigurationStates()
         errorMessage = draftError ?? configurationError
+        await verifyConfiguredDevices(approvedDevices, requestID: discoveryRequestID)
     }
 
     func configurationState(for device: HouseholdDevice) -> DeviceConfigurationState? {
@@ -223,6 +226,16 @@ final class DeviceDiscoveryModel {
         setupStatuses[device.id] = .ready
         setupDrafts.removeValue(forKey: device.id)
         statusMessage = "\(device.displayName) is ready and active."
+    }
+
+    /// Re-checks a configured Device against the administration authority.
+    /// A local configuration file is useful cached context, never proof that
+    /// the Device or its mapped Profiles are still usable.
+    func verify(_ device: HouseholdDevice) async {
+        guard !isVerifying else { return }
+        isVerifying = true
+        defer { isVerifying = false }
+        await verifyConfiguredDevice(device, requestID: discoveryRequestID)
     }
 
     func approve(_ device: HouseholdDevice) async -> Bool {
@@ -323,6 +336,116 @@ final class DeviceDiscoveryModel {
         }
     }
 
+    private func setupStatus(for state: DeviceConfigurationState) -> DeviceSetupStatus {
+        switch state.identityStatus {
+        case .verificationRequired:
+            return .verificationRequired
+        case .verified:
+            return state.pendingConfiguration == nil ? .ready : .updatePending
+        case .unavailable:
+            return .unavailable
+        case .revoked:
+            return .revoked
+        }
+    }
+
+    private func verifyConfiguredDevices(
+        _ devices: [HouseholdDevice],
+        requestID: Int
+    ) async {
+        guard !isVerifying else { return }
+        isVerifying = true
+        defer { isVerifying = false }
+
+        for device in devices {
+            guard requestID == discoveryRequestID else { return }
+            await verifyConfiguredDevice(device, requestID: requestID)
+        }
+    }
+
+    private func verifyConfiguredDevice(
+        _ device: HouseholdDevice,
+        requestID: Int
+    ) async {
+        guard requestID == discoveryRequestID,
+              let currentDevice = approvedDevices.first(where: { $0.id == device.id }),
+              let state = configurationStates[device.id],
+              state.identityStatus != .revoked
+        else {
+            return
+        }
+
+        do {
+            let receipt = try await administrationClient.verify(
+                currentDevice,
+                against: state.verifiedConfiguration
+            )
+            guard requestID == discoveryRequestID,
+                  approvedDevices.contains(where: { $0.id == device.id })
+            else {
+                return
+            }
+            guard receipt.deviceID == device.id else {
+                throw DeviceAdministrationError.unexpectedResponse
+            }
+
+            switch receipt.status {
+            case .verified:
+                guard receipt.matches(state.verifiedConfiguration) else {
+                    throw DeviceAdministrationError.unexpectedResponse
+                }
+                await applyIdentityStatus(.verified, to: state)
+                statusMessage = "\(device.displayName) is verified and ready."
+            case .unavailable:
+                await applyIdentityStatus(.unavailable, to: state)
+                errorMessage = verificationFailureMessage
+                statusMessage = "\(device.displayName) is unavailable and remains inactive."
+            case .revoked:
+                await applyIdentityStatus(.revoked, to: state)
+                errorMessage = nil
+                statusMessage = "Device access is revoked. Explicit re-enrollment is required."
+            case .verificationRequired:
+                throw DeviceAdministrationError.unexpectedResponse
+            }
+        } catch is CancellationError {
+            return
+        } catch let error as DeviceAdministrationError {
+            guard requestID == discoveryRequestID else { return }
+            await applyIdentityStatus(.unavailable, to: state)
+            errorMessage = verificationFailureMessage(for: error)
+            statusMessage = "\(device.displayName) remains inactive until its identity is verified."
+        } catch {
+            guard requestID == discoveryRequestID else { return }
+            await applyIdentityStatus(.unavailable, to: state)
+            errorMessage = verificationFailureMessage
+            statusMessage = "\(device.displayName) remains inactive until its identity is verified."
+        }
+    }
+
+    private func applyIdentityStatus(
+        _ identityStatus: DeviceIdentityStatus,
+        to state: DeviceConfigurationState
+    ) async {
+        var updatedState = state
+        updatedState.identityStatus = identityStatus
+        configurationStates[state.deviceID] = updatedState
+        setupStatuses[state.deviceID] = setupStatus(for: updatedState)
+        try? await configurationStore.save(updatedState)
+    }
+
+    private var verificationFailureMessage: String {
+        "The Device identity could not be verified. It remains unavailable until verification succeeds."
+    }
+
+    private func verificationFailureMessage(for error: DeviceAdministrationError) -> String {
+        switch error {
+        case .unexpectedResponse, .transportUnavailable:
+            verificationFailureMessage
+        case .approvalFailed, .configurationFailed:
+            verificationFailureMessage
+        }
+    }
+
     private func loadSetupDrafts() async -> String? {
         do {
             let drafts = try await draftStore.loadAll()
@@ -341,7 +464,16 @@ final class DeviceDiscoveryModel {
             configurationStates = try await configurationStore.loadAll().reduce(
                 into: [String: DeviceConfigurationState]()
             ) { states, state in
+                var state = state
+                // A receipt from a previous process cannot prove that the
+                // Device or its mapped Profiles are still usable today.
+                // Preserve revoked/unavailable last-known state, but always
+                // re-check a previously verified state after reload.
+                if state.identityStatus == .verified {
+                    state.identityStatus = .verificationRequired
+                }
                 states[state.deviceID] = state
+                setupStatuses[state.deviceID] = setupStatus(for: state)
             }
             return nil
         } catch {
@@ -530,7 +662,8 @@ final class DeviceSetupModel {
                 DeviceConfigurationState(
                     approvedDevice: device,
                     verifiedConfiguration: configuration,
-                    pendingConfiguration: nil
+                    pendingConfiguration: nil,
+                    identityStatus: .verified
                 )
             )
 
@@ -597,6 +730,7 @@ final class DeviceConfigurationModel {
     private(set) var errorMessage: String?
     private(set) var isPublishing = false
     private(set) var isActive = false
+    private(set) var identityStatus: DeviceIdentityStatus = .verificationRequired
     private var didLoad = false
 
     var room: String
@@ -634,7 +768,8 @@ final class DeviceConfigurationModel {
             room = editableConfiguration.room
             wakeMappings = editableConfiguration.wakeMappings
             publicationStatus = state.pendingConfiguration == nil ? .verified : .pending
-            isActive = true
+            identityStatus = state.identityStatus
+            isActive = state.identityStatus.isOperational
             errorMessage = nil
         } catch {
             errorMessage = "The verified Device configuration could not be loaded."
@@ -643,6 +778,12 @@ final class DeviceConfigurationModel {
 
     func publish() async -> Bool {
         guard !isPublishing else { return false }
+        guard identityStatus.isOperational else {
+            errorMessage = identityStatus == .revoked
+                ? "Device access is revoked. Explicit re-enrollment is required."
+                : "The Device identity could not be verified. Verify the Device before updating its mappings."
+            return false
+        }
         guard let configuration = validatedConfiguration() else { return false }
 
         isPublishing = true
@@ -656,7 +797,8 @@ final class DeviceConfigurationModel {
                 DeviceConfigurationState(
                     approvedDevice: device,
                     verifiedConfiguration: verifiedConfiguration,
-                    pendingConfiguration: configuration
+                    pendingConfiguration: configuration,
+                    identityStatus: identityStatus
                 )
             )
             let receipt = try await administrationClient.configure(configuration)
@@ -666,12 +808,14 @@ final class DeviceConfigurationModel {
             verifiedConfiguration = configuration
             pendingConfiguration = nil
             publicationStatus = .verified
+            identityStatus = .verified
             isActive = true
             try? await configurationStore.save(
                 DeviceConfigurationState(
                     approvedDevice: device,
                     verifiedConfiguration: configuration,
-                    pendingConfiguration: nil
+                    pendingConfiguration: nil,
+                    identityStatus: .verified
                 )
             )
             return true
@@ -698,7 +842,8 @@ final class DeviceConfigurationModel {
                     DeviceConfigurationState(
                         approvedDevice: device,
                         verifiedConfiguration: verifiedConfiguration,
-                        pendingConfiguration: nil
+                        pendingConfiguration: nil,
+                        identityStatus: identityStatus
                     )
                 )
                 pendingConfiguration = nil
@@ -716,7 +861,8 @@ final class DeviceConfigurationModel {
                 DeviceConfigurationState(
                     approvedDevice: device,
                     verifiedConfiguration: verifiedConfiguration,
-                    pendingConfiguration: configuration
+                    pendingConfiguration: configuration,
+                    identityStatus: identityStatus
                 )
             )
             pendingConfiguration = configuration

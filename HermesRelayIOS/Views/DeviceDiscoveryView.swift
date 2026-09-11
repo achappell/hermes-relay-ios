@@ -70,6 +70,12 @@ struct DeviceDiscoveryView: View {
                     }
                 }
 
+                if model.isVerifying {
+                    Section {
+                        ProgressView("Verifying approved Devices…")
+                    }
+                }
+
                 Section("Approved Devices") {
                     if model.approvedDevices.isEmpty {
                         Text("No approved Devices yet.")
@@ -113,6 +119,26 @@ struct DeviceDiscoveryView: View {
                                 .accessibilityIdentifier("configured-device-\(device.id)")
                                 .accessibilityHint(
                                     "Edit Wake Mappings. The current verified mapping remains active until an update is published."
+                                )
+                            } else if let setupStatus,
+                                      setupStatus.canVerify,
+                                      model.configurationState(for: device) != nil {
+                                Button {
+                                    Task { await model.verify(device) }
+                                } label: {
+                                    DeviceDiscoveryRow(
+                                        device: device,
+                                        connectionState: nil,
+                                        isInteractive: true,
+                                        setupStatus: setupStatus,
+                                        hasSetupDraft: hasSetupDraft
+                                    )
+                                }
+                                .buttonStyle(.plain)
+                                .disabled(model.isVerifying)
+                                .accessibilityIdentifier("verify-device-\(device.id)")
+                                .accessibilityHint(
+                                    "Verifies the Device identity and mapped Profiles before restoring Ready state."
                                 )
                             } else {
                                 DeviceDiscoveryRow(
@@ -297,6 +323,12 @@ private struct DeviceDiscoveryRow: View {
 
     private var actionLabel: String {
         if let setupStatus {
+            if setupStatus.canVerify {
+                return setupStatus == .verificationRequired ? "Verify" : "Retry"
+            }
+            if setupStatus == .revoked {
+                return "Re-enroll required"
+            }
             if !setupStatus.isActive {
                 return hasSetupDraft ? "Resume setup" : "Set up"
             }

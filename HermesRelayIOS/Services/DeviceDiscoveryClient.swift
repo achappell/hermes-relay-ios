@@ -79,6 +79,14 @@ protocol DeviceAdministrationClient: Sendable {
     func configure(
         _ configuration: DeviceSetupConfiguration
     ) async throws -> DeviceConfigurationReceipt
+    /// Verifies the currently published Device identity and mapping. A
+    /// successful `.verified` receipt is the only authority that may restore
+    /// an active state after discovery; the production adapter remains
+    /// unavailable until the shared Device contract exists.
+    func verify(
+        _ device: HouseholdDevice,
+        against configuration: DeviceSetupConfiguration
+    ) async throws -> DeviceVerificationReceipt
 }
 
 protocol DeviceConfigurationStore: Sendable {
@@ -313,6 +321,13 @@ struct UnavailableDeviceAdministrationClient: DeviceAdministrationClient {
     ) async throws -> DeviceConfigurationReceipt {
         throw DeviceAdministrationError.transportUnavailable
     }
+
+    func verify(
+        _ device: HouseholdDevice,
+        against configuration: DeviceSetupConfiguration
+    ) async throws -> DeviceVerificationReceipt {
+        throw DeviceAdministrationError.transportUnavailable
+    }
 }
 
 /// Selects the shipped unavailable adapter unless a Debug-only simulator
@@ -335,10 +350,19 @@ enum DeviceDiscoveryClientFactory {
 }
 
 enum DeviceAdministrationClientFactory {
+    static let unavailableFixtureLaunchArgument = "-HermesRelayDeviceAdministrationUnavailable"
+    static let revokedFixtureLaunchArgument = "-HermesRelayDeviceAdministrationRevoked"
+
     static func make(
         arguments: [String] = ProcessInfo.processInfo.arguments
     ) -> any DeviceAdministrationClient {
         #if DEBUG
+        if arguments.contains(unavailableFixtureLaunchArgument) {
+            return UnavailableDeviceAdministrationClient()
+        }
+        if arguments.contains(revokedFixtureLaunchArgument) {
+            return DebugDeviceAdministrationFixtureClient(verificationStatus: .revoked)
+        }
         if arguments.contains(DeviceDiscoveryClientFactory.fixtureLaunchArgument) {
             return DebugDeviceAdministrationFixtureClient()
         }
@@ -408,6 +432,11 @@ private struct DebugDeviceAdministrationFixtureClient: DeviceAdministrationClien
         "unconfigured-hallway-puck",
         "unconfigured-study-display"
     ]
+    private let verificationStatus: DeviceIdentityStatus
+
+    init(verificationStatus: DeviceIdentityStatus = .verified) {
+        self.verificationStatus = verificationStatus
+    }
 
     func approve(_ device: HouseholdDevice) async throws -> DeviceApprovalReceipt {
         try await Task.sleep(nanoseconds: 500_000_000)
@@ -428,6 +457,24 @@ private struct DebugDeviceAdministrationFixtureClient: DeviceAdministrationClien
         }
         return DeviceConfigurationReceipt(
             deviceID: configuration.deviceID,
+            configuration: configuration
+        )
+    }
+
+    func verify(
+        _ device: HouseholdDevice,
+        against configuration: DeviceSetupConfiguration
+    ) async throws -> DeviceVerificationReceipt {
+        try await Task.sleep(nanoseconds: 500_000_000)
+        guard supportedDeviceIDs.contains(device.id),
+              device.trustState == .approved,
+              configuration.deviceID == device.id
+        else {
+            throw DeviceAdministrationError.unexpectedResponse
+        }
+        return DeviceVerificationReceipt(
+            deviceID: device.id,
+            status: verificationStatus,
             configuration: configuration
         )
     }
