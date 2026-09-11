@@ -16,20 +16,24 @@ final class DeviceDiscoveryModel {
     private var connectionStates: [String: DeviceConnectionState] = [:]
     private var setupStatuses: [String: DeviceSetupStatus] = [:]
     private var setupDrafts: [String: DeviceSetupDraft] = [:]
+    private var configurationStates: [String: DeviceConfigurationState] = [:]
     private var discoveryRequestID = 0
 
     private let client: any DeviceDiscoveryClient
     private let administrationClient: any DeviceAdministrationClient
     private let draftStore: any DeviceSetupDraftStore
+    private let configurationStore: any DeviceConfigurationStore
 
     init(
         client: any DeviceDiscoveryClient,
         administrationClient: any DeviceAdministrationClient = UnavailableDeviceAdministrationClient(),
-        draftStore: any DeviceSetupDraftStore = NoopDeviceSetupDraftStore()
+        draftStore: any DeviceSetupDraftStore = NoopDeviceSetupDraftStore(),
+        configurationStore: any DeviceConfigurationStore = NoopDeviceConfigurationStore()
     ) {
         self.client = client
         self.administrationClient = administrationClient
         self.draftStore = draftStore
+        self.configurationStore = configurationStore
     }
 
     func discover() async {
@@ -55,8 +59,12 @@ final class DeviceDiscoveryModel {
             guard discoveryRequestID == requestID else { return }
             let draftLoadError = await loadSetupDrafts()
             guard discoveryRequestID == requestID else { return }
+            let configurationLoadError = await loadConfigurationStates()
+            guard discoveryRequestID == requestID else { return }
             let locallyApproved = approvedDevices.filter {
                 setupStatuses[$0.id] != nil
+                    || setupDrafts[$0.id] != nil
+                    || configurationStates[$0.id] != nil
             }
             let approved = uniqueDevices(
                 snapshot.approvedDevices + locallyApproved,
@@ -68,7 +76,7 @@ final class DeviceDiscoveryModel {
                 withTrustState: .unconfigured
             ).filter { !approvedIDs.contains($0.id) }
 
-            errorMessage = draftLoadError
+            errorMessage = draftLoadError ?? configurationLoadError
             approvedDevices = approved
             discoveredDevices = discovered
             let discoveredIDs = Set(discovered.map(\.id))
@@ -165,7 +173,10 @@ final class DeviceDiscoveryModel {
     }
 
     func setupStatus(for device: HouseholdDevice) -> DeviceSetupStatus? {
-        setupStatuses[device.id] ?? (setupDrafts[device.id] == nil ? nil : .pending)
+        if let configurationState = configurationStates[device.id] {
+            return configurationState.pendingConfiguration == nil ? .ready : .updatePending
+        }
+        return setupStatuses[device.id] ?? (setupDrafts[device.id] == nil ? nil : .pending)
     }
 
     func hasSetupDraft(for device: HouseholdDevice) -> Bool {
@@ -173,7 +184,13 @@ final class DeviceDiscoveryModel {
     }
 
     func refreshSetupDrafts() async {
-        errorMessage = await loadSetupDrafts()
+        let draftError = await loadSetupDrafts()
+        let configurationError = await loadConfigurationStates()
+        errorMessage = draftError ?? configurationError
+    }
+
+    func configurationState(for device: HouseholdDevice) -> DeviceConfigurationState? {
+        configurationStates[device.id]
     }
 
     func approvedDevice(for device: HouseholdDevice) -> HouseholdDevice? {
@@ -181,7 +198,7 @@ final class DeviceDiscoveryModel {
     }
 
     func isActive(_ device: HouseholdDevice) -> Bool {
-        setupStatuses[device.id]?.isActive == true
+        setupStatus(for: device)?.isActive == true
     }
 
     func markReady(_ device: HouseholdDevice) {
@@ -301,6 +318,20 @@ final class DeviceDiscoveryModel {
             return "Saved Device setup drafts could not be loaded. Try again."
         }
     }
+
+    private func loadConfigurationStates() async -> String? {
+        do {
+            configurationStates = try await configurationStore.loadAll().reduce(
+                into: [String: DeviceConfigurationState]()
+            ) { states, state in
+                states[state.deviceID] = state
+            }
+            return nil
+        } catch {
+            configurationStates = [:]
+            return "Saved Device configuration state could not be loaded. Try again."
+        }
+    }
 }
 
 @MainActor
@@ -309,6 +340,7 @@ final class DeviceSetupModel {
     let device: HouseholdDevice
     private let administrationClient: any DeviceAdministrationClient
     private let draftStore: any DeviceSetupDraftStore
+    private let configurationStore: any DeviceConfigurationStore
 
     private(set) var step: DeviceSetupStep = .room
     private(set) var errorMessage: String?
@@ -324,11 +356,13 @@ final class DeviceSetupModel {
     init(
         device: HouseholdDevice,
         administrationClient: any DeviceAdministrationClient,
-        draftStore: any DeviceSetupDraftStore = NoopDeviceSetupDraftStore()
+        draftStore: any DeviceSetupDraftStore = NoopDeviceSetupDraftStore(),
+        configurationStore: any DeviceConfigurationStore = NoopDeviceConfigurationStore()
     ) {
         self.device = device
         self.administrationClient = administrationClient
         self.draftStore = draftStore
+        self.configurationStore = configurationStore
     }
 
     func loadDraft() async {
@@ -471,9 +505,16 @@ final class DeviceSetupModel {
 
         do {
             let receipt = try await administrationClient.configure(configuration)
-            guard receipt.deviceID == device.id else {
+            guard receipt.matches(configuration) else {
                 throw DeviceAdministrationError.unexpectedResponse
             }
+
+            try? await configurationStore.save(
+                DeviceConfigurationState(
+                    verifiedConfiguration: configuration,
+                    pendingConfiguration: nil
+                )
+            )
 
             do {
                 try await draftStore.delete(deviceID: device.id)
@@ -522,5 +563,199 @@ final class DeviceSetupModel {
             return "Each Wake Mapping must use a unique wake phrase."
         }
         return nil
+    }
+}
+
+@MainActor
+@Observable
+final class DeviceConfigurationModel {
+    let device: HouseholdDevice
+    private let administrationClient: any DeviceAdministrationClient
+    private let configurationStore: any DeviceConfigurationStore
+
+    private(set) var verifiedConfiguration: DeviceSetupConfiguration
+    private(set) var pendingConfiguration: DeviceSetupConfiguration?
+    private(set) var publicationStatus: DeviceConfigurationPublicationStatus = .verified
+    private(set) var errorMessage: String?
+    private(set) var isPublishing = false
+    private(set) var isActive = false
+    private var didLoad = false
+
+    var room: String
+    var wakeMappings: [DeviceWakeMapping]
+
+    init(
+        device: HouseholdDevice,
+        administrationClient: any DeviceAdministrationClient,
+        configurationStore: any DeviceConfigurationStore = NoopDeviceConfigurationStore()
+    ) {
+        self.device = device
+        self.administrationClient = administrationClient
+        self.configurationStore = configurationStore
+        self.verifiedConfiguration = DeviceSetupConfiguration(
+            deviceID: device.id,
+            room: "",
+            wakeMappings: []
+        )
+        self.room = ""
+        self.wakeMappings = []
+    }
+
+    func load() async {
+        guard !didLoad else { return }
+        didLoad = true
+
+        do {
+            guard let state = try await configurationStore.load(for: device.id) else {
+                errorMessage = "The verified Device configuration is unavailable."
+                return
+            }
+            verifiedConfiguration = state.verifiedConfiguration
+            pendingConfiguration = state.pendingConfiguration
+            let editableConfiguration = state.pendingConfiguration ?? state.verifiedConfiguration
+            room = editableConfiguration.room
+            wakeMappings = editableConfiguration.wakeMappings
+            publicationStatus = state.pendingConfiguration == nil ? .verified : .pending
+            isActive = true
+            errorMessage = nil
+        } catch {
+            errorMessage = "The verified Device configuration could not be loaded."
+        }
+    }
+
+    func publish() async -> Bool {
+        guard !isPublishing else { return false }
+        guard let configuration = validatedConfiguration() else { return false }
+
+        isPublishing = true
+        errorMessage = nil
+        defer { isPublishing = false }
+
+        pendingConfiguration = configuration
+        publicationStatus = .pending
+        do {
+            try await configurationStore.save(
+                DeviceConfigurationState(
+                    verifiedConfiguration: verifiedConfiguration,
+                    pendingConfiguration: configuration
+                )
+            )
+            let receipt = try await administrationClient.configure(configuration)
+            guard receipt.matches(configuration) else {
+                throw DeviceAdministrationError.unexpectedResponse
+            }
+            verifiedConfiguration = configuration
+            pendingConfiguration = nil
+            publicationStatus = .verified
+            isActive = true
+            try? await configurationStore.save(
+                DeviceConfigurationState(
+                    verifiedConfiguration: configuration,
+                    pendingConfiguration: nil
+                )
+            )
+            return true
+        } catch let error as DeviceAdministrationError {
+            errorMessage = publicationErrorMessage(for: error)
+            return false
+        } catch {
+            errorMessage = "The pending mapping edit could not be saved. The current verified mapping remains active."
+            return false
+        }
+    }
+
+    func removeWakeMapping(id: UUID) {
+        wakeMappings.removeAll { $0.id == id }
+        errorMessage = nil
+    }
+
+    func preservePending() async -> Bool {
+        let configuration = normalizedConfiguration()
+        guard configuration != verifiedConfiguration else {
+            guard pendingConfiguration != nil else { return true }
+            do {
+                try await configurationStore.save(
+                    DeviceConfigurationState(
+                        verifiedConfiguration: verifiedConfiguration,
+                        pendingConfiguration: nil
+                    )
+                )
+                pendingConfiguration = nil
+                publicationStatus = .verified
+                errorMessage = nil
+                return true
+            } catch {
+                errorMessage = "The pending mapping edit could not be cleared. Try again."
+                return false
+            }
+        }
+
+        do {
+            try await configurationStore.save(
+                DeviceConfigurationState(
+                    verifiedConfiguration: verifiedConfiguration,
+                    pendingConfiguration: configuration
+                )
+            )
+            pendingConfiguration = configuration
+            publicationStatus = .pending
+            return true
+        } catch {
+            errorMessage = "The pending mapping edit could not be saved. Try again."
+            return false
+        }
+    }
+
+    private func validatedConfiguration() -> DeviceSetupConfiguration? {
+        let normalizedRoom = room.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !normalizedRoom.isEmpty else {
+            errorMessage = "Assign this Device to a Room."
+            return nil
+        }
+        guard !wakeMappings.isEmpty else {
+            errorMessage = "Add at least one Wake Mapping."
+            return nil
+        }
+        guard wakeMappings.allSatisfy(\.hasValidValues) else {
+            errorMessage = "Each Wake Mapping needs a wake phrase and Hermes Profile identifier."
+            return nil
+        }
+
+        var seenPhrases = Set<String>()
+        guard wakeMappings.allSatisfy({
+            seenPhrases.insert($0.normalizedWakePhrase).inserted
+        }) else {
+            errorMessage = "Each Wake Mapping must use a unique wake phrase."
+            return nil
+        }
+
+        return normalizedConfiguration(room: normalizedRoom)
+    }
+
+    private func normalizedConfiguration(
+        room normalizedRoom: String? = nil
+    ) -> DeviceSetupConfiguration {
+        DeviceSetupConfiguration(
+            deviceID: device.id,
+            room: normalizedRoom
+                ?? room.trimmingCharacters(in: .whitespacesAndNewlines),
+            wakeMappings: wakeMappings.map { mapping in
+                var normalized = mapping
+                normalized.wakePhrase = mapping.wakePhrase.trimmingCharacters(
+                    in: .whitespacesAndNewlines
+                )
+                normalized.profileIdentifier = mapping.normalizedProfileIdentifier
+                return normalized
+            }
+        )
+    }
+
+    private func publicationErrorMessage(for error: DeviceAdministrationError) -> String {
+        switch error {
+        case .unexpectedResponse:
+            return "The Device identity could not be verified. Try again."
+        case .approvalFailed, .configurationFailed, .transportUnavailable:
+            return "The mapping edit could not be published. The current verified mapping remains active."
+        }
     }
 }
