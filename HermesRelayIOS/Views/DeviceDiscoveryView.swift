@@ -7,25 +7,30 @@ struct DeviceDiscoveryView: View {
     let client: any DeviceDiscoveryClient
     let administrationClient: any DeviceAdministrationClient
     let draftStore: any DeviceSetupDraftStore
+    let configurationStore: any DeviceConfigurationStore
 
     @Environment(\.dismiss) private var dismiss
     @State private var model: DeviceDiscoveryModel
     @State private var isManualPairingPresented = false
     @State private var setupDevice: HouseholdDevice?
+    @State private var configurationDevice: HouseholdDevice?
 
     init(
         client: any DeviceDiscoveryClient,
         administrationClient: any DeviceAdministrationClient = UnavailableDeviceAdministrationClient(),
-        draftStore: any DeviceSetupDraftStore = NoopDeviceSetupDraftStore()
+        draftStore: any DeviceSetupDraftStore = NoopDeviceSetupDraftStore(),
+        configurationStore: any DeviceConfigurationStore = NoopDeviceConfigurationStore()
     ) {
         self.client = client
         self.administrationClient = administrationClient
         self.draftStore = draftStore
+        self.configurationStore = configurationStore
         _model = State(
             initialValue: DeviceDiscoveryModel(
                 client: client,
                 administrationClient: administrationClient,
-                draftStore: draftStore
+                draftStore: draftStore,
+                configurationStore: configurationStore
             )
         )
     }
@@ -74,6 +79,25 @@ struct DeviceDiscoveryView: View {
                                 .accessibilityIdentifier("approved-device-\(device.id)")
                                 .accessibilityHint(
                                     "Continue Room and Wake Mapping setup. The Device remains inactive until Ready."
+                                )
+                            } else if let setupStatus,
+                                      setupStatus.isActive,
+                                      model.configurationState(for: device) != nil {
+                                Button {
+                                    configurationDevice = device
+                                } label: {
+                                    DeviceDiscoveryRow(
+                                        device: device,
+                                        connectionState: nil,
+                                        isInteractive: true,
+                                        setupStatus: setupStatus,
+                                        hasSetupDraft: hasSetupDraft
+                                    )
+                                }
+                                .buttonStyle(.plain)
+                                .accessibilityIdentifier("configured-device-\(device.id)")
+                                .accessibilityHint(
+                                    "Edit Wake Mappings. The current verified mapping remains active until an update is published."
                                 )
                             } else {
                                 DeviceDiscoveryRow(
@@ -213,10 +237,20 @@ struct DeviceDiscoveryView: View {
             DeviceSetupView(
                 device: device,
                 administrationClient: administrationClient,
-                draftStore: draftStore
+                draftStore: draftStore,
+                configurationStore: configurationStore
             ) {
                 model.markReady(device)
             }
+        }
+        .sheet(item: $configurationDevice, onDismiss: {
+            Task { await model.refreshSetupDrafts() }
+        }) { device in
+            DeviceConfigurationView(
+                device: device,
+                administrationClient: administrationClient,
+                configurationStore: configurationStore
+            )
         }
     }
 }
@@ -248,8 +282,11 @@ private struct DeviceDiscoveryRow: View {
     }
 
     private var actionLabel: String {
-        if let setupStatus, !setupStatus.isActive {
-            return hasSetupDraft ? "Resume setup" : "Set up"
+        if let setupStatus {
+            if !setupStatus.isActive {
+                return hasSetupDraft ? "Resume setup" : "Set up"
+            }
+            return setupStatus == .updatePending ? "Review update" : "Edit"
         }
         guard let connectionState else { return "" }
         switch connectionState {
@@ -314,6 +351,7 @@ private struct DeviceSetupView: View {
     let device: HouseholdDevice
     let administrationClient: any DeviceAdministrationClient
     let draftStore: any DeviceSetupDraftStore
+    let configurationStore: any DeviceConfigurationStore
     let onReady: @MainActor () -> Void
 
     @Environment(\.dismiss) private var dismiss
@@ -325,17 +363,20 @@ private struct DeviceSetupView: View {
         device: HouseholdDevice,
         administrationClient: any DeviceAdministrationClient,
         draftStore: any DeviceSetupDraftStore,
+        configurationStore: any DeviceConfigurationStore,
         onReady: @escaping @MainActor () -> Void
     ) {
         self.device = device
         self.administrationClient = administrationClient
         self.draftStore = draftStore
+        self.configurationStore = configurationStore
         self.onReady = onReady
         _model = State(
             initialValue: DeviceSetupModel(
                 device: device,
                 administrationClient: administrationClient,
-                draftStore: draftStore
+                draftStore: draftStore,
+                configurationStore: configurationStore
             )
         )
     }
@@ -577,6 +618,135 @@ private struct DeviceSetupCompleteStep: View {
                 systemImage: "checkmark.circle.fill"
             )
             .foregroundStyle(.green)
+        }
+    }
+}
+
+@MainActor
+private struct DeviceConfigurationView: View {
+    let device: HouseholdDevice
+    let administrationClient: any DeviceAdministrationClient
+    let configurationStore: any DeviceConfigurationStore
+
+    @Environment(\.dismiss) private var dismiss
+    @State private var model: DeviceConfigurationModel
+
+    init(
+        device: HouseholdDevice,
+        administrationClient: any DeviceAdministrationClient,
+        configurationStore: any DeviceConfigurationStore
+    ) {
+        self.device = device
+        self.administrationClient = administrationClient
+        self.configurationStore = configurationStore
+        _model = State(
+            initialValue: DeviceConfigurationModel(
+                device: device,
+                administrationClient: administrationClient,
+                configurationStore: configurationStore
+            )
+        )
+    }
+
+    var body: some View {
+        @Bindable var model = model
+
+        NavigationStack {
+            Form {
+                Section {
+                    Label(
+                        model.publicationStatus == .verified
+                            ? "Verified configuration is active."
+                            : "Update pending. The current verified mapping remains active.",
+                        systemImage: model.publicationStatus == .verified
+                            ? "checkmark.shield"
+                            : "clock.arrow.circlepath"
+                    )
+                    LabeledContent("Room", value: model.room)
+                } header: {
+                    Text(device.displayName)
+                } footer: {
+                    Text(
+                        "A Wake Mapping is not applied until the Device accepts the exact Profile-specific configuration."
+                    )
+                }
+
+                Section {
+                    if model.wakeMappings.isEmpty {
+                        Text("Add at least one Wake Mapping.")
+                            .foregroundStyle(.secondary)
+                    } else {
+                        ForEach($model.wakeMappings) { $mapping in
+                            VStack(alignment: .leading, spacing: 8) {
+                                TextField("Wake phrase", text: $mapping.wakePhrase)
+                                    .textInputAutocapitalization(.sentences)
+                                TextField(
+                                    "Hermes Profile identifier",
+                                    text: $mapping.profileIdentifier
+                                )
+                                .autocorrectionDisabled()
+                                .textInputAutocapitalization(.never)
+                                .keyboardType(.asciiCapable)
+                            }
+                            .accessibilityElement(children: .contain)
+                            .accessibilityLabel("Wake Mapping")
+                            .swipeActions(edge: .trailing) {
+                                Button(role: .destructive) {
+                                    model.removeWakeMapping(id: mapping.id)
+                                } label: {
+                                    Label("Remove", systemImage: "trash")
+                                }
+                            }
+                        }
+                    }
+
+                    Button {
+                        model.wakeMappings.append(DeviceWakeMapping())
+                    } label: {
+                        Label("Add Wake Mapping", systemImage: "plus")
+                    }
+                } header: {
+                    Text("Wake Mappings")
+                } footer: {
+                    Text("Each wake phrase must be unique and point to one Hermes Profile identifier.")
+                }
+
+                Section {
+                    Button {
+                        Task { _ = await model.publish() }
+                    } label: {
+                        if model.isPublishing {
+                            ProgressView("Publishing mapping…")
+                        } else {
+                            Text("Publish mapping update")
+                        }
+                    }
+                    .disabled(model.isPublishing)
+                    .buttonStyle(.borderedProminent)
+                }
+
+                if let errorMessage = model.errorMessage {
+                    Section {
+                        Label(errorMessage, systemImage: "exclamationmark.triangle")
+                            .foregroundStyle(.red)
+                    }
+                }
+            }
+            .navigationTitle("Edit Device")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Done") {
+                        dismiss()
+                    }
+                }
+            }
+            .task {
+                await model.load()
+            }
+            .onDisappear {
+                Task { _ = await model.preservePending() }
+            }
         }
     }
 }

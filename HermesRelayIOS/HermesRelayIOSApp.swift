@@ -8,6 +8,7 @@ struct HermesRelayIOSApp: App {
     private let deviceDiscoveryClient: any DeviceDiscoveryClient
     private let deviceAdministrationClient: any DeviceAdministrationClient
     private let deviceSetupDraftStore: any DeviceSetupDraftStore
+    private let deviceConfigurationStore: any DeviceConfigurationStore
     private let appDirectory: URL
 
     init() {
@@ -42,6 +43,7 @@ struct HermesRelayIOSApp: App {
         self.deviceDiscoveryClient = DeviceDiscoveryClientFactory.make()
         self.deviceAdministrationClient = DeviceAdministrationClientFactory.make()
         self.deviceSetupDraftStore = DeviceSetupDraftStoreFactory.make(in: appDirectory)
+        self.deviceConfigurationStore = DeviceConfigurationStoreFactory.make(in: appDirectory)
     }
 
     var body: some Scene {
@@ -52,7 +54,8 @@ struct HermesRelayIOSApp: App {
                 conversationDirectory: appDirectory,
                 deviceDiscoveryClient: deviceDiscoveryClient,
                 deviceAdministrationClient: deviceAdministrationClient,
-                deviceSetupDraftStore: deviceSetupDraftStore
+                deviceSetupDraftStore: deviceSetupDraftStore,
+                deviceConfigurationStore: deviceConfigurationStore
             )
                 .task {
                     // Hand the pre-profiles conversation to whichever profile

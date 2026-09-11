@@ -81,6 +81,87 @@ protocol DeviceAdministrationClient: Sendable {
     ) async throws -> DeviceConfigurationReceipt
 }
 
+protocol DeviceConfigurationStore: Sendable {
+    func loadAll() async throws -> [DeviceConfigurationState]
+    func save(_ state: DeviceConfigurationState) async throws
+}
+
+extension DeviceConfigurationStore {
+    func load(for deviceID: String) async throws -> DeviceConfigurationState? {
+        try await loadAll().first { $0.deviceID == deviceID }
+    }
+}
+
+struct NoopDeviceConfigurationStore: DeviceConfigurationStore {
+    func loadAll() async throws -> [DeviceConfigurationState] {
+        []
+    }
+
+    func save(_ state: DeviceConfigurationState) async throws {}
+}
+
+enum DeviceConfigurationPersistenceFile {
+    static func url(in directory: URL) -> URL {
+        directory.appendingPathComponent("device-configurations.json")
+    }
+}
+
+actor JSONDeviceConfigurationStore: DeviceConfigurationStore {
+    private let fileURL: URL
+
+    init(fileURL: URL) {
+        self.fileURL = fileURL
+    }
+
+    func loadAll() async throws -> [DeviceConfigurationState] {
+        guard FileManager.default.fileExists(atPath: fileURL.path) else {
+            return []
+        }
+        let data = try Data(contentsOf: fileURL)
+        return try JSONDecoder()
+            .decode(PersistedDeviceConfigurations.self, from: data)
+            .states
+    }
+
+    func save(_ state: DeviceConfigurationState) async throws {
+        var statesByID: [String: DeviceConfigurationState] = [:]
+        for existing in try await loadAll() {
+            statesByID[existing.deviceID] = existing
+        }
+        statesByID[state.deviceID] = state
+        let states = statesByID.values.sorted { $0.deviceID < $1.deviceID }
+        let directory = fileURL.deletingLastPathComponent()
+        try FileManager.default.createDirectory(
+            at: directory,
+            withIntermediateDirectories: true
+        )
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.sortedKeys]
+        try encoder
+            .encode(PersistedDeviceConfigurations(states: states))
+            .write(to: fileURL, options: .atomic)
+
+        #if os(iOS)
+        try? FileManager.default.setAttributes(
+            [.protectionKey: FileProtectionType.complete],
+            ofItemAtPath: fileURL.path
+        )
+        #endif
+    }
+}
+
+private struct PersistedDeviceConfigurations: Codable, Sendable {
+    let states: [DeviceConfigurationState]
+}
+
+enum DeviceConfigurationStoreFactory {
+    static func make(in directory: URL) -> any DeviceConfigurationStore {
+        JSONDeviceConfigurationStore(
+            fileURL: DeviceConfigurationPersistenceFile.url(in: directory)
+        )
+    }
+}
+
 enum DeviceSetupDraftStoreError: Error, Equatable, Sendable {
     case invalidDeviceID
 
@@ -345,7 +426,10 @@ private struct DebugDeviceAdministrationFixtureClient: DeviceAdministrationClien
         guard supportedDeviceIDs.contains(configuration.deviceID) else {
             throw DeviceAdministrationError.configurationFailed
         }
-        return DeviceConfigurationReceipt(deviceID: configuration.deviceID)
+        return DeviceConfigurationReceipt(
+            deviceID: configuration.deviceID,
+            configuration: configuration
+        )
     }
 }
 #endif

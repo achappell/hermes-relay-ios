@@ -19,6 +19,7 @@ struct ContentView: View {
     private let deviceDiscoveryClient: any DeviceDiscoveryClient
     private let deviceAdministrationClient: any DeviceAdministrationClient
     private let deviceSetupDraftStore: any DeviceSetupDraftStore
+    private let deviceConfigurationStore: any DeviceConfigurationStore
     private let activityStore: AudioActivityStore
 
     private enum FocusField: Hashable {
@@ -33,6 +34,7 @@ struct ContentView: View {
         deviceDiscoveryClient: any DeviceDiscoveryClient = UnavailableDeviceDiscoveryClient(),
         deviceAdministrationClient: any DeviceAdministrationClient = UnavailableDeviceAdministrationClient(),
         deviceSetupDraftStore: any DeviceSetupDraftStore = NoopDeviceSetupDraftStore(),
+        deviceConfigurationStore: any DeviceConfigurationStore = NoopDeviceConfigurationStore(),
         activityStore providedActivityStore: AudioActivityStore? = nil
     ) {
         _store = State(initialValue: store)
@@ -77,6 +79,7 @@ struct ContentView: View {
         self.deviceDiscoveryClient = deviceDiscoveryClient
         self.deviceAdministrationClient = deviceAdministrationClient
         self.deviceSetupDraftStore = deviceSetupDraftStore
+        self.deviceConfigurationStore = deviceConfigurationStore
     }
 
     private var canSend: Bool {
@@ -143,7 +146,8 @@ struct ContentView: View {
                     conversationDirectory: conversationDirectory,
                     deviceDiscoveryClient: deviceDiscoveryClient,
                     deviceAdministrationClient: deviceAdministrationClient,
-                    deviceSetupDraftStore: deviceSetupDraftStore
+                    deviceSetupDraftStore: deviceSetupDraftStore,
+                    deviceConfigurationStore: deviceConfigurationStore
                 ) {
                     // The selected profile may have changed, so reconnect to
                     // whichever relay is now active rather than only reloading

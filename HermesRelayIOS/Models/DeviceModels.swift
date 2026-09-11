@@ -47,6 +47,7 @@ struct DeviceDiscoverySnapshot: Equatable, Sendable {
 enum DeviceSetupStatus: String, Codable, Equatable, Sendable {
     case pending
     case ready
+    case updatePending
 
     var label: String {
         switch self {
@@ -54,11 +55,13 @@ enum DeviceSetupStatus: String, Codable, Equatable, Sendable {
             "Setup pending · Inactive"
         case .ready:
             "Ready"
+        case .updatePending:
+            "Update pending · Current mapping remains active"
         }
     }
 
     var isActive: Bool {
-        self == .ready
+        self != .pending
     }
 }
 
@@ -125,10 +128,30 @@ struct DeviceSetupDraft: Codable, Equatable, Sendable {
     }
 }
 
-struct DeviceSetupConfiguration: Equatable, Sendable {
+struct DeviceSetupConfiguration: Codable, Equatable, Sendable {
     let deviceID: String
     let room: String
     let wakeMappings: [DeviceWakeMapping]
+}
+
+struct DeviceConfigurationState: Codable, Equatable, Sendable {
+    let deviceID: String
+    let verifiedConfiguration: DeviceSetupConfiguration
+    let pendingConfiguration: DeviceSetupConfiguration?
+
+    init(
+        verifiedConfiguration: DeviceSetupConfiguration,
+        pendingConfiguration: DeviceSetupConfiguration?
+    ) {
+        self.deviceID = verifiedConfiguration.deviceID
+        self.verifiedConfiguration = verifiedConfiguration
+        self.pendingConfiguration = pendingConfiguration
+    }
+}
+
+enum DeviceConfigurationPublicationStatus: String, Equatable, Sendable {
+    case verified
+    case pending
 }
 
 struct DeviceApprovalReceipt: Equatable, Sendable {
@@ -140,6 +163,24 @@ struct DeviceApprovalReceipt: Equatable, Sendable {
 
 struct DeviceConfigurationReceipt: Equatable, Sendable {
     let deviceID: String
+    let configuration: DeviceSetupConfiguration
+
+    /// Compare the publishable configuration while ignoring the local UUID
+    /// used to identify an editable row in the iOS form.
+    func matches(_ requested: DeviceSetupConfiguration) -> Bool {
+        guard deviceID == requested.deviceID,
+              configuration.deviceID == requested.deviceID,
+              configuration.room == requested.room,
+              configuration.wakeMappings.count == requested.wakeMappings.count
+        else {
+            return false
+        }
+
+        return zip(configuration.wakeMappings, requested.wakeMappings).allSatisfy {
+            $0.wakePhrase == $1.wakePhrase
+                && $0.profileIdentifier == $1.profileIdentifier
+        }
+    }
 }
 
 /// Adapter-provided result after the shared Device handshake confirms the

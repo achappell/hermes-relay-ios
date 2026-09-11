@@ -281,6 +281,47 @@ final class DeviceDiscoveryTests: XCTestCase {
         XCTAssertFalse(model.isActive(approved))
     }
 
+    func testDiscoveryShowsActiveDeviceWithPendingMappingEditAsUpdatePending() async throws {
+        let fileURL = temporaryConfigurationFileURL()
+        defer { try? FileManager.default.removeItem(at: fileURL.deletingLastPathComponent()) }
+        let store = JSONDeviceConfigurationStore(fileURL: fileURL)
+        let verified = DeviceSetupConfiguration(
+            deviceID: approvedSetupDevice.id,
+            room: "Kitchen",
+            wakeMappings: [
+                DeviceWakeMapping(wakePhrase: "Hey Missy", profileIdentifier: "missy")
+            ]
+        )
+        let pending = DeviceSetupConfiguration(
+            deviceID: approvedSetupDevice.id,
+            room: "Kitchen",
+            wakeMappings: [
+                DeviceWakeMapping(wakePhrase: "Hey Jensen", profileIdentifier: "jensen")
+            ]
+        )
+        try await store.save(
+            DeviceConfigurationState(
+                verifiedConfiguration: verified,
+                pendingConfiguration: pending
+            )
+        )
+        let client = FakeDeviceDiscoveryClient(
+            snapshot: DeviceDiscoverySnapshot(
+                approvedDevices: [approvedSetupDevice],
+                unconfiguredDevices: []
+            )
+        )
+        let model = DeviceDiscoveryModel(
+            client: client,
+            configurationStore: store
+        )
+
+        await model.discover()
+
+        XCTAssertEqual(model.setupStatus(for: approvedSetupDevice), .updatePending)
+        XCTAssertTrue(model.isActive(approvedSetupDevice))
+    }
+
     func testApprovalRequiresAConfirmedConnectionAndKeepsCandidateUnapproved() async {
         let candidate = HouseholdDevice(
             id: "unconfigured-puck",
@@ -550,6 +591,345 @@ final class DeviceDiscoveryTests: XCTestCase {
         XCTAssertEqual(configurationCount, 0)
     }
 
+    func testFailedMappingPublishPreservesVerifiedConfigurationAndStoresPendingEdit() async throws {
+        let fileURL = temporaryConfigurationFileURL()
+        defer { try? FileManager.default.removeItem(at: fileURL.deletingLastPathComponent()) }
+        let store = JSONDeviceConfigurationStore(fileURL: fileURL)
+        let verified = DeviceSetupConfiguration(
+            deviceID: approvedSetupDevice.id,
+            room: "Kitchen",
+            wakeMappings: [
+                DeviceWakeMapping(wakePhrase: "Hey Missy", profileIdentifier: "missy")
+            ]
+        )
+        try await store.save(
+            DeviceConfigurationState(
+                verifiedConfiguration: verified,
+                pendingConfiguration: nil
+            )
+        )
+        let administrationClient = FakeDeviceAdministrationClient(
+            configurationError: .configurationFailed
+        )
+        let model = DeviceConfigurationModel(
+            device: approvedSetupDevice,
+            administrationClient: administrationClient,
+            configurationStore: store
+        )
+        await model.load()
+
+        let pending = DeviceSetupConfiguration(
+            deviceID: approvedSetupDevice.id,
+            room: "Kitchen",
+            wakeMappings: [
+                DeviceWakeMapping(wakePhrase: "Hey Jensen", profileIdentifier: "jensen")
+            ]
+        )
+        model.wakeMappings = pending.wakeMappings
+
+        let published = await model.publish()
+
+        XCTAssertFalse(published)
+        XCTAssertEqual(model.verifiedConfiguration, verified)
+        XCTAssertEqual(model.pendingConfiguration, pending)
+        XCTAssertEqual(model.publicationStatus, .pending)
+        XCTAssertTrue(model.isActive)
+        XCTAssertEqual(
+            model.errorMessage,
+            "The mapping edit could not be published. The current verified mapping remains active."
+        )
+        let persistedState = try await store.load(for: approvedSetupDevice.id)
+        XCTAssertEqual(persistedState?.pendingConfiguration, pending)
+    }
+
+    func testUnpublishedMappingEditCanBePreservedAsPendingWithoutPublishing() async throws {
+        let fileURL = temporaryConfigurationFileURL()
+        defer { try? FileManager.default.removeItem(at: fileURL.deletingLastPathComponent()) }
+        let store = JSONDeviceConfigurationStore(fileURL: fileURL)
+        let verified = DeviceSetupConfiguration(
+            deviceID: approvedSetupDevice.id,
+            room: "Kitchen",
+            wakeMappings: [
+                DeviceWakeMapping(wakePhrase: "Hey Missy", profileIdentifier: "missy")
+            ]
+        )
+        try await store.save(
+            DeviceConfigurationState(
+                verifiedConfiguration: verified,
+                pendingConfiguration: nil
+            )
+        )
+        let administrationClient = FakeDeviceAdministrationClient()
+        let model = DeviceConfigurationModel(
+            device: approvedSetupDevice,
+            administrationClient: administrationClient,
+            configurationStore: store
+        )
+        await model.load()
+        model.wakeMappings = [
+            DeviceWakeMapping(wakePhrase: "Hey Jensen", profileIdentifier: "jensen")
+        ]
+
+        let preserved = await model.preservePending()
+
+        XCTAssertTrue(preserved)
+        XCTAssertEqual(model.publicationStatus, .pending)
+        let configurationCount = await administrationClient.configurationCount()
+        XCTAssertEqual(configurationCount, 0)
+        let persistedState = try await store.load(for: approvedSetupDevice.id)
+        XCTAssertEqual(
+            persistedState?.pendingConfiguration?.wakeMappings.first?.profileIdentifier,
+            "jensen"
+        )
+    }
+
+    func testMismatchedMappingReceiptDoesNotPromotePendingEdit() async throws {
+        let fileURL = temporaryConfigurationFileURL()
+        defer { try? FileManager.default.removeItem(at: fileURL.deletingLastPathComponent()) }
+        let store = JSONDeviceConfigurationStore(fileURL: fileURL)
+        let verified = DeviceSetupConfiguration(
+            deviceID: approvedSetupDevice.id,
+            room: "Kitchen",
+            wakeMappings: [
+                DeviceWakeMapping(wakePhrase: "Hey Missy", profileIdentifier: "missy")
+            ]
+        )
+        try await store.save(
+            DeviceConfigurationState(
+                verifiedConfiguration: verified,
+                pendingConfiguration: nil
+            )
+        )
+        let pending = DeviceSetupConfiguration(
+            deviceID: approvedSetupDevice.id,
+            room: "Kitchen",
+            wakeMappings: [
+                DeviceWakeMapping(wakePhrase: "Hey Jensen", profileIdentifier: "jensen")
+            ]
+        )
+        let administrationClient = FakeDeviceAdministrationClient(
+            configurationReceipt: DeviceSetupConfiguration(
+                deviceID: approvedSetupDevice.id,
+                room: "Kitchen",
+                wakeMappings: [
+                    DeviceWakeMapping(wakePhrase: "Hey River", profileIdentifier: "river")
+                ]
+            )
+        )
+        let model = DeviceConfigurationModel(
+            device: approvedSetupDevice,
+            administrationClient: administrationClient,
+            configurationStore: store
+        )
+        await model.load()
+        model.wakeMappings = pending.wakeMappings
+
+        let published = await model.publish()
+
+        XCTAssertFalse(published)
+        XCTAssertEqual(model.verifiedConfiguration, verified)
+        XCTAssertEqual(model.pendingConfiguration, pending)
+        XCTAssertEqual(model.publicationStatus, .pending)
+        XCTAssertTrue(model.isActive)
+        XCTAssertEqual(
+            model.errorMessage,
+            "The Device identity could not be verified. Try again."
+        )
+        let persistedState = try await store.load(for: approvedSetupDevice.id)
+        XCTAssertEqual(persistedState?.verifiedConfiguration, verified)
+        XCTAssertEqual(persistedState?.pendingConfiguration, pending)
+    }
+
+    func testRevertingPendingMappingToVerifiedClearsPendingEditWithoutPublishing() async throws {
+        let fileURL = temporaryConfigurationFileURL()
+        defer { try? FileManager.default.removeItem(at: fileURL.deletingLastPathComponent()) }
+        let store = JSONDeviceConfigurationStore(fileURL: fileURL)
+        let verified = DeviceSetupConfiguration(
+            deviceID: approvedSetupDevice.id,
+            room: "Kitchen",
+            wakeMappings: [
+                DeviceWakeMapping(wakePhrase: "Hey Missy", profileIdentifier: "missy")
+            ]
+        )
+        let pending = DeviceSetupConfiguration(
+            deviceID: approvedSetupDevice.id,
+            room: "Kitchen",
+            wakeMappings: [
+                DeviceWakeMapping(wakePhrase: "Hey Jensen", profileIdentifier: "jensen")
+            ]
+        )
+        try await store.save(
+            DeviceConfigurationState(
+                verifiedConfiguration: verified,
+                pendingConfiguration: pending
+            )
+        )
+        let administrationClient = FakeDeviceAdministrationClient()
+        let model = DeviceConfigurationModel(
+            device: approvedSetupDevice,
+            administrationClient: administrationClient,
+            configurationStore: store
+        )
+        await model.load()
+        model.room = verified.room
+        model.wakeMappings = verified.wakeMappings
+
+        let preserved = await model.preservePending()
+
+        XCTAssertTrue(preserved)
+        XCTAssertEqual(model.publicationStatus, .verified)
+        XCTAssertNil(model.pendingConfiguration)
+        let configurationCount = await administrationClient.configurationCount()
+        XCTAssertEqual(configurationCount, 0)
+        let persistedState = try await store.load(for: approvedSetupDevice.id)
+        XCTAssertEqual(persistedState?.verifiedConfiguration, verified)
+        XCTAssertNil(persistedState?.pendingConfiguration)
+    }
+
+    func testDuplicateMappingEditIsRejectedBeforePublishing() async throws {
+        let fileURL = temporaryConfigurationFileURL()
+        defer { try? FileManager.default.removeItem(at: fileURL.deletingLastPathComponent()) }
+        let store = JSONDeviceConfigurationStore(fileURL: fileURL)
+        let verified = DeviceSetupConfiguration(
+            deviceID: approvedSetupDevice.id,
+            room: "Kitchen",
+            wakeMappings: [
+                DeviceWakeMapping(wakePhrase: "Hey Missy", profileIdentifier: "missy")
+            ]
+        )
+        try await store.save(
+            DeviceConfigurationState(
+                verifiedConfiguration: verified,
+                pendingConfiguration: nil
+            )
+        )
+        let administrationClient = FakeDeviceAdministrationClient()
+        let model = DeviceConfigurationModel(
+            device: approvedSetupDevice,
+            administrationClient: administrationClient,
+            configurationStore: store
+        )
+        await model.load()
+        model.wakeMappings = [
+            DeviceWakeMapping(wakePhrase: "Hey Missy", profileIdentifier: "missy"),
+            DeviceWakeMapping(wakePhrase: " hey missy ", profileIdentifier: "jensen")
+        ]
+
+        let published = await model.publish()
+
+        XCTAssertFalse(published)
+        XCTAssertEqual(
+            model.errorMessage,
+            "Each Wake Mapping must use a unique wake phrase."
+        )
+        XCTAssertEqual(model.publicationStatus, .verified)
+        XCTAssertNil(model.pendingConfiguration)
+        let configurationCount = await administrationClient.configurationCount()
+        XCTAssertEqual(configurationCount, 0)
+    }
+
+    func testSuccessfulMappingPublishPromotesExactProfileSpecificConfiguration() async throws {
+        let fileURL = temporaryConfigurationFileURL()
+        defer { try? FileManager.default.removeItem(at: fileURL.deletingLastPathComponent()) }
+        let store = JSONDeviceConfigurationStore(fileURL: fileURL)
+        let verified = DeviceSetupConfiguration(
+            deviceID: approvedSetupDevice.id,
+            room: "Kitchen",
+            wakeMappings: [
+                DeviceWakeMapping(wakePhrase: "Hey Missy", profileIdentifier: "missy")
+            ]
+        )
+        try await store.save(
+            DeviceConfigurationState(
+                verifiedConfiguration: verified,
+                pendingConfiguration: nil
+            )
+        )
+        let administrationClient = FakeDeviceAdministrationClient()
+        let model = DeviceConfigurationModel(
+            device: approvedSetupDevice,
+            administrationClient: administrationClient,
+            configurationStore: store
+        )
+        await model.load()
+        let replacement = DeviceWakeMapping(
+            wakePhrase: "Hey Jensen",
+            profileIdentifier: "jensen"
+        )
+        model.wakeMappings = [replacement]
+
+        let published = await model.publish()
+
+        XCTAssertTrue(published)
+        XCTAssertEqual(
+            model.verifiedConfiguration,
+            DeviceSetupConfiguration(
+                deviceID: approvedSetupDevice.id,
+                room: "Kitchen",
+                wakeMappings: [replacement]
+            )
+        )
+        XCTAssertNil(model.pendingConfiguration)
+        XCTAssertEqual(model.publicationStatus, .verified)
+        let lastConfiguration = await administrationClient.lastConfiguration()
+        XCTAssertEqual(lastConfiguration?.wakeMappings.first?.profileIdentifier, "jensen")
+        let persistedState = try await store.load(for: approvedSetupDevice.id)
+        XCTAssertEqual(
+            persistedState?.verifiedConfiguration.wakeMappings.first?.profileIdentifier,
+            "jensen"
+        )
+        XCTAssertNil(persistedState?.pendingConfiguration)
+    }
+
+    func testSemanticallyMatchingMappingReceiptIgnoresLocalMappingIdentifier() async throws {
+        let fileURL = temporaryConfigurationFileURL()
+        defer { try? FileManager.default.removeItem(at: fileURL.deletingLastPathComponent()) }
+        let store = JSONDeviceConfigurationStore(fileURL: fileURL)
+        let verified = DeviceSetupConfiguration(
+            deviceID: approvedSetupDevice.id,
+            room: "Kitchen",
+            wakeMappings: [
+                DeviceWakeMapping(wakePhrase: "Hey Missy", profileIdentifier: "missy")
+            ]
+        )
+        try await store.save(
+            DeviceConfigurationState(
+                verifiedConfiguration: verified,
+                pendingConfiguration: nil
+            )
+        )
+        let replacement = DeviceWakeMapping(
+            wakePhrase: "Hey Jensen",
+            profileIdentifier: "jensen"
+        )
+        let administrationClient = FakeDeviceAdministrationClient(
+            configurationReceipt: DeviceSetupConfiguration(
+                deviceID: approvedSetupDevice.id,
+                room: "Kitchen",
+                wakeMappings: [
+                    DeviceWakeMapping(
+                        wakePhrase: replacement.wakePhrase,
+                        profileIdentifier: replacement.profileIdentifier
+                    )
+                ]
+            )
+        )
+        let model = DeviceConfigurationModel(
+            device: approvedSetupDevice,
+            administrationClient: administrationClient,
+            configurationStore: store
+        )
+        await model.load()
+        model.wakeMappings = [replacement]
+
+        let published = await model.publish()
+
+        XCTAssertTrue(published)
+        XCTAssertEqual(model.verifiedConfiguration.wakeMappings, [replacement])
+        XCTAssertNil(model.pendingConfiguration)
+        XCTAssertEqual(model.publicationStatus, .verified)
+    }
+
     private var approvedSetupDevice: HouseholdDevice {
         HouseholdDevice(
             id: "approved-puck",
@@ -563,6 +943,12 @@ final class DeviceDiscoveryTests: XCTestCase {
         FileManager.default.temporaryDirectory
             .appendingPathComponent("HermesDeviceSetupTests-\(UUID().uuidString)")
             .appendingPathComponent("device-setup-drafts.json")
+    }
+
+    private func temporaryConfigurationFileURL() -> URL {
+        FileManager.default.temporaryDirectory
+            .appendingPathComponent("HermesDeviceConfigurationTests-\(UUID().uuidString)")
+            .appendingPathComponent("device-configurations.json")
     }
 
     func testDiscoveryKeepsUnconfiguredDevicesSeparateFromApprovedDevices() async {
@@ -1231,6 +1617,7 @@ private actor FakeDeviceAdministrationClient: DeviceAdministrationClient {
     let configurationError: DeviceAdministrationError?
     let approvalReceiptDeviceID: String?
     let configurationReceiptDeviceID: String?
+    let configurationReceipt: DeviceSetupConfiguration?
     private var approvals = 0
     private var configurations: [DeviceSetupConfiguration] = []
 
@@ -1238,12 +1625,14 @@ private actor FakeDeviceAdministrationClient: DeviceAdministrationClient {
         approvalError: DeviceAdministrationError? = nil,
         configurationError: DeviceAdministrationError? = nil,
         approvalReceiptDeviceID: String? = nil,
-        configurationReceiptDeviceID: String? = nil
+        configurationReceiptDeviceID: String? = nil,
+        configurationReceipt: DeviceSetupConfiguration? = nil
     ) {
         self.approvalError = approvalError
         self.configurationError = configurationError
         self.approvalReceiptDeviceID = approvalReceiptDeviceID
         self.configurationReceiptDeviceID = configurationReceiptDeviceID
+        self.configurationReceipt = configurationReceipt
     }
 
     func approve(_ device: HouseholdDevice) async throws -> DeviceApprovalReceipt {
@@ -1262,7 +1651,8 @@ private actor FakeDeviceAdministrationClient: DeviceAdministrationClient {
         }
         configurations.append(configuration)
         return DeviceConfigurationReceipt(
-            deviceID: configurationReceiptDeviceID ?? configuration.deviceID
+            deviceID: configurationReceiptDeviceID ?? configuration.deviceID,
+            configuration: configurationReceipt ?? configuration
         )
     }
 
