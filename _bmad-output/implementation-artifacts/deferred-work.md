@@ -18,6 +18,10 @@
   summary: Define the Device-side acknowledgement and observable success semantics for identity connection.
   evidence: The iOS model exposes explicit connecting/success states, while external acknowledgement must come from the future Device transport and cannot be fabricated by this client slice.
 
+- source_spec: `_bmad-output/implementation-artifacts/spec-2-1-ios-capture-acknowledgement-and-live-transcription.md`
+  summary: Replace the `for _ in 0..<N { await Task.yield() }` synchronization pattern across `VoiceSessionCoordinatorTests.swift` with a deterministic wait.
+  evidence: The pattern (10+ occurrences, N ranging 3-100) is inherently probabilistic. This story's own new test tipped one instance (N=3, since raised to 20) into deterministic failure purely from binary-size/scheduling shift, with no logic change and no shared state — confirmed by stash/pop bisection. Raising the count reduces recurrence risk but does not remove it; a repo-wide move to awaiting the coordinator's internal task handle or an `XCTestExpectation` would, but that's a larger change than any single verify-only story's scope.
+
 ## Resolved on 2026-09-09
 
 - Epic 1 iOS physical-device validation pass for Stories 1.1 and 1.2 completed. Evidence is recorded in `docs/plans/2026-09-09-epic-1-ios-device-validation-plan.md` and the IOS-36, IOS-29, and IOS-37 Project #3 cards. Deterministic tests remain authoritative for speaker/WAV fallback and late-event timing branches that were not observed live.
