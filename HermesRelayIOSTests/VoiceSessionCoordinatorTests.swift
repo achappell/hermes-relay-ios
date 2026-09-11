@@ -442,6 +442,34 @@ final class VoiceSessionCoordinatorTests: XCTestCase {
         XCTAssertEqual(client.sentTurns, [])
     }
 
+    // Distinct from the `.noSpeech` error path (see
+    // testNoSpeechCaptureReturnsToReadyWithoutSubmittingOrReportingFailure):
+    // here the recognition stream simply closes with no final and no partial
+    // text at all, exercising the plain `guard !text.isEmpty` branch in
+    // `endCaptureAndSend()` rather than the recognizer-error branch.
+    @MainActor
+    func testEmptyFinalRecognitionEndsCaptureWithoutSubmittingATurn() async {
+        let input = CoordinatorSpeechInput()
+        let client = CoordinatorHermesSessionClient()
+        let store = await connectedStore(client)
+        let coordinator = VoiceSessionCoordinator(
+            store: store,
+            input: input,
+            output: CoordinatorAudioOutput()
+        )
+
+        await coordinator.beginCapture()
+        XCTAssertEqual(coordinator.state, .listening)
+
+        await coordinator.endCaptureAndSend()
+
+        XCTAssertEqual(coordinator.state, .idle)
+        XCTAssertEqual(client.sentTurns, [])
+        XCTAssertTrue(store.messages.isEmpty)
+        XCTAssertEqual(coordinator.provisionalText, "")
+        XCTAssertNil(store.transientError)
+    }
+
     @MainActor
     func testUnexpectedNoSpeechResetsCaptureAndAllowsRetryWithoutSendingPartialText() async {
         let input = CoordinatorSpeechInput()
@@ -456,7 +484,11 @@ final class VoiceSessionCoordinatorTests: XCTestCase {
         await coordinator.beginCapture()
         await input.emit(SpeechRecognitionUpdate(text: "Partial phrase", isFinal: false))
         await input.emitError(.noSpeech)
-        for _ in 0..<3 { await Task.yield() }
+        // Raised from 3 to 20 (spec-2-1): 3 was already marginal and started
+        // failing once an unrelated test method was added elsewhere in this
+        // file, with no shared state — a compiled-binary scheduling shift,
+        // not a logic change. Still probabilistic, not a deterministic wait.
+        for _ in 0..<20 { await Task.yield() }
 
         XCTAssertEqual(coordinator.state, .idle)
         XCTAssertEqual(coordinator.provisionalText, "")
