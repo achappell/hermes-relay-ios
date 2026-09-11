@@ -585,6 +585,53 @@ final class URLSessionHermesSessionClientTests: XCTestCase {
         await client.disconnect()
     }
 
+    func testReplacementSocketStartsAFreshSessionAndIgnoresLateOldFrames() async throws {
+        let firstSocket = FakeWebSocketConnection()
+        firstSocket.enqueue(.text(json(["type": "hello_ack"])))
+        let replacementSocket = FakeWebSocketConnection()
+        replacementSocket.enqueue(.text(json(["type": "hello_ack"])))
+        let factory = FakeWebSocketConnectionFactory(sockets: [firstSocket, replacementSocket])
+        let client = try makeClient(factory: factory)
+
+        let firstMetadata = try await client.connect()
+        let oldStream = await client.sendTurn(text: "old turn")
+        firstSocket.failNextReceive()
+
+        do {
+            _ = try await collect(oldStream)
+            XCTFail("The old turn must finish when its socket fails")
+        } catch let error as RelaySessionError {
+            XCTAssertEqual(error, .disconnected)
+        }
+
+        let replacementMetadata = try await client.connect()
+        XCTAssertNotEqual(replacementMetadata.sessionID, firstMetadata.sessionID)
+
+        let newStream = await client.sendTurn(text: "new turn")
+        let newTurnID = try XCTUnwrap(
+            replacementSocket.sentTexts.last?.jsonObject()["turn_id"] as? String
+        )
+        firstSocket.enqueue(.text(json([
+            "type": "text_delta",
+            "turn_id": newTurnID,
+            "text": "stale old response",
+        ])))
+        replacementSocket.enqueue(.text(json([
+            "type": "text_delta",
+            "turn_id": newTurnID,
+            "text": "fresh response",
+        ])))
+        replacementSocket.enqueue(.text(json(["type": "turn_end", "turn_id": newTurnID])))
+
+        let events = try await collect(newStream)
+
+        XCTAssertEqual(events, [
+            .textDelta("fresh response"),
+            .turnComplete(turnID: newTurnID),
+        ])
+        await client.disconnect()
+    }
+
     func testSendTimeoutClearsTheSessionAndFinishesTheActiveStream() async throws {
         let socket = FakeWebSocketConnection()
         socket.enqueue(.text(json(["type": "hello_ack"])))

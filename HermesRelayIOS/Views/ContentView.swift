@@ -88,6 +88,11 @@ struct ContentView: View {
             && !store.draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
     }
 
+    private var showsCachedDraftNotice: Bool {
+        !store.connectionState.isConnected
+            && !store.draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+
     private var applicationSettingsURL: URL? {
         #if os(iOS)
         return URL(string: UIApplication.openSettingsURLString)
@@ -135,7 +140,10 @@ struct ContentView: View {
             }
             .onChange(of: store.connectionState) { _, newState in
                 guard newState != .connected else { return }
-                Task { await voiceCoordinator.disableHandsFree() }
+                Task {
+                    await voiceCoordinator.cancelCapture()
+                    await voiceCoordinator.disableHandsFree()
+                }
             }
         }
         .sheet(isPresented: $showingConfiguration) {
@@ -203,6 +211,17 @@ struct ContentView: View {
 
     private var composer: some View {
         VStack(spacing: 8) {
+            if showsCachedDraftNotice {
+                HStack(spacing: 8) {
+                    Image(systemName: "doc.text")
+                    Text("Draft saved locally. Connect before sending.")
+                        .font(.footnote)
+                    Spacer()
+                }
+                .foregroundStyle(.secondary)
+                .accessibilityIdentifier("cached-draft-notice")
+            }
+
             if let activityText = store.activityText {
                 HStack(spacing: 8) {
                     ProgressView()
