@@ -32,6 +32,7 @@ enum DeviceIdentityStatus: String, Codable, Equatable, Sendable {
     case verificationRequired
     case verified
     case unavailable
+    case revocationPending
     case revoked
 
     var label: String {
@@ -42,6 +43,8 @@ enum DeviceIdentityStatus: String, Codable, Equatable, Sendable {
             "Verified"
         case .unavailable:
             "Unavailable"
+        case .revocationPending:
+            "Revocation pending"
         case .revoked:
             "Revoked"
         }
@@ -78,6 +81,7 @@ enum DeviceSetupStatus: String, Codable, Equatable, Sendable {
     case updatePending
     case verificationRequired
     case unavailable
+    case revocationPending
     case revoked
 
     var label: String {
@@ -92,6 +96,8 @@ enum DeviceSetupStatus: String, Codable, Equatable, Sendable {
             "Verification required · Inactive"
         case .unavailable:
             "Unavailable · Inactive"
+        case .revocationPending:
+            "Revocation pending · Inactive"
         case .revoked:
             "Revoked · Re-enrollment required"
         }
@@ -249,6 +255,18 @@ struct DeviceApprovalReceipt: Equatable, Sendable {
     /// A successful receipt means the future adapter provisioned the
     /// individually scoped credential. Raw credential material never crosses
     /// this boundary.
+    let deviceID: String
+}
+
+struct DeviceRevocationReceipt: Equatable, Sendable {
+    /// A successful receipt confirms that the Device Credential and Hermes
+    /// access were revoked. Raw credential material never crosses this seam.
+    let deviceID: String
+}
+
+struct DeviceReenrollmentReceipt: Equatable, Sendable {
+    /// A successful receipt confirms that explicit re-enrollment provisioned a
+    /// new individually scoped credential. It never makes the Device Ready.
     let deviceID: String
 }
 

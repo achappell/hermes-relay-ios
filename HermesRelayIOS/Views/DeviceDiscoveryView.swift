@@ -7,6 +7,7 @@ struct DeviceDiscoveryView: View {
     private enum PresentedSheet: Identifiable {
         case manualPairing
         case setup(HouseholdDevice)
+        case reenrollment(HouseholdDevice)
         case configuration(HouseholdDevice)
 
         var id: String {
@@ -15,6 +16,8 @@ struct DeviceDiscoveryView: View {
                 "manual-pairing"
             case let .setup(device):
                 "setup-\(device.id)"
+            case let .reenrollment(device):
+                "reenrollment-\(device.id)"
             case let .configuration(device):
                 "configuration-\(device.id)"
             }
@@ -100,6 +103,46 @@ struct DeviceDiscoveryView: View {
                                 .accessibilityIdentifier("approved-device-\(device.id)")
                                 .accessibilityHint(
                                     "Continue Room and Wake Mapping setup. The Device remains inactive until Ready."
+                                )
+                            } else if setupStatus == .revocationPending,
+                                      model.configurationState(for: device) != nil {
+                                Button {
+                                    presentedSheet = .configuration(device)
+                                } label: {
+                                    DeviceDiscoveryRow(
+                                        device: device,
+                                        connectionState: nil,
+                                        isInteractive: true,
+                                        setupStatus: setupStatus,
+                                        hasSetupDraft: hasSetupDraft
+                                    )
+                                }
+                                .buttonStyle(.plain)
+                                .accessibilityIdentifier("pending-revocation-device-\(device.id)")
+                                .accessibilityHint(
+                                    "Retries Device access revocation. The Device remains unavailable until revocation is confirmed."
+                                )
+                            } else if setupStatus == .revoked {
+                                Button {
+                                    Task {
+                                        if await model.reEnroll(device) {
+                                            presentedSheet = .reenrollment(device)
+                                        }
+                                    }
+                                } label: {
+                                    DeviceDiscoveryRow(
+                                        device: device,
+                                        connectionState: nil,
+                                        isInteractive: true,
+                                        setupStatus: setupStatus,
+                                        hasSetupDraft: hasSetupDraft
+                                    )
+                                }
+                                .buttonStyle(.plain)
+                                .disabled(model.isReenrolling)
+                                .accessibilityIdentifier("reenroll-device-\(device.id)")
+                                .accessibilityHint(
+                                    "Requests a new Device credential. Room, Wake Mapping, and Ready setup are still required."
                                 )
                             } else if let setupStatus,
                                       setupStatus.isActive,
@@ -284,6 +327,16 @@ struct DeviceDiscoveryView: View {
                 ) {
                     model.markReady(device)
                 }
+            case let .reenrollment(device):
+                DeviceSetupView(
+                    device: device,
+                    administrationClient: administrationClient,
+                    draftStore: draftStore,
+                    configurationStore: configurationStore,
+                    isReenrollment: true
+                ) {
+                    model.markReady(device)
+                }
             case let .configuration(device):
                 DeviceConfigurationView(
                     device: device,
@@ -325,6 +378,9 @@ private struct DeviceDiscoveryRow: View {
         if let setupStatus {
             if setupStatus.canVerify {
                 return setupStatus == .verificationRequired ? "Verify" : "Retry"
+            }
+            if setupStatus == .revocationPending {
+                return "Retry Disconnect"
             }
             if setupStatus == .revoked {
                 return "Re-enroll required"
@@ -400,6 +456,7 @@ private struct DeviceSetupView: View {
     let administrationClient: any DeviceAdministrationClient
     let draftStore: any DeviceSetupDraftStore
     let configurationStore: any DeviceConfigurationStore
+    let isReenrollment: Bool
     let onReady: @MainActor () -> Void
 
     @Environment(\.dismiss) private var dismiss
@@ -412,12 +469,14 @@ private struct DeviceSetupView: View {
         administrationClient: any DeviceAdministrationClient,
         draftStore: any DeviceSetupDraftStore,
         configurationStore: any DeviceConfigurationStore,
+        isReenrollment: Bool = false,
         onReady: @escaping @MainActor () -> Void
     ) {
         self.device = device
         self.administrationClient = administrationClient
         self.draftStore = draftStore
         self.configurationStore = configurationStore
+        self.isReenrollment = isReenrollment
         self.onReady = onReady
         _model = State(
             initialValue: DeviceSetupModel(
@@ -436,18 +495,22 @@ private struct DeviceSetupView: View {
             Form {
                 Section {
                     Label(
-                        "Approved, but inactive until setup is complete.",
+                        isReenrollment
+                            ? "New access is approved, but this Device remains inactive until setup is complete."
+                            : "Approved, but inactive until setup is complete.",
                         systemImage: "lock.shield"
                     )
                     Text(
                         model.hasDraft
                             ? "Resume this saved setup draft. It remains inactive until Ready."
-                            : "Set up \(device.displayName) in this order: Room, Wake Mappings, then Ready."
+                            : isReenrollment
+                                ? "Re-enroll \(device.displayName) in this order: Room, Wake Mappings, then Ready."
+                                : "Set up \(device.displayName) in this order: Room, Wake Mappings, then Ready."
                     )
                         .font(.footnote)
                         .foregroundStyle(.secondary)
                 } header: {
-                    Text("Setup pending")
+                    Text(isReenrollment ? "Re-enrollment pending" : "Setup pending")
                 }
 
                 switch model.step {
@@ -471,7 +534,7 @@ private struct DeviceSetupView: View {
                     }
                 }
             }
-            .navigationTitle("Set Up Device")
+            .navigationTitle(isReenrollment ? "Re-enroll Device" : "Set Up Device")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .secondaryAction) {
@@ -678,6 +741,7 @@ private struct DeviceConfigurationView: View {
 
     @Environment(\.dismiss) private var dismiss
     @State private var model: DeviceConfigurationModel
+    @State private var isDisconnectConfirmationPresented = false
 
     init(
         device: HouseholdDevice,
@@ -696,6 +760,40 @@ private struct DeviceConfigurationView: View {
         )
     }
 
+    private var accessStatusText: String {
+        switch model.identityStatus {
+        case .verified:
+            model.publicationStatus == .verified
+                ? "Verified configuration is active."
+                : "Update pending. The current verified mapping remains active."
+        case .verificationRequired:
+            "Device verification is required. It remains inactive."
+        case .unavailable:
+            "Device access is unavailable. It remains inactive."
+        case .revocationPending:
+            "Disconnect is pending. The Device remains inactive until revocation is confirmed."
+        case .revoked:
+            "Device access is revoked. Explicit re-enrollment is required."
+        }
+    }
+
+    private var accessStatusIcon: String {
+        switch model.identityStatus {
+        case .verified:
+            model.publicationStatus == .verified ? "checkmark.shield" : "clock.arrow.circlepath"
+        case .verificationRequired, .unavailable:
+            "exclamationmark.shield"
+        case .revocationPending:
+            "clock.badge.xmark"
+        case .revoked:
+            "lock.slash"
+        }
+    }
+
+    private var canEditConfiguration: Bool {
+        model.identityStatus.isOperational && !model.isRevoking
+    }
+
     var body: some View {
         @Bindable var model = model
 
@@ -703,19 +801,48 @@ private struct DeviceConfigurationView: View {
             Form {
                 Section {
                     Label(
-                        model.publicationStatus == .verified
-                            ? "Verified configuration is active."
-                            : "Update pending. The current verified mapping remains active.",
-                        systemImage: model.publicationStatus == .verified
-                            ? "checkmark.shield"
-                            : "clock.arrow.circlepath"
+                        accessStatusText,
+                        systemImage: accessStatusIcon
                     )
+                    LabeledContent("Access", value: model.identityStatus.label)
                     LabeledContent("Room", value: model.room)
                 } header: {
                     Text(device.displayName)
                 } footer: {
                     Text(
                         "A Wake Mapping is not applied until the Device accepts the exact Profile-specific configuration."
+                    )
+                }
+
+                Section {
+                    if model.identityStatus == .revoked {
+                        Label(
+                            "Re-enrollment is required before this Device can be configured again.",
+                            systemImage: "lock.slash"
+                        )
+                    } else {
+                        Button(role: .destructive) {
+                            isDisconnectConfirmationPresented = true
+                        } label: {
+                            if model.isRevoking {
+                                ProgressView("Disconnecting Device…")
+                            } else {
+                                Label(
+                                    model.identityStatus == .revocationPending
+                                        ? "Retry Disconnect"
+                                        : "Disconnect Device",
+                                    systemImage: "minus.circle"
+                                )
+                            }
+                        }
+                        .disabled(model.isRevoking)
+                    }
+                } header: {
+                    Text("Device access")
+                } footer: {
+                    Text(
+                        "Disconnect revokes the Device Credential and Hermes access. "
+                            + "The Device stays inactive until explicit re-enrollment and setup are complete."
                     )
                 }
 
@@ -758,6 +885,7 @@ private struct DeviceConfigurationView: View {
                 } footer: {
                     Text("Each wake phrase must be unique and point to one Hermes Profile identifier.")
                 }
+                .disabled(!canEditConfiguration)
 
                 Section {
                     Button {
@@ -769,7 +897,7 @@ private struct DeviceConfigurationView: View {
                             Text("Publish mapping update")
                         }
                     }
-                    .disabled(model.isPublishing)
+                    .disabled(!canEditConfiguration || model.isPublishing)
                     .buttonStyle(.borderedProminent)
                 }
 
@@ -782,6 +910,25 @@ private struct DeviceConfigurationView: View {
             }
             .navigationTitle("Edit Device")
             .navigationBarTitleDisplayMode(.inline)
+            .confirmationDialog(
+                "Disconnect \(device.displayName)?",
+                isPresented: $isDisconnectConfirmationPresented,
+                titleVisibility: .visible
+            ) {
+                Button("Disconnect Device", role: .destructive) {
+                    Task {
+                        if await model.revoke() {
+                            dismiss()
+                        }
+                    }
+                }
+                Button("Cancel", role: .cancel) {}
+            } message: {
+                Text(
+                    "This revokes the Device Credential and Hermes access. "
+                        + "The Device will remain inactive until you explicitly re-enroll and complete setup."
+                )
+            }
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
                     Button("Done") {
