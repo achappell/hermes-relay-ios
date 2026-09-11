@@ -61,13 +61,21 @@ final class DeviceDiscoveryModel {
             guard discoveryRequestID == requestID else { return }
             let configurationLoadError = await loadConfigurationStates()
             guard discoveryRequestID == requestID else { return }
+            let snapshotDevices = snapshot.approvedDevices + snapshot.unconfiguredDevices
+            let persistedApproved = configurationStates.values.compactMap { state in
+                state.approvedDevice
+                    ?? snapshotDevices.first { $0.id == state.deviceID }
+            }
+            let draftedApproved = setupDrafts.keys.compactMap { deviceID in
+                snapshotDevices.first { $0.id == deviceID }
+            }
             let locallyApproved = approvedDevices.filter {
                 setupStatuses[$0.id] != nil
                     || setupDrafts[$0.id] != nil
                     || configurationStates[$0.id] != nil
-            }
+            } + persistedApproved + draftedApproved
             let approved = uniqueDevices(
-                snapshot.approvedDevices + locallyApproved,
+                snapshot.approvedDevices + locallyApproved.map(asApprovedDevice),
                 withTrustState: .approved
             )
             let approvedIDs = Set(approved.map(\.id))
@@ -110,6 +118,15 @@ final class DeviceDiscoveryModel {
                 && device.trustState == trustState
                 && seenIDs.insert(device.id).inserted
         }
+    }
+
+    private func asApprovedDevice(_ device: HouseholdDevice) -> HouseholdDevice {
+        HouseholdDevice(
+            id: device.id,
+            displayName: device.displayName,
+            kind: device.kind,
+            trustState: .approved
+        )
     }
 
     private func discoveryMessage(for error: DeviceDiscoveryError) -> String {
@@ -511,6 +528,7 @@ final class DeviceSetupModel {
 
             try? await configurationStore.save(
                 DeviceConfigurationState(
+                    approvedDevice: device,
                     verifiedConfiguration: configuration,
                     pendingConfiguration: nil
                 )
@@ -636,6 +654,7 @@ final class DeviceConfigurationModel {
         do {
             try await configurationStore.save(
                 DeviceConfigurationState(
+                    approvedDevice: device,
                     verifiedConfiguration: verifiedConfiguration,
                     pendingConfiguration: configuration
                 )
@@ -650,6 +669,7 @@ final class DeviceConfigurationModel {
             isActive = true
             try? await configurationStore.save(
                 DeviceConfigurationState(
+                    approvedDevice: device,
                     verifiedConfiguration: configuration,
                     pendingConfiguration: nil
                 )
@@ -676,6 +696,7 @@ final class DeviceConfigurationModel {
             do {
                 try await configurationStore.save(
                     DeviceConfigurationState(
+                        approvedDevice: device,
                         verifiedConfiguration: verifiedConfiguration,
                         pendingConfiguration: nil
                     )
@@ -693,6 +714,7 @@ final class DeviceConfigurationModel {
         do {
             try await configurationStore.save(
                 DeviceConfigurationState(
+                    approvedDevice: device,
                     verifiedConfiguration: verifiedConfiguration,
                     pendingConfiguration: configuration
                 )

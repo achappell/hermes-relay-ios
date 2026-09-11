@@ -136,14 +136,27 @@ struct DeviceSetupConfiguration: Codable, Equatable, Sendable {
 
 struct DeviceConfigurationState: Codable, Equatable, Sendable {
     let deviceID: String
+    /// Locally approved identity used to rebuild the Devices list when an
+    /// adapter does not return a previously approved Device.
+    /// Older persisted states may omit this metadata.
+    let approvedDevice: HouseholdDevice?
     let verifiedConfiguration: DeviceSetupConfiguration
     let pendingConfiguration: DeviceSetupConfiguration?
 
     init(
+        approvedDevice: HouseholdDevice? = nil,
         verifiedConfiguration: DeviceSetupConfiguration,
         pendingConfiguration: DeviceSetupConfiguration?
     ) {
         self.deviceID = verifiedConfiguration.deviceID
+        self.approvedDevice = approvedDevice.map {
+            HouseholdDevice(
+                id: $0.id,
+                displayName: $0.displayName,
+                kind: $0.kind,
+                trustState: .approved
+            )
+        }
         self.verifiedConfiguration = verifiedConfiguration
         self.pendingConfiguration = pendingConfiguration
     }

@@ -322,6 +322,88 @@ final class DeviceDiscoveryTests: XCTestCase {
         XCTAssertTrue(model.isActive(approvedSetupDevice))
     }
 
+    func testDiscoveryRehydratesSavedConfigurationWhenAdapterReportsDeviceAsUnconfigured() async throws {
+        let fileURL = temporaryConfigurationFileURL()
+        defer { try? FileManager.default.removeItem(at: fileURL.deletingLastPathComponent()) }
+        let store = JSONDeviceConfigurationStore(fileURL: fileURL)
+        let verified = DeviceSetupConfiguration(
+            deviceID: approvedSetupDevice.id,
+            room: "Kitchen",
+            wakeMappings: [
+                DeviceWakeMapping(wakePhrase: "Hey Missy", profileIdentifier: "missy")
+            ]
+        )
+        try await store.save(
+            DeviceConfigurationState(
+                approvedDevice: approvedSetupDevice,
+                verifiedConfiguration: verified,
+                pendingConfiguration: nil
+            )
+        )
+        let adapterCandidate = HouseholdDevice(
+            id: approvedSetupDevice.id,
+            displayName: "Kitchen Puck",
+            kind: .puck,
+            trustState: .unconfigured
+        )
+        let client = FakeDeviceDiscoveryClient(
+            snapshot: DeviceDiscoverySnapshot(
+                approvedDevices: [],
+                unconfiguredDevices: [adapterCandidate]
+            )
+        )
+        let model = DeviceDiscoveryModel(
+            client: client,
+            configurationStore: store
+        )
+
+        await model.discover()
+
+        XCTAssertEqual(model.approvedDevices, [approvedSetupDevice])
+        XCTAssertTrue(model.discoveredDevices.isEmpty)
+        XCTAssertEqual(model.setupStatus(for: approvedSetupDevice), .ready)
+    }
+
+    func testDiscoveryMigratesLegacyConfigurationUsingMatchingAdapterIdentity() async throws {
+        let fileURL = temporaryConfigurationFileURL()
+        defer { try? FileManager.default.removeItem(at: fileURL.deletingLastPathComponent()) }
+        let store = JSONDeviceConfigurationStore(fileURL: fileURL)
+        let verified = DeviceSetupConfiguration(
+            deviceID: approvedSetupDevice.id,
+            room: "Kitchen",
+            wakeMappings: [
+                DeviceWakeMapping(wakePhrase: "Hey Missy", profileIdentifier: "missy")
+            ]
+        )
+        try await store.save(
+            DeviceConfigurationState(
+                verifiedConfiguration: verified,
+                pendingConfiguration: nil
+            )
+        )
+        let adapterCandidate = HouseholdDevice(
+            id: approvedSetupDevice.id,
+            displayName: "Kitchen Puck",
+            kind: .puck,
+            trustState: .unconfigured
+        )
+        let client = FakeDeviceDiscoveryClient(
+            snapshot: DeviceDiscoverySnapshot(
+                approvedDevices: [],
+                unconfiguredDevices: [adapterCandidate]
+            )
+        )
+        let model = DeviceDiscoveryModel(
+            client: client,
+            configurationStore: store
+        )
+
+        await model.discover()
+
+        XCTAssertEqual(model.approvedDevices, [approvedSetupDevice])
+        XCTAssertTrue(model.discoveredDevices.isEmpty)
+    }
+
     func testApprovalRequiresAConfirmedConnectionAndKeepsCandidateUnapproved() async {
         let candidate = HouseholdDevice(
             id: "unconfigured-puck",
