@@ -2,7 +2,7 @@
 title: 'Validate unique Wake Mappings and Profile-specific publish state'
 type: 'feature'
 created: '2026-09-10'
-status: 'in-review'
+status: 'done'
 route: 'dispatch'
 context:
   - '{project-root}/_bmad-output/implementation-artifacts/epic-3-context.md'
@@ -90,9 +90,9 @@ Device configuration contract is settled.
 
 ## Verification
 
-- Focused `DeviceDiscoveryTests`: 47 passed, 0 failed, 0 skipped on the iPhone
+- Focused `DeviceDiscoveryTests`: 49 passed, 0 failed, 0 skipped on the iPhone
   17 Pro / iOS 26.5 simulator.
-- Full iOS Simulator suite: 292 passed, 0 failed, 0 skipped.
+- Full iOS Simulator suite: 295 passed, 0 failed, 0 skipped.
 - iOS Simulator Debug build: succeeded.
 - macOS Debug build: succeeded.
 - `git diff --check`: clean.
@@ -101,15 +101,18 @@ Device configuration contract is settled.
 
 ## Review gate
 
-- The interactive smoke pass remains pending. `xcrun simctl launch` and a
-  temporary Xcode scheme launch argument both failed to deliver
-  `-HermesRelayDeviceDiscoveryFixture` to the app process in this environment;
-  the simulator therefore showed the honest production
-  `Device discovery is not configured yet` state rather than the fixture flow.
-- The temporary scheme argument was removed after the attempt. Deterministic
-  tests cover duplicate rejection, failed/offline/mismatched publish, pending
-  persistence, revert clearing, and exact Profile-specific receipt promotion.
-- This slice is ready for review once the fixture launch path can be injected
-  reliably for the manual Settings smoke.
+- The interactive smoke pass completed on 2026-09-10 through XcodeBuildMCP on
+  the iPhone 17 Pro / iOS 26.5 simulator after the fixture launch argument was
+  delivered reliably.
+- The smoke observed legacy Hallway Puck state rehydrating after reopening
+  Devices, Edit/Review opening for the configured row, a pending mapping edit
+  preserving the verified mapping, and a successful fixture publish returning
+  the row to Ready.
+- Deterministic tests cover duplicate rejection, failed/offline/mismatched
+  publish, pending persistence, revert clearing, and exact Profile-specific
+  receipt promotion. The shipped production adapter remains unavailable until
+  the shared Device configuration contract is settled.
+- This slice is closed; no credential, production Device transport, or
+  cross-platform administration behavior is implied by the fixture smoke.
 
 </frozen-after-approval>
