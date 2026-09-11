@@ -301,6 +301,10 @@ struct AmbientHUDView: View {
         voiceCoordinator?.provisionalText ?? provisionalText
     }
 
+    private var showsCachedContextNotice: Bool {
+        !connectionState.isConnected && hasTranscript
+    }
+
     @MainActor
     static func settingsRecoveryURL(
         for presentation: AmbientHUDPresentation,
@@ -321,6 +325,10 @@ struct AmbientHUDView: View {
     var body: some View {
         VStack(spacing: 0) {
             sessionHeader
+
+            if showsCachedContextNotice {
+                cachedContextNotice
+            }
 
             if let unconfirmedTurnText {
                 unconfirmedTurnNotice(text: unconfirmedTurnText)
@@ -363,6 +371,32 @@ struct AmbientHUDView: View {
             .ignoresSafeArea()
         }
         .accessibilityElement(children: .contain)
+    }
+
+    private var cachedContextNotice: some View {
+        HStack(alignment: .firstTextBaseline, spacing: 10) {
+            Image(systemName: "clock.arrow.circlepath")
+                .foregroundStyle(.orange)
+
+            VStack(alignment: .leading, spacing: 2) {
+                Text("Cached conversation")
+                    .font(.footnote.weight(.semibold))
+                Text("Saved locally; not live while Hermes is unavailable.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+
+            Spacer(minLength: 8)
+        }
+        .padding(.horizontal, 14)
+        .padding(.vertical, 10)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .relayGlass(cornerRadius: 20)
+        .padding(.top, 8)
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel(
+            "Cached conversation. Saved locally; not live while Hermes is unavailable."
+        )
     }
 
     private func failureNotice(message: String) -> some View {
