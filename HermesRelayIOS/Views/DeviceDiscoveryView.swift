@@ -4,6 +4,23 @@ import SwiftUI
 
 @MainActor
 struct DeviceDiscoveryView: View {
+    private enum PresentedSheet: Identifiable {
+        case manualPairing
+        case setup(HouseholdDevice)
+        case configuration(HouseholdDevice)
+
+        var id: String {
+            switch self {
+            case .manualPairing:
+                "manual-pairing"
+            case let .setup(device):
+                "setup-\(device.id)"
+            case let .configuration(device):
+                "configuration-\(device.id)"
+            }
+        }
+    }
+
     let client: any DeviceDiscoveryClient
     let administrationClient: any DeviceAdministrationClient
     let draftStore: any DeviceSetupDraftStore
@@ -11,9 +28,7 @@ struct DeviceDiscoveryView: View {
 
     @Environment(\.dismiss) private var dismiss
     @State private var model: DeviceDiscoveryModel
-    @State private var isManualPairingPresented = false
-    @State private var setupDevice: HouseholdDevice?
-    @State private var configurationDevice: HouseholdDevice?
+    @State private var presentedSheet: PresentedSheet?
 
     init(
         client: any DeviceDiscoveryClient,
@@ -65,7 +80,7 @@ struct DeviceDiscoveryView: View {
                             let hasSetupDraft = model.hasSetupDraft(for: device)
                             if setupStatus == .pending {
                                 Button {
-                                    setupDevice = device
+                                    presentedSheet = .setup(device)
                                 } label: {
                                     DeviceDiscoveryRow(
                                         device: device,
@@ -84,7 +99,7 @@ struct DeviceDiscoveryView: View {
                                       setupStatus.isActive,
                                       model.configurationState(for: device) != nil {
                                 Button {
-                                    configurationDevice = device
+                                    presentedSheet = .configuration(device)
                                 } label: {
                                     DeviceDiscoveryRow(
                                         device: device,
@@ -145,7 +160,7 @@ struct DeviceDiscoveryView: View {
                                         Task {
                                             if await model.approve(device),
                                                let approvedDevice = model.approvedDevice(for: device) {
-                                                setupDevice = approvedDevice
+                                                presentedSheet = .setup(approvedDevice)
                                             }
                                         }
                                     } label: {
@@ -184,7 +199,7 @@ struct DeviceDiscoveryView: View {
                     Section {
                         Button {
                             model.beginManualPairing()
-                            isManualPairingPresented = true
+                            presentedSheet = .manualPairing
                         } label: {
                             Label("Use manual pairing", systemImage: "rectangle.and.pencil.and.ellipsis")
                         }
@@ -228,29 +243,28 @@ struct DeviceDiscoveryView: View {
                 await model.discover()
             }
         }
-        .sheet(isPresented: $isManualPairingPresented) {
-            ManualDevicePairingView(model: model)
-        }
-        .sheet(item: $setupDevice, onDismiss: {
+        .sheet(item: $presentedSheet, onDismiss: {
             Task { await model.refreshSetupDrafts() }
-        }) { device in
-            DeviceSetupView(
-                device: device,
-                administrationClient: administrationClient,
-                draftStore: draftStore,
-                configurationStore: configurationStore
-            ) {
-                model.markReady(device)
+        }) { sheet in
+            switch sheet {
+            case .manualPairing:
+                ManualDevicePairingView(model: model)
+            case let .setup(device):
+                DeviceSetupView(
+                    device: device,
+                    administrationClient: administrationClient,
+                    draftStore: draftStore,
+                    configurationStore: configurationStore
+                ) {
+                    model.markReady(device)
+                }
+            case let .configuration(device):
+                DeviceConfigurationView(
+                    device: device,
+                    administrationClient: administrationClient,
+                    configurationStore: configurationStore
+                )
             }
-        }
-        .sheet(item: $configurationDevice, onDismiss: {
-            Task { await model.refreshSetupDrafts() }
-        }) { device in
-            DeviceConfigurationView(
-                device: device,
-                administrationClient: administrationClient,
-                configurationStore: configurationStore
-            )
         }
     }
 }
@@ -342,7 +356,9 @@ private struct DeviceDiscoveryRow: View {
                 }
             }
         }
+        .frame(maxWidth: .infinity, alignment: .leading)
         .padding(.vertical, 4)
+        .contentShape(Rectangle())
     }
 }
 
