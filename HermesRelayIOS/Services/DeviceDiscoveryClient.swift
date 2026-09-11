@@ -35,6 +35,8 @@ enum DeviceDiscoveryError: Error, Equatable, Sendable {
 enum DeviceAdministrationError: Error, Equatable, Sendable {
     case approvalFailed
     case configurationFailed
+    case revocationFailed
+    case reEnrollmentFailed
     case unexpectedResponse
     case transportUnavailable
 
@@ -44,6 +46,10 @@ enum DeviceAdministrationError: Error, Equatable, Sendable {
             "The Device could not be approved. Try again."
         case .configurationFailed:
             "The Device setup could not be saved. Try again."
+        case .revocationFailed:
+            "Device access could not be revoked. It remains unavailable until you retry."
+        case .reEnrollmentFailed:
+            "The Device could not be re-enrolled. It remains unavailable. Try again."
         case .unexpectedResponse:
             "The Device identity could not be verified. Try again."
         case .transportUnavailable:
@@ -76,6 +82,12 @@ protocol DeviceDiscoveryClient: Sendable {
 /// confirms the complete Room and Wake Mapping publish.
 protocol DeviceAdministrationClient: Sendable {
     func approve(_ device: HouseholdDevice) async throws -> DeviceApprovalReceipt
+    /// Revokes the Device Credential and Hermes access. The receipt contains
+    /// identity only; credential material never crosses this boundary.
+    func revoke(_ device: HouseholdDevice) async throws -> DeviceRevocationReceipt
+    /// Starts explicit re-enrollment with a fresh credential. This receipt
+    /// never promotes the Device to Ready; ordered setup must still complete.
+    func reEnroll(_ device: HouseholdDevice) async throws -> DeviceReenrollmentReceipt
     func configure(
         _ configuration: DeviceSetupConfiguration
     ) async throws -> DeviceConfigurationReceipt
@@ -316,6 +328,14 @@ struct UnavailableDeviceAdministrationClient: DeviceAdministrationClient {
         throw DeviceAdministrationError.transportUnavailable
     }
 
+    func revoke(_ device: HouseholdDevice) async throws -> DeviceRevocationReceipt {
+        throw DeviceAdministrationError.transportUnavailable
+    }
+
+    func reEnroll(_ device: HouseholdDevice) async throws -> DeviceReenrollmentReceipt {
+        throw DeviceAdministrationError.transportUnavailable
+    }
+
     func configure(
         _ configuration: DeviceSetupConfiguration
     ) async throws -> DeviceConfigurationReceipt {
@@ -446,6 +466,26 @@ private struct DebugDeviceAdministrationFixtureClient: DeviceAdministrationClien
             throw DeviceAdministrationError.approvalFailed
         }
         return DeviceApprovalReceipt(deviceID: device.id)
+    }
+
+    func revoke(_ device: HouseholdDevice) async throws -> DeviceRevocationReceipt {
+        try await Task.sleep(nanoseconds: 500_000_000)
+        guard supportedDeviceIDs.contains(device.id),
+              device.trustState == .approved
+        else {
+            throw DeviceAdministrationError.revocationFailed
+        }
+        return DeviceRevocationReceipt(deviceID: device.id)
+    }
+
+    func reEnroll(_ device: HouseholdDevice) async throws -> DeviceReenrollmentReceipt {
+        try await Task.sleep(nanoseconds: 500_000_000)
+        guard supportedDeviceIDs.contains(device.id),
+              device.trustState == .approved
+        else {
+            throw DeviceAdministrationError.reEnrollmentFailed
+        }
+        return DeviceReenrollmentReceipt(deviceID: device.id)
     }
 
     func configure(

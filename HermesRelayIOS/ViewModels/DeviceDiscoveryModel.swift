@@ -9,6 +9,7 @@ final class DeviceDiscoveryModel {
     private(set) var isApproving = false
     private(set) var isVerifying = false
     private(set) var isDiscovering = false
+    private(set) var isReenrolling = false
     private(set) var errorMessage: String?
     private(set) var isManualFallbackAvailable = false
     private(set) var statusMessage: String?
@@ -291,6 +292,51 @@ final class DeviceDiscoveryModel {
         }
     }
 
+    @discardableResult
+    func reEnroll(_ device: HouseholdDevice) async -> Bool {
+        guard !isReenrolling else { return false }
+        guard let currentDevice = approvedDevices.first(where: { $0.id == device.id }),
+              setupStatus(for: currentDevice) == .revoked
+        else {
+            errorMessage = "This Device must be revoked before it can be re-enrolled."
+            return false
+        }
+
+        isReenrolling = true
+        errorMessage = nil
+        statusMessage = nil
+        let requestID = discoveryRequestID
+        defer { isReenrolling = false }
+
+        do {
+            let receipt = try await administrationClient.reEnroll(currentDevice)
+            guard requestID == discoveryRequestID,
+                  approvedDevices.contains(where: { $0.id == currentDevice.id }),
+                  setupStatus(for: currentDevice) == .revoked
+            else {
+                return false
+            }
+            guard receipt.deviceID == currentDevice.id else {
+                throw DeviceAdministrationError.unexpectedResponse
+            }
+
+            // A new credential is not a Ready state. The caller must open the
+            // ordered Room -> Wake Mappings -> Ready flow explicitly.
+            statusMessage = "\(currentDevice.displayName) re-enrollment approved. Complete Room, Wake Mapping, and Ready setup."
+            return true
+        } catch is CancellationError {
+            return false
+        } catch let error as DeviceAdministrationError {
+            guard requestID == discoveryRequestID else { return false }
+            errorMessage = reenrollmentErrorMessage(for: error)
+            return false
+        } catch {
+            guard requestID == discoveryRequestID else { return false }
+            errorMessage = reenrollmentErrorMessage(for: .reEnrollmentFailed)
+            return false
+        }
+    }
+
     func connect(to device: HouseholdDevice) async {
         guard !isDiscovering else {
             errorMessage = DeviceDiscoveryError.discoveryInProgress.userMessage
@@ -344,6 +390,8 @@ final class DeviceDiscoveryModel {
             return state.pendingConfiguration == nil ? .ready : .updatePending
         case .unavailable:
             return .unavailable
+        case .revocationPending:
+            return .revocationPending
         case .revoked:
             return .revoked
         }
@@ -370,6 +418,7 @@ final class DeviceDiscoveryModel {
         guard requestID == discoveryRequestID,
               let currentDevice = approvedDevices.first(where: { $0.id == device.id }),
               let state = configurationStates[device.id],
+              state.identityStatus != .revocationPending,
               state.identityStatus != .revoked
         else {
             return
@@ -400,6 +449,10 @@ final class DeviceDiscoveryModel {
                 await applyIdentityStatus(.unavailable, to: state)
                 errorMessage = verificationFailureMessage
                 statusMessage = "\(device.displayName) is unavailable and remains inactive."
+            case .revocationPending:
+                await applyIdentityStatus(.revocationPending, to: state)
+                errorMessage = "Device access revocation is still pending. It remains inactive until confirmed."
+                statusMessage = "\(device.displayName) remains inactive while access revocation is pending."
             case .revoked:
                 await applyIdentityStatus(.revoked, to: state)
                 errorMessage = nil
@@ -443,6 +496,17 @@ final class DeviceDiscoveryModel {
             verificationFailureMessage
         case .approvalFailed, .configurationFailed:
             verificationFailureMessage
+        case .revocationFailed, .reEnrollmentFailed:
+            verificationFailureMessage
+        }
+    }
+
+    private func reenrollmentErrorMessage(for error: DeviceAdministrationError) -> String {
+        switch error {
+        case .reEnrollmentFailed, .transportUnavailable, .unexpectedResponse:
+            "The Device could not be re-enrolled. It remains unavailable. Try again."
+        case .approvalFailed, .configurationFailed, .revocationFailed:
+            "The Device could not be re-enrolled. It remains unavailable. Try again."
         }
     }
 
@@ -729,6 +793,7 @@ final class DeviceConfigurationModel {
     private(set) var publicationStatus: DeviceConfigurationPublicationStatus = .verified
     private(set) var errorMessage: String?
     private(set) var isPublishing = false
+    private(set) var isRevoking = false
     private(set) var isActive = false
     private(set) var identityStatus: DeviceIdentityStatus = .verificationRequired
     private var didLoad = false
@@ -779,9 +844,14 @@ final class DeviceConfigurationModel {
     func publish() async -> Bool {
         guard !isPublishing else { return false }
         guard identityStatus.isOperational else {
-            errorMessage = identityStatus == .revoked
-                ? "Device access is revoked. Explicit re-enrollment is required."
-                : "The Device identity could not be verified. Verify the Device before updating its mappings."
+            switch identityStatus {
+            case .revoked:
+                errorMessage = "Device access is revoked. Explicit re-enrollment is required."
+            case .revocationPending:
+                errorMessage = "Device access revocation is pending. It remains unavailable until you retry."
+            case .verificationRequired, .unavailable, .verified:
+                errorMessage = "The Device identity could not be verified. Verify the Device before updating its mappings."
+            }
             return false
         }
         guard let configuration = validatedConfiguration() else { return false }
@@ -828,12 +898,74 @@ final class DeviceConfigurationModel {
         }
     }
 
+    @discardableResult
+    func revoke() async -> Bool {
+        guard !isRevoking else { return false }
+        guard identityStatus != .revoked else {
+            errorMessage = "Device access is already revoked. Explicit re-enrollment is required."
+            return false
+        }
+        isRevoking = true
+        defer { isRevoking = false }
+
+        let pendingState = DeviceConfigurationState(
+            approvedDevice: device,
+            verifiedConfiguration: verifiedConfiguration,
+            pendingConfiguration: pendingConfiguration,
+            identityStatus: .revocationPending
+        )
+        do {
+            // Fail closed locally before asking the remote authority to
+            // revoke. A transport failure must never leave a powered Device
+            // looking Ready in the next launch.
+            identityStatus = .revocationPending
+            isActive = false
+            try await configurationStore.save(pendingState)
+        } catch {
+            errorMessage = "Disconnect could not be prepared. The Device remains unavailable until you retry."
+            return false
+        }
+
+        do {
+            let receipt = try await administrationClient.revoke(device)
+            guard receipt.deviceID == device.id else {
+                throw DeviceAdministrationError.unexpectedResponse
+            }
+
+            identityStatus = .revoked
+            isActive = false
+            pendingConfiguration = nil
+            publicationStatus = .verified
+            try await configurationStore.save(
+                DeviceConfigurationState(
+                    approvedDevice: device,
+                    verifiedConfiguration: verifiedConfiguration,
+                    pendingConfiguration: nil,
+                    identityStatus: .revoked
+                )
+            )
+            errorMessage = nil
+            return true
+        } catch let error as DeviceAdministrationError {
+            errorMessage = revocationErrorMessage(for: error)
+            return false
+        } catch {
+            errorMessage = "Device access could not be confirmed. It remains unavailable until you retry."
+            return false
+        }
+    }
+
     func removeWakeMapping(id: UUID) {
         wakeMappings.removeAll { $0.id == id }
         errorMessage = nil
     }
 
     func preservePending() async -> Bool {
+        guard identityStatus.isOperational else {
+            // Revoked and revocation-pending Devices cannot accumulate a new
+            // mapping edit while their access boundary is inactive.
+            return true
+        }
         let configuration = normalizedConfiguration()
         guard configuration != verifiedConfiguration else {
             guard pendingConfiguration != nil else { return true }
@@ -922,8 +1054,17 @@ final class DeviceConfigurationModel {
         switch error {
         case .unexpectedResponse:
             return "The Device identity could not be verified. Try again."
-        case .approvalFailed, .configurationFailed, .transportUnavailable:
+        case .approvalFailed, .configurationFailed, .revocationFailed, .reEnrollmentFailed, .transportUnavailable:
             return "The mapping edit could not be published. The current verified mapping remains active."
+        }
+    }
+
+    private func revocationErrorMessage(for error: DeviceAdministrationError) -> String {
+        switch error {
+        case .revocationFailed, .reEnrollmentFailed, .transportUnavailable, .unexpectedResponse:
+            return "Device access could not be confirmed. It remains unavailable until you retry."
+        case .approvalFailed, .configurationFailed:
+            return "Device access could not be confirmed. It remains unavailable until you retry."
         }
     }
 }
