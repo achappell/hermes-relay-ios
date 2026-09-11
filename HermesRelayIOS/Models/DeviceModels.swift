@@ -28,6 +28,34 @@ enum HouseholdDeviceTrustState: String, Codable, Hashable, Sendable {
     }
 }
 
+enum DeviceIdentityStatus: String, Codable, Equatable, Sendable {
+    case verificationRequired
+    case verified
+    case unavailable
+    case revoked
+
+    var label: String {
+        switch self {
+        case .verificationRequired:
+            "Verification required"
+        case .verified:
+            "Verified"
+        case .unavailable:
+            "Unavailable"
+        case .revoked:
+            "Revoked"
+        }
+    }
+
+    var isOperational: Bool {
+        self == .verified
+    }
+
+    var canRetryVerification: Bool {
+        self == .verificationRequired || self == .unavailable
+    }
+}
+
 struct HouseholdDevice: Identifiable, Codable, Equatable, Hashable, Sendable {
     let id: String
     let displayName: String
@@ -48,6 +76,9 @@ enum DeviceSetupStatus: String, Codable, Equatable, Sendable {
     case pending
     case ready
     case updatePending
+    case verificationRequired
+    case unavailable
+    case revoked
 
     var label: String {
         switch self {
@@ -57,11 +88,21 @@ enum DeviceSetupStatus: String, Codable, Equatable, Sendable {
             "Ready"
         case .updatePending:
             "Update pending · Current mapping remains active"
+        case .verificationRequired:
+            "Verification required · Inactive"
+        case .unavailable:
+            "Unavailable · Inactive"
+        case .revoked:
+            "Revoked · Re-enrollment required"
         }
     }
 
     var isActive: Bool {
-        self != .pending
+        self == .ready || self == .updatePending
+    }
+
+    var canVerify: Bool {
+        self == .verificationRequired || self == .unavailable
     }
 }
 
@@ -142,11 +183,13 @@ struct DeviceConfigurationState: Codable, Equatable, Sendable {
     let approvedDevice: HouseholdDevice?
     let verifiedConfiguration: DeviceSetupConfiguration
     let pendingConfiguration: DeviceSetupConfiguration?
+    var identityStatus: DeviceIdentityStatus
 
     init(
         approvedDevice: HouseholdDevice? = nil,
         verifiedConfiguration: DeviceSetupConfiguration,
-        pendingConfiguration: DeviceSetupConfiguration?
+        pendingConfiguration: DeviceSetupConfiguration?,
+        identityStatus: DeviceIdentityStatus = .verified
     ) {
         self.deviceID = verifiedConfiguration.deviceID
         self.approvedDevice = approvedDevice.map {
@@ -159,6 +202,41 @@ struct DeviceConfigurationState: Codable, Equatable, Sendable {
         }
         self.verifiedConfiguration = verifiedConfiguration
         self.pendingConfiguration = pendingConfiguration
+        self.identityStatus = identityStatus
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case deviceID
+        case approvedDevice
+        case verifiedConfiguration
+        case pendingConfiguration
+        case identityStatus
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        let verifiedConfiguration = try container.decode(
+            DeviceSetupConfiguration.self,
+            forKey: .verifiedConfiguration
+        )
+        self.init(
+            approvedDevice: try container.decodeIfPresent(
+                HouseholdDevice.self,
+                forKey: .approvedDevice
+            ),
+            verifiedConfiguration: verifiedConfiguration,
+            pendingConfiguration: try container.decodeIfPresent(
+                DeviceSetupConfiguration.self,
+                forKey: .pendingConfiguration
+            ),
+            // Older files contain a locally verified configuration but no
+            // current authority receipt. Missing status therefore fails
+            // closed instead of restoring Ready from stale cache.
+            identityStatus: try container.decodeIfPresent(
+                DeviceIdentityStatus.self,
+                forKey: .identityStatus
+            ) ?? .verificationRequired
+        )
     }
 }
 
@@ -193,6 +271,28 @@ struct DeviceConfigurationReceipt: Equatable, Sendable {
             $0.wakePhrase == $1.wakePhrase
                 && $0.profileIdentifier == $1.profileIdentifier
         }
+    }
+}
+
+struct DeviceVerificationReceipt: Equatable, Sendable {
+    let deviceID: String
+    let status: DeviceIdentityStatus
+    let configuration: DeviceSetupConfiguration?
+
+    /// A verified identity is useful only when it confirms the exact
+    /// publishable configuration that iOS already holds. Unavailable and
+    /// revoked receipts intentionally never match an active configuration.
+    func matches(_ requested: DeviceSetupConfiguration) -> Bool {
+        guard status == .verified,
+              let configuration
+        else {
+            return false
+        }
+
+        return DeviceConfigurationReceipt(
+            deviceID: deviceID,
+            configuration: configuration
+        ).matches(requested)
     }
 }
 

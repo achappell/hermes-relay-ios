@@ -311,8 +311,10 @@ final class DeviceDiscoveryTests: XCTestCase {
                 unconfiguredDevices: []
             )
         )
+        let administrationClient = FakeDeviceAdministrationClient()
         let model = DeviceDiscoveryModel(
             client: client,
+            administrationClient: administrationClient,
             configurationStore: store
         )
 
@@ -320,6 +322,256 @@ final class DeviceDiscoveryTests: XCTestCase {
 
         XCTAssertEqual(model.setupStatus(for: approvedSetupDevice), .updatePending)
         XCTAssertTrue(model.isActive(approvedSetupDevice))
+    }
+
+    func testPersistedConfigurationRequiresFreshVerificationBeforeShowingReady() async throws {
+        let fileURL = temporaryConfigurationFileURL()
+        defer { try? FileManager.default.removeItem(at: fileURL.deletingLastPathComponent()) }
+        let store = JSONDeviceConfigurationStore(fileURL: fileURL)
+        let verified = kitchenConfiguration(for: approvedSetupDevice)
+        try await store.save(
+            DeviceConfigurationState(
+                approvedDevice: approvedSetupDevice,
+                verifiedConfiguration: verified,
+                pendingConfiguration: nil,
+                identityStatus: .verified
+            )
+        )
+        let client = FakeDeviceDiscoveryClient(
+            snapshot: DeviceDiscoverySnapshot(
+                approvedDevices: [approvedSetupDevice],
+                unconfiguredDevices: []
+            )
+        )
+        let administrationClient = FakeDeviceAdministrationClient(
+            verificationError: .transportUnavailable
+        )
+        let model = DeviceDiscoveryModel(
+            client: client,
+            administrationClient: administrationClient,
+            configurationStore: store
+        )
+
+        await model.discover()
+
+        XCTAssertEqual(model.setupStatus(for: approvedSetupDevice), .unavailable)
+        XCTAssertFalse(model.isActive(approvedSetupDevice))
+        XCTAssertEqual(
+            model.errorMessage,
+            "The Device identity could not be verified. It remains unavailable until verification succeeds."
+        )
+        let verificationCount = await administrationClient.verificationCount()
+        XCTAssertEqual(verificationCount, 1)
+    }
+
+    func testExactVerificationReceiptRestoresReadyState() async throws {
+        let fileURL = temporaryConfigurationFileURL()
+        defer { try? FileManager.default.removeItem(at: fileURL.deletingLastPathComponent()) }
+        let store = JSONDeviceConfigurationStore(fileURL: fileURL)
+        let verified = kitchenConfiguration(for: approvedSetupDevice)
+        try await store.save(
+            DeviceConfigurationState(
+                approvedDevice: approvedSetupDevice,
+                verifiedConfiguration: verified,
+                pendingConfiguration: nil,
+                identityStatus: .verificationRequired
+            )
+        )
+        let client = FakeDeviceDiscoveryClient(
+            snapshot: DeviceDiscoverySnapshot(
+                approvedDevices: [approvedSetupDevice],
+                unconfiguredDevices: []
+            )
+        )
+        let administrationClient = FakeDeviceAdministrationClient(
+            verificationConfiguration: verified
+        )
+        let model = DeviceDiscoveryModel(
+            client: client,
+            administrationClient: administrationClient,
+            configurationStore: store
+        )
+
+        await model.discover()
+
+        XCTAssertEqual(model.setupStatus(for: approvedSetupDevice), .ready)
+        XCTAssertTrue(model.isActive(approvedSetupDevice))
+        XCTAssertNil(model.errorMessage)
+        let persisted = try await store.load(for: approvedSetupDevice.id)
+        XCTAssertEqual(persisted?.identityStatus, .verified)
+    }
+
+    func testUnavailableVerificationDoesNotFallBackToAnotherProfile() async throws {
+        let fileURL = temporaryConfigurationFileURL()
+        defer { try? FileManager.default.removeItem(at: fileURL.deletingLastPathComponent()) }
+        let store = JSONDeviceConfigurationStore(fileURL: fileURL)
+        let unavailable = approvedSetupDevice
+        let available = HouseholdDevice(
+            id: "approved-study-puck",
+            displayName: "Study Puck",
+            kind: .puck,
+            trustState: .approved
+        )
+        try await store.save(
+            DeviceConfigurationState(
+                approvedDevice: unavailable,
+                verifiedConfiguration: kitchenConfiguration(for: unavailable),
+                pendingConfiguration: nil,
+                identityStatus: .verificationRequired
+            )
+        )
+        try await store.save(
+            DeviceConfigurationState(
+                approvedDevice: available,
+                verifiedConfiguration: kitchenConfiguration(for: available),
+                pendingConfiguration: nil,
+                identityStatus: .verificationRequired
+            )
+        )
+        let client = FakeDeviceDiscoveryClient(
+            snapshot: DeviceDiscoverySnapshot(
+                approvedDevices: [unavailable, available],
+                unconfiguredDevices: []
+            )
+        )
+        let administrationClient = FakeDeviceAdministrationClient(
+            verificationStatusByDeviceID: [unavailable.id: .unavailable]
+        )
+        let model = DeviceDiscoveryModel(
+            client: client,
+            administrationClient: administrationClient,
+            configurationStore: store
+        )
+
+        await model.discover()
+
+        XCTAssertEqual(model.setupStatus(for: unavailable), .unavailable)
+        XCTAssertFalse(model.isActive(unavailable))
+        XCTAssertEqual(model.setupStatus(for: available), .ready)
+        XCTAssertTrue(model.isActive(available))
+        let persistedUnavailableState = try await store.load(for: unavailable.id)
+        XCTAssertEqual(
+            persistedUnavailableState?.verifiedConfiguration.wakeMappings.first?.profileIdentifier,
+            "missy"
+        )
+    }
+
+    func testRevokedVerificationRemainsRevokedWhenDeviceIsReachable() async throws {
+        let fileURL = temporaryConfigurationFileURL()
+        defer { try? FileManager.default.removeItem(at: fileURL.deletingLastPathComponent()) }
+        let store = JSONDeviceConfigurationStore(fileURL: fileURL)
+        let verified = kitchenConfiguration(for: approvedSetupDevice)
+        try await store.save(
+            DeviceConfigurationState(
+                approvedDevice: approvedSetupDevice,
+                verifiedConfiguration: verified,
+                pendingConfiguration: nil,
+                identityStatus: .verificationRequired
+            )
+        )
+        let client = FakeDeviceDiscoveryClient(
+            snapshot: DeviceDiscoverySnapshot(
+                approvedDevices: [approvedSetupDevice],
+                unconfiguredDevices: []
+            )
+        )
+        let administrationClient = FakeDeviceAdministrationClient(
+            verificationStatus: .revoked
+        )
+        let model = DeviceDiscoveryModel(
+            client: client,
+            administrationClient: administrationClient,
+            configurationStore: store
+        )
+
+        await model.discover()
+        await model.verify(approvedSetupDevice)
+
+        XCTAssertEqual(model.setupStatus(for: approvedSetupDevice), .revoked)
+        XCTAssertFalse(model.isActive(approvedSetupDevice))
+        XCTAssertEqual(
+            model.statusMessage,
+            "Device access is revoked. Explicit re-enrollment is required."
+        )
+        let persistedRevokedState = try await store.load(for: approvedSetupDevice.id)
+        XCTAssertEqual(persistedRevokedState?.identityStatus, .revoked)
+    }
+
+    func testReachableRevokedDeviceDoesNotSilentlyReactivate() async throws {
+        let fileURL = temporaryConfigurationFileURL()
+        defer { try? FileManager.default.removeItem(at: fileURL.deletingLastPathComponent()) }
+        let store = JSONDeviceConfigurationStore(fileURL: fileURL)
+        try await store.save(
+            DeviceConfigurationState(
+                approvedDevice: approvedSetupDevice,
+                verifiedConfiguration: kitchenConfiguration(for: approvedSetupDevice),
+                pendingConfiguration: nil,
+                identityStatus: .revoked
+            )
+        )
+        let client = FakeDeviceDiscoveryClient(
+            snapshot: DeviceDiscoverySnapshot(
+                approvedDevices: [approvedSetupDevice],
+                unconfiguredDevices: []
+            )
+        )
+        let administrationClient = FakeDeviceAdministrationClient()
+        let model = DeviceDiscoveryModel(
+            client: client,
+            administrationClient: administrationClient,
+            configurationStore: store
+        )
+
+        await model.discover()
+
+        XCTAssertEqual(model.setupStatus(for: approvedSetupDevice), .revoked)
+        XCTAssertFalse(model.isActive(approvedSetupDevice))
+        let verificationCount = await administrationClient.verificationCount()
+        XCTAssertEqual(verificationCount, 0)
+    }
+
+    func testMismatchedVerificationReceiptFailsClosed() async throws {
+        let fileURL = temporaryConfigurationFileURL()
+        defer { try? FileManager.default.removeItem(at: fileURL.deletingLastPathComponent()) }
+        let store = JSONDeviceConfigurationStore(fileURL: fileURL)
+        let verified = kitchenConfiguration(for: approvedSetupDevice)
+        try await store.save(
+            DeviceConfigurationState(
+                approvedDevice: approvedSetupDevice,
+                verifiedConfiguration: verified,
+                pendingConfiguration: nil,
+                identityStatus: .verificationRequired
+            )
+        )
+        let client = FakeDeviceDiscoveryClient(
+            snapshot: DeviceDiscoverySnapshot(
+                approvedDevices: [approvedSetupDevice],
+                unconfiguredDevices: []
+            )
+        )
+        let administrationClient = FakeDeviceAdministrationClient(
+            verificationConfiguration: DeviceSetupConfiguration(
+                deviceID: approvedSetupDevice.id,
+                room: "Study",
+                wakeMappings: [
+                    DeviceWakeMapping(wakePhrase: "Hey Jensen", profileIdentifier: "jensen")
+                ]
+            )
+        )
+        let model = DeviceDiscoveryModel(
+            client: client,
+            administrationClient: administrationClient,
+            configurationStore: store
+        )
+
+        await model.discover()
+
+        XCTAssertEqual(model.setupStatus(for: approvedSetupDevice), .unavailable)
+        XCTAssertFalse(model.isActive(approvedSetupDevice))
+        XCTAssertEqual(
+            model.errorMessage,
+            "The Device identity could not be verified. It remains unavailable until verification succeeds."
+        )
     }
 
     func testDiscoveryRehydratesSavedConfigurationWhenAdapterReportsDeviceAsUnconfigured() async throws {
@@ -352,8 +604,10 @@ final class DeviceDiscoveryTests: XCTestCase {
                 unconfiguredDevices: [adapterCandidate]
             )
         )
+        let administrationClient = FakeDeviceAdministrationClient()
         let model = DeviceDiscoveryModel(
             client: client,
+            administrationClient: administrationClient,
             configurationStore: store
         )
 
@@ -963,6 +1217,42 @@ final class DeviceDiscoveryTests: XCTestCase {
         XCTAssertNil(persistedState?.pendingConfiguration)
     }
 
+    func testRevokedIdentityCannotPublishMappingEdit() async throws {
+        let fileURL = temporaryConfigurationFileURL()
+        defer { try? FileManager.default.removeItem(at: fileURL.deletingLastPathComponent()) }
+        let store = JSONDeviceConfigurationStore(fileURL: fileURL)
+        let verified = kitchenConfiguration(for: approvedSetupDevice)
+        try await store.save(
+            DeviceConfigurationState(
+                approvedDevice: approvedSetupDevice,
+                verifiedConfiguration: verified,
+                pendingConfiguration: nil,
+                identityStatus: .revoked
+            )
+        )
+        let administrationClient = FakeDeviceAdministrationClient()
+        let model = DeviceConfigurationModel(
+            device: approvedSetupDevice,
+            administrationClient: administrationClient,
+            configurationStore: store
+        )
+        await model.load()
+        model.wakeMappings = [
+            DeviceWakeMapping(wakePhrase: "Hey Jensen", profileIdentifier: "jensen")
+        ]
+
+        let published = await model.publish()
+
+        XCTAssertFalse(published)
+        XCTAssertFalse(model.isActive)
+        XCTAssertEqual(
+            model.errorMessage,
+            "Device access is revoked. Explicit re-enrollment is required."
+        )
+        let configurationCount = await administrationClient.configurationCount()
+        XCTAssertEqual(configurationCount, 0)
+    }
+
     func testSemanticallyMatchingMappingReceiptIgnoresLocalMappingIdentifier() async throws {
         let fileURL = temporaryConfigurationFileURL()
         defer { try? FileManager.default.removeItem(at: fileURL.deletingLastPathComponent()) }
@@ -1018,6 +1308,16 @@ final class DeviceDiscoveryTests: XCTestCase {
             displayName: "Kitchen Puck",
             kind: .puck,
             trustState: .approved
+        )
+    }
+
+    private func kitchenConfiguration(for device: HouseholdDevice) -> DeviceSetupConfiguration {
+        DeviceSetupConfiguration(
+            deviceID: device.id,
+            room: "Kitchen",
+            wakeMappings: [
+                DeviceWakeMapping(wakePhrase: "Hey Missy", profileIdentifier: "missy")
+            ]
         )
     }
 
@@ -1697,24 +1997,40 @@ private actor FakeDeviceDiscoveryClient: DeviceDiscoveryClient {
 private actor FakeDeviceAdministrationClient: DeviceAdministrationClient {
     let approvalError: DeviceAdministrationError?
     let configurationError: DeviceAdministrationError?
+    let verificationError: DeviceAdministrationError?
     let approvalReceiptDeviceID: String?
     let configurationReceiptDeviceID: String?
     let configurationReceipt: DeviceSetupConfiguration?
+    let verificationReceiptDeviceID: String?
+    let verificationStatus: DeviceIdentityStatus
+    let verificationStatusByDeviceID: [String: DeviceIdentityStatus]
+    let verificationConfiguration: DeviceSetupConfiguration?
     private var approvals = 0
     private var configurations: [DeviceSetupConfiguration] = []
+    private var verifications = 0
 
     init(
         approvalError: DeviceAdministrationError? = nil,
         configurationError: DeviceAdministrationError? = nil,
+        verificationError: DeviceAdministrationError? = nil,
         approvalReceiptDeviceID: String? = nil,
         configurationReceiptDeviceID: String? = nil,
-        configurationReceipt: DeviceSetupConfiguration? = nil
+        configurationReceipt: DeviceSetupConfiguration? = nil,
+        verificationReceiptDeviceID: String? = nil,
+        verificationStatus: DeviceIdentityStatus = .verified,
+        verificationStatusByDeviceID: [String: DeviceIdentityStatus] = [:],
+        verificationConfiguration: DeviceSetupConfiguration? = nil
     ) {
         self.approvalError = approvalError
         self.configurationError = configurationError
+        self.verificationError = verificationError
         self.approvalReceiptDeviceID = approvalReceiptDeviceID
         self.configurationReceiptDeviceID = configurationReceiptDeviceID
         self.configurationReceipt = configurationReceipt
+        self.verificationReceiptDeviceID = verificationReceiptDeviceID
+        self.verificationStatus = verificationStatus
+        self.verificationStatusByDeviceID = verificationStatusByDeviceID
+        self.verificationConfiguration = verificationConfiguration
     }
 
     func approve(_ device: HouseholdDevice) async throws -> DeviceApprovalReceipt {
@@ -1738,6 +2054,22 @@ private actor FakeDeviceAdministrationClient: DeviceAdministrationClient {
         )
     }
 
+    func verify(
+        _ device: HouseholdDevice,
+        against configuration: DeviceSetupConfiguration
+    ) async throws -> DeviceVerificationReceipt {
+        verifications += 1
+        if let verificationError {
+            throw verificationError
+        }
+        let status = verificationStatusByDeviceID[device.id] ?? verificationStatus
+        return DeviceVerificationReceipt(
+            deviceID: verificationReceiptDeviceID ?? device.id,
+            status: status,
+            configuration: verificationConfiguration ?? configuration
+        )
+    }
+
     func approvalCount() -> Int {
         approvals
     }
@@ -1748,6 +2080,10 @@ private actor FakeDeviceAdministrationClient: DeviceAdministrationClient {
 
     func lastConfiguration() -> DeviceSetupConfiguration? {
         configurations.last
+    }
+
+    func verificationCount() -> Int {
+        verifications
     }
 }
 
