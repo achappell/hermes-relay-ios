@@ -54,7 +54,7 @@ The current voice slice provides:
 
 ## Requirements
 
-- macOS with Xcode 26.6 or newer
+- macOS with Xcode 27 or newer
 - Swift 6.3 or newer
 - iOS 26 or newer for the iOS target
 - macOS 26 or newer for the macOS target
@@ -66,10 +66,10 @@ tests.
 ## Open the app
 
 ```bash
-open HermesRelayIOS.xcodeproj
+open "Hermes Relay.xcodeproj"
 ```
 
-Select the `HermesRelayIOS` scheme and either an iPhone simulator or `My Mac`.
+Select the `HermesRelay` scheme and either an iPhone simulator or `My Mac`.
 Tap the gear button to open Configure Relay. Enter the `ws://` or `wss://`
 endpoint, client ID, device ID, display name, and bearer token, then choose
 Save configuration. The token is stored in Keychain; the other fields are
@@ -89,7 +89,7 @@ audio contents. For a booted iOS Simulator, view them with:
 xcrun simctl spawn booted log stream \
   --info \
   --debug \
-  --predicate 'subsystem == "com.achappell.HermesRelayIOS" && category == "audio-playback"'
+  --predicate 'subsystem == "com.achappell.HermesRelay" && category == "audio-playback"'
 ```
 
 The useful sequence is `audio chunk received` → `audio chunk scheduled` →
@@ -103,8 +103,8 @@ Build for a generic simulator without signing:
 
 ```bash
 xcodebuild \
-  -project HermesRelayIOS.xcodeproj \
-  -scheme HermesRelayIOS \
+  -project "Hermes Relay.xcodeproj" \
+  -scheme HermesRelay \
   -sdk iphonesimulator \
   -destination 'generic/platform=iOS Simulator' \
   CODE_SIGNING_ALLOWED=NO \
@@ -115,8 +115,8 @@ Run the unit tests on an installed simulator runtime:
 
 ```bash
 xcodebuild \
-  -project HermesRelayIOS.xcodeproj \
-  -scheme HermesRelayIOS \
+  -project "Hermes Relay.xcodeproj" \
+  -scheme HermesRelay \
   -destination 'platform=iOS Simulator,name=iPhone 16' \
   CODE_SIGNING_ALLOWED=NO \
   test
@@ -129,8 +129,8 @@ Build the macOS target explicitly:
 
 ```bash
 xcodebuild \
-  -project HermesRelayIOS.xcodeproj \
-  -scheme HermesRelayIOS \
+  -project "Hermes Relay.xcodeproj" \
+  -scheme HermesRelay \
   -destination 'platform=macOS,arch=arm64' \
   CODE_SIGNING_ALLOWED=NO \
   build
@@ -141,18 +141,23 @@ intentionally supports `iphoneos`, `iphonesimulator`, and `macosx`.
 
 ## GitHub Actions and releases
 
-Hosted GitHub Actions CI is currently disabled to avoid paying for a macOS
-runner on every pull request. Run the local validation commands above before
-opening a PR; the repository workflow remains available for an intentional
-manual dispatch when hosted validation is worth the spend.
+GitHub Actions CI runs on pull requests targeting `main`, pushes to `main`, or
+an intentional manual dispatch. It builds and tests both Apple targets on a
+macOS runner.
 
 Releases use Release Please and conventional commits. A push to `main` opens or
 updates the release PR; merging that PR creates a `vX.Y.Z` tag and GitHub release,
 then invokes the packaging workflow directly. The same workflow also accepts tag
 pushes and manual dispatch for reruns. It reruns the macOS tests, builds the macOS
 and iOS Simulator apps, and uploads unsigned archives with SHA-256 checksums.
-These are internal development artifacts: physical iPhone distribution requires
-a future Apple signing/TestFlight workflow.
+These are internal development artifacts; physical iPhone distribution is
+handled by the separate manual TestFlight workflow below.
+
+The manual [`TestFlight` workflow](.github/workflows/testflight.yml) archives a
+signed iOS Release build and uploads it to App Store Connect. Configure its
+App Store Connect API key, distribution certificate, and protected GitHub
+environment as described in [`docs/testflight.md`](docs/testflight.md); no
+Hermes endpoint or bearer token is required by the pipeline.
 
 The release version is kept in `version.txt` and mirrored in the Xcode project.
 Do not put signing certificates, provisioning profiles, bearer tokens, or
