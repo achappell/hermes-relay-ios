@@ -12,10 +12,7 @@
       "draft": false,
       "prerelease": false,
       "extra-files": [
-        {
-          "type": "generic",
-          "path": "Hermes Relay.xcodeproj/project.pbxproj"
-        }
+        "Hermes Relay.xcodeproj/project.pbxproj"
       ],
       "changelog-sections": [
         {"type": "feat", "section": "Features"},
