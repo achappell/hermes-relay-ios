@@ -72,6 +72,7 @@ jobs:
       - name: Validate release metadata
         env:
           BUILD_NUMBER: ${{ inputs.build_number }}
+          RELEASE_REF: ${{ inputs.release_ref }}
         run: |
           set -euo pipefail
           [[ "$BUILD_NUMBER" =~ ^[1-9][0-9]*$ ]] || {
@@ -86,6 +87,21 @@ jobs:
             echo "MARKETING_VERSION could not be read from the Xcode project."
             exit 1
           }
+
+          if [[ -n "$RELEASE_REF" ]]; then
+            release_version="${RELEASE_REF##*/}"
+            release_version="${release_version#v}"
+            [[ "$release_version" =~ ^[0-9]+\.[0-9]+\.[0-9]+([-.+][0-9A-Za-z.-]+)?$ ]] || {
+              echo "release_ref must identify a semantic-versioned release tag."
+              exit 1
+            }
+            test "$release_version" = "$(tr -d '[:space:]' < version.txt)" || {
+              echo "release_ref does not match version.txt."
+              exit 1
+            }
+            project_version="$release_version"
+          fi
+
           test -n "$team_id" || {
             echo "DEVELOPMENT_TEAM could not be read from the Xcode project."
             exit 1
@@ -138,6 +154,7 @@ jobs:
             CODE_SIGN_IDENTITY="Apple Distribution" \
             DEVELOPMENT_TEAM="$TEAM_ID" \
             PROVISIONING_PROFILE_SPECIFIER="$PROFILE_NAME" \
+            MARKETING_VERSION="$MARKETING_VERSION" \
             CURRENT_PROJECT_VERSION="$BUILD_NUMBER"
 
       - name: Export App Store package

@@ -44,7 +44,11 @@ jobs:
           set -euo pipefail
           version="${RELEASE_TAG#v}"
           test "$version" = "$(tr -d '[:space:]' < version.txt)"
-          grep -q "MARKETING_VERSION = ${version};" "Hermes Relay.xcodeproj/project.pbxproj"
+          project_versions="$(sed -n 's/.*MARKETING_VERSION = \([^;]*\);.*/\1/p' "Hermes Relay.xcodeproj/project.pbxproj" | sort -u)"
+          if [[ "$project_versions" != "$version" ]]; then
+            echo "::warning::Xcode project marketing version is $project_versions; release builds will use $version from version.txt."
+          fi
+          echo "Using release marketing version $version."
 
       - name: Run macOS XCTest suite
         run: |
@@ -59,6 +63,7 @@ jobs:
 
       - name: Build macOS app
         run: |
+          version="${RELEASE_TAG#v}"
           xcodebuild \
             -project "Hermes Relay.xcodeproj" \
             -scheme HermesRelay \
@@ -66,11 +71,13 @@ jobs:
             -destination 'generic/platform=macOS' \
             CODE_SIGNING_ALLOWED=NO \
             CODE_SIGN_IDENTITY="" \
+            MARKETING_VERSION="$version" \
             -derivedDataPath "$RUNNER_TEMP/hermes-relay-release-macos" \
             build
 
       - name: Build iOS Simulator app
         run: |
+          version="${RELEASE_TAG#v}"
           xcodebuild \
             -project "Hermes Relay.xcodeproj" \
             -scheme HermesRelay \
@@ -79,6 +86,7 @@ jobs:
             -destination 'generic/platform=iOS Simulator' \
             CODE_SIGNING_ALLOWED=NO \
             CODE_SIGN_IDENTITY="" \
+            MARKETING_VERSION="$version" \
             -derivedDataPath "$RUNNER_TEMP/hermes-relay-release-ios-simulator" \
             build
 
