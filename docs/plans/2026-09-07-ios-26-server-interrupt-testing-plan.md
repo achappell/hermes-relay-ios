@@ -53,5 +53,10 @@ With a locally configured test relay and a non-sensitive test prompt:
 6. Review diagnostics for content safety: only state, IDs/counts, formats,
    and bounded error wording may be present.
 
-Hardware validation remains pending until this walkthrough is performed on a
-real iOS device. Keep the project item in Verify / In Progress until then.
+## Closure evidence
+
+Amanda confirmed that the real-device walkthrough was completed on 2026-09-11.
+The focused iOS simulator verification was rerun during closeout: 127 selected
+tests passed with zero failures, including the supported-interrupt and legacy
+fallback paths. No prompt, response, token, raw frame, PCM, or microphone
+content was recorded in the repository.

@@ -1,0 +1,666 @@
+// !$*UTF8*$!
+{
+	archiveVersion = 1;
+	classes = {
+	};
+	objectVersion = 71;
+	objects = {
+
+/* Begin PBXBuildFile section */
+		A10000000000000000000011 /* HermesRelayApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000000000000000000021 /* HermesRelayApp.swift */; };
+		A10000000000000000000012 /* SessionModels.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000000000000000000022 /* SessionModels.swift */; };
+		A10000000000000000000013 /* HermesSessionClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000000000000000000023 /* HermesSessionClient.swift */; };
+		A10000000000000000000014 /* ConversationStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000000000000000000024 /* ConversationStore.swift */; };
+		A10000000000000000000015 /* ContentView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000000000000000000025 /* ContentView.swift */; };
+		A10000000000000000000016 /* MessageBubble.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000000000000000000026 /* MessageBubble.swift */; };
+		A10000000000000000000017 /* HermesRelayTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000000000000000000031 /* HermesRelayTests.swift */; };
+		A10000000000000000000018 /* RelayConfigurationTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000000000000000000032 /* RelayConfigurationTests.swift */; };
+		A10000000000000000000019 /* RelayProfile.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000000000000000000033 /* RelayProfile.swift */; };
+		A1000000000000000000001A /* SecureValueStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000000000000000000034 /* SecureValueStore.swift */; };
+		A1000000000000000000001B /* RelayConfigurationStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000000000000000000035 /* RelayConfigurationStore.swift */; };
+		A1000000000000000000001C /* HermesEventNormalizerTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000000000000000000037 /* HermesEventNormalizerTests.swift */; };
+		A1000000000000000000001D /* HermesEventNormalizer.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000000000000000000038 /* HermesEventNormalizer.swift */; };
+		A1000000000000000000001E /* URLSessionHermesSessionClientTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000000000000000000039 /* URLSessionHermesSessionClientTests.swift */; };
+		A1000000000000000000001F /* WebSocketConnection.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1000000000000000000003A /* WebSocketConnection.swift */; };
+		A1000000000000000000002A /* URLSessionHermesSessionClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1000000000000000000003B /* URLSessionHermesSessionClient.swift */; };
+		A1000000000000000000002B /* ConversationStoreTransportTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1000000000000000000003C /* ConversationStoreTransportTests.swift */; };
+		A1000000000000000000002C /* SpeechInputTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1000000000000000000003D /* SpeechInputTests.swift */; };
+		A1000000000000000000002D /* SpeechInput.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1000000000000000000003E /* SpeechInput.swift */; };
+		A1000000000000000000002E /* AppleSpeechInput.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1000000000000000000003F /* AppleSpeechInput.swift */; };
+		A10000000000000000000087 /* AudioOutputTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1000000000000000000008B /* AudioOutputTests.swift */; };
+		A10000000000000000000088 /* AudioOutput.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1000000000000000000008C /* AudioOutput.swift */; };
+		A10000000000000000000089 /* AppleAudioOutput.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1000000000000000000008D /* AppleAudioOutput.swift */; };
+		A1000000000000000000008A /* WAVFallbackWriter.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1000000000000000000008E /* WAVFallbackWriter.swift */; };
+		A1000000000000000000008F /* VoiceSessionCoordinatorTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000000000000000000093 /* VoiceSessionCoordinatorTests.swift */; };
+		A10000000000000000000090 /* VoiceSessionCoordinator.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000000000000000000094 /* VoiceSessionCoordinator.swift */; };
+		A10000000000000000000091 /* VoiceStatusView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000000000000000000095 /* VoiceStatusView.swift */; };
+		A10000000000000000000092 /* VoiceControl.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000000000000000000096 /* VoiceControl.swift */; };
+		A10000000000000000000097 /* ConversationPersistenceTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1000000000000000000009A /* ConversationPersistenceTests.swift */; };
+		A10000000000000000000098 /* RecoveryTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1000000000000000000009B /* RecoveryTests.swift */; };
+		A10000000000000000000099 /* ConversationPersistence.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1000000000000000000009C /* ConversationPersistence.swift */; };
+		A100000000000000000000A0 /* AudioActivity.swift in Sources */ = {isa = PBXBuildFile; fileRef = A100000000000000000000A1 /* AudioActivity.swift */; };
+		A100000000000000000000A2 /* AmbientHUD.swift in Sources */ = {isa = PBXBuildFile; fileRef = A100000000000000000000A3 /* AmbientHUD.swift */; };
+		A100000000000000000000A4 /* RecentTranscriptRail.swift in Sources */ = {isa = PBXBuildFile; fileRef = A100000000000000000000A5 /* RecentTranscriptRail.swift */; };
+		A100000000000000000000A6 /* ReconnectPolicy.swift in Sources */ = {isa = PBXBuildFile; fileRef = A100000000000000000000A7 /* ReconnectPolicy.swift */; };
+		A100000000000000000000A8 /* ReconnectPolicyTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A100000000000000000000A9 /* ReconnectPolicyTests.swift */; };
+		A100000000000000000000AA /* ConversationStoreReconnectTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A100000000000000000000AB /* ConversationStoreReconnectTests.swift */; };
+		A100000000000000000000B0 /* RelayProfileCollection.swift in Sources */ = {isa = PBXBuildFile; fileRef = A100000000000000000000B1 /* RelayProfileCollection.swift */; };
+		A100000000000000000000B2 /* RelayConfigurationView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A100000000000000000000B3 /* RelayConfigurationView.swift */; };
+		A100000000000000000000B4 /* TranscriptExport.swift in Sources */ = {isa = PBXBuildFile; fileRef = A100000000000000000000B5 /* TranscriptExport.swift */; };
+		A100000000000000000000B6 /* PromptHistory.swift in Sources */ = {isa = PBXBuildFile; fileRef = A100000000000000000000B7 /* PromptHistory.swift */; };
+		A100000000000000000000C0 /* DeviceDiscoveryTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A100000000000000000000C1 /* DeviceDiscoveryTests.swift */; };
+		A100000000000000000000C2 /* DeviceModels.swift in Sources */ = {isa = PBXBuildFile; fileRef = A100000000000000000000C3 /* DeviceModels.swift */; };
+		A100000000000000000000C4 /* DeviceDiscoveryClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = A100000000000000000000C5 /* DeviceDiscoveryClient.swift */; };
+		A100000000000000000000C6 /* DeviceDiscoveryModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = A100000000000000000000C7 /* DeviceDiscoveryModel.swift */; };
+		A100000000000000000000C8 /* DeviceDiscoveryView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A100000000000000000000C9 /* DeviceDiscoveryView.swift */; };
+		A100000000000000000000D1 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = A100000000000000000000D0 /* Assets.xcassets */; };
+		A100000000000000000000D2 /* VisualDesignTokens.swift in Sources */ = {isa = PBXBuildFile; fileRef = A100000000000000000000D3 /* VisualDesignTokens.swift */; };
+/* End PBXBuildFile section */
+
+/* Begin PBXContainerItemProxy section */
+		A10000000000000000000041 /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = A10000000000000000000001 /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = A10000000000000000000002;
+			remoteInfo = HermesRelayIOS;
+		};
+/* End PBXContainerItemProxy section */
+
+/* Begin PBXFileReference section */
+		A10000000000000000000020 /* Hermes Relay.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = "Hermes Relay.app"; sourceTree = BUILT_PRODUCTS_DIR; };
+		A10000000000000000000021 /* HermesRelayApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HermesRelayApp.swift; sourceTree = "<group>"; };
+		A10000000000000000000022 /* SessionModels.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SessionModels.swift; sourceTree = "<group>"; };
+		A10000000000000000000023 /* HermesSessionClient.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HermesSessionClient.swift; sourceTree = "<group>"; };
+		A10000000000000000000024 /* ConversationStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ConversationStore.swift; sourceTree = "<group>"; };
+		A10000000000000000000025 /* ContentView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ContentView.swift; sourceTree = "<group>"; };
+		A10000000000000000000026 /* MessageBubble.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MessageBubble.swift; sourceTree = "<group>"; };
+		A10000000000000000000030 /* Hermes RelayTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = "Hermes RelayTests.xctest"; sourceTree = BUILT_PRODUCTS_DIR; };
+		A10000000000000000000031 /* HermesRelayTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HermesRelayTests.swift; sourceTree = "<group>"; };
+		A10000000000000000000032 /* RelayConfigurationTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RelayConfigurationTests.swift; sourceTree = "<group>"; };
+		A10000000000000000000033 /* RelayProfile.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RelayProfile.swift; sourceTree = "<group>"; };
+		A10000000000000000000034 /* SecureValueStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SecureValueStore.swift; sourceTree = "<group>"; };
+		A10000000000000000000035 /* RelayConfigurationStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RelayConfigurationStore.swift; sourceTree = "<group>"; };
+		A10000000000000000000036 /* HermesRelay.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = HermesRelay.entitlements; sourceTree = "<group>"; };
+		A10000000000000000000037 /* HermesEventNormalizerTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HermesEventNormalizerTests.swift; sourceTree = "<group>"; };
+		A10000000000000000000038 /* HermesEventNormalizer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HermesEventNormalizer.swift; sourceTree = "<group>"; };
+		A10000000000000000000039 /* URLSessionHermesSessionClientTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = URLSessionHermesSessionClientTests.swift; sourceTree = "<group>"; };
+		A1000000000000000000003A /* WebSocketConnection.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WebSocketConnection.swift; sourceTree = "<group>"; };
+		A1000000000000000000003B /* URLSessionHermesSessionClient.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = URLSessionHermesSessionClient.swift; sourceTree = "<group>"; };
+		A1000000000000000000003C /* ConversationStoreTransportTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ConversationStoreTransportTests.swift; sourceTree = "<group>"; };
+		A1000000000000000000003D /* SpeechInputTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SpeechInputTests.swift; sourceTree = "<group>"; };
+		A1000000000000000000003E /* SpeechInput.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SpeechInput.swift; sourceTree = "<group>"; };
+		A1000000000000000000003F /* AppleSpeechInput.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppleSpeechInput.swift; sourceTree = "<group>"; };
+		A1000000000000000000008B /* AudioOutputTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AudioOutputTests.swift; sourceTree = "<group>"; };
+		A1000000000000000000008C /* AudioOutput.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AudioOutput.swift; sourceTree = "<group>"; };
+		A1000000000000000000008D /* AppleAudioOutput.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppleAudioOutput.swift; sourceTree = "<group>"; };
+		A1000000000000000000008E /* WAVFallbackWriter.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WAVFallbackWriter.swift; sourceTree = "<group>"; };
+		A10000000000000000000093 /* VoiceSessionCoordinatorTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VoiceSessionCoordinatorTests.swift; sourceTree = "<group>"; };
+		A10000000000000000000094 /* VoiceSessionCoordinator.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VoiceSessionCoordinator.swift; sourceTree = "<group>"; };
+		A10000000000000000000095 /* VoiceStatusView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VoiceStatusView.swift; sourceTree = "<group>"; };
+		A10000000000000000000096 /* VoiceControl.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VoiceControl.swift; sourceTree = "<group>"; };
+		A1000000000000000000009A /* ConversationPersistenceTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ConversationPersistenceTests.swift; sourceTree = "<group>"; };
+		A1000000000000000000009B /* RecoveryTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RecoveryTests.swift; sourceTree = "<group>"; };
+		A1000000000000000000009C /* ConversationPersistence.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ConversationPersistence.swift; sourceTree = "<group>"; };
+		A1000000000000000000009D /* Development-Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = "Development-Info.plist"; sourceTree = "<group>"; };
+		A100000000000000000000A1 /* AudioActivity.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AudioActivity.swift; sourceTree = "<group>"; };
+		A100000000000000000000A3 /* AmbientHUD.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AmbientHUD.swift; sourceTree = "<group>"; };
+		A100000000000000000000A5 /* RecentTranscriptRail.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RecentTranscriptRail.swift; sourceTree = "<group>"; };
+		A100000000000000000000A7 /* ReconnectPolicy.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ReconnectPolicy.swift; sourceTree = "<group>"; };
+		A100000000000000000000A9 /* ReconnectPolicyTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ReconnectPolicyTests.swift; sourceTree = "<group>"; };
+		A100000000000000000000AB /* ConversationStoreReconnectTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ConversationStoreReconnectTests.swift; sourceTree = "<group>"; };
+		A100000000000000000000B1 /* RelayProfileCollection.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RelayProfileCollection.swift; sourceTree = "<group>"; };
+		A100000000000000000000B3 /* RelayConfigurationView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RelayConfigurationView.swift; sourceTree = "<group>"; };
+		A100000000000000000000B5 /* TranscriptExport.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TranscriptExport.swift; sourceTree = "<group>"; };
+		A100000000000000000000B7 /* PromptHistory.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PromptHistory.swift; sourceTree = "<group>"; };
+		A100000000000000000000C1 /* DeviceDiscoveryTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DeviceDiscoveryTests.swift; sourceTree = "<group>"; };
+		A100000000000000000000C3 /* DeviceModels.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DeviceModels.swift; sourceTree = "<group>"; };
+		A100000000000000000000C5 /* DeviceDiscoveryClient.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DeviceDiscoveryClient.swift; sourceTree = "<group>"; };
+		A100000000000000000000C7 /* DeviceDiscoveryModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DeviceDiscoveryModel.swift; sourceTree = "<group>"; };
+		A100000000000000000000C9 /* DeviceDiscoveryView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DeviceDiscoveryView.swift; sourceTree = "<group>"; };
+		A100000000000000000000D0 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
+		A100000000000000000000D3 /* VisualDesignTokens.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VisualDesignTokens.swift; sourceTree = "<group>"; };
+/* End PBXFileReference section */
+
+/* Begin PBXFrameworksBuildPhase section */
+		A10000000000000000000051 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		A10000000000000000000052 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXFrameworksBuildPhase section */
+
+/* Begin PBXGroup section */
+		A10000000000000000000060 = {
+			isa = PBXGroup;
+			children = (
+				A10000000000000000000061 /* HermesRelay */,
+				A10000000000000000000062 /* HermesRelayTests */,
+				A10000000000000000000063 /* Products */,
+			);
+			sourceTree = "<group>";
+		};
+		A10000000000000000000061 /* HermesRelay */ = {
+			isa = PBXGroup;
+			children = (
+				A10000000000000000000021 /* HermesRelayApp.swift */,
+				A1000000000000000000009D /* Development-Info.plist */,
+				A10000000000000000000036 /* HermesRelay.entitlements */,
+				A100000000000000000000D0 /* Assets.xcassets */,
+				A10000000000000000000064 /* Models */,
+				A10000000000000000000065 /* Services */,
+				A10000000000000000000066 /* ViewModels */,
+				A10000000000000000000067 /* Views */,
+			);
+			path = HermesRelay;
+			sourceTree = "<group>";
+		};
+		A10000000000000000000062 /* HermesRelayTests */ = {
+			isa = PBXGroup;
+			children = (
+				A10000000000000000000031 /* HermesRelayTests.swift */,
+				A10000000000000000000032 /* RelayConfigurationTests.swift */,
+				A10000000000000000000037 /* HermesEventNormalizerTests.swift */,
+				A10000000000000000000039 /* URLSessionHermesSessionClientTests.swift */,
+				A100000000000000000000A9 /* ReconnectPolicyTests.swift */,
+				A100000000000000000000AB /* ConversationStoreReconnectTests.swift */,
+				A1000000000000000000003C /* ConversationStoreTransportTests.swift */,
+				A1000000000000000000003D /* SpeechInputTests.swift */,
+				A1000000000000000000008B /* AudioOutputTests.swift */,
+				A10000000000000000000093 /* VoiceSessionCoordinatorTests.swift */,
+				A1000000000000000000009A /* ConversationPersistenceTests.swift */,
+				A1000000000000000000009B /* RecoveryTests.swift */,
+				A100000000000000000000C1 /* DeviceDiscoveryTests.swift */,
+			);
+			path = HermesRelayTests;
+			sourceTree = "<group>";
+		};
+		A10000000000000000000063 /* Products */ = {
+			isa = PBXGroup;
+			children = (
+				A10000000000000000000020 /* Hermes Relay.app */,
+				A10000000000000000000030 /* Hermes RelayTests.xctest */,
+			);
+			name = Products;
+			sourceTree = "<group>";
+		};
+		A10000000000000000000064 /* Models */ = {
+			isa = PBXGroup;
+			children = (
+				A10000000000000000000022 /* SessionModels.swift */,
+				A100000000000000000000B1 /* RelayProfileCollection.swift */,
+				A10000000000000000000033 /* RelayProfile.swift */,
+				A100000000000000000000C3 /* DeviceModels.swift */,
+			);
+			path = Models;
+			sourceTree = "<group>";
+		};
+		A10000000000000000000065 /* Services */ = {
+			isa = PBXGroup;
+			children = (
+				A10000000000000000000023 /* HermesSessionClient.swift */,
+				A10000000000000000000038 /* HermesEventNormalizer.swift */,
+				A100000000000000000000A7 /* ReconnectPolicy.swift */,
+				A1000000000000000000003A /* WebSocketConnection.swift */,
+				A1000000000000000000003B /* URLSessionHermesSessionClient.swift */,
+				A1000000000000000000003E /* SpeechInput.swift */,
+				A1000000000000000000003F /* AppleSpeechInput.swift */,
+				A1000000000000000000008C /* AudioOutput.swift */,
+				A100000000000000000000A1 /* AudioActivity.swift */,
+				A1000000000000000000008D /* AppleAudioOutput.swift */,
+				A1000000000000000000008E /* WAVFallbackWriter.swift */,
+				A10000000000000000000034 /* SecureValueStore.swift */,
+				A10000000000000000000035 /* RelayConfigurationStore.swift */,
+				A1000000000000000000009C /* ConversationPersistence.swift */,
+				A100000000000000000000B5 /* TranscriptExport.swift */,
+				A100000000000000000000C5 /* DeviceDiscoveryClient.swift */,
+			);
+			path = Services;
+			sourceTree = "<group>";
+		};
+		A10000000000000000000066 /* ViewModels */ = {
+			isa = PBXGroup;
+			children = (
+				A10000000000000000000024 /* ConversationStore.swift */,
+				A10000000000000000000094 /* VoiceSessionCoordinator.swift */,
+				A100000000000000000000B7 /* PromptHistory.swift */,
+				A100000000000000000000C7 /* DeviceDiscoveryModel.swift */,
+			);
+			path = ViewModels;
+			sourceTree = "<group>";
+		};
+		A10000000000000000000067 /* Views */ = {
+			isa = PBXGroup;
+			children = (
+				A100000000000000000000C9 /* DeviceDiscoveryView.swift */,
+				A100000000000000000000B3 /* RelayConfigurationView.swift */,
+				A10000000000000000000025 /* ContentView.swift */,
+				A10000000000000000000026 /* MessageBubble.swift */,
+				A10000000000000000000095 /* VoiceStatusView.swift */,
+				A10000000000000000000096 /* VoiceControl.swift */,
+				A100000000000000000000A3 /* AmbientHUD.swift */,
+				A100000000000000000000A5 /* RecentTranscriptRail.swift */,
+				A100000000000000000000D3 /* VisualDesignTokens.swift */,
+			);
+			path = Views;
+			sourceTree = "<group>";
+		};
+/* End PBXGroup section */
+
+/* Begin PBXNativeTarget section */
+		A10000000000000000000002 /* Hermes Relay */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = A10000000000000000000072 /* Build configuration list for PBXNativeTarget "Hermes Relay" */;
+			buildPhases = (
+				A10000000000000000000050 /* Sources */,
+				A10000000000000000000051 /* Frameworks */,
+				A10000000000000000000053 /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			name = "Hermes Relay";
+			productName = HermesRelayIOS;
+			productReference = A10000000000000000000020 /* Hermes Relay.app */;
+			productType = "com.apple.product-type.application";
+		};
+		A10000000000000000000003 /* Hermes RelayTests */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = A10000000000000000000073 /* Build configuration list for PBXNativeTarget "Hermes RelayTests" */;
+			buildPhases = (
+				A10000000000000000000054 /* Sources */,
+				A10000000000000000000052 /* Frameworks */,
+				A10000000000000000000055 /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+				A10000000000000000000042 /* PBXTargetDependency */,
+			);
+			name = "Hermes RelayTests";
+			productName = HermesRelayIOSTests;
+			productReference = A10000000000000000000030 /* Hermes RelayTests.xctest */;
+			productType = "com.apple.product-type.bundle.unit-test";
+		};
+/* End PBXNativeTarget section */
+
+/* Begin PBXProject section */
+		A10000000000000000000001 /* Project object */ = {
+			isa = PBXProject;
+			attributes = {
+				BuildIndependentTargetsInParallel = 1;
+				LastUpgradeCheck = 2700;
+				TargetAttributes = {
+					A10000000000000000000002 = {
+						CreatedOnToolsVersion = 26.6;
+					};
+					A10000000000000000000003 = {
+						CreatedOnToolsVersion = 26.6;
+						TestTargetID = A10000000000000000000002;
+					};
+				};
+			};
+			buildConfigurationList = A10000000000000000000071 /* Build configuration list for PBXProject "Hermes Relay" */;
+			compatibilityVersion = "Xcode 16.0";
+			developmentRegion = en;
+			hasScannedForEncodings = 0;
+			knownRegions = (
+				en,
+				Base,
+			);
+			mainGroup = A10000000000000000000060;
+			productRefGroup = A10000000000000000000063 /* Products */;
+			projectDirPath = "";
+			projectRoot = "";
+			targets = (
+				A10000000000000000000002 /* Hermes Relay */,
+				A10000000000000000000003 /* Hermes RelayTests */,
+			);
+		};
+/* End PBXProject section */
+
+/* Begin PBXResourcesBuildPhase section */
+		A10000000000000000000053 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				A100000000000000000000D1 /* Assets.xcassets in Resources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		A10000000000000000000055 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXResourcesBuildPhase section */
+
+/* Begin PBXSourcesBuildPhase section */
+		A10000000000000000000050 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				A10000000000000000000011 /* HermesRelayApp.swift in Sources */,
+				A10000000000000000000012 /* SessionModels.swift in Sources */,
+				A10000000000000000000013 /* HermesSessionClient.swift in Sources */,
+				A10000000000000000000014 /* ConversationStore.swift in Sources */,
+				A100000000000000000000B2 /* RelayConfigurationView.swift in Sources */,
+				A10000000000000000000015 /* ContentView.swift in Sources */,
+				A10000000000000000000016 /* MessageBubble.swift in Sources */,
+				A100000000000000000000B0 /* RelayProfileCollection.swift in Sources */,
+				A10000000000000000000019 /* RelayProfile.swift in Sources */,
+				A1000000000000000000001A /* SecureValueStore.swift in Sources */,
+				A1000000000000000000001B /* RelayConfigurationStore.swift in Sources */,
+				A1000000000000000000001D /* HermesEventNormalizer.swift in Sources */,
+				A100000000000000000000A6 /* ReconnectPolicy.swift in Sources */,
+				A1000000000000000000001F /* WebSocketConnection.swift in Sources */,
+				A1000000000000000000002A /* URLSessionHermesSessionClient.swift in Sources */,
+				A1000000000000000000002D /* SpeechInput.swift in Sources */,
+				A1000000000000000000002E /* AppleSpeechInput.swift in Sources */,
+				A10000000000000000000088 /* AudioOutput.swift in Sources */,
+				A100000000000000000000A0 /* AudioActivity.swift in Sources */,
+				A10000000000000000000089 /* AppleAudioOutput.swift in Sources */,
+				A1000000000000000000008A /* WAVFallbackWriter.swift in Sources */,
+				A10000000000000000000090 /* VoiceSessionCoordinator.swift in Sources */,
+				A10000000000000000000091 /* VoiceStatusView.swift in Sources */,
+				A10000000000000000000092 /* VoiceControl.swift in Sources */,
+				A100000000000000000000A2 /* AmbientHUD.swift in Sources */,
+				A100000000000000000000A4 /* RecentTranscriptRail.swift in Sources */,
+				A10000000000000000000099 /* ConversationPersistence.swift in Sources */,
+				A100000000000000000000B4 /* TranscriptExport.swift in Sources */,
+				A100000000000000000000B6 /* PromptHistory.swift in Sources */,
+				A100000000000000000000C2 /* DeviceModels.swift in Sources */,
+				A100000000000000000000C4 /* DeviceDiscoveryClient.swift in Sources */,
+				A100000000000000000000C6 /* DeviceDiscoveryModel.swift in Sources */,
+				A100000000000000000000C8 /* DeviceDiscoveryView.swift in Sources */,
+				A100000000000000000000D2 /* VisualDesignTokens.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		A10000000000000000000054 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				A10000000000000000000017 /* HermesRelayTests.swift in Sources */,
+				A10000000000000000000018 /* RelayConfigurationTests.swift in Sources */,
+				A1000000000000000000001C /* HermesEventNormalizerTests.swift in Sources */,
+				A1000000000000000000001E /* URLSessionHermesSessionClientTests.swift in Sources */,
+				A100000000000000000000A8 /* ReconnectPolicyTests.swift in Sources */,
+				A100000000000000000000AA /* ConversationStoreReconnectTests.swift in Sources */,
+				A1000000000000000000002B /* ConversationStoreTransportTests.swift in Sources */,
+				A1000000000000000000002C /* SpeechInputTests.swift in Sources */,
+				A10000000000000000000087 /* AudioOutputTests.swift in Sources */,
+				A1000000000000000000008F /* VoiceSessionCoordinatorTests.swift in Sources */,
+				A10000000000000000000097 /* ConversationPersistenceTests.swift in Sources */,
+				A10000000000000000000098 /* RecoveryTests.swift in Sources */,
+				A100000000000000000000C0 /* DeviceDiscoveryTests.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXSourcesBuildPhase section */
+
+/* Begin PBXTargetDependency section */
+		A10000000000000000000042 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = A10000000000000000000002 /* Hermes Relay */;
+			targetProxy = A10000000000000000000041 /* PBXContainerItemProxy */;
+		};
+/* End PBXTargetDependency section */
+
+/* Begin XCBuildConfiguration section */
+		A10000000000000000000081 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				CLANG_WARN_BLOCK_CAPTURE_AUTORELEASING = YES;
+				CLANG_WARN_BOOL_CONVERSION = YES;
+				CLANG_WARN_COMMA = YES;
+				CLANG_WARN_CONSTANT_CONVERSION = YES;
+				CLANG_WARN_DEPRECATED_OBJC_IMPLEMENTATIONS = YES;
+				CLANG_WARN_EMPTY_BODY = YES;
+				CLANG_WARN_ENUM_CONVERSION = YES;
+				CLANG_WARN_INFINITE_RECURSION = YES;
+				CLANG_WARN_INT_CONVERSION = YES;
+				CLANG_WARN_NON_LITERAL_NULL_CONVERSION = YES;
+				CLANG_WARN_OBJC_IMPLICIT_RETAIN_SELF = YES;
+				CLANG_WARN_OBJC_LITERAL_CONVERSION = YES;
+				CLANG_WARN_QUOTED_INCLUDE_IN_FRAMEWORK_HEADER = YES;
+				CLANG_WARN_RANGE_LOOP_ANALYSIS = YES;
+				CLANG_WARN_STRICT_PROTOTYPES = YES;
+				CLANG_WARN_SUSPICIOUS_MOVE = YES;
+				CLANG_WARN_UNREACHABLE_CODE = YES;
+				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
+				DEAD_CODE_STRIPPING = YES;
+				ENABLE_STRICT_OBJC_MSGSEND = YES;
+				ENABLE_TESTABILITY = YES;
+				ENABLE_USER_SCRIPT_SANDBOXING = YES;
+				GCC_NO_COMMON_BLOCKS = YES;
+				GCC_WARN_64_TO_32_BIT_CONVERSION = YES;
+				GCC_WARN_ABOUT_RETURN_TYPE = YES;
+				GCC_WARN_UNDECLARED_SELECTOR = YES;
+				GCC_WARN_UNINITIALIZED_AUTOS = YES;
+				GCC_WARN_UNUSED_FUNCTION = YES;
+				GCC_WARN_UNUSED_VARIABLE = YES;
+				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
+				ONLY_ACTIVE_ARCH = YES;
+				STRING_CATALOG_GENERATE_SYMBOLS = YES;
+				SWIFT_ACTIVE_COMPILATION_CONDITIONS = "DEBUG $(inherited)";
+				SWIFT_OPTIMIZATION_LEVEL = "-Onone";
+				SWIFT_VERSION = 6.0;
+			};
+			name = Debug;
+		};
+		A10000000000000000000082 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				CLANG_WARN_BLOCK_CAPTURE_AUTORELEASING = YES;
+				CLANG_WARN_BOOL_CONVERSION = YES;
+				CLANG_WARN_COMMA = YES;
+				CLANG_WARN_CONSTANT_CONVERSION = YES;
+				CLANG_WARN_DEPRECATED_OBJC_IMPLEMENTATIONS = YES;
+				CLANG_WARN_EMPTY_BODY = YES;
+				CLANG_WARN_ENUM_CONVERSION = YES;
+				CLANG_WARN_INFINITE_RECURSION = YES;
+				CLANG_WARN_INT_CONVERSION = YES;
+				CLANG_WARN_NON_LITERAL_NULL_CONVERSION = YES;
+				CLANG_WARN_OBJC_IMPLICIT_RETAIN_SELF = YES;
+				CLANG_WARN_OBJC_LITERAL_CONVERSION = YES;
+				CLANG_WARN_QUOTED_INCLUDE_IN_FRAMEWORK_HEADER = YES;
+				CLANG_WARN_RANGE_LOOP_ANALYSIS = YES;
+				CLANG_WARN_STRICT_PROTOTYPES = YES;
+				CLANG_WARN_SUSPICIOUS_MOVE = YES;
+				CLANG_WARN_UNREACHABLE_CODE = YES;
+				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
+				DEAD_CODE_STRIPPING = YES;
+				ENABLE_STRICT_OBJC_MSGSEND = YES;
+				ENABLE_USER_SCRIPT_SANDBOXING = YES;
+				GCC_NO_COMMON_BLOCKS = YES;
+				GCC_WARN_64_TO_32_BIT_CONVERSION = YES;
+				GCC_WARN_ABOUT_RETURN_TYPE = YES;
+				GCC_WARN_UNDECLARED_SELECTOR = YES;
+				GCC_WARN_UNINITIALIZED_AUTOS = YES;
+				GCC_WARN_UNUSED_FUNCTION = YES;
+				GCC_WARN_UNUSED_VARIABLE = YES;
+				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
+				STRING_CATALOG_GENERATE_SYMBOLS = YES;
+				SWIFT_COMPILATION_MODE = wholemodule;
+				SWIFT_VERSION = 6.0;
+			};
+			name = Release;
+		};
+		A10000000000000000000083 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				"ASSETCATALOG_COMPILER_APPICON_NAME[sdk=iphoneos*]" = AppIcon;
+				"ASSETCATALOG_COMPILER_APPICON_NAME[sdk=iphonesimulator*]" = AppIcon;
+				"ASSETCATALOG_COMPILER_APPICON_NAME[sdk=macosx*]" = AppIconMac;
+				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
+				CODE_SIGN_ENTITLEMENTS = HermesRelay/HermesRelay.entitlements;
+				"CODE_SIGN_IDENTITY[sdk=macosx*]" = "Apple Development";
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = 37CAHGRH45;
+				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
+				ENABLE_APP_SANDBOX = YES;
+				ENABLE_HARDENED_RUNTIME = YES;
+				ENABLE_OUTGOING_NETWORK_CONNECTIONS = YES;
+				ENABLE_TESTABILITY = YES;
+				GENERATE_INFOPLIST_FILE = NO;
+				INFOPLIST_FILE = "HermesRelay/Development-Info.plist";
+				INFOPLIST_KEY_CFBundleDisplayName = "Hermes Streaming Relay";
+				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.productivity";
+				INFOPLIST_KEY_NSLocalNetworkUsageDescription = "Hermes uses your private network to discover household Devices and connect to configured relays.";
+				INFOPLIST_KEY_NSMicrophoneUsageDescription = "Hermes uses the microphone for push-to-talk voice turns.";
+				INFOPLIST_KEY_NSSpeechRecognitionUsageDescription = "Hermes uses speech recognition to turn a voice turn into text.";
+				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
+				INFOPLIST_KEY_UISupportedInterfaceOrientations = "UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight UIInterfaceOrientationPortrait UIInterfaceOrientationPortraitUpsideDown";
+				IPHONEOS_DEPLOYMENT_TARGET = 26.0;
+				MACOSX_DEPLOYMENT_TARGET = 26.0;
+				MARKETING_VERSION = 0.2.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.achappell.HermesRelay;
+				PRODUCT_MODULE_NAME = HermesRelayIOS;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				REGISTER_APP_GROUPS = YES;
+				SDKROOT = iphoneos;
+				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator macosx";
+				SUPPORTS_MACCATALYST = NO;
+				SUPPORTS_MAC_DESIGNED_FOR_IPHONE_IPAD = NO;
+				SUPPORTS_XR_DESIGNED_FOR_IPHONE_IPAD = NO;
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_OPTIMIZATION_LEVEL = "-Onone";
+				SWIFT_VERSION = 6.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			name = Debug;
+		};
+		A10000000000000000000084 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				"ASSETCATALOG_COMPILER_APPICON_NAME[sdk=iphoneos*]" = AppIcon;
+				"ASSETCATALOG_COMPILER_APPICON_NAME[sdk=iphonesimulator*]" = AppIcon;
+				"ASSETCATALOG_COMPILER_APPICON_NAME[sdk=macosx*]" = AppIconMac;
+				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
+				CODE_SIGN_ENTITLEMENTS = HermesRelay/HermesRelay.entitlements;
+				"CODE_SIGN_IDENTITY[sdk=macosx*]" = "Apple Development";
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = 37CAHGRH45;
+				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
+				ENABLE_APP_SANDBOX = YES;
+				ENABLE_HARDENED_RUNTIME = YES;
+				ENABLE_OUTGOING_NETWORK_CONNECTIONS = YES;
+				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_KEY_CFBundleDisplayName = "Hermes Streaming Relay";
+				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.productivity";
+				INFOPLIST_KEY_NSLocalNetworkUsageDescription = "Hermes uses your private network to discover household Devices and connect to configured relays.";
+				INFOPLIST_KEY_NSMicrophoneUsageDescription = "Hermes uses the microphone for push-to-talk voice turns.";
+				INFOPLIST_KEY_NSSpeechRecognitionUsageDescription = "Hermes uses speech recognition to turn a voice turn into text.";
+				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
+				INFOPLIST_KEY_UISupportedInterfaceOrientations = "UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight UIInterfaceOrientationPortrait UIInterfaceOrientationPortraitUpsideDown";
+				IPHONEOS_DEPLOYMENT_TARGET = 26.0;
+				MACOSX_DEPLOYMENT_TARGET = 26.0;
+				MARKETING_VERSION = 0.2.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.achappell.HermesRelay;
+				PRODUCT_MODULE_NAME = HermesRelayIOS;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				REGISTER_APP_GROUPS = YES;
+				SDKROOT = iphoneos;
+				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator macosx";
+				SUPPORTS_MACCATALYST = NO;
+				SUPPORTS_MAC_DESIGNED_FOR_IPHONE_IPAD = NO;
+				SUPPORTS_XR_DESIGNED_FOR_IPHONE_IPAD = NO;
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_VERSION = 6.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			name = Release;
+		};
+		A10000000000000000000085 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				CODE_SIGN_STYLE = Automatic;
+				GENERATE_INFOPLIST_FILE = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 26.0;
+				MACOSX_DEPLOYMENT_TARGET = 26.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.achappell.HermesRelayIOSTests;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = iphoneos;
+				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator macosx";
+				SWIFT_VERSION = 6.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/Hermes Relay.app/$(BUNDLE_EXECUTABLE_FOLDER_PATH)/Hermes Relay";
+			};
+			name = Debug;
+		};
+		A10000000000000000000086 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				CODE_SIGN_STYLE = Automatic;
+				GENERATE_INFOPLIST_FILE = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 26.0;
+				MACOSX_DEPLOYMENT_TARGET = 26.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.achappell.HermesRelayIOSTests;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = iphoneos;
+				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator macosx";
+				SWIFT_VERSION = 6.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/Hermes Relay.app/$(BUNDLE_EXECUTABLE_FOLDER_PATH)/Hermes Relay";
+			};
+			name = Release;
+		};
+/* End XCBuildConfiguration section */
+
+/* Begin XCConfigurationList section */
+		A10000000000000000000071 /* Build configuration list for PBXProject "Hermes Relay" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				A10000000000000000000081 /* Debug */,
+				A10000000000000000000082 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		A10000000000000000000072 /* Build configuration list for PBXNativeTarget "Hermes Relay" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				A10000000000000000000083 /* Debug */,
+				A10000000000000000000084 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		A10000000000000000000073 /* Build configuration list for PBXNativeTarget "Hermes RelayTests" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				A10000000000000000000085 /* Debug */,
+				A10000000000000000000086 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+/* End XCConfigurationList section */
+	};
+	rootObject = A10000000000000000000001 /* Project object */;
+}

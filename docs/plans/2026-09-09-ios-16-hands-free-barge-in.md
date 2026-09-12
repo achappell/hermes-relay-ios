@@ -55,10 +55,19 @@ barge-in is permitted only on an echo-safe headphone route.
       connection disarms hands-free mode.
 - [x] The merged hands-free input adapter is covered with deterministic fake
       activity and recognition events.
-- [ ] Real-device smoke: arm, speak, receive an answer, speak over it using an
+- [x] Real-device smoke: arm, speak, receive an answer, speak over it using an
       echo-safe route, then repeat silence/noise, disarm, permission denial,
       route change, session end, and audio interruption.
 
 The device pass must record only state transitions, counts, device/OS, route,
 and pass/fail outcomes. Do not capture prompts, responses, tokens, raw frames,
 PCM, or microphone audio.
+
+## Closure evidence
+
+Amanda confirmed that the real-device smoke walkthrough was completed on
+2026-09-11. The focused iOS simulator verification was rerun during closeout:
+127 selected tests passed with zero failures, including hands-free capture,
+silence/noise handling, permission failures, safe-route barge-in, and unsafe-
+route blocking. No prompt, response, token, raw frame, PCM, or microphone
+content was recorded in the repository.
