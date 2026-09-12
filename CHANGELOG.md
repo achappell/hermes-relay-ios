@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.3.2 (2026-09-12)
+
+<!-- Release notes generated using configuration in .github/release.yml at main -->
+
+## What's Changed
+### Other Changes
+* fix(ci): prevent macOS speech test timeout by @achappell in https://github.com/achappell/hermes-relay-ios/pull/59
+
+
+**Full Changelog**: https://github.com/achappell/hermes-relay-ios/compare/v0.3.1...v0.3.2
+
 ## 0.3.1 (2026-09-12)
 
 <!-- Release notes generated using configuration in .github/release.yml at main -->
