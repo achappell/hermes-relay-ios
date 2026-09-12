@@ -296,7 +296,7 @@ final class DeviceDiscoveryTests: XCTestCase {
             deviceID: approvedSetupDevice.id,
             room: "Kitchen",
             wakeMappings: [
-                DeviceWakeMapping(wakePhrase: "Hey Jensen", profileIdentifier: "jensen")
+                DeviceWakeMapping(wakePhrase: "Hey Relay", profileIdentifier: "primary")
             ]
         )
         try await store.save(
@@ -757,7 +757,7 @@ final class DeviceDiscoveryTests: XCTestCase {
                 deviceID: approvedSetupDevice.id,
                 room: "Study",
                 wakeMappings: [
-                    DeviceWakeMapping(wakePhrase: "Hey Jensen", profileIdentifier: "jensen")
+                    DeviceWakeMapping(wakePhrase: "Hey Relay", profileIdentifier: "primary")
                 ]
             )
         )
@@ -1161,7 +1161,7 @@ final class DeviceDiscoveryTests: XCTestCase {
             deviceID: approvedSetupDevice.id,
             room: "Kitchen",
             wakeMappings: [
-                DeviceWakeMapping(wakePhrase: "Hey Jensen", profileIdentifier: "jensen")
+                DeviceWakeMapping(wakePhrase: "Hey Relay", profileIdentifier: "primary")
             ]
         )
         model.wakeMappings = pending.wakeMappings
@@ -1206,7 +1206,7 @@ final class DeviceDiscoveryTests: XCTestCase {
         )
         await model.load()
         model.wakeMappings = [
-            DeviceWakeMapping(wakePhrase: "Hey Jensen", profileIdentifier: "jensen")
+            DeviceWakeMapping(wakePhrase: "Hey Relay", profileIdentifier: "primary")
         ]
 
         let preserved = await model.preservePending()
@@ -1218,7 +1218,7 @@ final class DeviceDiscoveryTests: XCTestCase {
         let persistedState = try await store.load(for: approvedSetupDevice.id)
         XCTAssertEqual(
             persistedState?.pendingConfiguration?.wakeMappings.first?.profileIdentifier,
-            "jensen"
+            "primary"
         )
     }
 
@@ -1243,7 +1243,7 @@ final class DeviceDiscoveryTests: XCTestCase {
             deviceID: approvedSetupDevice.id,
             room: "Kitchen",
             wakeMappings: [
-                DeviceWakeMapping(wakePhrase: "Hey Jensen", profileIdentifier: "jensen")
+                DeviceWakeMapping(wakePhrase: "Hey Relay", profileIdentifier: "primary")
             ]
         )
         let administrationClient = FakeDeviceAdministrationClient(
@@ -1294,7 +1294,7 @@ final class DeviceDiscoveryTests: XCTestCase {
             deviceID: approvedSetupDevice.id,
             room: "Kitchen",
             wakeMappings: [
-                DeviceWakeMapping(wakePhrase: "Hey Jensen", profileIdentifier: "jensen")
+                DeviceWakeMapping(wakePhrase: "Hey Relay", profileIdentifier: "primary")
             ]
         )
         try await store.save(
@@ -1351,7 +1351,7 @@ final class DeviceDiscoveryTests: XCTestCase {
         await model.load()
         model.wakeMappings = [
             DeviceWakeMapping(wakePhrase: "Hey Missy", profileIdentifier: "missy"),
-            DeviceWakeMapping(wakePhrase: " hey missy ", profileIdentifier: "jensen")
+            DeviceWakeMapping(wakePhrase: " hey missy ", profileIdentifier: "primary")
         ]
 
         let published = await model.publish()
@@ -1392,8 +1392,8 @@ final class DeviceDiscoveryTests: XCTestCase {
         )
         await model.load()
         let replacement = DeviceWakeMapping(
-            wakePhrase: "Hey Jensen",
-            profileIdentifier: "jensen"
+            wakePhrase: "Hey Relay",
+            profileIdentifier: "primary"
         )
         model.wakeMappings = [replacement]
 
@@ -1411,11 +1411,11 @@ final class DeviceDiscoveryTests: XCTestCase {
         XCTAssertNil(model.pendingConfiguration)
         XCTAssertEqual(model.publicationStatus, .verified)
         let lastConfiguration = await administrationClient.lastConfiguration()
-        XCTAssertEqual(lastConfiguration?.wakeMappings.first?.profileIdentifier, "jensen")
+        XCTAssertEqual(lastConfiguration?.wakeMappings.first?.profileIdentifier, "primary")
         let persistedState = try await store.load(for: approvedSetupDevice.id)
         XCTAssertEqual(
             persistedState?.verifiedConfiguration.wakeMappings.first?.profileIdentifier,
-            "jensen"
+            "primary"
         )
         XCTAssertNil(persistedState?.pendingConfiguration)
     }
@@ -1441,7 +1441,7 @@ final class DeviceDiscoveryTests: XCTestCase {
         )
         await model.load()
         model.wakeMappings = [
-            DeviceWakeMapping(wakePhrase: "Hey Jensen", profileIdentifier: "jensen")
+            DeviceWakeMapping(wakePhrase: "Hey Relay", profileIdentifier: "primary")
         ]
 
         let published = await model.publish()
@@ -1497,8 +1497,8 @@ final class DeviceDiscoveryTests: XCTestCase {
                     room: "Study",
                     wakeMappings: [
                         DeviceWakeMapping(
-                            wakePhrase: "Hey Jensen",
-                            profileIdentifier: "jensen"
+                            wakePhrase: "Hey Relay",
+                            profileIdentifier: "primary"
                         )
                     ]
                 )
@@ -1542,7 +1542,7 @@ final class DeviceDiscoveryTests: XCTestCase {
         )
         await model.load()
         model.wakeMappings = [
-            DeviceWakeMapping(wakePhrase: "Hey Jensen", profileIdentifier: "jensen")
+            DeviceWakeMapping(wakePhrase: "Hey Relay", profileIdentifier: "primary")
         ]
 
         let disconnected = await model.revoke()
@@ -1637,8 +1637,8 @@ final class DeviceDiscoveryTests: XCTestCase {
             )
         )
         let replacement = DeviceWakeMapping(
-            wakePhrase: "Hey Jensen",
-            profileIdentifier: "jensen"
+            wakePhrase: "Hey Relay",
+            profileIdentifier: "primary"
         )
         let administrationClient = FakeDeviceAdministrationClient(
             configurationReceipt: DeviceSetupConfiguration(

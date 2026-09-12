@@ -65,7 +65,7 @@ PCM, or microphone audio.
 
 ## Closure evidence
 
-Amanda confirmed that the real-device smoke walkthrough was completed on
+The maintainer confirmed that the real-device smoke walkthrough was completed on
 2026-09-11. The focused iOS simulator verification was rerun during closeout:
 127 selected tests passed with zero failures, including hands-free capture,
 silence/noise handling, permission failures, safe-route barge-in, and unsafe-

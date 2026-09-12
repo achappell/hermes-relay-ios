@@ -2,8 +2,9 @@
 
 ## Board flow
 
-Use GitHub Project #3 as the source of truth. IOS-01 is the current foundation
-slice. Keep one vertical slice in `Building` and move it promptly through:
+Use the repository's local planning artifacts as the source of truth for IOS-01,
+the current foundation slice. Keep one vertical slice in `Building` and move it
+promptly through:
 
 `Inbox` → `Ready` → `Building` → `Verify` → `Done`
 
@@ -26,13 +27,13 @@ failure before adding session browsing or media polish.
 
 ## Code workflow
 
-1. Read the active board item and this repository's `AGENTS.md`.
+1. Read the active local story artifact and this repository's `AGENTS.md`.
 2. Add or update a focused XCTest before changing behavior.
 3. Run the focused test to establish the failure or boundary.
 4. Implement the smallest test-backed change.
 5. Build and test the iOS simulator target.
 6. Build the macOS target.
-7. Run the manual smoke plan and record evidence on the board item.
+7. Run the manual smoke plan and record evidence in the local validation record.
 8. Commit one coherent slice with a conventional commit message.
 
 For the voice path, the manual plan is

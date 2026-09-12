@@ -220,5 +220,6 @@ Read [`AGENTS.md`](AGENTS.md), [`docs/architecture.md`](docs/architecture.md),
 and [`docs/workflow.md`](docs/workflow.md) before extending the foundation.
 The active plan is [`docs/plans/2026-08-30-ios-01-foundation-plan.md`](docs/plans/2026-08-30-ios-01-foundation-plan.md).
 
-Project work is tracked on [GitHub Project #3](https://github.com/users/achappell/projects/3/views/2),
-with IOS-01 as the current slice.
+Project work is tracked in the repository's local BMad artifacts, with IOS-01
+as the current slice. Private board links and product-hub paths are kept out
+of this public repository.

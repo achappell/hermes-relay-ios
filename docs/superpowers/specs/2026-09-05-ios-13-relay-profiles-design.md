@@ -4,7 +4,7 @@ Design, 2026-09-05.
 
 ## Outcome
 
-Amanda can save several Hermes relay connections and switch between them
+The user can save several Hermes relay connections and switch between them
 without re-entering credentials. One profile is active at a time; Connect and
 auto-connect target that profile and no other.
 

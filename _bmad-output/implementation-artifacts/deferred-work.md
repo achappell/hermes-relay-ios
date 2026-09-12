@@ -32,8 +32,9 @@
 ## Future iOS UX, design, and brand tickets captured on 2026-09-11
 
 These are local follow-up records from the simulator UX run. They are not new
-upstream story identities or GitHub Project items while Project #3 remains
-paused; promote one into the appropriate local story artifact when selected.
+upstream story identities or external board items while board reconciliation
+remains paused; promote one into the appropriate local story artifact when
+selected.
 
 - ticket: `IOS-UX-F1`
   status: `verified`
@@ -90,8 +91,8 @@ paused; promote one into the appropriate local story artifact when selected.
 
 These are local follow-up records requested during the macOS packaging pass. They
 are intentionally scoped to the direct macOS distribution channel; iOS update
-delivery remains App Store-managed. They are not GitHub Project items while
-Project #3 remains paused.
+delivery remains App Store-managed. They are not external board items while
+board reconciliation remains paused.
 
 - ticket: `MACOS-DIST-F1`
   status: `future`
@@ -109,7 +110,7 @@ Project #3 remains paused.
 
 ## Resolved on 2026-09-09
 
-- Epic 1 iOS physical-device validation pass for Stories 1.1 and 1.2 completed. Evidence is recorded in `docs/plans/2026-09-09-epic-1-ios-device-validation-plan.md` and the IOS-36, IOS-29, and IOS-37 Project #3 cards. Deterministic tests remain authoritative for speaker/WAV fallback and late-event timing branches that were not observed live.
+- Epic 1 iOS physical-device validation pass for Stories 1.1 and 1.2 completed. Evidence is recorded in `docs/plans/2026-09-09-epic-1-ios-device-validation-plan.md` and the corresponding external story records. Deterministic tests remain authoritative for speaker/WAV fallback and late-event timing branches that were not observed live.
 - DEVICE-01 interactive iOS Devices smoke completed with the Debug fixture on the iPhone 17 Pro / iOS 26.5 simulator. The approved/unconfigured split, successful identity confirmation without promotion, connection failure with retry, and manual identification without approval were observed; the transient connecting state remains covered by deterministic tests. The production discovery adapter remains unavailable by design until the shared Device transport contract exists.
 
 ## Deferred from: code review of hermes-relay-ios-review-spec.XXXXXX.XV2EBX33l3 (2026-09-09)

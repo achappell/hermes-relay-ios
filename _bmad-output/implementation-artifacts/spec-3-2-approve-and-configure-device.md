@@ -84,17 +84,17 @@ not cross the seam.
 
 ## Acceptance Criteria
 
-- Given a connected unconfigured Device, when Amanda taps Approve, then the
+- Given a connected unconfigured Device, when the user taps Approve, then the
   administration seam receives the exact Device identity and the UI enters
   Room setup only after approval succeeds.
 - Given an approved Device with incomplete setup, when the wizard is closed or
   the app is still on Room or Wake Mappings, then the Device is visibly
   setup-pending/inactive and is not ready.
-- Given a blank Room or zero mappings, when Amanda continues, then the wizard
+- Given a blank Room or zero mappings, when the user continues, then the wizard
   stays on the current step and makes the missing requirement actionable.
 - Given one or more mappings, when any wake phrase is blank or duplicated, then
   final configuration is blocked before the administration seam is called.
-- Given a valid Room and unique mappings, when Amanda confirms Ready, then the
+- Given a valid Room and unique mappings, when the user confirms Ready, then the
   administration seam receives the complete configuration and a matching
   receipt promotes the Device to ready; a failure leaves it inactive.
 - Given the macOS target is built, when the slice is present, then the existing
