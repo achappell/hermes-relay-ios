@@ -14,7 +14,7 @@
       "extra-files": [
         {
           "type": "generic",
-          "path": "HermesRelayIOS.xcodeproj/project.pbxproj"
+          "path": "Hermes Relay.xcodeproj/project.pbxproj"
         }
       ],
       "changelog-sections": [

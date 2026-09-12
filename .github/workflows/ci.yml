@@ -15,8 +15,8 @@ concurrency:
   cancel-in-progress: true
 
 env:
-  PROJECT: HermesRelayIOS.xcodeproj
-  SCHEME: HermesRelayIOS
+  PROJECT: Hermes Relay.xcodeproj
+  SCHEME: HermesRelay
 
 jobs:
   validate:

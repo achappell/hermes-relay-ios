@@ -1,0 +1,182 @@
+name: TestFlight
+
+on:
+  workflow_dispatch:
+    inputs:
+      build_number:
+        description: "CFBundleVersion; must be higher than the latest TestFlight build"
+        required: true
+        type: string
+      release_notes:
+        description: "Optional notes for the TestFlight build"
+        required: false
+        type: string
+      wait_for_processing:
+        description: "Wait for App Store Connect processing to finish"
+        required: true
+        default: true
+        type: boolean
+
+permissions:
+  contents: read
+
+concurrency:
+  group: testflight-${{ github.repository }}
+  cancel-in-progress: false
+
+env:
+  PROJECT: Hermes Relay.xcodeproj
+  SCHEME: HermesRelay
+  BUNDLE_ID: com.achappell.HermesRelay
+
+jobs:
+  upload:
+    name: Archive and upload iOS build
+    runs-on: macos-26
+    timeout-minutes: 45
+    environment: testflight
+
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Show Xcode toolchain
+        run: |
+          set -euo pipefail
+          xcode-select -p
+          xcodebuild -version
+
+      - name: Validate release metadata
+        env:
+          BUILD_NUMBER: ${{ inputs.build_number }}
+        run: |
+          set -euo pipefail
+          [[ "$BUILD_NUMBER" =~ ^[1-9][0-9]*$ ]] || {
+            echo "build_number must be a positive integer."
+            exit 1
+          }
+
+          settings="$(xcodebuild -project "$PROJECT" -scheme "$SCHEME" -configuration Release -showBuildSettings)"
+          project_version="$(sed -n 's/^    MARKETING_VERSION = //p' <<<"$settings" | head -1)"
+          team_id="$(sed -n 's/^    DEVELOPMENT_TEAM = //p' <<<"$settings" | head -1)"
+          test -n "$project_version" || {
+            echo "MARKETING_VERSION could not be read from the Xcode project."
+            exit 1
+          }
+          test -n "$team_id" || {
+            echo "DEVELOPMENT_TEAM could not be read from the Xcode project."
+            exit 1
+          }
+          echo "MARKETING_VERSION=$project_version" >> "$GITHUB_ENV"
+          echo "TEAM_ID=$team_id" >> "$GITHUB_ENV"
+          echo "Validated version $project_version with build $BUILD_NUMBER."
+
+      - name: Import Apple distribution certificate
+        uses: apple-actions/import-codesign-certs@b2e261033a9e248f91a9b57201e8d1e12b15a24e # v7.0.0
+        with:
+          p12-file-base64: ${{ secrets.APPSTORE_CERTIFICATES_FILE_BASE64 }}
+          p12-password: ${{ secrets.APPSTORE_CERTIFICATES_PASSWORD }}
+
+      - name: Download App Store provisioning profile
+        id: profiles
+        uses: apple-actions/download-provisioning-profiles@473562c853e9f580367eeff7c180258653e416e0 # v6.1.0
+        with:
+          bundle-id: ${{ env.BUNDLE_ID }}
+          profile-type: IOS_APP_STORE
+          issuer-id: ${{ vars.APPSTORE_ISSUER_ID }}
+          api-key-id: ${{ vars.APPSTORE_API_KEY_ID }}
+          api-private-key: ${{ secrets.APPSTORE_API_PRIVATE_KEY }}
+
+      - name: Select downloaded provisioning profile
+        env:
+          PROFILES_JSON: ${{ steps.profiles.outputs.profiles }}
+        run: |
+          set -euo pipefail
+          profile_name="$(jq -r '.[0].name // empty' <<<"$PROFILES_JSON")"
+          test -n "$profile_name" || {
+            echo "No App Store provisioning profile was downloaded for $BUNDLE_ID."
+            exit 1
+          }
+          echo "PROFILE_NAME=$profile_name" >> "$GITHUB_ENV"
+
+      - name: Archive signed iOS app
+        env:
+          BUILD_NUMBER: ${{ inputs.build_number }}
+        run: |
+          set -euo pipefail
+          xcodebuild archive \
+            -project "$PROJECT" \
+            -scheme "$SCHEME" \
+            -configuration Release \
+            -destination 'generic/platform=iOS' \
+            -archivePath "$RUNNER_TEMP/HermesRelay.xcarchive" \
+            -derivedDataPath "$RUNNER_TEMP/hermes-relay-ios-archive" \
+            CODE_SIGN_STYLE=Manual \
+            CODE_SIGN_IDENTITY="Apple Distribution" \
+            DEVELOPMENT_TEAM="$TEAM_ID" \
+            PROVISIONING_PROFILE_SPECIFIER="$PROFILE_NAME" \
+            CURRENT_PROJECT_VERSION="$BUILD_NUMBER"
+
+      - name: Export App Store package
+        run: |
+          set -euo pipefail
+          export_options="$RUNNER_TEMP/ExportOptions.plist"
+          cat > "$export_options" <<PLIST
+          <?xml version="1.0" encoding="UTF-8"?>
+          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+          <plist version="1.0">
+          <dict>
+            <key>method</key>
+            <string>app-store</string>
+            <key>provisioningProfiles</key>
+            <dict>
+              <key>${BUNDLE_ID}</key>
+              <string>${PROFILE_NAME}</string>
+            </dict>
+            <key>signingStyle</key>
+            <string>manual</string>
+            <key>stripSwiftSymbols</key>
+            <true/>
+            <key>teamID</key>
+            <string>${TEAM_ID}</string>
+            <key>uploadSymbols</key>
+            <true/>
+          </dict>
+          </plist>
+          PLIST
+
+          xcodebuild -exportArchive \
+            -archivePath "$RUNNER_TEMP/HermesRelay.xcarchive" \
+            -exportPath "$RUNNER_TEMP/export" \
+            -exportOptionsPlist "$export_options"
+          ipa_path="$(find "$RUNNER_TEMP/export" -maxdepth 1 -name '*.ipa' -print -quit)"
+          test -n "$ipa_path" || {
+            echo "The archive export did not produce an IPA."
+            exit 1
+          }
+          echo "IPA_PATH=$ipa_path" >> "$GITHUB_ENV"
+
+      - name: Upload build to TestFlight
+        uses: apple-actions/upload-testflight-build@6fd267a887d75a215682c05c861278a67801855c # v5.3.0
+        with:
+          app-path: ${{ env.IPA_PATH }}
+          app-type: ios
+          issuer-id: ${{ vars.APPSTORE_ISSUER_ID }}
+          api-key-id: ${{ vars.APPSTORE_API_KEY_ID }}
+          api-private-key: ${{ secrets.APPSTORE_API_PRIVATE_KEY }}
+          release-notes: ${{ inputs.release_notes }}
+          uses-non-exempt-encryption: false
+          wait-for-processing: ${{ inputs.wait_for_processing }}
+          backend: appstore-api
+
+      - name: Upload IPA and dSYM artifacts
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: testflight-build-${{ github.run_id }}
+          path: |
+            ${{ runner.temp }}/export/*.ipa
+            ${{ runner.temp }}/HermesRelay.xcarchive/dSYMs/*.dSYM
+          if-no-files-found: ignore
+          retention-days: 7

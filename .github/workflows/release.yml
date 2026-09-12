@@ -44,13 +44,13 @@ jobs:
           set -euo pipefail
           version="${RELEASE_TAG#v}"
           test "$version" = "$(tr -d '[:space:]' < version.txt)"
-          grep -q "MARKETING_VERSION = ${version}; // x-release-please-version" HermesRelayIOS.xcodeproj/project.pbxproj
+          grep -q "MARKETING_VERSION = ${version};" "Hermes Relay.xcodeproj/project.pbxproj"
 
       - name: Run macOS XCTest suite
         run: |
           xcodebuild \
-            -project HermesRelayIOS.xcodeproj \
-            -scheme HermesRelayIOS \
+            -project "Hermes Relay.xcodeproj" \
+            -scheme HermesRelay \
             -destination 'platform=macOS' \
             CODE_SIGNING_ALLOWED=NO \
             CODE_SIGN_IDENTITY="" \
@@ -60,8 +60,8 @@ jobs:
       - name: Build macOS app
         run: |
           xcodebuild \
-            -project HermesRelayIOS.xcodeproj \
-            -scheme HermesRelayIOS \
+            -project "Hermes Relay.xcodeproj" \
+            -scheme HermesRelay \
             -configuration Release \
             -destination 'generic/platform=macOS' \
             CODE_SIGNING_ALLOWED=NO \
@@ -72,8 +72,8 @@ jobs:
       - name: Build iOS Simulator app
         run: |
           xcodebuild \
-            -project HermesRelayIOS.xcodeproj \
-            -scheme HermesRelayIOS \
+            -project "Hermes Relay.xcodeproj" \
+            -scheme HermesRelay \
             -configuration Release \
             -sdk iphonesimulator \
             -destination 'generic/platform=iOS Simulator' \
@@ -88,11 +88,11 @@ jobs:
           version="${RELEASE_TAG#v}"
           mkdir -p dist
           ditto -c -k --sequesterRsrc --keepParent \
-            "$RUNNER_TEMP/hermes-relay-release-macos/Build/Products/Release/HermesRelayIOS.app" \
-            "dist/HermesRelayIOS-${version}-macOS-unsigned.zip"
+            "$RUNNER_TEMP/hermes-relay-release-macos/Build/Products/Release/Hermes Relay.app" \
+            "dist/Hermes-Relay-${version}-macOS-unsigned.zip"
           ditto -c -k --sequesterRsrc --keepParent \
-            "$RUNNER_TEMP/hermes-relay-release-ios-simulator/Build/Products/Release-iphonesimulator/HermesRelayIOS.app" \
-            "dist/HermesRelayIOS-${version}-iOS-Simulator.zip"
+            "$RUNNER_TEMP/hermes-relay-release-ios-simulator/Build/Products/Release-iphonesimulator/Hermes Relay.app" \
+            "dist/Hermes-Relay-${version}-iOS-Simulator.zip"
           shasum -a 256 dist/*.zip > dist/SHA256SUMS.txt
 
       - name: Ensure the GitHub release exists
