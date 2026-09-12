@@ -1,5 +1,50 @@
 # Changelog
 
+## 0.3.0 (2026-09-12)
+
+<!-- Release notes generated using configuration in .github/release.yml at main -->
+
+## What's Changed
+### Other Changes
+* feat: bounded reconnect after unexpected transport loss (IOS-25) by @achappell in https://github.com/achappell/hermes-relay-ios/pull/21
+* fix: resend the unconfirmed turn through the voice coordinator (IOS-25) by @achappell in https://github.com/achappell/hermes-relay-ios/pull/22
+* fix: pace only the active assistant message (IOS-30) by @achappell in https://github.com/achappell/hermes-relay-ios/pull/23
+* fix: end the response on turn completion, not segment end (IOS-31) by @achappell in https://github.com/achappell/hermes-relay-ios/pull/24
+* feat: instrument segment boundaries and speech timing (IOS-32) by @achappell in https://github.com/achappell/hermes-relay-ios/pull/25
+* fix: drain playback before ending the response (IOS-33) by @achappell in https://github.com/achappell/hermes-relay-ios/pull/27
+* chore: log audio diagnostics in every debug build (IOS-32) by @achappell in https://github.com/achappell/hermes-relay-ios/pull/26
+* fix: pace the caption from the playback clock before timings arrive (IOS-32) by @achappell in https://github.com/achappell/hermes-relay-ios/pull/28
+* fix: open the conversation history at the newest message (IOS-29) by @achappell in https://github.com/achappell/hermes-relay-ios/pull/29
+* fix: give each relay profile its own conversation (IOS-35) by @achappell in https://github.com/achappell/hermes-relay-ios/pull/31
+* feat: saved relay profiles and connection switching (IOS-13) by @achappell in https://github.com/achappell/hermes-relay-ios/pull/30
+* fix: terminate relay turns on native socket closure by @achappell in https://github.com/achappell/hermes-relay-ios/pull/32
+* feat: adopt server-confirmed interruption by @achappell in https://github.com/achappell/hermes-relay-ios/pull/33
+* feat(ios): add native transcript export and prompt history by @achappell in https://github.com/achappell/hermes-relay-ios/pull/34
+* chore: add Hermes Home BMAD upstream context by @achappell in https://github.com/achappell/hermes-relay-ios/pull/35
+* feat(ios): gate turns on verified Hermes Profile sessions by @achappell in https://github.com/achappell/hermes-relay-ios/pull/36
+* feat(ios): render honest turn phases and response delivery by @achappell in https://github.com/achappell/hermes-relay-ios/pull/37
+* fix(ios): harden voice capture recovery by @achappell in https://github.com/achappell/hermes-relay-ios/pull/38
+* feat: add opt-in iOS hands-free voice turns by @achappell in https://github.com/achappell/hermes-relay-ios/pull/39
+* docs: align local BMad task guidance by @achappell in https://github.com/achappell/hermes-relay-ios/pull/40
+* Feat/ios device 01 discovery by @achappell in https://github.com/achappell/hermes-relay-ios/pull/41
+* test(ios): add device discovery smoke fixture by @achappell in https://github.com/achappell/hermes-relay-ios/pull/42
+* feat(ios): preserve incomplete device setup drafts by @achappell in https://github.com/achappell/hermes-relay-ios/pull/43
+* docs: define iOS planning authorities by @achappell in https://github.com/achappell/hermes-relay-ios/pull/44
+* docs(ios): add retroactive spec for Story 1.4 recovery (I-3) by @achappell in https://github.com/achappell/hermes-relay-ios/pull/45
+* feat(ios): preserve verified wake mappings during publish by @achappell in https://github.com/achappell/hermes-relay-ios/pull/46
+* fix(ios): rehydrate approved devices from saved state by @achappell in https://github.com/achappell/hermes-relay-ios/pull/47
+* test(ios): verify capture acknowledgement and live transcription (2-I-1) by @achappell in https://github.com/achappell/hermes-relay-ios/pull/48
+* docs(ios): close 3-I-3 review gate by @achappell in https://github.com/achappell/hermes-relay-ios/pull/49
+* feat(ios): harden disconnected state recovery by @achappell in https://github.com/achappell/hermes-relay-ios/pull/50
+* feat(ios): fail closed for unavailable and revoked Device identities by @achappell in https://github.com/achappell/hermes-relay-ios/pull/51
+* feat(ios): revoke Device access safely by @achappell in https://github.com/achappell/hermes-relay-ios/pull/52
+* feat(ios): complete visual design and distribution foundations by @achappell in https://github.com/achappell/hermes-relay-ios/pull/54
+* chore: redact private planning and fixture data by @achappell in https://github.com/achappell/hermes-relay-ios/pull/55
+* fix(ci): use CodeQL default setup only by @achappell in https://github.com/achappell/hermes-relay-ios/pull/56
+
+
+**Full Changelog**: https://github.com/achappell/hermes-relay-ios/compare/v0.2.0...v0.3.0
+
 ## 0.2.0 (2026-09-03)
 
 <!-- Release notes generated using configuration in .github/release.yml at main -->
