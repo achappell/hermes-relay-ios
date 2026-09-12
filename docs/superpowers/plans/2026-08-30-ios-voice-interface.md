@@ -705,7 +705,7 @@ Use this ladder:
         ↓
     iOS device voice smoke test
         ↓
-    Project #3 evidence
+    Local validation evidence
 
 - [ ] Step 2: Document the iOS-device walkthrough.
 
@@ -736,12 +736,12 @@ Run both destination-specific builds, the focused XCTest targets, the complete X
 
 ---
 
-## Task 12: Close the slices on Project #3
+## Task 12: Close the slices on the external board
 
-**Objective:** Move each completed slice through Inbox → Ready → Building → Verify → Done with implementation and validation evidence, while keeping only one iOS slice active.
+**Objective:** Move each completed slice through Inbox → Ready → Building → Verify → Done with implementation and validation evidence, while keeping only one iOS slice active. Keep board URLs and personal planning details outside this public repository.
 
 **Files:**
-- No repository files; update GitHub Project #3 items.
+- No repository files; update the external board separately.
 
 **Interfaces:**
 - Consumes: commits, focused XCTest output, destination-specific build output, and manual smoke evidence.

@@ -8,17 +8,17 @@ final class HermesRelayIOSTests: XCTestCase {
         let secondDate = firstDate.addingTimeInterval(61)
         let messages = [
             TranscriptMessage(id: UUID(uuidString: "AAAAAAAA-BBBB-CCCC-DDDD-EEEEEEEEEEEE")!, role: .user, text: "Hello Hermes", createdAt: firstDate),
-            TranscriptMessage(id: UUID(uuidString: "BBBBBBBB-CCCC-DDDD-EEEE-FFFFFFFFFFFF")!, role: .assistant, text: "Hello, Amanda.", createdAt: secondDate)
+            TranscriptMessage(id: UUID(uuidString: "BBBBBBBB-CCCC-DDDD-EEEE-FFFFFFFFFFFF")!, role: .assistant, text: "Hello, user.", createdAt: secondDate)
         ]
         let formatter = TranscriptExportFormatter(timeZone: TimeZone(secondsFromGMT: 0)!)
 
         XCTAssertEqual(
             formatter.plainText(for: messages),
-            "[2024-01-01 12:00:00 GMT] You\nHello Hermes\n\n[2024-01-01 12:01:01 GMT] Hermes\nHello, Amanda."
+            "[2024-01-01 12:00:00 GMT] You\nHello Hermes\n\n[2024-01-01 12:01:01 GMT] Hermes\nHello, user."
         )
         XCTAssertEqual(
             formatter.markdown(for: messages),
-            "## Conversation\n\n### You — 2024-01-01 12:00:00 GMT\n\nHello Hermes\n\n### Hermes — 2024-01-01 12:01:01 GMT\n\nHello, Amanda."
+            "## Conversation\n\n### You — 2024-01-01 12:00:00 GMT\n\nHello Hermes\n\n### Hermes — 2024-01-01 12:01:01 GMT\n\nHello, user."
         )
     }
 
@@ -362,7 +362,7 @@ final class HermesRelayIOSTests: XCTestCase {
     func testAmbientHUDPrefersStreamingHermesCaptionAndHidesIdleHistory() {
         let messages = [
             TranscriptMessage(role: .user, text: "Hello"),
-            TranscriptMessage(role: .assistant, text: "Hello, Amanda.")
+            TranscriptMessage(role: .assistant, text: "Hello, user.")
         ]
         let speaking = AmbientHUDPresentation(
             voiceState: .speaking,
@@ -377,7 +377,7 @@ final class HermesRelayIOSTests: XCTestCase {
             messages: messages
         )
 
-        XCTAssertEqual(speaking.caption, "Hello, Amanda.")
+        XCTAssertEqual(speaking.caption, "Hello, user.")
         XCTAssertEqual(speaking.captionSource, .hermes)
         XCTAssertNil(idle.caption)
         XCTAssertNil(idle.captionSource)

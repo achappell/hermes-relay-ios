@@ -8,7 +8,7 @@ review_loop_iteration: 0
 context:
   - '{project-root}/_bmad-output/implementation-artifacts/epic-1-context.md'
   - '../hermes-relay-tui/_bmad-output/planning-artifacts/epics.md'
-  - '~/Documents/Vaults/Personal Vault/projects/hermes-home/hermes-home.md'
+  - 'private canonical product hub'
 ---
 
 <frozen-after-approval reason="human-owned intent — do not modify unless human renegotiates">

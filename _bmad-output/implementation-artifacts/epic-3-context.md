@@ -4,7 +4,12 @@
 
 ## Goal
 
-Make iOS the trustworthy control plane for physical household doorways: Amanda can discover a Device without granting it access, approve and configure it deliberately, preserve Profile isolation, and revoke access so a powered Device cannot continue operating. The repository-local planning-artifacts directory is absent; this context is therefore distilled from the canonical Hermes Home hub and its imported PRD, UX, architecture, and epic sources.
+Make iOS the trustworthy control plane for physical household doorways: the
+user can discover a Device without granting it access, approve and configure it
+deliberately, preserve Profile isolation, and revoke access so a powered Device
+cannot continue operating. The repository-local planning-artifacts directory
+is absent; this context is therefore distilled from the canonical product hub
+and its imported PRD, UX, architecture, and epic sources.
 
 ## Stories
 

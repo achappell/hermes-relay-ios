@@ -40,7 +40,7 @@ Device configuration contract is settled.
 ## Acceptance Criteria
 
 - Given duplicate wake phrases after trimming and case/diacritic normalization,
-  when Amanda publishes an edit, then validation blocks the administration call
+  when the user publishes an edit, then validation blocks the administration call
   and explains the duplicate.
 - Given a valid mapping to one Hermes Profile, when the Device returns a receipt
   matching the Device ID, Room, ordered wake phrases, and Profile identifiers,

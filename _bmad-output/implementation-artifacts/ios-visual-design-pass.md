@@ -4,8 +4,8 @@ type: 'design'
 created: '2026-09-11'
 status: 'approved'
 direction: 'Night Console iOS adaptation'
-upstream_ux: '~/Documents/Vaults/Personal Vault/projects/hermes-home/sources/ux/ux-hermes-relay-tui-2026-09-07/DESIGN.md'
-upstream_experience: '~/Documents/Vaults/Personal Vault/projects/hermes-home/sources/ux/ux-hermes-relay-tui-2026-09-07/EXPERIENCE.md'
+upstream_ux: 'private canonical UX source'
+upstream_experience: 'private canonical experience source'
 icon_mark: 'abstract signal orb'
 reviewed_surfaces:
   - conversation idle and no-profile state
@@ -305,7 +305,7 @@ without turning the phone into a miniature appliance panel.
 
 ## Decision recorded
 
-Amanda approved the recommended abstract signal-orb mark on 2026-09-11. The
+The maintainer approved the recommended abstract signal-orb mark on 2026-09-11. The
 icon should represent typed and voice conversation, relay identity, and the
 shared Night Console visualizer without implying that iOS is only a recorder.
 

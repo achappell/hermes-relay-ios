@@ -44,7 +44,7 @@ final class RelayConfigurationTests: XCTestCase {
             endpoint: URL(string: "wss://relay.example.test/session")!,
             clientID: "hermes-ios",
             deviceID: "device-123",
-            displayName: "Amanda's iPhone"
+            displayName: "Test iPhone"
         )
 
         try await store.saveProfile(expected)
@@ -180,7 +180,7 @@ final class RelayConfigurationTests: XCTestCase {
             endpoint: URL(string: "wss://relay.example.test/session")!,
             clientID: "hermes-ios",
             deviceID: "device-123",
-            displayName: "Amanda's iPhone"
+            displayName: "Test iPhone"
         )
 
         let draft = RelayConfigurationDraft(profile: profile, hasStoredToken: true)
@@ -188,25 +188,25 @@ final class RelayConfigurationTests: XCTestCase {
         XCTAssertEqual(draft.endpoint, "wss://relay.example.test/session")
         XCTAssertEqual(draft.clientID, "hermes-ios")
         XCTAssertEqual(draft.deviceID, "device-123")
-        XCTAssertEqual(draft.displayName, "Amanda's iPhone")
+        XCTAssertEqual(draft.displayName, "Test iPhone")
         XCTAssertTrue(draft.hasStoredToken)
         XCTAssertTrue(draft.token.isEmpty)
     }
 
     func testConfigurationDraftUsesEditableDeviceIdentityDefaults() {
         let draft = RelayConfigurationDraft(
-            identity: RelayDeviceIdentity(deviceName: "Amanda’s iPhone")
+            identity: RelayDeviceIdentity(deviceName: "Test iPhone")
         )
 
         #if os(iOS)
-        XCTAssertEqual(draft.clientID, "hermes-ios-amanda-s-iphone")
+        XCTAssertEqual(draft.clientID, "hermes-ios-test-iphone")
         #elseif os(macOS)
-        XCTAssertEqual(draft.clientID, "hermes-mac-amanda-s-iphone")
+        XCTAssertEqual(draft.clientID, "hermes-mac-test-iphone")
         #else
-        XCTAssertEqual(draft.clientID, "hermes-apple-amanda-s-iphone")
+        XCTAssertEqual(draft.clientID, "hermes-apple-test-iphone")
         #endif
-        XCTAssertEqual(draft.deviceID, "amanda-s-iphone")
-        XCTAssertEqual(draft.displayName, "Amanda’s iPhone")
+        XCTAssertEqual(draft.deviceID, "test-iphone")
+        XCTAssertEqual(draft.displayName, "Test iPhone")
     }
 
     func testConfigurationDraftBuildsTrimmedProfileAndToken() throws {
@@ -214,7 +214,7 @@ final class RelayConfigurationTests: XCTestCase {
         draft.endpoint = "  wss://relay.example.test/session  "
         draft.clientID = "  hermes-ios "
         draft.deviceID = " device-123 "
-        draft.displayName = " Amanda's iPhone "
+        draft.displayName = " Test iPhone "
         draft.token = " token-value "
 
         let profile = try draft.makeProfile()
@@ -222,7 +222,7 @@ final class RelayConfigurationTests: XCTestCase {
         XCTAssertEqual(profile.endpoint.absoluteString, "wss://relay.example.test/session")
         XCTAssertEqual(profile.clientID, "hermes-ios")
         XCTAssertEqual(profile.deviceID, "device-123")
-        XCTAssertEqual(profile.displayName, "Amanda's iPhone")
+        XCTAssertEqual(profile.displayName, "Test iPhone")
         XCTAssertEqual(try draft.tokenToSave(existingToken: nil), "token-value")
     }
 

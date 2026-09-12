@@ -55,7 +55,7 @@ With a locally configured test relay and a non-sensitive test prompt:
 
 ## Closure evidence
 
-Amanda confirmed that the real-device walkthrough was completed on 2026-09-11.
+The maintainer confirmed that the real-device walkthrough was completed on 2026-09-11.
 The focused iOS simulator verification was rerun during closeout: 127 selected
 tests passed with zero failures, including the supported-interrupt and legacy
 fallback paths. No prompt, response, token, raw frame, PCM, or microphone

@@ -9,7 +9,7 @@ implementation_artifacts: "{project-root}/_bmad-output/implementation-artifacts"
 project_knowledge: "{project-root}/docs"
 
 # Core Configuration Values
-user_name: Amanda Chappell
+user_name: Maintainer
 project_name: hermes-relay-ios
 communication_language: English
 document_output_language: English

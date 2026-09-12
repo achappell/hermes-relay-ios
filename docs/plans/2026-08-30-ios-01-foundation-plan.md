@@ -2,7 +2,7 @@
 
 > **For Gemini:** REQUIRED SUB-SKILL: Use superpowers:executing-plans to implement this plan task-by-task.
 
-**Goal:** Create a separate native SwiftUI iOS repository that gives Amanda a runnable conversation shell and a safe, testable seam for the Hermes voice-session protocol.
+**Goal:** Create a separate native SwiftUI iOS repository that gives the user a runnable conversation shell and a safe, testable seam for the Hermes voice-session protocol.
 
 **Architecture:** Keep SwiftUI presentation and main-actor conversation state above a typed `HermesSessionClient` protocol. Start with an explicit unavailable client so the app can be launched and tested without pretending that live relay support exists; add the WebSocket transport, secure profiles, and audio as separate vertical slices.
 

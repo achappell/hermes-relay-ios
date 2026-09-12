@@ -7,9 +7,9 @@ not copy terminal-specific UI assumptions into the Apple client.
 
 ## Task management — local BMad mode
 
-Amanda has explicitly paused GitHub Project #3 while the local BMad surface
-reconciliation is completed. Until she explicitly reopens the board, do not
-inspect, query, create, edit, move, delete, or reconcile Project #3 items.
+The maintainer has paused external board reconciliation while the local BMad
+surface work is completed. Until the board is explicitly reopened, do not
+inspect, query, create, edit, move, delete, or reconcile external board items.
 
 The shared surface coverage index (kept at the historical
 [`../hermes-relay-tui/_bmad-output/implementation-artifacts/surface-coverage-matrix.md`](../hermes-relay-tui/_bmad-output/implementation-artifacts/surface-coverage-matrix.md)
@@ -17,7 +17,8 @@ path) is a thin cross-repository view of applicability, evidence, and shared
 dependencies. Read it before answering "what's next" or beginning substantive
 story work. It is not a backlog, story specification, or formal status
 authority; this repository's local story artifacts own iOS delivery scope and
-closure, and the Personal Vault owns durable product intent.
+closure, and the canonical product hub outside this repository owns durable
+product intent.
 
 While the board is paused:
 
@@ -41,19 +42,18 @@ While the board is paused:
 - Do not create a duplicate backlog in `docs/plans/`; select from the existing
   BMad epic/story set and record prioritization decisions in local artifacts.
 
-When Amanda explicitly reopens board work, restore the Project #3 procedure
-before choosing a board-scoped task: verify the credential with `gh auth
-status`, inspect the board, and reconcile it with the matrix and local
+When the maintainer explicitly reopens board work, restore the external-board
+procedure before choosing a board-scoped task: verify the credential with `gh
+auth status`, inspect the board, and reconcile it with the matrix and local
 artifacts. Never print token values.
 
 ## Product planning authority
 
 Durable Hermes Home product intent and cross-repository reconciliation are
-canonical in the Personal Vault hub:
-
-`~/Documents/Vaults/Personal Vault/projects/hermes-home/hermes-home.md`
-
-Read the hub and its relevant source notes before using BMAD for a new slice.
+canonical in the product hub maintained outside this repository. Read the hub
+and its relevant source notes from the local working environment before using
+BMAD for a new slice. Do not copy private hub paths or personal notes into this
+public repository.
 While GitHub Project work is paused, use the surface coverage index for
 cross-repository applicability, evidence, and dependencies, and use this
 repository's local BMAD runtime and artifacts for iOS delivery scope, status,

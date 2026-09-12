@@ -1,9 +1,11 @@
 # TestFlight submission
 
-The `TestFlight` GitHub Actions workflow is manual by design. It archives the
-Release iOS target, downloads the matching App Store provisioning profile,
-exports an App Store IPA, and uploads it with the App Store Connect API. It
-does not need a Hermes endpoint, bearer token, or a connected device.
+The `TestFlight` GitHub Actions workflow archives the Release iOS target,
+downloads the matching App Store provisioning profile, exports an App Store
+IPA, and uploads it with the App Store Connect API. It supports a manual run
+and is also called automatically by the release packaging workflow after a
+tagged or Release Please release is packaged. It does not need a Hermes
+endpoint, bearer token, or a connected device.
 
 ## One-time Apple setup
 
@@ -66,3 +68,12 @@ marketing version belongs in the normal Release Please flow. It retains the
 exported IPA and dSYM as short-lived workflow artifacts for troubleshooting,
 but never uploads certificates, provisioning profiles, API keys, or app
 credentials as artifacts.
+
+## Automatic release submission
+
+When `release.yml` packages a version from a release tag, it calls this same
+workflow with the release tag as `release_ref`. The build number is the
+release workflow's monotonically increasing GitHub run number, and the release
+tag is used as the TestFlight release note. Keep manually entered build
+numbers below future automatic run numbers, or choose a number higher than
+both the latest uploaded build and the next release workflow run number.

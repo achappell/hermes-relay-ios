@@ -16,6 +16,27 @@ on:
         required: true
         default: true
         type: boolean
+  workflow_call:
+    inputs:
+      build_number:
+        description: "CFBundleVersion; must be higher than the latest TestFlight build"
+        required: true
+        type: string
+      release_notes:
+        description: "Optional notes for the TestFlight build"
+        required: false
+        default: ""
+        type: string
+      wait_for_processing:
+        description: "Wait for App Store Connect processing to finish"
+        required: false
+        default: true
+        type: boolean
+      release_ref:
+        description: "Release tag or ref to archive"
+        required: false
+        default: ""
+        type: string
 
 permissions:
   contents: read
@@ -39,6 +60,7 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          ref: ${{ inputs.release_ref || github.ref }}
           persist-credentials: false
 
       - name: Show Xcode toolchain
