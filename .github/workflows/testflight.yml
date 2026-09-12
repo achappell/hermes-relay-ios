@@ -131,9 +131,13 @@ jobs:
           PROFILES_JSON: ${{ steps.profiles.outputs.profiles }}
         run: |
           set -euo pipefail
-          profile_name="$(jq -r '.[0].name // empty' <<<"$PROFILES_JSON")"
+          expected_profile_name="AppStore $BUNDLE_ID"
+          profile_name="$(jq -r --arg expected "$expected_profile_name" '.[] | select(.name == $expected) | .name' <<<"$PROFILES_JSON" | head -n 1)"
           test -n "$profile_name" || {
-            echo "No App Store provisioning profile was downloaded for $BUNDLE_ID."
+            echo "No manually managed App Store profile named '$expected_profile_name' was downloaded for $BUNDLE_ID."
+            echo "Create that profile in Apple Developer, then rerun this workflow."
+            echo "Downloaded profile names:"
+            jq -r '.[].name' <<<"$PROFILES_JSON"
             exit 1
           }
           echo "PROFILE_NAME=$profile_name" >> "$GITHUB_ENV"
