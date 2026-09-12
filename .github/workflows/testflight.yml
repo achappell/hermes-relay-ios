@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       build_number:
-        description: "CFBundleVersion build string (for example, 1 or 0.3.2); increment the latest TestFlight build"
+        description: "CI build number; positive integer higher than the latest TestFlight build"
         required: true
         type: string
       release_notes:
@@ -19,7 +19,7 @@ on:
   workflow_call:
     inputs:
       build_number:
-        description: "CFBundleVersion build string (for example, 1 or 0.3.2); increment the latest TestFlight build"
+        description: "CI build number; positive integer higher than the latest TestFlight build"
         required: true
         type: string
       release_notes:
@@ -75,8 +75,8 @@ jobs:
           RELEASE_REF: ${{ inputs.release_ref }}
         run: |
           set -euo pipefail
-          [[ "$BUILD_NUMBER" =~ ^[0-9]+(\.[0-9]+){0,2}$ ]] || {
-            echo "build_number must contain one to three non-negative integers separated by periods (for example, 1 or 0.3.2)."
+          [[ "$BUILD_NUMBER" =~ ^[1-9][0-9]*$ ]] || {
+            echo "build_number must be a positive integer, such as 61."
             exit 1
           }
 

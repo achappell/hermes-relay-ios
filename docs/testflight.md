@@ -61,19 +61,19 @@ file or paste it into a workflow log.
 
 1. Open **Actions → TestFlight → Run workflow**. Select the branch to submit;
    `main` is the normal choice after the release PR is merged.
-2. Enter a `build_number` build string with one to three non-negative integers
-   separated by periods (for example, `1` or `0.3.2`). Increment it from the
-   latest build already in TestFlight; App Store Connect rejects reused build
-   strings for the same marketing version.
+2. Enter a positive integer `build_number` higher than the latest build
+   already in TestFlight. The normal release workflow supplies this value from
+   its monotonically increasing GitHub Actions run number.
 3. Optionally enter TestFlight release notes and leave **Wait for App Store
    processing** enabled when you want the workflow to report processing status.
 4. Approve the `testflight` environment if its protection rules request it.
 
 The workflow uses the Xcode project's current `MARKETING_VERSION`; a new
-marketing version belongs in the normal Release Please flow. It retains the
-exported IPA and dSYM as short-lived workflow artifacts for troubleshooting,
-but never uploads certificates, provisioning profiles, API keys, or app
-credentials as artifacts.
+marketing version belongs in the normal Release Please flow. CI overrides
+`CURRENT_PROJECT_VERSION` with the integer build number, so the Xcode project's
+local default can remain `1`. It retains the exported IPA and dSYM as
+short-lived workflow artifacts for troubleshooting, but never uploads
+certificates, provisioning profiles, API keys, or app credentials as artifacts.
 
 ## Automatic release submission
 
