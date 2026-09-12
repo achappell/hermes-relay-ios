@@ -8,7 +8,7 @@ actor AppleSpeechInput: SpeechInput {
 
     private var recognitionTask: SFSpeechRecognitionTask?
     private var recognitionRequest: SFSpeechAudioBufferRecognitionRequest?
-    private var activeContinuation: AsyncThrowingStream<SpeechRecognitionUpdate, Error>.Continuation?
+    private var recognitionSession: SpeechRecognitionSession?
     private let activityReporter: any AudioActivityReporter
     private let audioSessionCoordinator: AppleAudioSessionCoordinator
     private let finalResultGraceNanoseconds: UInt64
@@ -61,7 +61,8 @@ actor AppleSpeechInput: SpeechInput {
             throw SpeechInputError.captureFailed
         }
 
-        let (stream, continuation) = AsyncThrowingStream<SpeechRecognitionUpdate, Error>.makeStream()
+        let session = SpeechRecognitionSession(activityReporter: activityReporter)
+        let stream = await session.makeStream()
         let request = SFSpeechAudioBufferRecognitionRequest()
         request.shouldReportPartialResults = true
         if recognizer.supportsOnDeviceRecognition {
@@ -93,13 +94,14 @@ actor AppleSpeechInput: SpeechInput {
             try audioEngine.start()
 
             recognitionRequest = request
-            activeContinuation = continuation
-            recognitionTask = recognizer.recognitionTask(with: request) { [weak self] result, error in
+            recognitionSession = session
+            recognitionTask = recognizer.recognitionTask(with: request) { [weak self, session] result, error in
                 let text = result?.bestTranscription.formattedString
                 let isFinal = result?.isFinal ?? false
                 let recognitionError = error.map { Self.mapRecognitionError($0) }
                 Task {
                     await self?.handleRecognition(
+                        session: session,
                         text: text,
                         isFinal: isFinal,
                         error: recognitionError
@@ -114,15 +116,16 @@ actor AppleSpeechInput: SpeechInput {
         } catch {
             await stopResources()
             await activityReporter.reportMicrophoneUnavailable()
-            continuation.finish(throwing: SpeechInputError.captureFailed)
+            _ = await session.finish(throwing: SpeechInputError.captureFailed)
+            recognitionSession = nil
             throw SpeechInputError.captureFailed
         }
     }
 
     func cancel() async {
-        let wasActive = activeContinuation != nil
-        activeContinuation?.finish(throwing: SpeechInputError.cancelled)
-        activeContinuation = nil
+        let wasActive = await recognitionSession?.isActive() ?? false
+        _ = await recognitionSession?.finish(throwing: SpeechInputError.cancelled)
+        recognitionSession = nil
         await stopResources()
         if wasActive {
             await activityReporter.reportMicrophoneEnded()
@@ -130,7 +133,8 @@ actor AppleSpeechInput: SpeechInput {
     }
 
     func finish() async {
-        guard activeContinuation != nil else { return }
+        guard let session = recognitionSession,
+              await session.isActive() else { return }
         audioEngine.inputNode.removeTap(onBus: 0)
         if audioEngine.isRunning {
             audioEngine.stop()
@@ -142,55 +146,23 @@ actor AppleSpeechInput: SpeechInput {
         // result. If it doesn't, terminate the stream so the coordinator isn't
         // left waiting out its full recognition timeout.
         try? await Task.sleep(nanoseconds: finalResultGraceNanoseconds)
-        if activeContinuation != nil {
-            activeContinuation?.finish()
-            activeContinuation = nil
+        if await session.finish() {
+            recognitionSession = nil
             await stopResources()
             await activityReporter.reportMicrophoneEnded()
         }
     }
-
-    #if DEBUG
-    func makeTestingRecognitionStream() -> AsyncThrowingStream<SpeechRecognitionUpdate, Error> {
-        let (stream, continuation) = AsyncThrowingStream<SpeechRecognitionUpdate, Error>.makeStream()
-        activeContinuation = continuation
-        return stream
-    }
-
-    func handleRecognitionForTesting(
-        text: String?,
-        isFinal: Bool,
-        error: SpeechInputError?
-    ) async {
-        await handleRecognition(text: text, isFinal: isFinal, error: error)
-    }
-    #endif
 
     private func handleRecognition(
+        session: SpeechRecognitionSession,
         text: String?,
         isFinal: Bool,
         error: SpeechInputError?
     ) async {
-        guard let continuation = activeContinuation else { return }
-        if let error {
-            continuation.finish(throwing: error)
-            activeContinuation = nil
+        guard recognitionSession === session else { return }
+        if await session.handle(text: text, isFinal: isFinal, error: error) {
+            recognitionSession = nil
             await stopResources()
-            if error == .noSpeech {
-                await activityReporter.reportMicrophoneEnded()
-            } else {
-                await activityReporter.reportMicrophoneUnavailable()
-            }
-            return
-        }
-        if let text, !text.isEmpty {
-            continuation.yield(SpeechRecognitionUpdate(text: text, isFinal: isFinal))
-        }
-        if isFinal {
-            continuation.finish()
-            activeContinuation = nil
-            await stopResources()
-            await activityReporter.reportMicrophoneEnded()
         }
     }
 
@@ -219,12 +191,13 @@ actor AppleSpeechInput: SpeechInput {
     }
 
     private func handleConfigurationChange() async {
-        guard activeContinuation != nil else { return }
+        guard let session = recognitionSession,
+              await session.isActive() else { return }
         await activityReporter.reportMicrophoneUnavailable()
-        guard activeContinuation != nil else { return }
+        guard await session.isActive() else { return }
         if audioEngine.inputNode.inputFormat(forBus: 0).channelCount == 0 {
-            activeContinuation?.finish(throwing: SpeechInputError.captureFailed)
-            activeContinuation = nil
+            _ = await session.finish(throwing: SpeechInputError.captureFailed)
+            recognitionSession = nil
             await stopResources()
         }
     }
@@ -265,9 +238,10 @@ actor AppleSpeechInput: SpeechInput {
     }
 
     private func handleAudioInterruption() async {
-        guard activeContinuation != nil else { return }
-        activeContinuation?.finish(throwing: SpeechInputError.captureFailed)
-        activeContinuation = nil
+        guard let session = recognitionSession,
+              await session.isActive() else { return }
+        _ = await session.finish(throwing: SpeechInputError.captureFailed)
+        recognitionSession = nil
         await stopResources()
         await activityReporter.reportMicrophoneUnavailable()
     }

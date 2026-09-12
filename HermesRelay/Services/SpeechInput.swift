@@ -41,6 +41,70 @@ protocol SpeechInput: Sendable {
     func cancel() async
 }
 
+/// Owns the deterministic stream and state transitions shared by the Apple
+/// speech adapter and its tests. Audio capture remains the responsibility of
+/// `AppleSpeechInput`; this type deliberately has no audio framework state.
+actor SpeechRecognitionSession {
+    private let activityReporter: any AudioActivityReporter
+    private var continuation: AsyncThrowingStream<SpeechRecognitionUpdate, Error>.Continuation?
+
+    init(activityReporter: any AudioActivityReporter) {
+        self.activityReporter = activityReporter
+    }
+
+    func makeStream() -> AsyncThrowingStream<SpeechRecognitionUpdate, Error> {
+        let (stream, continuation) = AsyncThrowingStream<SpeechRecognitionUpdate, Error>.makeStream()
+        self.continuation = continuation
+        return stream
+    }
+
+    func isActive() -> Bool {
+        continuation != nil
+    }
+
+    @discardableResult
+    func handle(
+        text: String?,
+        isFinal: Bool,
+        error: SpeechInputError?
+    ) async -> Bool {
+        guard continuation != nil else { return false }
+
+        if let error {
+            _ = finish(throwing: error)
+            if error == .noSpeech {
+                await activityReporter.reportMicrophoneEnded()
+            } else {
+                await activityReporter.reportMicrophoneUnavailable()
+            }
+            return true
+        }
+
+        if let text, !text.isEmpty {
+            continuation?.yield(SpeechRecognitionUpdate(text: text, isFinal: isFinal))
+        }
+        if isFinal {
+            _ = finish()
+            await activityReporter.reportMicrophoneEnded()
+            return true
+        }
+
+        return false
+    }
+
+    @discardableResult
+    func finish(throwing error: SpeechInputError? = nil) -> Bool {
+        guard let continuation else { return false }
+        if let error {
+            continuation.finish(throwing: error)
+        } else {
+            continuation.finish()
+        }
+        self.continuation = nil
+        return true
+    }
+}
+
 enum HandsFreeInputEvent: Equatable, Sendable {
     case activity(AudioActivitySnapshot)
     case recognition(SpeechRecognitionUpdate)
