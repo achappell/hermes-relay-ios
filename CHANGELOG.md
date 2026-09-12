@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.3.1 (2026-09-12)
+
+<!-- Release notes generated using configuration in .github/release.yml at main -->
+
+## What's Changed
+### Other Changes
+* fix(release): keep Xcode version in sync by @achappell in https://github.com/achappell/hermes-relay-ios/pull/57
+
+
+**Full Changelog**: https://github.com/achappell/hermes-relay-ios/compare/v0.3.0...v0.3.1
+
 ## 0.3.0 (2026-09-12)
 
 <!-- Release notes generated using configuration in .github/release.yml at main -->
