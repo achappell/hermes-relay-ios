@@ -181,7 +181,6 @@ jobs:
             -authenticationKeyID "$ASC_API_KEY_ID" \
             -authenticationKeyIssuerID "$ASC_ISSUER_ID" \
             CODE_SIGN_STYLE=Automatic \
-            CODE_SIGN_IDENTITY="Apple Distribution" \
             DEVELOPMENT_TEAM="$TEAM_ID" \
             MARKETING_VERSION="$MARKETING_VERSION" \
             CURRENT_PROJECT_VERSION="$BUILD_NUMBER"
