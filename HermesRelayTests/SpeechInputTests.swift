@@ -109,16 +109,17 @@ final class SpeechInputTests: XCTestCase {
         )
     }
 
-    func testAppleSpeechNoSpeechFinishesStreamAndReportsMicrophoneEnded() async throws {
+    func testSpeechRecognitionSessionNoSpeechFinishesStreamAndReportsMicrophoneEnded() async throws {
         let activityStore = AudioActivityStore()
-        let input = AppleSpeechInput(activityReporter: activityStore)
-        let stream = await input.makeTestingRecognitionStream()
+        let session = SpeechRecognitionSession(activityReporter: activityStore)
+        let stream = await session.makeStream()
 
-        await input.handleRecognitionForTesting(
+        let handled = await session.handle(
             text: nil,
             isFinal: false,
             error: .noSpeech
         )
+        XCTAssertTrue(handled)
 
         do {
             _ = try await collect(stream)
