@@ -16,9 +16,13 @@ endpoint, bearer token, or a connected device.
 3. Create or download an Apple Distribution certificate and export its private
    key as a password-protected `.p12` file. The certificate must belong to the
    Apple Developer team configured by the Xcode project.
-4. Ensure an App Store provisioning profile exists for
-   `com.achappell.HermesRelay`. The workflow downloads it at run time, so the
-   profile itself is not stored in the repository.
+4. Create a manually managed App Store Connect provisioning profile for
+   `com.achappell.HermesRelay`. Select the Apple Distribution certificate and
+   name the profile exactly `AppStore com.achappell.HermesRelay`. The workflow
+   downloads it at run time, so the profile itself is not stored in the
+   repository. Do not use the Xcode-managed profile named
+   `iOS Team Store Provisioning Profile: com.achappell.HermesRelay`; that
+   profile cannot be used with the workflow's manual signing settings.
 
 ## GitHub configuration
 
