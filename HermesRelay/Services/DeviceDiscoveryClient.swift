@@ -101,6 +101,47 @@ protocol DeviceAdministrationClient: Sendable {
     ) async throws -> DeviceVerificationReceipt
 }
 
+/// Typed boundary for the single local Home service. The service owns the
+/// household snapshot and rejects writes based on a stale revision; this app
+/// does not guess the production HTTP schema until the shared contract lands.
+protocol HomeServiceClient: Sendable {
+    func fetchConfiguration() async throws -> HomeConfigurationSnapshot
+    func publish(
+        _ configuration: HomeConfigurationSnapshot,
+        expectedRevision: Int
+    ) async throws -> HomeConfigurationSnapshot
+}
+
+enum HomeServiceError: Error, Equatable, Sendable {
+    case revisionConflict
+    case invalidConfiguration
+    case transportUnavailable
+
+    var userMessage: String {
+        switch self {
+        case .revisionConflict:
+            "Home configuration changed on another Device. Reload before publishing."
+        case .invalidConfiguration:
+            "Home configuration is invalid. Fix the highlighted Device settings and try again."
+        case .transportUnavailable:
+            "The local Home service is unavailable. Try again when it is running."
+        }
+    }
+}
+
+struct UnavailableHomeServiceClient: HomeServiceClient {
+    func fetchConfiguration() async throws -> HomeConfigurationSnapshot {
+        throw HomeServiceError.transportUnavailable
+    }
+
+    func publish(
+        _ configuration: HomeConfigurationSnapshot,
+        expectedRevision: Int
+    ) async throws -> HomeConfigurationSnapshot {
+        throw HomeServiceError.transportUnavailable
+    }
+}
+
 protocol DeviceConfigurationStore: Sendable {
     func loadAll() async throws -> [DeviceConfigurationState]
     func save(_ state: DeviceConfigurationState) async throws

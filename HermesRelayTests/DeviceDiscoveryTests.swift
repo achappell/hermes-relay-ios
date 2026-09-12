@@ -2280,6 +2280,178 @@ final class DeviceDiscoveryTests: XCTestCase {
         XCTAssertNotNil(controller.view)
     }
     #endif
+
+    func testHomeConfigurationSnapshotAcceptsSharedMappingAndUniqueRoomPriorities() {
+        let mappingID = CanonicalWakeMappingID("wake-missy")
+        let snapshot = HomeConfigurationSnapshot(
+            revision: 7,
+            wakeMappings: [
+                CanonicalWakeMapping(id: mappingID, wakePhrase: "Hey Missy")
+            ],
+            devices: [
+                DeviceSetupConfiguration(
+                    deviceID: "kitchen-puck",
+                    room: "Kitchen",
+                    wakeMappings: [
+                        DeviceWakeMapping(
+                            wakePhrase: "Hey Missy",
+                            profileIdentifier: "kitchen",
+                            canonicalID: mappingID
+                        )
+                    ],
+                    arbitrationPriority: 1
+                ),
+                DeviceSetupConfiguration(
+                    deviceID: "kitchen-ipad",
+                    room: "Kitchen",
+                    wakeMappings: [
+                        DeviceWakeMapping(
+                            wakePhrase: "Hey Missy",
+                            profileIdentifier: "hallway",
+                            canonicalID: mappingID
+                        )
+                    ],
+                    arbitrationPriority: 2
+                )
+            ]
+        )
+
+        XCTAssertTrue(snapshot.isValid)
+        XCTAssertTrue(snapshot.validationErrors.isEmpty)
+    }
+
+    func testHomeConfigurationSnapshotRejectsDuplicatePriorityWithinRoom() {
+        let mappingID = CanonicalWakeMappingID("wake-missy")
+        let mapping = CanonicalWakeMapping(id: mappingID, wakePhrase: "Hey Missy")
+        let deviceMapping = DeviceWakeMapping(
+            wakePhrase: "Hey Missy",
+            profileIdentifier: "missy",
+            canonicalID: mappingID
+        )
+        let snapshot = HomeConfigurationSnapshot(
+            revision: 1,
+            wakeMappings: [mapping],
+            devices: [
+                DeviceSetupConfiguration(
+                    deviceID: "device-a",
+                    room: "Kitchen",
+                    wakeMappings: [deviceMapping],
+                    arbitrationPriority: 1
+                ),
+                DeviceSetupConfiguration(
+                    deviceID: "device-b",
+                    room: " Kitchen ",
+                    wakeMappings: [deviceMapping],
+                    arbitrationPriority: 1
+                )
+            ]
+        )
+
+        XCTAssertTrue(
+            snapshot.validationErrors.contains(
+                .duplicatePriority(room: "Kitchen", priority: 1)
+            )
+        )
+    }
+
+    func testHomeConfigurationSnapshotRejectsUnknownOrMissingCanonicalMapping() {
+        let knownID = CanonicalWakeMappingID("known")
+        let unknownID = CanonicalWakeMappingID("unknown")
+        let snapshot = HomeConfigurationSnapshot(
+            revision: 1,
+            wakeMappings: [
+                CanonicalWakeMapping(id: knownID, wakePhrase: "Hey Missy")
+            ],
+            devices: [
+                DeviceSetupConfiguration(
+                    deviceID: "device-a",
+                    room: "Kitchen",
+                    wakeMappings: [
+                        DeviceWakeMapping(
+                            wakePhrase: "Hey Missy",
+                            profileIdentifier: "missy"
+                        ),
+                        DeviceWakeMapping(
+                            wakePhrase: "Hey River",
+                            profileIdentifier: "river",
+                            canonicalID: unknownID
+                        )
+                    ],
+                    arbitrationPriority: 1
+                )
+            ]
+        )
+
+        XCTAssertTrue(
+            snapshot.validationErrors.contains(
+                .invalidDeviceMapping(deviceID: "device-a", mappingID: CanonicalWakeMappingID(""))
+            )
+        )
+        XCTAssertTrue(
+            snapshot.validationErrors.contains(
+                .unknownMapping(deviceID: "device-a", mappingID: unknownID)
+            )
+        )
+    }
+
+    func testHomeConfigurationSnapshotRejectsMappingPhraseThatDisagreesWithCanonicalDefinition() {
+        let mappingID = CanonicalWakeMappingID("wake-missy")
+        let snapshot = HomeConfigurationSnapshot(
+            revision: 1,
+            wakeMappings: [
+                CanonicalWakeMapping(id: mappingID, wakePhrase: "Hey Missy")
+            ],
+            devices: [
+                DeviceSetupConfiguration(
+                    deviceID: "device-a",
+                    room: "Kitchen",
+                    wakeMappings: [
+                        DeviceWakeMapping(
+                            wakePhrase: "Hey River",
+                            profileIdentifier: "missy",
+                            canonicalID: mappingID
+                        )
+                    ],
+                    arbitrationPriority: 1
+                )
+            ]
+        )
+
+        XCTAssertTrue(
+            snapshot.validationErrors.contains(
+                .mappingPhraseMismatch(deviceID: "device-a", mappingID: mappingID)
+            )
+        )
+    }
+
+    func testHomeConfigurationSnapshotRoundTripsRevisionAndCanonicalIDs() throws {
+        let mappingID = CanonicalWakeMappingID("wake-missy")
+        let snapshot = HomeConfigurationSnapshot(
+            revision: 12,
+            wakeMappings: [
+                CanonicalWakeMapping(id: mappingID, wakePhrase: "Hey Missy")
+            ],
+            devices: [
+                DeviceSetupConfiguration(
+                    deviceID: "device-a",
+                    room: "Kitchen",
+                    wakeMappings: [
+                        DeviceWakeMapping(
+                            wakePhrase: "Hey Missy",
+                            profileIdentifier: "missy",
+                            canonicalID: mappingID
+                        )
+                    ],
+                    arbitrationPriority: 1
+                )
+            ]
+        )
+
+        let data = try JSONEncoder().encode(snapshot)
+        let decoded = try JSONDecoder().decode(HomeConfigurationSnapshot.self, from: data)
+
+        XCTAssertEqual(decoded, snapshot)
+    }
 }
 
 private struct DeviceDiscoverySideEffectCounts: Equatable, Sendable {
