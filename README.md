@@ -151,13 +151,14 @@ then invokes the packaging workflow directly. The same workflow also accepts tag
 pushes and manual dispatch for reruns. It reruns the macOS tests, builds the macOS
 and iOS Simulator apps, and uploads unsigned archives with SHA-256 checksums.
 These are internal development artifacts; physical iPhone distribution is
-handled by the separate manual TestFlight workflow below.
+handled by the separate TestFlight workflow below.
 
-The manual [`TestFlight` workflow](.github/workflows/testflight.yml) archives a
-signed iOS Release build and uploads it to App Store Connect. Configure its
-App Store Connect API key, distribution certificate, and protected GitHub
-environment as described in [`docs/testflight.md`](docs/testflight.md); no
-Hermes endpoint or bearer token is required by the pipeline.
+The [`TestFlight` workflow](.github/workflows/testflight.yml) supports both a
+manual run and automatic submission after the release packaging workflow
+finishes. Configure its App Store Connect API key, distribution certificate,
+and protected GitHub environment as described in
+[`docs/testflight.md`](docs/testflight.md); no Hermes endpoint or bearer token
+is required by the pipeline.
 
 The release version is kept in `version.txt` and mirrored in the Xcode project.
 Do not put signing certificates, provisioning profiles, bearer tokens, or

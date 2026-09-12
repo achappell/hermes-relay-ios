@@ -110,3 +110,17 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: gh release upload "$RELEASE_TAG" dist/*.zip dist/SHA256SUMS.txt --clobber
+
+  testflight:
+    name: Submit iOS build to TestFlight
+    if: ${{ inputs.tag != '' || startsWith(github.ref, 'refs/tags/v') }}
+    needs: package
+    uses: ./.github/workflows/testflight.yml
+    with:
+      build_number: ${{ format('{0}', github.run_number) }}
+      release_notes: ${{ inputs.tag || github.ref_name }}
+      release_ref: ${{ inputs.tag || github.ref }}
+      wait_for_processing: true
+    secrets: inherit
+    permissions:
+      contents: read
