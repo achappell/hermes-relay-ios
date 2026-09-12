@@ -126,21 +126,43 @@ jobs:
           api-key-id: ${{ vars.APPSTORE_API_KEY_ID || secrets.APPSTORE_API_KEY_ID }}
           api-private-key: ${{ secrets.APPSTORE_API_PRIVATE_KEY }}
 
-      - name: Select downloaded provisioning profile
+      - name: Verify downloaded provisioning profile
         env:
           PROFILES_JSON: ${{ steps.profiles.outputs.profiles }}
         run: |
           set -euo pipefail
-          expected_profile_name="AppStore $BUNDLE_ID"
-          profile_name="$(jq -r --arg expected "$expected_profile_name" '.[] | select(.name == $expected) | .name' <<<"$PROFILES_JSON" | head -n 1)"
-          test -n "$profile_name" || {
-            echo "No manually managed App Store profile named '$expected_profile_name' was downloaded for $BUNDLE_ID."
-            echo "Create that profile in Apple Developer, then rerun this workflow."
-            echo "Downloaded profile names:"
-            jq -r '.[].name' <<<"$PROFILES_JSON"
+          profile_count="$(jq 'length' <<<"$PROFILES_JSON")"
+          test "$profile_count" -gt 0 || {
+            echo "No App Store provisioning profile was downloaded for $BUNDLE_ID."
             exit 1
           }
-          echo "PROFILE_NAME=$profile_name" >> "$GITHUB_ENV"
+          echo "Found $profile_count App Store provisioning profile(s) for $BUNDLE_ID."
+
+      - name: Prepare App Store Connect authentication key
+        env:
+          ASC_API_KEY_ID: ${{ vars.APPSTORE_API_KEY_ID || secrets.APPSTORE_API_KEY_ID }}
+          ASC_ISSUER_ID: ${{ vars.APPSTORE_ISSUER_ID || secrets.APPSTORE_ISSUER_ID }}
+          ASC_API_PRIVATE_KEY: ${{ secrets.APPSTORE_API_PRIVATE_KEY }}
+        run: |
+          set -euo pipefail
+          test -n "$ASC_API_KEY_ID" || {
+            echo "APPSTORE_API_KEY_ID is not configured."
+            exit 1
+          }
+          test -n "$ASC_ISSUER_ID" || {
+            echo "APPSTORE_ISSUER_ID is not configured."
+            exit 1
+          }
+          test -n "$ASC_API_PRIVATE_KEY" || {
+            echo "APPSTORE_API_PRIVATE_KEY is not configured."
+            exit 1
+          }
+          key_path="$RUNNER_TEMP/AuthKey_${ASC_API_KEY_ID}.p8"
+          printf '%s\n' "$ASC_API_PRIVATE_KEY" > "$key_path"
+          chmod 600 "$key_path"
+          echo "ASC_API_KEY_PATH=$key_path" >> "$GITHUB_ENV"
+          echo "ASC_API_KEY_ID=$ASC_API_KEY_ID" >> "$GITHUB_ENV"
+          echo "ASC_ISSUER_ID=$ASC_ISSUER_ID" >> "$GITHUB_ENV"
 
       - name: Archive signed iOS app
         env:
@@ -154,10 +176,13 @@ jobs:
             -destination 'generic/platform=iOS' \
             -archivePath "$RUNNER_TEMP/HermesRelay.xcarchive" \
             -derivedDataPath "$RUNNER_TEMP/hermes-relay-ios-archive" \
-            CODE_SIGN_STYLE=Manual \
+            -allowProvisioningUpdates \
+            -authenticationKeyPath "$ASC_API_KEY_PATH" \
+            -authenticationKeyID "$ASC_API_KEY_ID" \
+            -authenticationKeyIssuerID "$ASC_ISSUER_ID" \
+            CODE_SIGN_STYLE=Automatic \
             CODE_SIGN_IDENTITY="Apple Distribution" \
             DEVELOPMENT_TEAM="$TEAM_ID" \
-            PROVISIONING_PROFILE_SPECIFIER="$PROFILE_NAME" \
             MARKETING_VERSION="$MARKETING_VERSION" \
             CURRENT_PROJECT_VERSION="$BUILD_NUMBER"
 
@@ -171,14 +196,9 @@ jobs:
           <plist version="1.0">
           <dict>
             <key>method</key>
-            <string>app-store</string>
-            <key>provisioningProfiles</key>
-            <dict>
-              <key>${BUNDLE_ID}</key>
-              <string>${PROFILE_NAME}</string>
-            </dict>
+            <string>app-store-connect</string>
             <key>signingStyle</key>
-            <string>manual</string>
+            <string>automatic</string>
             <key>stripSwiftSymbols</key>
             <true/>
             <key>teamID</key>
@@ -192,7 +212,11 @@ jobs:
           xcodebuild -exportArchive \
             -archivePath "$RUNNER_TEMP/HermesRelay.xcarchive" \
             -exportPath "$RUNNER_TEMP/export" \
-            -exportOptionsPlist "$export_options"
+            -exportOptionsPlist "$export_options" \
+            -allowProvisioningUpdates \
+            -authenticationKeyPath "$ASC_API_KEY_PATH" \
+            -authenticationKeyID "$ASC_API_KEY_ID" \
+            -authenticationKeyIssuerID "$ASC_ISSUER_ID"
           ipa_path="$(find "$RUNNER_TEMP/export" -maxdepth 1 -name '*.ipa' -print -quit)"
           test -n "$ipa_path" || {
             echo "The archive export did not produce an IPA."
@@ -223,3 +247,10 @@ jobs:
             ${{ runner.temp }}/HermesRelay.xcarchive/dSYMs/*.dSYM
           if-no-files-found: ignore
           retention-days: 7
+
+      - name: Remove App Store Connect authentication key
+        if: always()
+        run: |
+          if [[ -n "${ASC_API_KEY_PATH:-}" ]]; then
+            rm -f "$ASC_API_KEY_PATH"
+          fi
