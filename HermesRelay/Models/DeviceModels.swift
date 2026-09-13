@@ -119,17 +119,37 @@ enum DeviceSetupStep: String, Codable, Equatable, Sendable {
     case complete
 }
 
+/// Opaque identifier for a household-level wake trigger. The Home service
+/// owns its value; iOS persists and transports it but never derives it from a
+/// wake phrase or Hermes Profile identifier.
+struct CanonicalWakeMappingID: Codable, Equatable, Hashable, Sendable {
+    let rawValue: String
+
+    init(_ rawValue: String) {
+        self.rawValue = rawValue
+    }
+
+    var isValid: Bool {
+        !rawValue.isEmpty && !rawValue.contains(where: \Character.isWhitespace)
+    }
+}
+
 struct DeviceWakeMapping: Identifiable, Codable, Equatable, Hashable, Sendable {
     let id: UUID
+    /// Local editor identity. This is intentionally distinct from the
+    /// server-owned identifier used to group simultaneous wake claims.
+    var canonicalID: CanonicalWakeMappingID?
     var wakePhrase: String
     var profileIdentifier: String
 
     init(
         id: UUID = UUID(),
         wakePhrase: String = "",
-        profileIdentifier: String = ""
+        profileIdentifier: String = "",
+        canonicalID: CanonicalWakeMappingID? = nil
     ) {
         self.id = id
+        self.canonicalID = canonicalID
         self.wakePhrase = wakePhrase
         self.profileIdentifier = profileIdentifier
     }
@@ -161,17 +181,20 @@ struct DeviceSetupDraft: Codable, Equatable, Sendable {
     let room: String
     let wakeMappings: [DeviceWakeMapping]
     let step: DeviceSetupStep
+    let arbitrationPriority: Int?
 
     init(
         deviceID: String,
         room: String,
         wakeMappings: [DeviceWakeMapping],
-        step: DeviceSetupStep
+        step: DeviceSetupStep,
+        arbitrationPriority: Int? = nil
     ) {
         self.deviceID = deviceID
         self.room = room
         self.wakeMappings = wakeMappings
         self.step = step
+        self.arbitrationPriority = arbitrationPriority
     }
 }
 
@@ -179,6 +202,172 @@ struct DeviceSetupConfiguration: Codable, Equatable, Sendable {
     let deviceID: String
     let room: String
     let wakeMappings: [DeviceWakeMapping]
+    /// Rank within the assigned Room. Lower values win an effective acoustic
+    /// tie; the Home service validates uniqueness across Devices.
+    let arbitrationPriority: Int?
+
+    init(
+        deviceID: String,
+        room: String,
+        wakeMappings: [DeviceWakeMapping],
+        arbitrationPriority: Int? = nil
+    ) {
+        self.deviceID = deviceID
+        self.room = room
+        self.wakeMappings = wakeMappings
+        self.arbitrationPriority = arbitrationPriority
+    }
+}
+
+struct CanonicalWakeMapping: Identifiable, Codable, Equatable, Hashable, Sendable {
+    let id: CanonicalWakeMappingID
+    let wakePhrase: String
+
+    var normalizedWakePhrase: String {
+        wakePhrase.trimmingCharacters(in: .whitespacesAndNewlines)
+            .split(whereSeparator: \.isWhitespace)
+            .joined(separator: " ")
+            .folding(
+                options: [.caseInsensitive, .diacriticInsensitive],
+                locale: Locale(identifier: "en_US_POSIX")
+            )
+    }
+
+    var hasValidValues: Bool {
+        id.isValid && !normalizedWakePhrase.isEmpty
+    }
+}
+
+struct HomeConfigurationSnapshot: Codable, Equatable, Sendable {
+    let revision: Int
+    let wakeMappings: [CanonicalWakeMapping]
+    let devices: [DeviceSetupConfiguration]
+
+    var validationErrors: [HomeConfigurationValidationError] {
+        HomeConfigurationValidator.validate(self)
+    }
+
+    var isValid: Bool {
+        validationErrors.isEmpty
+    }
+}
+
+enum HomeConfigurationValidationError: Equatable, Sendable {
+    case invalidRevision
+    case invalidMapping(CanonicalWakeMappingID)
+    case duplicateMappingID(CanonicalWakeMappingID)
+    case duplicateMappingPhrase(String)
+    case invalidDeviceID(String)
+    case duplicateDeviceID(String)
+    case invalidRoom(String)
+    case invalidPriority(String)
+    case duplicatePriority(room: String, priority: Int)
+    case invalidDeviceMapping(deviceID: String, mappingID: CanonicalWakeMappingID)
+    case unknownMapping(deviceID: String, mappingID: CanonicalWakeMappingID)
+    case mappingPhraseMismatch(deviceID: String, mappingID: CanonicalWakeMappingID)
+}
+
+private enum HomeConfigurationValidator {
+    static func validate(
+        _ snapshot: HomeConfigurationSnapshot
+    ) -> [HomeConfigurationValidationError] {
+        var errors: [HomeConfigurationValidationError] = []
+
+        if snapshot.revision < 0 {
+            errors.append(.invalidRevision)
+        }
+
+        var mappingIDs = Set<CanonicalWakeMappingID>()
+        var mappingPhrases = Set<String>()
+        var mappingsByID: [CanonicalWakeMappingID: CanonicalWakeMapping] = [:]
+        for mapping in snapshot.wakeMappings {
+            if !mapping.hasValidValues {
+                errors.append(.invalidMapping(mapping.id))
+            }
+            if !mappingIDs.insert(mapping.id).inserted {
+                errors.append(.duplicateMappingID(mapping.id))
+            }
+            if !mappingPhrases.insert(mapping.normalizedWakePhrase).inserted {
+                errors.append(.duplicateMappingPhrase(mapping.normalizedWakePhrase))
+            }
+            mappingsByID[mapping.id] = mapping
+        }
+
+        var deviceIDs = Set<String>()
+        var prioritiesByRoom: [String: Set<Int>] = [:]
+        for device in snapshot.devices {
+            guard device.deviceID.hasValidDeviceIdentifier else {
+                errors.append(.invalidDeviceID(device.deviceID))
+                continue
+            }
+            if !deviceIDs.insert(device.deviceID).inserted {
+                errors.append(.duplicateDeviceID(device.deviceID))
+            }
+
+            let room = device.room.trimmingCharacters(in: .whitespacesAndNewlines)
+            if room.isEmpty {
+                errors.append(.invalidRoom(device.room))
+            }
+
+            guard let priority = device.arbitrationPriority,
+                  priority > 0
+            else {
+                errors.append(.invalidPriority(device.deviceID))
+                continue
+            }
+            var roomPriorities = prioritiesByRoom[room, default: []]
+            if !roomPriorities.insert(priority).inserted {
+                errors.append(.duplicatePriority(room: room, priority: priority))
+            }
+            prioritiesByRoom[room] = roomPriorities
+
+            var deviceMappingIDs = Set<CanonicalWakeMappingID>()
+            for mapping in device.wakeMappings {
+                guard let canonicalID = mapping.canonicalID,
+                      canonicalID.isValid
+                else {
+                    errors.append(
+                        .invalidDeviceMapping(
+                            deviceID: device.deviceID,
+                            mappingID: mapping.canonicalID ?? CanonicalWakeMappingID("")
+                        )
+                    )
+                    continue
+                }
+                if !deviceMappingIDs.insert(canonicalID).inserted {
+                    errors.append(
+                        .invalidDeviceMapping(
+                            deviceID: device.deviceID,
+                            mappingID: canonicalID
+                        )
+                    )
+                }
+                guard mappingIDs.contains(canonicalID) else {
+                    errors.append(
+                        .unknownMapping(deviceID: device.deviceID, mappingID: canonicalID)
+                    )
+                    continue
+                }
+                if let canonicalMapping = mappingsByID[canonicalID],
+                   canonicalMapping.normalizedWakePhrase != mapping.normalizedWakePhrase {
+                    errors.append(
+                        .mappingPhraseMismatch(
+                            deviceID: device.deviceID,
+                            mappingID: canonicalID
+                        )
+                    )
+                }
+            }
+        }
+
+        return errors
+    }
+}
+
+private extension String {
+    var hasValidDeviceIdentifier: Bool {
+        !isEmpty && !contains(where: \Character.isWhitespace)
+    }
 }
 
 struct DeviceConfigurationState: Codable, Equatable, Sendable {
@@ -189,12 +378,16 @@ struct DeviceConfigurationState: Codable, Equatable, Sendable {
     let approvedDevice: HouseholdDevice?
     let verifiedConfiguration: DeviceSetupConfiguration
     let pendingConfiguration: DeviceSetupConfiguration?
+    /// Revision of the Home service snapshot that produced the verified
+    /// configuration. Older local state may not have this value.
+    let homeConfigurationRevision: Int?
     var identityStatus: DeviceIdentityStatus
 
     init(
         approvedDevice: HouseholdDevice? = nil,
         verifiedConfiguration: DeviceSetupConfiguration,
         pendingConfiguration: DeviceSetupConfiguration?,
+        homeConfigurationRevision: Int? = nil,
         identityStatus: DeviceIdentityStatus = .verified
     ) {
         self.deviceID = verifiedConfiguration.deviceID
@@ -208,6 +401,7 @@ struct DeviceConfigurationState: Codable, Equatable, Sendable {
         }
         self.verifiedConfiguration = verifiedConfiguration
         self.pendingConfiguration = pendingConfiguration
+        self.homeConfigurationRevision = homeConfigurationRevision
         self.identityStatus = identityStatus
     }
 
@@ -216,6 +410,7 @@ struct DeviceConfigurationState: Codable, Equatable, Sendable {
         case approvedDevice
         case verifiedConfiguration
         case pendingConfiguration
+        case homeConfigurationRevision
         case identityStatus
     }
 
@@ -234,6 +429,10 @@ struct DeviceConfigurationState: Codable, Equatable, Sendable {
             pendingConfiguration: try container.decodeIfPresent(
                 DeviceSetupConfiguration.self,
                 forKey: .pendingConfiguration
+            ),
+            homeConfigurationRevision: try container.decodeIfPresent(
+                Int.self,
+                forKey: .homeConfigurationRevision
             ),
             // Older files contain a locally verified configuration but no
             // current authority receipt. Missing status therefore fails
@@ -273,6 +472,17 @@ struct DeviceReenrollmentReceipt: Equatable, Sendable {
 struct DeviceConfigurationReceipt: Equatable, Sendable {
     let deviceID: String
     let configuration: DeviceSetupConfiguration
+    let homeConfigurationRevision: Int?
+
+    init(
+        deviceID: String,
+        configuration: DeviceSetupConfiguration,
+        homeConfigurationRevision: Int? = nil
+    ) {
+        self.deviceID = deviceID
+        self.configuration = configuration
+        self.homeConfigurationRevision = homeConfigurationRevision
+    }
 
     /// Compare the publishable configuration while ignoring the local UUID
     /// used to identify an editable row in the iOS form.
@@ -280,13 +490,15 @@ struct DeviceConfigurationReceipt: Equatable, Sendable {
         guard deviceID == requested.deviceID,
               configuration.deviceID == requested.deviceID,
               configuration.room == requested.room,
-              configuration.wakeMappings.count == requested.wakeMappings.count
+              configuration.wakeMappings.count == requested.wakeMappings.count,
+              configuration.arbitrationPriority == requested.arbitrationPriority
         else {
             return false
         }
 
         return zip(configuration.wakeMappings, requested.wakeMappings).allSatisfy {
-            $0.wakePhrase == $1.wakePhrase
+            $0.canonicalID == $1.canonicalID
+                && $0.wakePhrase == $1.wakePhrase
                 && $0.profileIdentifier == $1.profileIdentifier
         }
     }
