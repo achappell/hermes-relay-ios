@@ -1,0 +1,98 @@
+schema_version: 1
+repository: hermes-relay-ios
+surface: I
+stories:
+  - id: 1-I-1
+    product_epic: 1
+    title: Start an authorized Hermes turn
+    kind: surface
+    spec: docs/plans/2026-08-30-ios-01-foundation-plan.md
+    validation: docs/plans/2026-09-09-epic-1-ios-device-validation-plan.md
+  - id: 1-I-2
+    product_epic: 1
+    title: Render honest iOS turn phases and response delivery
+    kind: surface
+    spec: _bmad-output/implementation-artifacts/spec-1-2-render-honest-ios-turn-phases.md
+  - id: 1-I-3
+    product_epic: 1
+    title: Recover without replaying an uncertain iOS turn
+    kind: surface
+    spec: _bmad-output/implementation-artifacts/spec-1-4-recover-without-replaying-an-uncertain-ios-turn.md
+  - id: 2-I-1
+    product_epic: 2
+    title: Show iOS capture acknowledgement and live transcription
+    kind: surface
+    spec: _bmad-output/implementation-artifacts/spec-2-1-ios-capture-acknowledgement-and-live-transcription.md
+  - id: 2-I-2
+    product_epic: 2
+    title: Show honest iOS disconnected or unavailable state
+    kind: surface
+    spec: _bmad-output/implementation-artifacts/spec-2-2-ios-disconnected-state.md
+  - id: 3-I-1
+    product_epic: 3
+    title: Discover and connect an unconfigured Device
+    kind: surface
+    spec: _bmad-output/implementation-artifacts/spec-3-1-discover-unconfigured-devices.md
+  - id: 3-I-2
+    product_epic: 3
+    title: Approve and configure a Device
+    kind: surface
+    spec: _bmad-output/implementation-artifacts/spec-3-2-approve-and-configure-device.md
+  - id: 3-I-3
+    product_epic: 3
+    title: Validate unique Wake Mappings and Profile-specific publish state
+    kind: surface
+    spec: _bmad-output/implementation-artifacts/spec-3-3-validate-unique-wake-mappings-and-profile-specific-publish-state.md
+  - id: 3-I-4
+    product_epic: 3
+    title: Configure and expose deterministic single-Device wake arbitration
+    kind: surface
+    spec: null
+    notes: Shared Home contract and a local story specification remain open.
+  - id: 3-I-5
+    product_epic: 3
+    title: Fail closed for unavailable or revoked Device identities
+    kind: surface
+    spec: _bmad-output/implementation-artifacts/spec-3-5-fail-closed-for-unavailable-or-revoked-identities.md
+  - id: 3-I-6
+    product_epic: 3
+    title: Revoke access and require verified re-enrollment
+    kind: surface
+    spec: _bmad-output/implementation-artifacts/spec-3-6-revoke-access-and-require-verified-reenrollment.md
+  - id: 5-I-1
+    product_epic: 5
+    title: Use iOS as an independent conversation doorway
+    kind: surface
+    spec: _bmad-output/implementation-artifacts/spec-5-1-ios-independent-conversation-doorway.md
+  - id: IOS-UX-F1
+    title: Make unavailable and unconfigured states lead with the usable action
+    kind: local
+    spec: _bmad-output/implementation-artifacts/deferred-work.md
+  - id: IOS-UX-F2
+    title: Reconcile the live session after deleting the selected profile
+    kind: local
+    spec: _bmad-output/implementation-artifacts/deferred-work.md
+  - id: IOS-UX-F3
+    title: Replace configuration save-banner validation with field-level guidance
+    kind: local
+    spec: _bmad-output/implementation-artifacts/deferred-work.md
+  - id: IOS-UX-F4
+    title: Clarify household Device discovery recovery and empty states
+    kind: local
+    spec: _bmad-output/implementation-artifacts/deferred-work.md
+  - id: IOS-DESIGN-F1
+    title: Run a deliberate visual design pass across the iOS doorway
+    kind: local
+    spec: _bmad-output/implementation-artifacts/deferred-work.md
+  - id: IOS-BRAND-F1
+    title: Create and wire the Hermes Relay app icon set
+    kind: local
+    spec: _bmad-output/implementation-artifacts/deferred-work.md
+  - id: MACOS-DIST-F1
+    title: Produce a signed, notarized, and Gatekeeper-valid macOS DMG
+    kind: local
+    spec: _bmad-output/implementation-artifacts/deferred-work.md
+  - id: MACOS-DIST-F2
+    title: Add a secure macOS Check for Updates flow
+    kind: local
+    spec: _bmad-output/implementation-artifacts/deferred-work.md

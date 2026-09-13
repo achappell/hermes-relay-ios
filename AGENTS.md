@@ -35,12 +35,15 @@ While the board is paused:
   story specification, context, validation record, and review state for formal
   status and closure. Never mark an iOS story complete because another surface
   is complete.
-- Follow the surface story ID from the index to the shared surface-specific
-  map in `../hermes-relay-tui/_bmad-output/planning-artifacts/epics.md` and
-  then to the owning iOS artifact. Do not duplicate acceptance criteria or
-  create a second cross-repository matrix in this repository.
-- Do not create a duplicate backlog in `docs/plans/`; select from the existing
-  BMad epic/story set and record prioritization decisions in local artifacts.
+- For an existing imported story identity, use the shared surface map as
+  context, then follow this repository's `story-index.yaml` to the owning
+  artifact. New iOS stories are added to the local index and local tracker;
+  they do not require an edit to the TUI repository.
+- Do not duplicate acceptance criteria or create a second cross-repository
+  matrix in this repository. The local `story-index.yaml` is the iOS story
+  map, and `sprint-status.yaml` is the iOS delivery-status authority.
+- Do not create a backlog in `docs/plans/`; record iOS prioritization in the
+  local story index and tracker.
 
 When the maintainer explicitly reopens board work, restore the external-board
 procedure before choosing a board-scoped task: verify the credential with `gh
@@ -56,17 +59,17 @@ BMAD for a new slice. Do not copy private hub paths or personal notes into this
 public repository.
 While GitHub Project work is paused, use the surface coverage index for
 cross-repository applicability, evidence, and dependencies, and use this
-repository's local BMAD runtime and artifacts for iOS delivery scope, status,
-and validation. The shared surface-specific story identities live in
-`hermes-relay-tui/_bmad-output/planning-artifacts/epics.md`; do not copy them
-into a second local epic map. Do not copy `_bmad/` or tool configuration from
-`hermes-relay-tui`, and do not create a second matrix or product PRD. Existing
-local architecture and workflow notes remain implementation context. See
+repository's local BMAD runtime and artifacts for iOS story scope, status, and
+validation. The TUI epic map is an imported compatibility snapshot, not the
+iOS story or status authority. Do not copy `_bmad/` or tool configuration from
+`hermes-relay-tui`, and do not create a second cross-repository matrix or
+product PRD. Existing local architecture and workflow notes remain
+implementation context. See
 [`docs/bmad-upstream.md`](docs/bmad-upstream.md).
 
 Product or shared-behaviour decisions discovered during implementation flow
-back to the hub. `IOS-*` cards belong here; `TUI-*`/`HOME-*` cards belong in
-`hermes-relay-tui`.
+back to the product hub. `IOS-*` records belong here; TUI, Android, Home, and
+other surface records belong in their owning repositories.
 
 ## Product boundary
 

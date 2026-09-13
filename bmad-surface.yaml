@@ -1,0 +1,9 @@
+schema_version: 1
+repository: hermes-relay-ios
+planning: bmad
+surfaces:
+  - id: I
+    name: iOS Client
+status_tracker: _bmad-output/implementation-artifacts/sprint-status.yaml
+story_index: _bmad-output/implementation-artifacts/story-index.yaml
+coordination_authority: product-hub

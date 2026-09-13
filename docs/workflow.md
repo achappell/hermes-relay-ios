@@ -1,16 +1,21 @@
 # iOS/macOS Workflow
 
-## Board flow
+## Local tracker flow
 
-Use the repository's local planning artifacts as the source of truth for IOS-01,
-the current foundation slice. Keep one vertical slice in `Building` and move it
-promptly through:
+Use `_bmad-output/implementation-artifacts/sprint-status.yaml` as the formal
+delivery-status authority for iOS. Keep one vertical slice in `in-progress`
+and move it promptly through:
 
-`Inbox` → `Ready` → `Building` → `Verify` → `Done`
+`backlog` → `ready-for-dev` → `in-progress` → `review` → `done`
 
-Use `Blocked` when work depends on a Hermes protocol change, an external
-service, or a design decision. Keep the built-in status aligned with the
-workflow state.
+Use a local note or dependency reference when work depends on a Hermes
+protocol change, an external service, or a product decision. Do not change a
+sibling repository's tracker to represent an iOS dependency.
+
+The TUI coverage index is a read-only cross-repository context view. A normal
+iOS status transition is committed only in this repository. The product hub is
+updated only when implementation changes durable shared intent or a decision
+another surface must consume.
 
 ## Slice shape
 
@@ -27,14 +32,29 @@ failure before adding session browsing or media polish.
 
 ## Code workflow
 
-1. Read the active local story artifact and this repository's `AGENTS.md`.
+1. Read the active local story entry, specification, and this repository's
+   `AGENTS.md`.
 2. Add or update a focused XCTest before changing behavior.
 3. Run the focused test to establish the failure or boundary.
 4. Implement the smallest test-backed change.
 5. Build and test the iOS simulator target.
 6. Build the macOS target.
 7. Run the manual smoke plan and record evidence in the local validation record.
-8. Commit one coherent slice with a conventional commit message.
+8. Update the local tracker and validation record, then commit one coherent
+   slice with a conventional commit message.
+
+## Story records
+
+`_bmad-output/implementation-artifacts/story-index.yaml` owns iOS story
+identity, the parent product-epic reference, and links to local evidence. It
+does not copy product acceptance criteria. The individual specification owns
+the acceptance contract; the validation record owns observed evidence; the
+local tracker owns formal delivery status.
+
+When a story is iOS-only, create or update these local records without editing
+the TUI repository. When a change affects a shared protocol, household rule,
+or product outcome, record the shared decision in the product hub and link it
+from the local story.
 
 For the voice path, the manual plan is
 [`docs/plans/2026-08-30-ios-voice-interface-testing-plan.md`](plans/2026-08-30-ios-voice-interface-testing-plan.md).
