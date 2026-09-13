@@ -193,12 +193,14 @@ git commit -m "chore: scope tui bmad ownership locally"
 
 ---
 
-### Task 5: Add and test the derived cross-repository status report
+### Task 5: Move and test the derived cross-repository status report
 
 **Files:**
-- Create: `scripts/render_surface_status.py`
-- Create: `tests/test_surface_status_report.py`
-- Modify: `README.md`
+- Create: sibling `hermes-relay-coordinator/scripts/render_surface_status.py`
+- Create: sibling `hermes-relay-coordinator/tests/test_surface_status_report.py`
+- Create: sibling `hermes-relay-coordinator/surface-repositories.yaml`
+- Modify: sibling `hermes-relay-tui/README.md`
+- Modify: sibling `hermes-relay-tui/AGENTS.md`
 
 **Step 1: Write failing tests**
 
@@ -214,26 +216,37 @@ Cover these behaviors with temporary repository fixtures:
   `Next candidates` section ordered `ready-for-dev`, then `backlog`.
 - The renderer never edits an input repository.
 
-Run:
+Run from the coordinator repository:
 
 ```bash
-.venv/bin/pytest tests/test_surface_status_report.py -q
+uv run --no-project --python 3.14 --with pytest --with PyYAML \
+  -- python -m pytest tests/test_surface_status_report.py -q
 ```
 
-Expected: the new tests fail because the renderer does not exist.
+Expected: the new tests fail until the coordinator renderer is transferred.
 
-**Step 2: Implement the smallest renderer**
+**Step 2: Keep the renderer in the coordinator repository**
 
-Implement a standard-library CLI with PyYAML parsing:
+The public `hermes-relay-coordinator` repository owns the renderer, its
+path-only roster, and its focused tests. Its standard roster points to the five
+adjacent delivery repositories:
 
 ```text
-python scripts/render_surface_status.py \
-  --repo tui=. \
-  --repo ios=../hermes-relay-ios \
-  --repo android=../hermes-relay-android \
-  --repo home=../hermes-relay-home \
-  --repo agent=../hermes-agent \
-  --output _bmad-output/implementation-artifacts/surface-status-report.md
+uv run python scripts/render_surface_status.py \
+  --config surface-repositories.yaml \
+  --output surface-status-report.md
+```
+
+For isolated worktrees, pass all five paths explicitly:
+
+```text
+uv run python scripts/render_surface_status.py \
+  --repo tui=../../hermes-relay-tui-worktrees/federated-bmad-ownership \
+  --repo ios=../../hermes-relay-ios-worktrees/federated-bmad-ownership \
+  --repo android=../../hermes-relay-android-worktrees/federated-bmad-ownership \
+  --repo home=../../hermes-relay-home-worktrees/federated-bmad-ownership \
+  --repo agent=../../hermes-agent-worktrees/federated-bmad-ownership \
+  --output surface-status-report.md
 ```
 
 The command reads each repository’s `bmad-surface.yaml`, local story index,
@@ -242,13 +255,14 @@ row per local story, reports unregistered/missing records, and writes only the
 requested output file. It accepts arbitrary repository paths so no machine-
 specific path is stored in the report or source.
 
-**Step 3: Run the focused tests**
+**Step 3: Run the focused coordinator tests**
 
 ```bash
-.venv/bin/pytest tests/test_surface_status_report.py -q
+uv run --no-project --python 3.14 --with pytest --with PyYAML \
+  -- python -m pytest tests/test_surface_status_report.py -q
 ```
 
-Expected: all renderer tests pass.
+Expected: all coordinator renderer tests pass.
 
 **Step 4: Run the TUI regression check**
 
@@ -260,15 +274,16 @@ Expected: the existing TUI suite remains green.
 
 **Step 5: Document the command and its authority**
 
-Add the command to the TUI README and state that the output is disposable,
-read-only roll-up data. Do not overwrite the existing coverage matrix in this
-slice; it still carries applicability and dependency evidence.
+Point the TUI README at the coordinator and state that its output is
+disposable, read-only roll-up data. Do not overwrite the existing coverage
+matrix in this slice; it still carries applicability and dependency evidence.
 
-**Step 6: Commit the report tooling**
+**Step 6: Commit the coordinator tooling**
 
 ```bash
-git add scripts/render_surface_status.py tests/test_surface_status_report.py README.md
-git commit -m "feat: generate federated bmad status report"
+git add scripts/render_surface_status.py tests/test_surface_status_report.py \
+  surface-repositories.yaml README.md AGENTS.md
+git commit -m "feat: add federated bmad coordinator"
 ```
 
 ---
@@ -276,13 +291,14 @@ git commit -m "feat: generate federated bmad status report"
 ### Task 6: Generate, inspect, and hand off the migration
 
 **Files:**
-- Create or modify only the generated report: `_bmad-output/implementation-artifacts/surface-status-report.md`
+- Create or modify only the generated report in the coordinator checkout:
+  `surface-status-report.md`
 
-**Step 1: Render the local portfolio view**
+**Step 1: Render the portfolio view from the coordinator**
 
-Run the command from Task 5 against the five sibling repositories. The report
-must show iOS and Android statuses from their own trackers, not the TUI
-tracker, and must show `hermes-agent` as not applicable.
+Run the coordinator command from Task 5 against the five sibling repositories.
+The report must show iOS and Android statuses from their own trackers, not the
+TUI tracker, and must show `hermes-agent` as not applicable.
 
 **Step 2: Inspect the authority boundary**
 
