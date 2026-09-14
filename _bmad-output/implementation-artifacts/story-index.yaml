@@ -68,6 +68,7 @@ stories:
     title: Migrate the iOS/macOS client to the Standard Hermes boundary
     kind: migration
     spec: _bmad-output/implementation-artifacts/next-wave-standard-hermes-migration/stories/0-I-4-apple-migrate-ios-macos-client.md
+    validation: _bmad-output/implementation-artifacts/next-wave-standard-hermes-migration/stories/0-I-4-apple-migrate-ios-macos-client-validation.md
   - id: IOS-UX-F1
     title: Make unavailable and unconfigured states lead with the usable action
     kind: local
