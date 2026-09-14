@@ -2,7 +2,7 @@
 title: '[Apple] Migrate the iOS/macOS client'
 type: 'feature'
 created: '2026-09-14'
-status: 'blocked'
+status: 'draft'
 review_loop_iteration: 0
 followup_review_recommended: false
 context:
@@ -16,24 +16,24 @@ deferred: []
 
 ## Intent
 
-**Problem:** The Apple client currently sends fork-only `hello`/`turn`/`interrupt` frames, personal bearer credentials, and same-socket PCM. It has no explicit Home/Standard route or adapter, so the target migration cannot be verified without risking local Profile, history, presentation, audio, interruption, or recovery behavior.
+**Problem:** The Apple client currently sends fork-only `hello`/`turn`/`interrupt` frames, personal bearer credentials, and same-socket PCM. It has no adapter for Home’s planned schema-1 `/api/v1/bridge/ws` boundary, so the target migration cannot be verified without risking local Profile, history, presentation, audio, interruption, or recovery behavior. The public Home adapter is not live.
 
-**Approach:** Add an explicit Apple-local route and configuration seam, then implement the approved Home/Standard transport behind `HermesSessionClient`. Coordinate Standard JSON session traffic and response PCM at that seam, emit the existing normalized events, and retain the current client as an explicit rollback path until the Apple evidence gate passes.
+**Approach:** Add an explicit Apple-local Home bridge route and configuration seam behind `HermesSessionClient`, using an injectable fake Home bridge for implementation and evidence until the public endpoint exists. Consume Home’s opaque handle, Device credential, route/status separation, JSON-RPC envelope, normalized Standard events, and separate audio notifications; retain the current client as an explicit rollback path. Do not call Home methods on vanilla Hermes `/api/ws`, expose a Hermes bearer, or claim live route integration before the Home adapter is served.
 
 ## Boundaries & Constraints
 
-**Always:** Select and freeze a route before each turn; expose readiness only after a verified session identity; keep one receive owner per socket; preserve cumulative text, turn correlation, verified PCM metadata, terminal ordering, local Profile UUID/history/Keychain separation, native capture/playback, and confirmed-versus-unconfirmed interruption state. Reconnect only after fresh readiness. Preserve an uncertain turn for explicit fresh user action. Treat Standard timing as absent unless a verified playback clock or duration supplies it; network arrival is never timing authority. Use only the approved device/Home credential boundary and content-safe diagnostics.
+**Always:** Consume only the Home-approved route and opaque conversation handle; freeze route, Household, bridge, and turn identity for each turn; expose readiness only after Home authorization and bridge/session binding are verified; keep one receive owner per Home control stream and one owner per audio stream; preserve cumulative text, turn correlation, verified PCM metadata, terminal ordering, local Profile UUID/history/Keychain separation, native capture/playback, and confirmed-versus-unconfirmed interruption state. Reconnect only through Home with fresh authorization/readiness and preserve the unresolved-turn marker. Require a fresh explicit user action after uncertainty. Treat Standard timing as absent unless a verified playback clock or duration supplies it; network arrival is never timing authority. Use only the approved Device credential boundary and content-safe diagnostics.
 
-**Never:** Put raw Standard/Home frames in `ConversationStore` or SwiftUI, add a second Hermes parser, invent a public Home route or envelope, send a personal Hermes bearer to an endpoint, switch routes during an active or uncertain turn, replay an uncertain turn, silently emulate missing prompts/commands/timing, or change the sibling Home/TUI repositories.
+**Never:** Put raw Standard/Home frames in `ConversationStore` or SwiftUI, add a second Hermes parser, invent or claim a live Home route, send Home methods directly to vanilla `/api/ws`, send a personal or server-held Hermes bearer to the endpoint, persist a Device credential outside Keychain, switch routes during an active or uncertain turn, replay an uncertain turn, silently emulate missing prompts/commands/timing, or change the sibling Home/TUI repositories.
 
 ## I/O & Edge-Case Matrix
 
 | Scenario | Input / State | Expected Output / Behavior | Error Handling |
 |---|---|---|---|
-| Ready text and voice turn | Selected Home/Standard route; approved credential; ready session; normalized text and sidecar PCM | Native text and voice surfaces retain current phases, text replacement, audio format, and playback-drain completion semantics | Unusable readiness or audio metadata is typed unavailable before false completion |
+| Ready text and voice turn | Fake Home bridge; approved Device credential; opaque handle; ready bridge/session; normalized text and sidecar PCM | Native text and voice surfaces retain current phases, text replacement, audio format, and playback-drain completion semantics | Unusable Home readiness or audio metadata is typed unavailable before false completion |
 | Standard timing absent | Ready Standard session with no speech-timing capability | Timing capability is visibly absent to evidence/state; captions use existing playback/duration behavior | Never derive timing from frame arrival or transcript timestamps |
 | Confirmed interrupt | Active turn with advertised interrupt; terminal interruption arrives | Native playback stops, stale events are discarded, and the surface reports Interrupted only after terminal confirmation | Request/acknowledgement without terminal confirmation is not completion |
-| Route loss or uncertain delivery | Active/uncertain turn loses transport | Selected route reconnects after readiness; text remains recoverable and the user gets an explicit fresh resend action | No path switch or automatic resend; unconfirmed delivery remains unconfirmed |
+| Route loss or uncertain delivery | Active/uncertain turn loses Home transport | Home reconnects through an approved same-identity route after fresh authorization/readiness; text remains recoverable and the user gets an explicit fresh resend action | No path switch during active/uncertain delivery or automatic resend; unconfirmed delivery remains unconfirmed |
 | Reversible configuration conversion | Existing profile, local history, legacy credential, and new route metadata | Profile identity, device identity, history, draft, and uncertainty marker survive; legacy source remains until verified rollback is possible | Failed conversion leaves the legacy source usable and reports a safe actionable error |
 
 </intent-contract>
