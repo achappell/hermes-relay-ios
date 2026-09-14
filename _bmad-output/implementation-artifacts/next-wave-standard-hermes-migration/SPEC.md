@@ -1,15 +1,15 @@
 ---
 id: SPEC-ios-next-wave-standard-hermes-migration
 companions:
-  - ../../../hermes-relay-home/_bmad-output/specs/spec-home-bridge-route-roaming/bridge-contract.md
-  - ../../../hermes-relay-home/_bmad-output/specs/spec-home-bridge-route-roaming/SPEC.md
-  - ../../../hermes-relay-home/_bmad-output/specs/spec-home-bridge-route-roaming/route-session-state.md
-  - ../../../hermes-relay-home/_bmad-output/specs/spec-standard-hermes-compatibility-migration/standard-baseline.md
-  - ../../../hermes-relay-home/_bmad-output/specs/spec-standard-hermes-compatibility-migration/surface-migration-matrix.md
-  - ../../../hermes-relay-home/_bmad-output/specs/spec-home-service-foundation/credential-lifecycle.md
-  - ../../../hermes-relay-home/_bmad-output/specs/spec-standard-bridge/transport-contract.md
-  - ../../../hermes-relay-home/_bmad-output/specs/spec-standard-hermes-compatibility-migration/compatibility-and-rollout.md
-  - ../../../hermes-relay-home/_bmad-output/planning-artifacts/architecture/architecture-hermes-relay-home-2026-09-12/ARCHITECTURE-SPINE.md
+  - ~/Development/hermes-relay-home/_bmad-output/specs/spec-home-bridge-route-roaming/bridge-contract.md
+  - ~/Development/hermes-relay-home/_bmad-output/specs/spec-home-bridge-route-roaming/SPEC.md
+  - ~/Development/hermes-relay-home/_bmad-output/specs/spec-home-bridge-route-roaming/route-session-state.md
+  - ~/Development/hermes-relay-home/_bmad-output/specs/spec-standard-hermes-compatibility-migration/standard-baseline.md
+  - ~/Development/hermes-relay-home/_bmad-output/specs/spec-standard-hermes-compatibility-migration/surface-migration-matrix.md
+  - ~/Development/hermes-relay-home/_bmad-output/specs/spec-home-service-foundation/credential-lifecycle.md
+  - ~/Development/hermes-relay-home/_bmad-output/specs/spec-standard-bridge/transport-contract.md
+  - ~/Development/hermes-relay-home/_bmad-output/specs/spec-standard-hermes-compatibility-migration/compatibility-and-rollout.md
+  - ~/Development/hermes-relay-home/_bmad-output/planning-artifacts/architecture/architecture-hermes-relay-home-2026-09-12/ARCHITECTURE-SPINE.md
   - ../../../docs/bmad-upstream.md
 ---
 

@@ -1,6 +1,6 @@
 ---
 story: 0-I-4
-run_id: 20260914-140556-e55a
+run_id: 20260914-170648-846a
 status: blocked
 phase: plan
 ---
@@ -9,50 +9,43 @@ phase: plan
 
 ## Outcome
 
-The migrated unattended BMad auto loop generated the Story 4 implementation
-plan, then paused at the plan checkpoint after the read-only spec reviewer
-returned `fail`. No implementation, focused XCTest, simulator build/test,
-macOS build/test, or live smoke check ran.
+The second unattended BMad pass read the now-published Home bridge contract
+and generated an implementation plan, but its read-only plan gate returned
+`fail`. No implementation, focused XCTest, iOS Simulator build/test, macOS
+build/test, or live route check ran.
 
-## Blocking dependency
-
-Home Story 2 must first publish the approved Apple-facing bridge contract. The
-current upstream material leaves the endpoint path and versioned envelope open,
-and does not yet pin the handle exchange, route/Household identity, readiness
-and safe-error states, Standard event mapping, or route-loss behavior. Story 4
-must select that single contract before an Apple adapter can be implemented.
+The upstream contract is no longer the blocker: it defines the planned
+schema-1 `/api/v1/bridge/ws`, one endpoint-facing WebSocket, opaque handles,
+Device authentication, route/session state, error codes, event/audio shapes,
+no-replay reconnect, and the vanilla Hermes `0.21.1` ownership boundary. The
+public Home adapter is still absent, so live route integration remains a
+separate blocked evidence gate.
 
 ## Review evidence
 
-The plan reviewer recorded 16 blocking findings. They fall into these required
-repair groups:
+Run `20260914-170648-846a` returned 13 actionable findings. The plan needed to:
 
-- one authoritative Home/Standard route, with route/session/Household identity
-  and no route change during active or uncertain delivery;
-- versioned device-credential conversion with crash-safe verification and
-  explicit legacy rollback;
-- Apple-owned configuration, readiness, heartbeat/reconnect, lifecycle, and
-  typed failure boundaries;
-- a defined Standard/Home-to-normalized-event mapping and dual-socket join
-  state machine;
-- verified PCM metadata, audio-unavailable behavior, interrupt confirmation,
-  optional prompt/command capability handling, and explicit timing absence;
-- phase-specific route-loss recovery and persistence of the uncertainty marker;
-- a pinned Hermes release and focused XCTest command, followed by corrected
-  iOS/macOS build and manual evidence commands.
-
-The reviewer also identified that the existing manual plan describes an older
-project/scheme, bearer-token form, `hello_ack`, and same-socket audio flow, so it
-cannot be used as Story 4 evidence until the migration contract is pinned and
-the Apple validation steps are updated.
+- resolve sibling companion paths;
+- model one Apple Home socket with one reader and logical audio/control
+  demultiplexing, keeping Standard's gateway/audio sockets Home-owned;
+- define opaque binding types instead of reusing or leaking Standard
+  `sessionID`;
+- define typed Home route/bridge/turn states, stable errors, operation
+  deadlines, and known-rejected versus uncertain delivery;
+- make pre-issued Device-credential conversion, persisted phases, crash-safe
+  verification, idle-boundary rollback, and legacy retention explicit;
+- assign structured prompt/command actions and secret redaction;
+- specify the control/audio join, strict PCM metadata, audio failure, timing
+  absence, interrupt confirmation, route-loss phases, and Apple lifecycle;
+- provide a reproducible Debug fake injection path and pin fake provenance to
+  Standard commit `2237be355906fbe6065ce1815711eee52b2d646e`.
 
 ## Resume condition
 
-Re-arm the story only after Home Story 2 resolves the bridge endpoint/envelope,
-identity, capability, and failure decisions and the local Story 4 spec is
-repaired against them. Then run the auto loop’s plan review again before any
-implementation attempt. Preserve the explicit rollback and fresh-user-action
-boundary; do not invent a direct Standard or Home endpoint in this repository.
+The local Story 4 spec and wrapper have been repaired against the Home
+contract. Re-arm the auto loop for a fresh plan review. If that gate passes,
+implementation may proceed only against the injectable fake Home bridge; keep
+the public-adapter absence visible as a blocked live-integration condition.
 
 ## Evidence safety
 
