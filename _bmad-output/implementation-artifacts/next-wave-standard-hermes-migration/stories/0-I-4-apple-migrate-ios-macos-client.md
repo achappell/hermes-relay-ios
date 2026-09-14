@@ -2,7 +2,7 @@
 title: '[Apple] Migrate the iOS/macOS client'
 type: 'feature'
 created: '2026-09-14'
-status: 'draft'
+status: 'ready-for-dev'
 review_loop_iteration: 0
 followup_review_recommended: false
 context:
@@ -178,181 +178,294 @@ uncertain. Late frames are rejected by the turn/generation guard.
 
 ## Code Map
 
-- `HermesRelay/Models/HomeBridgeModels.swift` -- endpoint-safe route,
-  binding, capability, credential-migration, structured-prompt, audio, error,
-  connection, and turn-delivery types.
-- `HermesRelay/Models/SessionModels.swift:176-246,289-307` -- replace the
-  public Home use of `sessionID`, add endpoint-safe binding/correlation and
-  explicit audio byte order while retaining legacy-only compatibility.
-- `HermesRelay/Services/HermesSessionClient.swift:3-25` -- introduce typed
-  operation and interruption outcomes; map the existing legacy client without
-  changing its explicit rollback behavior.
-- `HermesRelay/Services/HomeBridgeSessionClient.swift` and
-  `HermesRelay/Services/URLSessionHomeBridgeSessionClient.swift` -- one
-  endpoint-facing Home WebSocket, upgrade credential boundary, request-ID
-  correlation, deadlines, reconnect, typed errors, and stream demultiplexing.
-  The production adapter must remain an explicit unavailable gate while the
-  public Home endpoint is absent; it must not open Standard sockets.
-- `HermesRelay/Services/WebSocketConnection.swift:8-25` -- retain the
-  injectable one-socket boundary and document one reader/close ownership.
-- `HermesRelay/Services/HermesEventNormalizer.swift:17-337` -- extend the
-  existing normalization boundary for schema-1 Home event envelopes,
-  cumulative replacement, safe error mapping, audio validation, interrupt
-  terminals, and timing absence. Do not add a second Standard parser.
-- `HermesRelay/ViewModels/ConversationStore.swift:30-131,163-358,375-507`
-  and `HermesRelay/Services/ReconnectPolicy.swift:1-28` -- construct and
-  freeze a verified binding, project separate route/bridge/turn state, persist
-  known-versus-uncertain outcomes, preserve the old client for explicit
-  rollback, and reconnect only through Home with no replay.
+- `HermesRelay/Models/SessionModels.swift:3-33,73-206,289-308` -- current
+  connection/voice projections, `SessionMetadata.sessionID`,
+  `HermesTurnBinding`, `AudioFormat`, and normalized `HermesEvent`; introduce
+  a typed Home-versus-legacy binding and explicit PCM byte order without
+  putting an opaque Home handle or Standard runtime ID in `sessionID`.
+- `HermesRelay/Services/HermesSessionClient.swift:3-35` -- the async
+  normalized client seam and Boolean interrupt result; add typed Home operation
+  and interruption outcomes while keeping the legacy adapter usable only for
+  explicit rollback.
+- `HermesRelay/Services/HermesEventNormalizer.swift:17-169,171-215,217-367`
+  -- existing Standard/fork event mapping, cumulative preview replacement, and
+  legacy `speech_timing`; add an envelope-validation wrapper and Home timing
+  gate here, not a second Standard parser.
+- `HermesRelay/Services/WebSocketConnection.swift:8-16,44-157` -- injectable
+  text/binary socket and exactly-once receive continuation; retain it as the
+  single receive-owner seam for the Home socket.
+- `HermesRelay/Services/URLSessionHermesSessionClient.swift:33-191,222-333,340-485`
+  -- current legacy bearer, `hello`/`turn`/`interrupt`, binary gating,
+  generation guards, and bounded sends; preserve as rollback-only and ensure
+  no Home method is routed through it.
+- `HermesRelay/Models/HomeBridgeModels.swift` -- add endpoint-safe schema-1
+  JSON-RPC envelopes, approved route identity, opaque conversation/turn
+  binding, bridge/delivery/audio states, capabilities, stable failures,
+  structured prompts/commands, typed interruption outcomes, deadlines, and
+  migration records. This file does not exist yet.
+- `HermesRelay/Services/HomeBridgeSessionClient.swift`,
+  `HermesRelay/Services/URLSessionHomeBridgeSessionClient.swift`, and
+  `HermesRelay/Services/FakeHomeBridgeSessionClient.swift` -- add the Home
+  session boundary, opt-in URLSession adapter, deterministic fake, one-reader
+  JSON/binary demultiplexing, request correlation, and production
+  `public_adapter_unavailable` gate. These files do not exist yet.
+- `HermesRelay/ViewModels/ConversationStore.swift:18-161,163-306,375-508`
+  and `HermesRelay/Services/ReconnectPolicy.swift:7-30` -- current binding
+  proof, local transcript/draft/uncertainty persistence, reconnect ladder, and
+  no-replay seam; separate route, bridge, and turn delivery and freeze the
+  Home binding through recovery.
+- `HermesRelay/Services/ConversationPersistence.swift:3-90` -- per-Profile
+  local messages, draft, and `unconfirmedTurnText`; retain this ordinary local
+  store while keeping credentials, raw PCM, server IDs, and structured secret
+  values outside it.
+- `HermesRelay/Models/RelayProfile.swift:29-95`,
+  `HermesRelay/Models/RelayProfileCollection.swift:7-44`,
+  `HermesRelay/Services/RelayConfigurationStore.swift:24-177`, and
+  `HermesRelay/Services/SecureValueStore.swift:4-70` -- profile identity and
+  verified Keychain copy/read-back; extend them with Home/legacy mode, a
+  secure-only pre-issued Device credential reference, and crash-safe phase
+  storage without altering legacy token deletion semantics for unrelated users.
+- `HermesRelay/Services/HomeCredentialStore.swift` and
+  `HermesRelay/Services/HomeConfigurationMigration.swift` -- new secure
+  credential-reference and reversible conversion seams. Store no raw
+  credential in Codable profiles, snapshots, logs, or diagnostics; activate
+  Home only after secure read-back and fake-ready verification, and retain
+  the legacy credential for explicit rollback.
 - `HermesRelay/ViewModels/VoiceSessionCoordinator.swift:469-576,731-840,891-1238`
-  and `HermesRelay/Services/AudioOutput.swift:1-44` -- preserve native
-  capture/playback, generation guards, audio-terminal join, playback drain,
-  and verified duration/clock timing.
-- `HermesRelay/Views/AmbientHUD.swift:1-220,283-418`,
-  `HermesRelay/Views/ContentView.swift:1-220`, and
-  `HermesRelay/Views/RelayConfigurationView.swift:1-380` -- project the
-  typed Home/route/turn/timing/audio/unresolved states, expose safe unavailable
-  and fresh-resend actions, and keep structured prompt/secret presentation out
-  of ordinary text.
-- `HermesRelay/HermesRelayApp.swift:1-90` -- inject a Debug-only
-  `-HomeBridgeFake` factory for deterministic iOS/macOS manual evidence;
-  production Home mode remains unavailable until the public adapter exists.
-- `HermesRelay/Services/RelayConfigurationStore.swift:24-177`,
-  `HermesRelay/Models/RelayProfile.swift:29-95`,
-  `HermesRelay/Models/RelayProfileCollection.swift:3-44`, and
-  `HermesRelay/Services/SecureValueStore.swift:4-70` -- persist versioned
-  Home/legacy credential references and crash-safe migration phases without
-  writing secret values to Codable profile files.
-- `HermesRelay/Services/ConversationPersistence.swift:3-90` -- preserve
-  per-Profile messages, draft, and `unconfirmedTurnText`; do not export them
-  into diagnostics or use this store as a wire parser.
-- `HermesRelayTests/HomeBridgeSessionClientTests.swift`,
-  `HermesRelayTests/HomeBridgeEnvelopeTests.swift`,
-  `HermesRelayTests/HomeBridgeAudioTests.swift`,
-  `HermesRelayTests/ConversationStoreTransportTests.swift`,
-  `HermesRelayTests/ConversationStoreReconnectTests.swift`,
-  `HermesRelayTests/RecoveryTests.swift`,
-  `HermesRelayTests/RelayConfigurationTests.swift`,
-  `HermesRelayTests/ConversationPersistenceTests.swift`, and
-  `HermesRelayTests/VoiceSessionCoordinatorTests.swift` -- deterministic
-  one-Home-socket fixtures plus regression coverage for every table above.
-- `Hermes Relay.xcodeproj/project.pbxproj:167-185,259-294,392-408`,
-  `.github/workflows/ci.yml:17-89`, and `docs/workflow.md:33-87` -- add source
-  membership and use the repository's iOS/macOS build-test ladder.
+  -- capture binding, interrupt flow, generation guards, native playback
+  drain, local playback clock, and final PCM duration; add Home control/audio
+  joining, typed audio failures, confirmed interrupt projection, and lifecycle
+  teardown while preserving text when audio fails.
+- `HermesRelay/Services/AudioOutput.swift:4-63,196-329`,
+  `HermesRelay/Services/AppleAudioOutput.swift:4-173`, and
+  `HermesRelay/Views/RecentTranscriptRail.swift:111-175,418-605` -- strict
+  PCM validation, frame accumulation, platform playback, and verified local
+  timing projection.
+- `HermesRelay/Views/AmbientHUD.swift:86-259,281-285`,
+  `HermesRelay/Views/ContentView.swift:85-220,223-375`,
+  `HermesRelay/Views/RelayConfigurationView.swift:121-475`, and
+  `HermesRelay/Views/VoiceControl.swift:3-26,96-213` -- current SwiftUI
+  connection projection, scene handling, configuration form, and voice
+  actions; expose typed Home route/bridge/delivery/timing/audio/prompt state
+  and explicit fresh-action/rollback controls without content-bearing
+  diagnostics.
+- `HermesRelay/HermesRelayApp.swift:5-76` -- app-owned persistence ordering,
+  configured-client construction, and debug factory seam; select
+  `-HomeBridgeFake` only in Debug and keep production Home mode unavailable
+  until the public route adapter is served.
+- `HermesRelayTests/HermesEventNormalizerTests.swift:5-311`,
+  `HermesRelayTests/URLSessionHermesSessionClientTests.swift:204-695,801-917`,
+  `HermesRelayTests/ConversationStoreTransportTests.swift:7-468,482-713`,
+  `HermesRelayTests/ConversationStoreReconnectTests.swift:7-181,211-247`,
+  `HermesRelayTests/RecoveryTests.swift:7-101`,
+  `HermesRelayTests/VoiceSessionCoordinatorTests.swift:8-2068,2077-2885`,
+  `HermesRelayTests/AudioOutputTests.swift:7-348,392-494`, and
+  `HermesRelayTests/RelayConfigurationTests.swift:6-633` -- existing
+  deterministic fakes and regression seams to extend; no Home-focused test
+  files currently exist.
+- `Hermes Relay.xcodeproj/project.pbxproj:167-228,350-412` -- one app target
+  and one `HermesRelayTests` target; register each new source/test explicitly.
+- `.github/workflows/ci.yml:17-100`,
+  `docs/plans/2026-08-30-ios-voice-interface-testing-plan.md:13-149`, and
+  `docs/workflow.md:33-87` -- actual iOS/macOS build ladder and stale manual
+  commands; update the plan to the real project/scheme and fake-only smoke
+  boundary.
+- Canonical Home bridge contract v1, route/session state, credential lifecycle,
+  and pinned Standard baseline -- external planning authority read during
+  investigation. The fixed rules are schema-1 JSON-RPC, the seven Home
+  methods, `event`/`audio.frame` notifications, `Authorization: Device`, safe
+  opaque handles, `timing: absent`, and no direct public adapter claim.
 
 ## Tasks & Acceptance
 
 **Execution:**
 
-1. **Define the safe model boundary.** Add the typed Home route, binding,
-   capability, connection, turn-delivery, prompt/command, audio, failure, and
-   credential-migration models. Replace the Home path's public `sessionID`
-   assumption with an opaque binding case and retain a legacy-only case. Add
-   byte order to `AudioFormat`; no missing metadata defaults.
-2. **Build the endpoint-facing adapter.** Add the one-socket Home bridge client
-   and fake transport. Encode/decode schema-1 JSON-RPC, unique request IDs,
-   `Authorization: Device`, Home methods, `event` and `audio.frame` JSON, and
-   binary PCM. Enforce the endpoint-safe allowlist and keep Standard runtime
-   identity, Profile IDs, and bearers private. The fake may join internal
-   Standard gateway/audio fixtures, but Apple code must never send directly to
-   vanilla `/api/ws` or `/api/audio/speak-stream`.
-3. **Normalize and join streams.** Extend the existing normalizer and session
-   client so only matching handle/route/Profile/turn/correlation events reach
-   the store; cumulative previews replace rather than append; global events do
-   not complete; structured prompts and advertised commands have typed APIs;
-   and the control/audio state machine settles on control terminal plus an
-   audio terminal or typed audio failure. Add the full PCM validation and
-   generation/late-frame guards.
-4. **Make outcomes and recovery explicit.** Update `HermesSessionClient`,
-   `ConversationStore`, and `ReconnectPolicy` for typed ready/unavailable,
-   operation deadlines, known rejection versus uncertain transport,
-   `conversation.reconnect`, phase-specific route loss, unresolved-turn
-   persistence, fresh-resend-only recovery, confirmed/unconfirmed interrupt,
-   and no route/Profile/Household switch during active or uncertain delivery.
-5. **Migrate configuration without losing rollback.** Consume only a
-   pre-issued Home Device credential from the secure store. Persist separate
-   Home and legacy credential records plus an idempotent migration phase; write
-   the active-mode change only after Keychain read-back and a successful fake
-   Home ready binding. Keep the legacy source until explicit verified rollback.
-   Defer conversion or rollback while capture, playback drain, active delivery,
-   or uncertainty is in progress, and leave legacy mode selected after any
-   failure.
-6. **Project Apple lifecycle and UI state.** Update `AmbientHUD`, `ContentView`,
-   `RelayConfigurationView`, `HermesRelayApp`, and the voice coordinator so
-   iOS and macOS stop capture/playback at their existing deactivation boundary,
-   do not send or claim reconnect readiness while inactive, restore
-   history/draft/uncertainty on relaunch, and resume only through Home ready.
-   Add the Debug-only `-HomeBridgeFake` injection path and show typed route,
-   bridge, timing, audio, prompt, command, and unresolved states without
-   content-bearing diagnostics.
-7. **Add deterministic evidence and validate the repository.** Add one-socket
-   fake fixtures for ready/unavailable, adapter absence, identity mismatch,
-   cumulative text, prompts/commands, valid/invalid PCM, audio loss,
-   timing-absent, interrupt confirmation/fallback, each route-loss phase,
-   conversion/rollback/crash, lifecycle, and no-replay behavior. Pin fake
-   provenance to Hermes `0.21.1` commit
-   `2237be355906fbe6065ce1815711eee52b2d646e`. Update the local validation
-   record with fake results and the separately blocked live-adapter gate, then
-   run focused XCTest, iOS Simulator build/test, macOS build/test, and the
-   target-specific fake smoke plan.
+1. `HermesRelay/Models/HomeBridgeModels.swift`,
+   `HermesRelay/Models/SessionModels.swift`,
+   `HermesRelay/Services/HermesSessionClient.swift`, and
+   `HermesRelay/Services/HermesEventNormalizer.swift` -- define the typed
+   endpoint-safe schema-1 request/response/notification envelope and the
+   Home-versus-legacy binding. Validate `jsonrpc: "2.0"`, `schema: 1`, unique
+   request IDs, matching opaque conversation/turn/correlation fields, stable
+   Home failure codes, typed deadlines, capability `timing: absent`, and
+   strict audio-frame metadata. Preserve Standard event names, semantic
+   payload meaning, cumulative replacement, and global-event rules at the
+   existing normalizer seam; map `sessionID` only for the legacy case.
+2. `HermesRelay/Services/HomeBridgeSessionClient.swift`,
+   `HermesRelay/Services/URLSessionHomeBridgeSessionClient.swift`,
+   `HermesRelay/Services/FakeHomeBridgeSessionClient.swift`, and
+   `HermesRelay/Services/WebSocketConnection.swift` -- implement one Home
+   receive owner over the planned
+   `/api/v1/bridge/ws`, with JSON-RPC methods limited to
+   `conversation.open`, `conversation.reconnect`, `prompt.submit`,
+   `session.interrupt`, `prompt.respond`, `command.dispatch`, and
+   `bridge.ping`; carry `event`/`audio.frame` JSON and binary PCM on that
+   socket. Send only `Authorization: Device <device-credential>` on the
+   upgrade, keep the credential and server/runtime identifiers out of all
+   other frames, and make the production factory return
+   `public_adapter_unavailable` while the public Home adapter is absent. The
+   Debug fake must be explicit and deterministic; it may model Home's internal
+   Standard gateway/audio join but must never open vanilla `/api/ws` or
+   `/api/audio/speak-stream`.
+3. `HermesRelay/Models/RelayProfile.swift`,
+   `HermesRelay/Models/RelayProfileCollection.swift`,
+   `HermesRelay/Services/SecureValueStore.swift`,
+   `HermesRelay/Services/HomeCredentialStore.swift`,
+   `HermesRelay/Services/HomeConfigurationMigration.swift`, and
+   `HermesRelay/Services/RelayConfigurationStore.swift` -- add explicit
+   Home/legacy mode and Home-provided approved-route metadata, store only a
+   reference to a pre-issued endpoint Device credential in secure storage,
+   persist idempotent migration phases, and verify Keychain read-back before
+   probing a fake Home `conversation.open`. Persist Home mode only after the
+   binding is `ready`; leave legacy mode and its bearer available after any
+   write/read-back/fake-ready/crash failure. Allow explicit rollback only at an
+   idle boundary and never derive or issue a Device credential in Apple code.
+4. `HermesRelay/ViewModels/ConversationStore.swift`,
+   `HermesRelay/Services/ConversationPersistence.swift`, and
+   `HermesRelay/Services/ReconnectPolicy.swift` -- keep local Profile
+   messages/drafts intact while separating route state, Home bridge state, and
+   turn-delivery state. Classify `request_rejected` as known non-delivery and
+   `transport_unavailable`/`transport_timeout` as uncertain; persist
+   `unconfirmedTurnText` only for the latter, retain it through reconnect, and
+   clear/replace it only after a fresh explicit user action creates a new
+   Home turn. Freeze Profile, Household, route, conversation handle, and
+   active turn identity while active or uncertain; reconnect the same binding
+   with bounded 10-second operations and never resend or replay.
+5. `HermesRelay/ViewModels/VoiceSessionCoordinator.swift`,
+   `HermesRelay/Services/AudioOutput.swift`,
+   `HermesRelay/Services/AppleAudioOutput.swift`, and
+   `HermesRelay/Views/RecentTranscriptRail.swift` -- join the Home control
+   terminal with an audio terminal (`ended`, `fallback`, `unavailable`, or
+   `invalid`) and native playback drain; accept PCM only after a positive-rate,
+   mono, signed-16, little-endian `audio.frame` start, reject pre-start,
+   duplicate, late, misaligned, or wrong-generation bytes, and keep text
+   usable after audio failure. Treat Home `timing: absent` and legacy
+   `speech_timing` as non-authoritative in Home mode; expose unavailable timing
+   or the already verified local playback clock/final PCM duration only.
+6. `HermesRelay/Services/HermesSessionClient.swift`,
+   `HermesRelay/Services/URLSessionHermesSessionClient.swift`,
+   `HermesRelay/ViewModels/ConversationStore.swift`,
+   `HermesRelay/ViewModels/VoiceSessionCoordinator.swift`, and
+   `HermesRelay/Services/ReconnectPolicy.swift` -- replace optimistic Boolean
+   interruption at the normalized seam with typed
+   `confirmed`/`rejected`/`unavailable`/`uncertain` outcomes. Use the 2-second
+   interrupt acknowledgement bound, wait for the matching
+   `interrupted`/`cancelled` terminal before showing Interrupted, and use
+   close/reconnect fallback for timeout or transport loss without replay.
+   Apply the 10-second open/reconnect and prompt-acceptance, 5-second ping,
+   and 5-second audio-start bounds through injected clocks/sleepers; preserve
+   late-event and generation guards.
+7. `HermesRelay/Services/AppleLifecycleCoordinator.swift`,
+   `HermesRelay/ViewModels/VoiceSessionCoordinator.swift`,
+   `HermesRelay/ViewModels/ConversationStore.swift`, and
+   `HermesRelay/Views/ContentView.swift` -- add a main-actor Apple lifecycle
+   seam used by both iOS and macOS. On inactive/background/suspension/window
+   disappearance, stop capture and playback, cancel or freeze reconnect/send
+   work, preserve local history/draft/uncertainty, and prevent readiness claims
+   or Home operations until active again. On relaunch/foreground, restore the
+   per-Profile local state before a fresh Home-ready reconnect; never retarget
+   an active or uncertain binding.
+8. `HermesRelay/Views/AmbientHUD.swift`,
+   `HermesRelay/Views/RelayConfigurationView.swift`,
+   `HermesRelay/Views/VoiceControl.swift`, and
+   `HermesRelay/HermesRelayApp.swift` -- project safe route/bridge/turn,
+   timing, audio, structured-prompt, command, and uncertainty states. Keep
+   structured prompt responses typed with fixed keys (`choice`/`all`,
+   `answer`, `value`, `password`) and out of ordinary transcript history;
+   expose explicit rollback and fresh-action recovery. Wire
+   `-HomeBridgeFake` only for Debug and render
+   `public_adapter_unavailable` as unavailable, never as invalid credentials
+   or live Home connectivity.
+9. `HermesRelayTests/HomeBridgeEnvelopeTests.swift`,
+   `HermesRelayTests/HomeBridgeSessionClientTests.swift`,
+   `HermesRelayTests/HomeBridgeAudioTests.swift`,
+   `HermesRelayTests/HomeConfigurationMigrationTests.swift`,
+   `HermesRelayTests/AppleLifecycleTests.swift`,
+   `HermesRelayTests/ConversationStoreTransportTests.swift`,
+   `HermesRelayTests/ConversationStoreReconnectTests.swift`,
+   `HermesRelayTests/RecoveryTests.swift`,
+   `HermesRelayTests/VoiceSessionCoordinatorTests.swift`,
+   `HermesRelayTests/AudioOutputTests.swift`, and
+   `HermesRelayTests/RelayConfigurationTests.swift` -- add deterministic
+   fixtures for envelope/error redaction, one-reader ordering, method
+   allowlisting, Device-header construction, production adapter absence,
+   opaque-handle isolation, route-loss phases, known-versus-uncertain
+   delivery, no-replay/fresh action, interrupt terminal confirmation,
+   structured prompt/command gating, strict PCM and control/audio joining,
+   timing absence, crash-safe migration/rollback, and iOS/macOS lifecycle.
+   Keep all fixtures free of prompts, responses, credentials, raw frames, and
+   PCM bytes; use numeric counts and safe reason codes in assertions.
+10. `Hermes Relay.xcodeproj/project.pbxproj`, `.github/workflows/ci.yml`,
+    `docs/plans/2026-08-30-ios-voice-interface-testing-plan.md`, and
+    `_bmad-output/implementation-artifacts/next-wave-standard-hermes-migration/stories/validation-0-I-4-apple-migrate-ios-macos-client.md`
+    -- register every new source/test in the single
+    app/test targets, correct the manual commands to `Hermes Relay.xcodeproj`
+    and `HermesRelay`, pin fake provenance to Standard `0.21.1` commit
+    `2237be355906fbe6065ce1815711eee52b2d646e`, and record fake-backed results
+    separately from the blocked public-adapter gate. Do not run or claim live
+    Home route evidence until that adapter is served.
 
 **Acceptance Criteria:**
 
-- Given an existing selected Profile with local history, draft, uncertainty
-  marker, and a legacy bearer record, when a pre-issued Home Device credential
-  is staged, then secure-store read-back and a ready fake Home binding are
-  required before Home mode becomes active; Profile UUID, device identity,
-  history, draft, and uncertainty survive, and the legacy source remains
-  available for explicit idle-boundary rollback.
-- Given a Home route is selected by Home and `conversation.open` returns
-  schema-1 `status: ready` with the same opaque handle, route binding, and
-  capabilities, then the store may project Connected and accept input. A
-  route-only success, `status: unavailable`, `reconnect_required`, refusal, or
-  `404` cannot project Connected or be reported as invalid credentials.
-- Given a ready binding, when a user sends text or voice, then the adapter
-  sends one Home `prompt.submit`, the store receives only matching normalized
-  Standard event semantics, cumulative previews replace correctly, a known
-  rejection is not marked uncertain, and an accepted turn retains its opaque
-  Home IDs without exposing a Standard runtime Session ID.
-- Given a voice turn, when valid `audio.frame` metadata, split binary PCM, and
-  control/audio terminal conditions arrive in either permitted order, then only
-  verified signed-16 little-endian mono PCM reaches native playback and the
-  response settles after control terminal plus playback/audio terminal. Invalid,
-  fallback, unavailable, or late audio produces typed audio state while
-  readable text remains available.
-- Given the pinned Standard capability reports `timing: absent`, then the
-  Apple surface exposes timing absence or the existing verified final playback
-  duration/clock and never uses network arrival, ping, transcript timestamps,
-  or legacy `speech_timing` as timing authority.
-- Given an approval, clarify, secret, or sudo event, then the native surface
-  preserves its fixed response key, sensitivity, options, expiry, handle, turn,
-  and correlation; unsupported or stale resolution is typed unavailable or
-  rejected, and secret/password values are absent from transcript, persistence,
-  diagnostics, and evidence. Given a command, only an advertised name is
-  dispatched and its known/uncertain outcome remains distinct.
-- Given interrupt capability is advertised, then an accepted request changes
-  the surface to Interrupted only after a matching interrupted/cancelled
-  terminal event, stops native playback, and discards stale generations. An
-  unsupported/rejected request remains distinct; an acknowledgement or timeout
-  without terminal confirmation uses the existing close/reconnect fallback and
-  leaves delivery unconfirmed.
-- Given route or transport loss occurs at any phase in the route-loss matrix,
-  then recovery uses fresh Home authorization/readiness and the same binding,
-  never changes route during active/uncertain delivery, never resubmits or
-  replays, retains `unconfirmedTurnText` through reconnect, and requires a
-  fresh explicit user action for a new turn. Exhaustion or revocation leaves a
-  safe unavailable/disconnected state with no new submission.
-- Given iOS or macOS becomes inactive, backgrounds, suspends, relaunches, or
-  closes a window during capture/playback/reconnect/uncertainty, then native
-  resources stop at the defined boundary, no inactive send or readiness claim
-  occurs, and relaunch restores local history/draft/uncertainty before a new
-  Home-ready connection. The `-HomeBridgeFake` launch path reproduces the fake
-  scenarios on both targets; production does not claim a live Home route while
-  the adapter is absent.
-- Given the deterministic fake scenarios pass, then the focused XCTest and the
-  `HermesRelay` iOS Simulator and macOS build/test gates pass, and the
-  validation record proves that no credentials, prompts, response text, raw
-  frames, PCM bytes, audio captures, or generated build files entered evidence.
+- Given a selected Profile with local history, draft, uncertainty marker, and
+  legacy credential, when a pre-issued Home Device credential is staged and
+  the user explicitly starts conversion, then Keychain read-back and a
+  fake-ready `conversation.open` binding are required before the Apple surface
+  selects Home mode; the Profile identity and local state survive, and the
+  legacy credential remains available for idle-boundary rollback.
+- Given a Home-provided approved route and opaque conversation handle, when
+  schema-1 `conversation.open` returns `status: ready` with the same handle,
+  route identity, and capabilities, then the Apple surface may show Connected
+  and accept input; route reachability alone, `unavailable`,
+  `reconnect_required`, refusal, or `404` never does.
+- Given Home mode is selected while the public adapter is absent, when the app
+  loads the selected Profile, then it shows typed
+  `public_adapter_unavailable` and offers explicit recovery/rollback without
+  sending a Home method to vanilla `/api/ws`, opening
+  `/api/audio/speak-stream`, sending a bearer, or claiming live Home route
+  integration.
+- Given a Home-ready binding, when the user performs one text or voice action,
+  then exactly one allowlisted `prompt.submit` is correlated to a new opaque
+  Home turn, matching Standard events reach the normalized store with their
+  cumulative-preview and terminal meaning intact, and the Apple surface never
+  exposes a Standard runtime Session ID.
+- Given an accepted or rejected input operation, when the transport returns
+  success, `request_rejected`, or `transport_timeout`/`transport_unavailable`,
+  then the surface distinguishes completed/known-failed/uncertain delivery,
+  persists the uncertainty marker only for the uncertain cases, and on
+  reconnect retains the same binding without resubmission until a fresh user
+  action.
+- Given a valid or invalid Home audio sequence, when control and audio
+  terminals arrive in either permitted order, then the surface plays only
+  validated mono signed-16 little-endian PCM and settles text/audio after the
+  control terminal plus an audio terminal or typed audio failure; late or
+  invalid audio cannot create a second answer or erase readable text.
+- Given `timing: absent` and either a legacy timing-shaped event or ping
+  response, when the Apple surface presents the turn, then it reports timing
+  absence or uses only verified local playback duration/clock and never treats
+  network arrival, ping latency, transcript timestamps, or `speech_timing` as
+  timing authority.
+- Given an approval, clarify, secret, or sudo request or an advertised command,
+  when the user resolves or dispatches it, then the surface uses the fixed
+  typed response key or advertised command only, preserves handle/turn/
+  correlation and sensitivity metadata, and keeps secret/password values out
+  of transcript, persistence, diagnostics, and evidence.
+- Given interrupt support is advertised, when an acknowledgement is received
+  without a matching `interrupted`/`cancelled` terminal, then the surface does
+  not show Interrupted; the bounded timeout/transport path stops local audio,
+  reconnects through the same binding, and leaves delivery uncertain. Only the
+  matching terminal confirms interruption and invalidates stale generations.
+- Given route loss, revocation, or lifecycle deactivation occurs before,
+  during, or after a turn, when recovery or relaunch runs, then route,
+  Profile, Household, handle, and delivery state follow the route-loss matrix,
+  native resources stop at the Apple boundary, inactive operations are
+  suppressed, local state restores before Home readiness, and no uncertain
+  prompt or response is replayed.
+- Given the deterministic fake suite and iOS/macOS gates pass, when the
+  validation record is reviewed, then it contains only safe states, counts,
+  timings from approved local clocks, reason codes, build/test destinations,
+  and the pinned fake provenance; live Home integration remains explicitly
+  blocked until the public adapter exists.
 
 ## Spec Change Log
 
@@ -365,65 +478,82 @@ uncertain. Late frames are rejected by the turn/generation guard.
 ## Review Triage Log
 
 - 2026-09-14: The prior auto-loop plan review failed because it linked the
-  sibling companions incorrectly and left the endpoint/Standard socket boundary,
-  opaque binding, credential conversion, typed readiness/errors, audio join,
-  prompts/commands, timing absence, lifecycle injection, and pinned evidence
-  insufficiently specified. This revision addresses those findings. The Home
-  contract is now readable and stable enough for fake-backed implementation;
-  only the public live adapter remains an explicit external gate.
+  sibling companions incorrectly and left the endpoint/Standard socket
+  boundary, opaque binding, credential conversion, typed readiness/errors,
+  audio join, prompts/commands, timing absence, lifecycle injection, and pinned
+  evidence insufficiently specified. This revision addresses those findings.
+  The Home contract is now readable and stable enough for fake-backed
+  implementation; only the public live adapter remains an explicit external
+  gate.
 
 ## Design Notes
 
 The Apple adapter is a narrow endpoint client, not a second Hermes gateway.
-Home's future endpoint presents one receive stream. Its `event` and
-`audio.frame` JSON notifications plus binary PCM are demultiplexed by one
-reader, while Home—not this repository—owns the awkward join between the
-Standard JSON gateway and the separate response-audio sidecar. The fake uses
-that same endpoint shape and may drive two internal fixtures to prove the join.
+Home's endpoint exposes one receive stream: `event` and `audio.frame` JSON
+notifications plus binary PCM are demultiplexed by one reader. Home—not this
+repository—owns the join between Standard's JSON gateway and response-audio
+sidecar. The fake uses the same endpoint shape and may drive deterministic
+internal fixtures to prove that join.
 
-The route selector and Household Identity proof belong to Home. Apple stores
-only the safe selected route binding, opaque conversation handle, local Profile
-UUID, and capability snapshot. Reconnect restores the existing binding; it does
-not create a new Profile, infer a new route, or resend uncertain input.
+The route selector and Household Identity proof remain Home-owned. Apple stores
+only Home-provided safe route metadata, the opaque conversation handle, the
+local Profile UUID, and the capability snapshot. The chosen Apple-local
+transport mode is explicit: Home mode is selected only after migration
+verification; the legacy client is retained as an explicit rollback mode.
+Reconnect restores the existing binding and any unresolved turn; it never
+creates a new Profile, infers a route, resubmits input, or declares completion
+from readiness.
 
-The current coordinator already supports playback-position and final PCM
-duration behavior. The migration therefore records Standard timing as absent
-and keeps those verified local fallbacks, without allowing fork-era timing or
-network arrival to leak back in.
+The canonical Home prompt response keys are fixed: approval uses `choice` with
+optional `all`, clarification uses `answer`, secret uses `value`, and sudo uses
+`password`. These values are transient typed input and never ordinary model
+text. The pinned Standard baseline has no authoritative timing event, so Home
+mode reports `timing: absent` and may use only the existing verified playback
+clock/final PCM duration.
 
 ## Verification
 
 **Commands:**
 
-- `xcodebuild -project "Hermes Relay.xcodeproj" -scheme HermesRelay -destination 'platform=iOS Simulator,name=iPhone 17 Pro' CODE_SIGNING_ALLOWED=NO CODE_SIGN_IDENTITY="" test -only-testing:HermesRelayTests/HomeBridgeSessionClientTests -only-testing:HermesRelayTests/HomeBridgeEnvelopeTests -only-testing:HermesRelayTests/HomeBridgeAudioTests -only-testing:HermesRelayTests/HomeBridgeConfigurationTests` -- expected: focused Home bridge, envelope, audio, and migration XCTest pass.
+- `xcodebuild -project "Hermes Relay.xcodeproj" -scheme HermesRelay -destination 'platform=macOS' CODE_SIGNING_ALLOWED=NO CODE_SIGN_IDENTITY="" test -only-testing:HermesRelayTests/HomeBridgeEnvelopeTests -only-testing:HermesRelayTests/HomeBridgeSessionClientTests -only-testing:HermesRelayTests/HomeBridgeAudioTests -only-testing:HermesRelayTests/HomeConfigurationMigrationTests -only-testing:HermesRelayTests/AppleLifecycleTests` -- expected: focused deterministic Home/lifecycle XCTest pass.
 - `xcodebuild -project "Hermes Relay.xcodeproj" -scheme HermesRelay -sdk iphonesimulator -destination 'generic/platform=iOS Simulator' CODE_SIGNING_ALLOWED=NO CODE_SIGN_IDENTITY="" build` -- expected: iOS Simulator build succeeds.
-- `simulator_id="$(xcrun simctl list devices available | awk -F '[()]' '/iPhone/ { print $2; exit }')" && test -n "$simulator_id" && xcodebuild -project "Hermes Relay.xcodeproj" -scheme HermesRelay -destination "platform=iOS Simulator,id=$simulator_id" CODE_SIGNING_ALLOWED=NO CODE_SIGN_IDENTITY="" test` -- expected: the full iOS XCTest suite passes against the first available iPhone Simulator.
+- `simulator_id="$(xcrun simctl list devices available | awk -F '[()]' '/iPhone/ { print $2; exit }')"; test -n "$simulator_id"; xcodebuild -project "Hermes Relay.xcodeproj" -scheme HermesRelay -destination "platform=iOS Simulator,id=$simulator_id" CODE_SIGNING_ALLOWED=NO CODE_SIGN_IDENTITY="" test` -- expected: complete iOS XCTest suite passes on the first available iPhone simulator, or the inability to launch is recorded as an environment limitation.
 - `xcodebuild -project "Hermes Relay.xcodeproj" -scheme HermesRelay -destination 'generic/platform=macOS' CODE_SIGNING_ALLOWED=NO CODE_SIGN_IDENTITY="" build` -- expected: macOS build succeeds.
-- `xcodebuild -project "Hermes Relay.xcodeproj" -scheme HermesRelay -destination 'platform=macOS' CODE_SIGNING_ALLOWED=NO CODE_SIGN_IDENTITY="" test` -- expected: macOS XCTest suite passes.
+- `xcodebuild -project "Hermes Relay.xcodeproj" -scheme HermesRelay -destination 'platform=macOS' CODE_SIGNING_ALLOWED=NO CODE_SIGN_IDENTITY="" test` -- expected: complete macOS XCTest suite passes.
+- `git diff --check` -- expected: no whitespace errors, generated build products, credentials, audio, or unrelated repository edits.
 
 **Manual checks:**
 
-- On both iOS and macOS, launch the Debug fake with `-HomeBridgeFake` and
-  exercise readiness before capture, one text turn, one spoken turn with
-  split-sidecar PCM, confirmed interruption, audio failure, each route-loss
-  phase, explicit rollback, and one fresh resend after uncertainty.
-- Exercise inactive/background/suspension/relaunch while capture, playback,
-  reconnect, and uncertainty are active. Confirm native resources stop, local
-  history/draft/uncertainty survive, and no inactive operation sends or claims
-  readiness.
-- Confirm `AmbientHUD` exposes route/bridge/turn/timing/audio/unresolved state
-  without prompt or response content in diagnostics. Record the public Home
-  adapter refusal/absence as blocked integration evidence; do not send any Home
-  method to vanilla Hermes and do not call that absence a credential failure.
-- Review the validation record and diff for bearer/device credentials, prompts,
-  response text, runtime IDs, raw frames, PCM/audio captures, generated build
-  files, and changes outside this repository.
+- On both iOS and macOS, launch Debug with `-HomeBridgeFake`; confirm
+  Home-ready state precedes capture, one text turn preserves Standard event
+  meaning, one voice turn joins split PCM with the control terminal, timing
+  absence is visible, audio failure preserves text, and confirmed interruption
+  waits for its matching terminal.
+- Exercise loss before acceptance, during acceptance, after acceptance, after
+  control completion while audio drains, revocation, reconnect exhaustion,
+  explicit idle-boundary rollback, and one fresh user action after uncertainty.
+  Confirm no prompt is resent, no route/Profile/Household binding changes
+  mid-turn, and no readiness state is mistaken for old-turn completion.
+- Exercise inactive/background/suspension/relaunch/window disappearance during
+  capture, playback, reconnect, and uncertainty. Confirm native resources stop,
+  local history/draft/uncertainty survive, and no inactive Home operation or
+  readiness claim occurs.
+- Confirm the UI displays safe route/bridge/delivery/audio/timing/prompt/
+  command/unresolved states. Review diagnostics and validation evidence for
+  absence of credentials, prompts, responses, runtime IDs, raw frames, PCM,
+  microphone captures, and screenshots with private content. Record the
+  public-adapter absence as blocked integration evidence; do not call it a
+  credential failure.
 
 ## Auto Run Result
 
-Status: pending plan review.
+Status: ready-for-dev.
 
-Planning boundary: the next unattended run must regenerate this plan, pass the
-read-only specification gate, and only then dispatch implementation. The live
-Home route remains blocked because the public adapter is not served; fake Home
-bridge evidence is the permitted implementation boundary.
+Planning result: the story has a file-anchored, fake-backed implementation
+plan. The normalized session boundary, schema-1 Home envelope, approved Device
+credential boundary, opaque handles, explicit rollback, fresh-action recovery,
+strict Standard audio/event meaning, timing absence, and Apple lifecycle
+ownership are all specified. The public Home adapter remains an explicit
+blocked evidence gate; no implementation, build, test, or live-route check ran
+in this planning pass.
+
