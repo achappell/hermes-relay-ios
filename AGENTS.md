@@ -93,6 +93,14 @@ The current protocol facts come from the sibling TUI:
 - The iOS client must not invent upload, remote undo, usage, compression, or
   other server operations before Hermes exposes them.
 
+## Worktrees
+
+All linked feature and agent worktrees for this repository belong under
+`.worktrees/<name>` inside the repository's main checkout. Keep `.worktrees/`
+ignored and do not create sibling `*-worktrees` directories or use a global
+tool-specific worktree location. BMAD loop-managed run worktrees under
+`.bmad-loop/runs/<run>/worktrees/` are engine-owned and remain there.
+
 ## Security
 
 - Never commit bearer tokens, profile files, audio, signing certificates, or

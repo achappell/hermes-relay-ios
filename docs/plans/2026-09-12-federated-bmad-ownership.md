@@ -241,11 +241,11 @@ For isolated worktrees, pass all five paths explicitly:
 
 ```text
 uv run python scripts/render_surface_status.py \
-  --repo tui=../../hermes-relay-tui-worktrees/federated-bmad-ownership \
-  --repo ios=../../hermes-relay-ios-worktrees/federated-bmad-ownership \
-  --repo android=../../hermes-relay-android-worktrees/federated-bmad-ownership \
-  --repo home=../../hermes-relay-home-worktrees/federated-bmad-ownership \
-  --repo agent=../../hermes-agent-worktrees/federated-bmad-ownership \
+  --repo tui=../../hermes-relay-tui/.worktrees/federated-bmad-ownership \
+  --repo ios=../../hermes-relay-ios/.worktrees/federated-bmad-ownership \
+  --repo android=../../hermes-relay-android/.worktrees/federated-bmad-ownership \
+  --repo home=../../hermes-relay-home/.worktrees/federated-bmad-ownership \
+  --repo agent=../../hermes-agent/.worktrees/federated-bmad-ownership \
   --output surface-status-report.md
 ```
 
