@@ -5,3 +5,10 @@
 #
 # [agents.bmad-agent-pm]
 # description = "Prefers short, bulleted PRDs over narrative drafts."
+
+[core]
+user_name = "Amanda"
+communication_language = "English"
+
+[modules.bmm]
+user_skill_level = "intermediate"
