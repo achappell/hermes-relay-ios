@@ -1,0 +1,12 @@
+- id: "0-I-4"
+  title: "[Apple] Migrate the iOS/macOS client"
+  description: >-
+    Move the native Apple client to the approved Home or Standard Hermes
+    boundary without changing local Profile, history, presentation, audio
+    lifecycle, or interruption semantics. Record fake-bridge and live text,
+    voice, reconnect, route, and timing evidence in this repository.
+  spec_checkpoint: true
+  invoke_dev_with: >-
+    Keep SwiftUI and Apple lifecycle concerns local to this repository. Use the
+    existing normalized session boundary, preserve explicit rollback and fresh
+    user action after uncertainty, and do not claim timing from network arrival.

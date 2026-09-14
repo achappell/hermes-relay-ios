@@ -64,6 +64,10 @@ stories:
     title: Use iOS as an independent conversation doorway
     kind: surface
     spec: _bmad-output/implementation-artifacts/spec-5-1-ios-independent-conversation-doorway.md
+  - id: 0-I-4
+    title: Migrate the iOS/macOS client to the Standard Hermes boundary
+    kind: migration
+    spec: _bmad-output/implementation-artifacts/next-wave-standard-hermes-migration/stories/0-I-4-apple-migrate-ios-macos-client.md
   - id: IOS-UX-F1
     title: Make unavailable and unconfigured states lead with the usable action
     kind: local

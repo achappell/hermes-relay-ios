@@ -1,4 +1,6 @@
 .DS_Store
+__pycache__/
+*.pyc
 
 # Xcode user and build state
 DerivedData/
@@ -20,3 +22,6 @@ Secrets.xcconfig
 Recordings/
 Audio/
 /_bmad/config.user.toml
+.bmad-loop/runs/
+.bmad-loop/cache/
+_bmad/render/
