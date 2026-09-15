@@ -1,5 +1,29 @@
 # Changelog
 
+## 0.4.0 (2026-09-15)
+
+<!-- Release notes generated using configuration in .github/release.yml at main -->
+
+## What's Changed
+### Dependencies
+* chore(deps): bump apple-actions/download-provisioning-profiles from 473562c853e9f580367eeff7c180258653e416e0 to 2126b5f86a0e2863cbf4d2d312112b22b943a594 by @dependabot[bot] in https://github.com/achappell/hermes-relay-ios/pull/76
+* chore(deps): bump apple-actions/import-codesign-certs from b2e261033a9e248f91a9b57201e8d1e12b15a24e to 5142e029c445c10ffc7149d172e540235a065466 by @dependabot[bot] in https://github.com/achappell/hermes-relay-ios/pull/75
+* chore(deps): bump apple-actions/upload-testflight-build from 6fd267a887d75a215682c05c861278a67801855c to 5e75ff58276689011512ba87a381d93dc67dbcf8 by @dependabot[bot] in https://github.com/achappell/hermes-relay-ios/pull/74
+### Other Changes
+* fix(ci): use Xcode managed TestFlight signing by @achappell in https://github.com/achappell/hermes-relay-ios/pull/61
+* fix(ci): use integer TestFlight build numbers by @achappell in https://github.com/achappell/hermes-relay-ios/pull/63
+* feat(ios): add Home wake arbitration configuration seam by @achappell in https://github.com/achappell/hermes-relay-ios/pull/64
+* chore: make iOS BMad delivery status local by @achappell in https://github.com/achappell/hermes-relay-ios/pull/65
+* docs(ios): specify Home service client slice by @achappell in https://github.com/achappell/hermes-relay-ios/pull/66
+* chore: standardize project-local worktrees by @achappell in https://github.com/achappell/hermes-relay-ios/pull/72
+* docs: register Apple next-wave story roster by @achappell in https://github.com/achappell/hermes-relay-ios/pull/73
+* feat(ios): implement Story 4 Home bridge migration by @achappell in https://github.com/achappell/hermes-relay-ios/pull/77
+
+## New Contributors
+* @dependabot[bot] made their first contribution in https://github.com/achappell/hermes-relay-ios/pull/76
+
+**Full Changelog**: https://github.com/achappell/hermes-relay-ios/compare/v0.3.2...v0.4.0
+
 ## 0.3.2 (2026-09-12)
 
 <!-- Release notes generated using configuration in .github/release.yml at main -->
