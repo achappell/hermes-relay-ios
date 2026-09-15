@@ -2,11 +2,11 @@
 title: '[Apple] Migrate the iOS/macOS client'
 type: 'feature'
 created: '2026-09-14'
-baseline_revision: 'cae50c2ed61df0296f9ca64e7d5463ff3d0e6879'
-baseline_commit: 'cae50c2ed61df0296f9ca64e7d5463ff3d0e6879'
-status: 'in-progress'
-review_loop_iteration: 3
-followup_review_recommended: false
+baseline_revision: '7cd4f31'
+baseline_commit: '7cd4f31'
+status: 'review'
+review_loop_iteration: 4
+followup_review_recommended: true
 context:
   - '{project-root}/docs/architecture.md'
   - '{project-root}/docs/workflow.md'
@@ -1862,14 +1862,21 @@ hide an untested migration branch:
 
 ## Auto Run Result
 
-Status: in-progress.
+Status: review.
 
 Implementation result: the BMAD auto loop produced the first Apple migration
 slice and its deterministic evidence. The normalized session boundary,
 schema-1 Home envelope, approved Device credential boundary, opaque handles,
 explicit rollback, fresh-action recovery, strict Standard audio/event meaning,
 timing absence, Apple lifecycle ownership, and safe Home status projection are
-now represented in source and tests. The public Home adapter remains an
-explicit blocked evidence gate; no live-route check was run or claimed. The
-manual fake UI walkthrough remains pending because the available computer-use
-surface could not attach to the iOS Simulator window.
+now represented in source and tests. The contract audit also closed the nested
+Home event/audio envelope shape, numeric JSON-RPC error code, and strict typed
+payload validation gaps found after the baseline commit.
+
+The focused deterministic Apple gates and complete iOS/macOS XCTest and build
+gates pass. The public Home adapter remains an explicit blocked evidence gate:
+the deployed listener returned `status: unavailable` with
+`reason: hermes_unavailable` to a schema-1 `conversation.open` probe using a
+deliberately synthetic Device credential. No real credential, prompt, turn, or
+audio was sent. The manual fake UI walkthrough remains unavailable because the
+computer-use surface could not attach to the iOS Simulator window.

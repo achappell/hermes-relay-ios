@@ -64,6 +64,152 @@ final class HomeBridgeSessionClientTests: XCTestCase {
         XCTAssertEqual(closeCount, 1)
     }
 
+    func testURLSessionClientAcceptsContractNestedEventNotification() async throws {
+        let fixture = try await makeFixture()
+        let client = fixture.client
+        let stream = await client.events()
+        var events = stream.makeAsyncIterator()
+
+        guard case .ready(let binding, _) = await client.open(claim: fixture.claim) else {
+            return XCTFail("The bridge must open before it can deliver events")
+        }
+
+        let scope = HomeEventScope(
+            conversationHandle: binding.conversationHandle,
+            turnID: "turn-1",
+            correlationID: "correlation-1"
+        )
+        await fixture.socket.enqueue(.text(try contractEventFrame(
+            scope: scope,
+            type: "message.start",
+            payload: ["kind": "assistant"]
+        )))
+
+        let event = try await events.next()
+        XCTAssertEqual(
+            event,
+            .standard(HomeStandardEvent(
+                type: .messageStart,
+                scope: scope,
+                payload: .start(kind: .assistant)
+            ))
+        )
+
+        await client.close()
+    }
+
+    func testURLSessionClientMapsNumericJSONRPCErrorUsingStableHomeCode() async throws {
+        let fixture = try await makeFixture()
+        let client = fixture.client
+        guard case .ready(let binding, _) = await client.open(claim: fixture.claim) else {
+            return XCTFail("A valid Home bridge response must become ready")
+        }
+
+        await fixture.socket.setNextError(
+            for: "prompt.submit",
+            jsonRPCCode: -32_000,
+            homeCode: "request_rejected"
+        )
+        let outcome = await client.submitPrompt("synthetic prompt", binding: binding)
+
+        XCTAssertEqual(
+            outcome,
+            .rejected(.home(code: .requestRejected, phase: .submission))
+        )
+        await client.close()
+    }
+
+    func testURLSessionClientRejectsUnknownNestedEventFields() async throws {
+        let fixture = try await makeFixture()
+        let client = fixture.client
+        let stream = await client.events()
+        var events = stream.makeAsyncIterator()
+
+        guard case .ready(let binding, _) = await client.open(claim: fixture.claim) else {
+            return XCTFail("A valid Home bridge response must become ready")
+        }
+        await fixture.socket.enqueue(.text(try contractEventFrame(
+            scope: HomeEventScope(
+                conversationHandle: binding.conversationHandle,
+                turnID: "turn-1",
+                correlationID: "correlation-1"
+            ),
+            type: "message.start",
+            payload: ["kind": "assistant"],
+            extraEventFields: ["session_id": "server-only"]
+        )))
+
+        do {
+            _ = try await events.next()
+            XCTFail("Server-only nested event fields must not reach the event stream")
+        } catch {
+            XCTAssertTrue(true)
+        }
+        await client.close()
+    }
+
+    func testURLSessionClientRejectsMalformedTypedEventPayload() async throws {
+        let fixture = try await makeFixture()
+        let client = fixture.client
+        let stream = await client.events()
+        var events = stream.makeAsyncIterator()
+
+        guard case .ready(let binding, _) = await client.open(claim: fixture.claim) else {
+            return XCTFail("A valid Home bridge response must become ready")
+        }
+        await fixture.socket.enqueue(.text(try contractEventFrame(
+            scope: HomeEventScope(
+                conversationHandle: binding.conversationHandle,
+                turnID: "turn-1",
+                correlationID: "correlation-1"
+            ),
+            type: "message.delta",
+            payload: [
+                "rendered": "synthetic preview",
+                "replace": "not-a-boolean",
+            ]
+        )))
+
+        do {
+            _ = try await events.next()
+            XCTFail("Malformed typed event fields must not be normalized by default")
+        } catch {
+            XCTAssertTrue(true)
+        }
+        await client.close()
+    }
+
+    func testURLSessionClientRejectsMalformedStructuredPromptPayload() async throws {
+        let fixture = try await makeFixture()
+        let client = fixture.client
+        let stream = await client.events()
+        var events = stream.makeAsyncIterator()
+
+        guard case .ready(let binding, _) = await client.open(claim: fixture.claim) else {
+            return XCTFail("A valid Home bridge response must become ready")
+        }
+        await fixture.socket.enqueue(.text(try contractEventFrame(
+            scope: HomeEventScope(
+                conversationHandle: binding.conversationHandle,
+                turnID: "turn-1",
+                correlationID: "approval-1"
+            ),
+            type: "approval.request",
+            payload: [
+                "options": "not-an-array",
+                "sensitive": false,
+            ]
+        )))
+
+        do {
+            _ = try await events.next()
+            XCTFail("Malformed structured prompt fields must not become a typed prompt")
+        } catch {
+            XCTAssertTrue(true)
+        }
+        await client.close()
+    }
+
     func testURLSessionClientJoinsBinaryPCMOnlyInsideAValidatedAudioScope() async throws {
         let fixture = try await makeFixture()
         let client = fixture.client
@@ -311,9 +457,12 @@ final class HomeBridgeSessionClientTests: XCTestCase {
         payload: [String: Any]
     ) throws -> String {
         var params: [String: Any] = [
+            "schema": 1,
             "conversation_handle": conversationHandle,
-            "type": type,
-            "payload": payload,
+            "event": [
+                "type": type,
+                "payload": payload,
+            ],
         ]
         if let turnID { params["turn_id"] = turnID }
         if let correlationID { params["correlation_id"] = correlationID }
@@ -326,18 +475,48 @@ final class HomeBridgeSessionClientTests: XCTestCase {
         return String(decoding: try JSONSerialization.data(withJSONObject: object), as: UTF8.self)
     }
 
+    private func contractEventFrame(
+        scope: HomeEventScope,
+        type: String,
+        payload: [String: Any],
+        extraEventFields: [String: Any] = [:]
+    ) throws -> String {
+        var event: [String: Any] = [
+            "type": type,
+            "payload": payload,
+        ]
+        event.merge(extraEventFields) { current, _ in current }
+        let object: [String: Any] = [
+            "jsonrpc": "2.0",
+            "schema": 1,
+            "method": "event",
+            "params": [
+                "schema": 1,
+                "conversation_handle": scope.conversationHandle,
+                "turn_id": scope.turnID as Any,
+                "correlation_id": scope.correlationID as Any,
+                "event": event,
+            ],
+        ]
+        return String(decoding: try JSONSerialization.data(withJSONObject: object), as: UTF8.self)
+    }
+
     private func audioFrame(scope: HomeEventScope, kind: String) throws -> String {
         var params: [String: Any] = [
+            "schema": 1,
             "conversation_handle": scope.conversationHandle,
             "turn_id": scope.turnID as Any,
-            "correlation_id": scope.correlationID as Any,
-            "kind": kind,
+            "frame": ["kind": kind],
         ]
+        if let correlationID = scope.correlationID { params["correlation_id"] = correlationID }
         if kind == "start" {
-            params["sample_rate"] = 24_000
-            params["channels"] = 1
-            params["sample_width"] = 2
-            params["byte_order"] = "little"
+            params["frame"] = [
+                "kind": kind,
+                "sample_rate": 24_000,
+                "channels": 1,
+                "sample_width": 2,
+                "byte_order": "little",
+            ]
         }
         let object: [String: Any] = [
             "jsonrpc": "2.0",
@@ -394,6 +573,7 @@ private actor TestHomeSocket: WebSocketConnection {
     private var sent: [String] = []
     private var closed = false
     private var closes = 0
+    private var nextError: (method: String, jsonRPCCode: Int, homeCode: String)?
 
     init(claim: HomeConversationClaim) {
         self.claim = claim
@@ -407,6 +587,25 @@ private actor TestHomeSocket: WebSocketConnection {
         let id = try XCTUnwrap(object["id"] as? String)
         let method = try XCTUnwrap(object["method"] as? String)
         let params = object["params"] as? [String: Any] ?? [:]
+        if let nextError, nextError.method == method {
+            self.nextError = nil
+            let response: [String: Any] = [
+                "jsonrpc": "2.0",
+                "schema": 1,
+                "id": id,
+                "error": [
+                    "code": nextError.jsonRPCCode,
+                    "message": "ignored",
+                    "data": [
+                        "schema": 1,
+                        "code": nextError.homeCode,
+                        "delivery": "known",
+                    ],
+                ],
+            ]
+            enqueue(.text(String(decoding: try JSONSerialization.data(withJSONObject: response), as: UTF8.self)))
+            return
+        }
         let result: [String: Any]
         switch method {
         case "conversation.open", "conversation.reconnect":
@@ -493,6 +692,10 @@ private actor TestHomeSocket: WebSocketConnection {
             )
             return try XCTUnwrap(object["method"] as? String)
         }
+    }
+
+    func setNextError(for method: String, jsonRPCCode: Int, homeCode: String) {
+        nextError = (method, jsonRPCCode, homeCode)
     }
 
     func closeCount() -> Int { closes }
