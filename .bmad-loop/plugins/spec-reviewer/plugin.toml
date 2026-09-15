@@ -1,0 +1,68 @@
+[plugin]
+name = "spec-reviewer"
+version = "1.0.0"
+api_version = 1
+description = "Unattended readiness review for the iOS/macOS migration story."
+author = "hermes-relay-ios"
+priority = 10
+
+[workflows.spec_review]
+stage = "post_dev_phase"
+role = "review"
+blocking = true
+prompt = """
+Act as the independent, unattended specification gate for story `{story_key}`.
+
+This workflow runs immediately after the bmad-build-auto dev phase. The
+project's Stories folder is
+`_bmad-output/implementation-artifacts/next-wave-standard-hermes-migration`;
+use its `stories.yaml` to resolve the story id, then read the complete story
+specification and that folder's `SPEC.md`. Read the repository `AGENTS.md` when
+an Apple boundary or validation rule needs clarification.
+
+This workflow is deliberately read-only. Do not edit the story specification,
+stories.yaml, source code, tests, configuration, skills, or git state. Do not
+implement anything and do not commit.
+
+The same workflow is invoked again after the implementation leg. If the story
+specification's frontmatter status is not `ready-for-dev`, this is not the plan
+review. Write a verdict with `status` `skip`, `phase` `not-plan`, and an empty
+`findings` array; then write the required completion marker and end your turn.
+
+For the plan-review leg, the specification must be coherent enough for an
+independent Apple developer to implement without guessing. Check all of the
+following:
+
+* the story goal, description, acceptance criteria, tasks, and verification
+  plan agree with one another and with the local wrapper and upstream story;
+* acceptance criteria are observable and testable, with no unresolved
+  contradiction, placeholder, or unchecked requirement masquerading as done;
+* the task list traces to the acceptance criteria and names the correct Swift
+  files, Apple lifecycle boundary, and repository ownership;
+* dependencies, error paths, credential safety, timing behavior, rollback,
+  and no-replay recovery are explicit enough to prevent an unsafe or invented
+  implementation; and
+* the scope is limited to this repository's Apple surface and does not silently
+  close Home, TUI, Android, or hardware work.
+
+A clean plan gets `status` `pass` and an empty `findings` array. Any concrete
+gap or contradiction gets `status` `fail` and a short, actionable finding.
+Do not call a plan clean merely because it is long or familiar.
+
+Record the machine-readable verdict in the run directory named by
+`$BMAD_LOOP_RUN_DIR`, at `spec-review-verdict.json`, with this shape:
+
+    {
+      "schema_version": 1,
+      "story_key": "{story_key}",
+      "phase": "plan",
+      "status": "pass",
+      "findings": []
+    }
+
+Use the actual `status`, `phase`, and findings for the result. For a plan
+`fail`, the completion marker must use `status: blocked`; for a plan `pass` or
+a not-applicable `skip`, it must use `status: done`. The orchestrator's
+completion-marker instructions appended to this prompt are authoritative for
+the marker path and format.
+"""

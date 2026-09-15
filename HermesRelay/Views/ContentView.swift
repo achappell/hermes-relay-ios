@@ -21,6 +21,7 @@ struct ContentView: View {
     private let deviceSetupDraftStore: any DeviceSetupDraftStore
     private let deviceConfigurationStore: any DeviceConfigurationStore
     private let activityStore: AudioActivityStore
+    private let lifecycleCoordinator: AppleLifecycleCoordinator
 
     private enum FocusField: Hashable {
         case composer
@@ -35,14 +36,20 @@ struct ContentView: View {
         deviceAdministrationClient: any DeviceAdministrationClient = UnavailableDeviceAdministrationClient(),
         deviceSetupDraftStore: any DeviceSetupDraftStore = NoopDeviceSetupDraftStore(),
         deviceConfigurationStore: any DeviceConfigurationStore = NoopDeviceConfigurationStore(),
-        activityStore providedActivityStore: AudioActivityStore? = nil
+        activityStore providedActivityStore: AudioActivityStore? = nil,
+        homeClientFactory: any HomeBridgeSessionClientFactory = UnavailableHomeBridgeSessionClientFactory(),
+        homeClaimProvider: (any HomeConversationClaimProvider)? = nil,
+        homeClock: any HomeMonotonicClock = ContinuousHomeMonotonicClock()
     ) {
         _store = State(initialValue: store)
+        store.configureHomeClientFactory(homeClientFactory, claimProvider: homeClaimProvider)
         let activityStore = providedActivityStore ?? AudioActivityStore()
         self.activityStore = activityStore
         _hudModel = State(initialValue: AmbientHUDModel())
+        let resolvedVoiceCoordinator: VoiceSessionCoordinator
         if let voiceCoordinator {
             _voiceCoordinator = State(initialValue: voiceCoordinator)
+            resolvedVoiceCoordinator = voiceCoordinator
         } else {
             let diagnostics = AudioPlaybackDiagnosticsFactory.make()
             let audioSessionCoordinator = AppleAudioSessionCoordinator()
@@ -58,21 +65,27 @@ struct ContentView: View {
             #else
             let handsFreeInput: (any HandsFreeInput)? = nil
             #endif
-            _voiceCoordinator = State(initialValue: VoiceSessionCoordinator(
+            let recoveringOutput = RecoveringAudioOutput(
+                liveOutput: AudioActivityReportingOutput(
+                    wrapped: AppleAudioOutput(
+                        diagnostics: diagnostics,
+                        audioSessionCoordinator: audioSessionCoordinator
+                    ),
+                    reporter: activityStore
+                )
+            )
+            let newVoiceCoordinator = VoiceSessionCoordinator(
                 store: store,
                 input: speechInput,
-                output: RecoveringAudioOutput(
-                    liveOutput: AudioActivityReportingOutput(
-                        wrapped: AppleAudioOutput(
-                            diagnostics: diagnostics,
-                            audioSessionCoordinator: audioSessionCoordinator
-                        ),
-                        reporter: activityStore
-                    )
+                output: HomeAwareAudioOutput(
+                    wrapped: recoveringOutput,
+                    isHomeMode: { @MainActor [weak store] in store?.isHomeMode ?? false }
                 ),
                 diagnostics: diagnostics,
                 handsFreeInput: handsFreeInput
-            ))
+            )
+            _voiceCoordinator = State(initialValue: newVoiceCoordinator)
+            resolvedVoiceCoordinator = newVoiceCoordinator
         }
         self.configurationStore = configurationStore
         self.conversationDirectory = conversationDirectory
@@ -80,6 +93,12 @@ struct ContentView: View {
         self.deviceAdministrationClient = deviceAdministrationClient
         self.deviceSetupDraftStore = deviceSetupDraftStore
         self.deviceConfigurationStore = deviceConfigurationStore
+        self.lifecycleCoordinator = AppleLifecycleCoordinator(
+            store: store,
+            voice: resolvedVoiceCoordinator,
+            homeClientFactory: homeClientFactory,
+            clock: homeClock
+        )
     }
 
     private var canSend: Bool {
@@ -135,24 +154,28 @@ struct ContentView: View {
             #endif
             .task {
                 hudModel.start(observing: activityStore)
+                if let conversationDirectory,
+                   let activeID = try? await configurationStore?.loadProfile()?.id {
+                    ConversationPersistenceMigrator.migrateLegacyConversation(
+                        in: conversationDirectory,
+                        to: activeID
+                    )
+                }
+                _ = await lifecycleCoordinator.handle(.relaunch)
             }
             .onDisappear {
                 hudModel.stop()
-                Task { await voiceCoordinator.disableHandsFree() }
+                Task { _ = await lifecycleCoordinator.handle(.windowDisappeared) }
             }
             .onChange(of: scenePhase) { _, newPhase in
-                if newPhase == .active {
-                    Task { await store.autoConnectIfNeeded() }
-                } else {
-                    Task { await voiceCoordinator.disableHandsFree() }
+                let input: AppleLifecycleInput
+                switch newPhase {
+                case .active: input = .active
+                case .inactive: input = .inactive
+                case .background: input = .background
+                @unknown default: input = .inactive
                 }
-            }
-            .onChange(of: store.connectionState) { _, newState in
-                guard newState != .connected else { return }
-                Task {
-                    await voiceCoordinator.cancelCapture()
-                    await voiceCoordinator.disableHandsFree()
-                }
+                Task { _ = await lifecycleCoordinator.handle(input) }
             }
         }
         .sheet(isPresented: $showingConfiguration) {
@@ -216,7 +239,14 @@ struct ContentView: View {
             onShowHistory: {
                 showingHistory = true
             },
-            settingsURL: applicationSettingsURL
+            settingsURL: applicationSettingsURL,
+            homeBridgeState: store.isHomeMode ? store.homeBridgeState : nil,
+            homeRouteState: store.isHomeMode ? store.homeRouteState : nil,
+            homeTurnDeliveryState: store.isHomeMode ? store.homeTurnDeliveryState : nil,
+            homeAudioState: store.isHomeMode ? store.homeAudioState : nil,
+            homeTimingCapability: store.isHomeMode ? .absent : nil,
+            pendingHomePromptKind: store.pendingHomePrompt?.prompt.kind,
+            homeCommandEventCount: store.homeCommandEvents.count
         )
     }
 

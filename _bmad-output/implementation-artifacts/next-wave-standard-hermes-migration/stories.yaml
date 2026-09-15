@@ -1,0 +1,21 @@
+- id: "0-I-4"
+  title: "[Apple] Migrate the iOS/macOS client"
+  description: >-
+    Move the native Apple client to Home's planned schema-1 bridge boundary
+    without changing local Profile, history, presentation, audio lifecycle, or
+    interruption semantics. Home owns Device authentication, approved route
+    selection, Household Identity, opaque handles, reconnect, redaction, and
+    the /api/v1/bridge/ws envelope; vanilla Hermes 0.21.1 owns only Home's
+    backend /api/ws and /api/audio/speak-stream operations. Build against a
+    fake Home bridge because the public adapter is not live, and record live
+    route integration as blocked rather than calling Home methods on vanilla
+    Hermes or claiming live evidence.
+  spec_checkpoint: true
+  invoke_dev_with: >-
+    Keep SwiftUI and Apple lifecycle concerns local to this repository. Use the
+    existing normalized session boundary, Home schema-1 envelopes, approved
+    Device credentials, opaque conversation handles, explicit rollback, and
+    fresh user action after uncertainty. Preserve Standard event/audio meaning,
+    report timing absence honestly, and never send Home methods directly to
+    vanilla /api/ws or claim live Home route integration while the public
+    adapter is absent.

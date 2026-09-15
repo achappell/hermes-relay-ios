@@ -201,6 +201,11 @@ protocol AudioOutput: Sendable {
     func playbackPosition() async -> TimeInterval?
 }
 
+enum AudioFallbackPolicy: Equatable, Sendable {
+    case legacyWAV
+    case disabled
+}
+
 actor AudioActivityReportingOutput: AudioOutput {
     private let wrapped: any AudioOutput
     private let reporter: any AudioActivityReporter
@@ -260,16 +265,23 @@ actor AudioActivityReportingOutput: AudioOutput {
 actor RecoveringAudioOutput: AudioOutput {
     private let liveOutput: any AudioOutput
     private let fallbackWriter: WAVFallbackWriter
+    private var fallbackPolicy: AudioFallbackPolicy
     private var format: AudioFormat?
     private var bufferedPCM = Data()
     private var lastFallbackURL: URL?
 
     init(
         liveOutput: any AudioOutput,
-        fallbackWriter: WAVFallbackWriter = WAVFallbackWriter()
+        fallbackWriter: WAVFallbackWriter = WAVFallbackWriter(),
+        fallbackPolicy: AudioFallbackPolicy = .legacyWAV
     ) {
         self.liveOutput = liveOutput
         self.fallbackWriter = fallbackWriter
+        self.fallbackPolicy = fallbackPolicy
+    }
+
+    func setFallbackPolicy(_ policy: AudioFallbackPolicy) {
+        fallbackPolicy = policy
     }
 
     func start(format: AudioFormat) async throws {
@@ -289,7 +301,7 @@ actor RecoveringAudioOutput: AudioOutput {
             return try await liveOutput.append(pcm)
         } catch {
             await liveOutput.stop()
-            if let format {
+            if fallbackPolicy == .legacyWAV, let format {
                 lastFallbackURL = try? fallbackWriter.write(pcm: bufferedPCM, format: format)
             }
             throw error
@@ -301,7 +313,7 @@ actor RecoveringAudioOutput: AudioOutput {
             try await liveOutput.finish()
         } catch {
             await liveOutput.stop()
-            if let format {
+            if fallbackPolicy == .legacyWAV, let format {
                 lastFallbackURL = try? fallbackWriter.write(pcm: bufferedPCM, format: format)
             }
             self.format = nil
@@ -325,5 +337,41 @@ actor RecoveringAudioOutput: AudioOutput {
 
     func fallbackURL() -> URL? {
         lastFallbackURL
+    }
+}
+
+/// Selects the legacy WAV recovery only for the explicit legacy transport.
+/// Home PCM failures remain failures; they never turn into a local recording.
+actor HomeAwareAudioOutput: AudioOutput {
+    private let wrapped: RecoveringAudioOutput
+    private let isHomeMode: @MainActor @Sendable () -> Bool
+
+    init(
+        wrapped: RecoveringAudioOutput,
+        isHomeMode: @escaping @MainActor @Sendable () -> Bool
+    ) {
+        self.wrapped = wrapped
+        self.isHomeMode = isHomeMode
+    }
+
+    func start(format: AudioFormat) async throws {
+        await wrapped.setFallbackPolicy(await isHomeMode() ? .disabled : .legacyWAV)
+        try await wrapped.start(format: format)
+    }
+
+    func append(_ pcm: Data) async throws -> AudioPlaybackReadiness {
+        try await wrapped.append(pcm)
+    }
+
+    func finish() async throws {
+        try await wrapped.finish()
+    }
+
+    func stop() async {
+        await wrapped.stop()
+    }
+
+    func playbackPosition() async -> TimeInterval? {
+        await wrapped.playbackPosition()
     }
 }

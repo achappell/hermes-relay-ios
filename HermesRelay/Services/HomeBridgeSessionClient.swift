@@ -1,0 +1,1130 @@
+import Foundation
+
+enum HomeBridgeClientFactoryError: Error, Equatable, Sendable {
+    case unsupportedMode
+}
+
+struct UnavailableHomeBridgeSessionClientFactory: HomeBridgeSessionClientFactory {
+    let failure: HomeBridgeFailure
+
+    init(failure: HomeBridgeFailure = .publicAdapterUnavailable) {
+        self.failure = failure
+    }
+
+    func make(
+        profileID: UUID,
+        mode: AppleTransportMode
+    ) -> any HomeBridgeSessionClient {
+        UnavailableHomeBridgeSessionClient(failure: failure)
+    }
+}
+
+struct UnavailableHomeBridgeSessionClient: HomeBridgeSessionClient {
+    let failure: HomeBridgeFailure
+
+    init(failure: HomeBridgeFailure = .publicAdapterUnavailable) {
+        self.failure = failure
+    }
+
+    func open(claim: HomeConversationClaim) async -> HomeOpenOutcome {
+        .unavailable(failure)
+    }
+
+    func reconnect(binding: HomeConversationBinding) async -> HomeReconnectOutcome {
+        .unavailable(failure)
+    }
+
+    func submitPrompt(
+        _ text: String,
+        binding: HomeConversationBinding
+    ) async -> HomePromptSubmissionOutcome {
+        .rejected(failure)
+    }
+
+    func interrupt(
+        binding: HomeConversationBinding,
+        turnID: String
+    ) async -> HomeInterruptOutcome {
+        .unavailable(failure)
+    }
+
+    func respond(
+        to prompt: HomeStructuredPrompt,
+        with response: HomePromptResponse
+    ) async -> HomeStructuredResponseOutcome {
+        .rejected(failure)
+    }
+
+    func dispatch(_ command: HomeCommandRequest) async -> HomeCommandOutcome {
+        .rejected(failure)
+    }
+
+    func ping(binding: HomeConversationBinding) async -> HomePingOutcome {
+        .unavailable(failure)
+    }
+
+    func cancelPending(requestID: HomePendingRequestID) async {}
+
+    func events() async -> AsyncThrowingStream<HomeBridgeEvent, Error> {
+        AsyncThrowingStream { continuation in
+            continuation.finish()
+        }
+    }
+
+    func close() async {}
+}
+
+struct DefaultHomeBridgeSessionClientFactory: HomeBridgeSessionClientFactory {
+    let dependencies: HomeBridgeClientDependencies
+
+    init(dependencies: HomeBridgeClientDependencies) {
+        self.dependencies = dependencies
+    }
+
+    func make(
+        profileID: UUID,
+        mode: AppleTransportMode
+    ) -> any HomeBridgeSessionClient {
+        guard mode == .home else {
+            return UnavailableHomeBridgeSessionClient(
+                failure: .home(code: .capabilityUnavailable, phase: .lifecycle)
+            )
+        }
+        guard dependencies.publicAdapterEnabled else {
+            return UnavailableHomeBridgeSessionClient()
+        }
+        return URLSessionHomeBridgeSessionClient(dependencies: dependencies)
+    }
+}
+
+typealias HomeBridgeClientFactory = DefaultHomeBridgeSessionClientFactory
+
+private enum HomeBridgeTransportError: Error, Equatable, Sendable {
+    case disconnected
+    case cancelled
+    case invalidResponse
+}
+
+private final class HomeConnectionHolder: @unchecked Sendable {
+    var connection: (any WebSocketConnection)?
+}
+
+actor URLSessionHomeBridgeSessionClient: HomeBridgeSessionClient {
+    private static let allowedMethods: Set<String> = [
+        "conversation.open",
+        "conversation.reconnect",
+        "prompt.submit",
+        "session.interrupt",
+        "prompt.respond",
+        "command.dispatch",
+        "bridge.ping",
+    ]
+
+    private let dependencies: HomeBridgeClientDependencies
+    private let deadlines: HomeOperationDeadlines
+    private var socket: (any WebSocketConnection)?
+    private var readerTask: Task<Void, Never>?
+    private var generation: UInt64 = 0
+    private var currentClaim: HomeConversationClaim?
+    private var currentBinding: HomeConversationBinding?
+    private var capabilities = HomeBridgeCapabilities()
+    private var pending: [String: CheckedContinuation<HomeWireResponse, Error>] = [:]
+    private var pendingPrompts: [String: HomePendingStructuredPrompt] = [:]
+    private var eventContinuation: AsyncThrowingStream<HomeBridgeEvent, Error>.Continuation?
+    private var eventStream: AsyncThrowingStream<HomeBridgeEvent, Error>?
+    private var activeAudioScope: HomeEventScope?
+    private var audioAccumulator: HomePCMAccumulator?
+    private var audioGeneration: UInt64?
+    private var audioTerminalReceived = false
+    private var closed = false
+
+    init(
+        dependencies: HomeBridgeClientDependencies,
+        deadlines: HomeOperationDeadlines = .default
+    ) {
+        self.dependencies = dependencies
+        self.deadlines = deadlines
+    }
+
+    func open(claim: HomeConversationClaim) async -> HomeOpenOutcome {
+        guard !closed else { return .disconnected(.home(code: .transportUnavailable, phase: .lifecycle)) }
+        guard dependencies.publicAdapterEnabled else { return .unavailable(.publicAdapterUnavailable) }
+        do {
+            try claim.approvedRoute.validate()
+            guard let approved = try await dependencies.routeProvider.approvedRoute(for: claim.profileID) else {
+                return .unavailable(.route(.unavailable))
+            }
+            guard approved == claim.approvedRoute else {
+                return .unavailable(.route(.identityMismatch))
+            }
+            if let currentBinding {
+                guard currentBinding.profileID == claim.profileID,
+                      currentBinding.conversationHandle == claim.conversationHandle,
+                      currentBinding.endpoint == claim.approvedRoute.endpoint,
+                      currentBinding.route == claim.approvedRoute.identity,
+                      currentBinding.householdBinding == claim.approvedRoute.householdBinding else {
+                    return .unavailable(.home(code: .conversationMismatch, phase: .open))
+                }
+                return .ready(binding: currentBinding, capabilities: capabilities)
+            }
+            try await installSocket(route: claim.approvedRoute, profileID: claim.profileID)
+            currentClaim = claim
+
+            let requestID = HomePendingRequestID()
+            let response = try await withHomeDeadline(
+                requestID: requestID,
+                timeout: deadlines.open,
+                clock: dependencies.clock,
+                cancelPending: { [weak self] requestID in
+                    await self?.cancelPending(requestID: requestID)
+                },
+                operation: { [weak self] in
+                    guard let self else { throw HomeBridgeTransportError.disconnected }
+                    return try await self.request(
+                        id: requestID,
+                        method: "conversation.open",
+                        params: ["conversation_handle": .string(claim.conversationHandle)]
+                    )
+                }
+            )
+            let ready = try decodeReady(response)
+            guard ready.schema == 1,
+                  !ready.conversationHandle.isEmpty,
+                  ready.conversationHandle == claim.conversationHandle else {
+                throw HomeWireDecodingError.invalidShape
+            }
+            guard ready.status == .ready,
+                  let wireRoute = ready.route,
+                  let wireCapabilities = ready.capabilities else {
+                if ready.reason == .reconnectRequired {
+                    return .unavailable(.reconnectRequired)
+                }
+                return .unavailable(mapOpenReason(ready.reason ?? .protocolError))
+            }
+            guard wireRoute.routeClass == claim.approvedRoute.identity.routeClass,
+                  wireRoute.id == claim.approvedRoute.identity.id else {
+                return .unavailable(.route(.identityMismatch))
+            }
+            guard ready.reason == nil else {
+                return .unavailable(mapOpenReason(ready.reason!))
+            }
+            capabilities = HomeBridgeCapabilities(wireCapabilities)
+            let binding = HomeConversationBinding(
+                profileID: claim.profileID,
+                conversationHandle: claim.conversationHandle,
+                endpoint: claim.approvedRoute.endpoint,
+                route: claim.approvedRoute.identity,
+                householdBinding: claim.approvedRoute.householdBinding,
+                capabilities: capabilities
+            )
+            currentBinding = binding
+            return .ready(binding: binding, capabilities: capabilities)
+        } catch is HomeWireDecodingError {
+            return .unavailable(.home(code: .protocolError, phase: .open))
+        } catch is HomeDeadlineError {
+            return .disconnected(.home(code: .transportTimeout, phase: .open))
+        } catch is CancellationError {
+            return .disconnected(.home(code: .transportTimeout, phase: .open))
+        } catch {
+            return .disconnected(failure(for: error, phase: .open))
+        }
+    }
+
+    func reconnect(binding: HomeConversationBinding) async -> HomeReconnectOutcome {
+        guard !closed else { return .disconnected(.home(code: .transportUnavailable, phase: .lifecycle)) }
+        do {
+            guard validateCurrentBinding(binding) == nil else {
+                return .unavailable(.home(code: .conversationMismatch, phase: .reconnect))
+            }
+            if socket == nil {
+                let route = HomeApprovedRoute(
+                    endpoint: binding.endpoint,
+                    identity: binding.route,
+                    householdBinding: binding.householdBinding
+                )
+                try route.validate()
+                guard let approved = try await dependencies.routeProvider.approvedRoute(for: binding.profileID),
+                      approved == route else {
+                    return .unavailable(.route(.identityMismatch))
+                }
+                try await installSocket(route: route, profileID: binding.profileID)
+            }
+            currentBinding = binding
+            capabilities = binding.capabilities
+            let requestID = HomePendingRequestID()
+            let response = try await withHomeDeadline(
+                requestID: requestID,
+                timeout: deadlines.reconnectAttempt,
+                clock: dependencies.clock,
+                cancelPending: { [weak self] id in await self?.cancelPending(requestID: id) },
+                operation: { [weak self] in
+                    guard let self else { throw HomeBridgeTransportError.disconnected }
+                    return try await self.request(
+                        id: requestID,
+                        method: "conversation.reconnect",
+                        params: ["conversation_handle": .string(binding.conversationHandle)]
+                    )
+                }
+            )
+            let result = try decodeReconnect(response, binding: binding)
+            switch result.status {
+            case .ready:
+                let unresolved = result.unresolvedTurnID.map {
+                    HomeUnresolvedTurn(turnID: $0, resumeCursor: result.resumeCursor)
+                }
+                return .ready(binding: binding, unresolvedTurn: unresolved)
+            case .unavailable:
+                if result.reason == .reconnectRequired {
+                    return .unavailable(.reconnectRequired)
+                }
+                return .unavailable(mapOpenReason(result.reason ?? .protocolError))
+            }
+        } catch is HomeWireDecodingError {
+            return .unavailable(.home(code: .protocolError, phase: .reconnect))
+        } catch is HomeDeadlineError {
+            return .disconnected(.home(code: .transportTimeout, phase: .reconnect))
+        } catch is CancellationError {
+            return .disconnected(.home(code: .transportTimeout, phase: .reconnect))
+        } catch {
+            return .disconnected(failure(for: error, phase: .reconnect))
+        }
+    }
+
+    func submitPrompt(
+        _ text: String,
+        binding: HomeConversationBinding
+    ) async -> HomePromptSubmissionOutcome {
+        guard !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            return .rejected(.home(code: .invalidRequest, phase: .submission))
+        }
+        guard validateCurrentBinding(binding) == nil else {
+            return .rejected(.home(code: .conversationMismatch, phase: .submission))
+        }
+        let requestID = HomePendingRequestID()
+        do {
+            let response = try await withHomeDeadline(
+                requestID: requestID,
+                timeout: deadlines.promptAcceptance,
+                clock: dependencies.clock,
+                cancelPending: { [weak self] id in await self?.cancelPending(requestID: id) },
+                operation: { [weak self] in
+                    guard let self else { throw HomeBridgeTransportError.disconnected }
+                    return try await self.request(
+                        id: requestID,
+                        method: "prompt.submit",
+                        params: [
+                            "conversation_handle": .string(binding.conversationHandle),
+                            "text": .string(text),
+                        ]
+                    )
+                }
+            )
+            let result = try decodeSubmission(response, binding: binding)
+            guard result.status == "accepted" else {
+                return .rejected(.home(code: .requestRejected, phase: .submission))
+            }
+            return .accepted(
+                HomeTurnBinding(
+                    conversationHandle: binding.conversationHandle,
+                    turnID: result.turnID,
+                    correlationID: result.correlationID
+                )
+            )
+        } catch is HomeDeadlineError {
+            return .uncertain(.home(code: .transportTimeout, phase: .submission))
+        } catch is CancellationError {
+            return .uncertain(.home(code: .transportTimeout, phase: .submission))
+        } catch is HomeWireDecodingError {
+            return .rejected(.home(code: .protocolError, phase: .submission))
+        } catch {
+            let failure = failure(for: error, phase: .submission)
+            if failure.classification == .uncertain {
+                return .uncertain(failure)
+            }
+            return .rejected(failure)
+        }
+    }
+
+    func interrupt(
+        binding: HomeConversationBinding,
+        turnID: String
+    ) async -> HomeInterruptOutcome {
+        guard validateCurrentBinding(binding) == nil else {
+            return .rejected(.home(code: .conversationMismatch, phase: .interrupt))
+        }
+        guard binding.capabilities.interrupt else {
+            return .unavailable(.home(code: .capabilityUnavailable, phase: .interrupt))
+        }
+        let requestID = HomePendingRequestID()
+        do {
+            let response = try await withHomeDeadline(
+                requestID: requestID,
+                timeout: deadlines.interruptAcknowledgement,
+                clock: dependencies.clock,
+                cancelPending: { [weak self] id in await self?.cancelPending(requestID: id) },
+                operation: { [weak self] in
+                    guard let self else { throw HomeBridgeTransportError.disconnected }
+                    return try await self.request(
+                        id: requestID,
+                        method: "session.interrupt",
+                        params: [
+                            "conversation_handle": .string(binding.conversationHandle),
+                            "turn_id": .string(turnID),
+                        ]
+                    )
+                }
+            )
+            let status = responseString(response, key: "status") ?? "acknowledged"
+            guard status == "accepted" || status == "acknowledged" else {
+                return .rejected(.home(code: .requestRejected, phase: .interrupt))
+            }
+            return .acknowledged
+        } catch is HomeDeadlineError {
+            return .uncertain(.home(code: .transportTimeout, phase: .interrupt))
+        } catch is CancellationError {
+            return .uncertain(.home(code: .transportTimeout, phase: .interrupt))
+        } catch is HomeWireDecodingError {
+            return .rejected(.home(code: .protocolError, phase: .interrupt))
+        } catch {
+            let failure = failure(for: error, phase: .interrupt)
+            return failure.classification == .uncertain ? .uncertain(failure) : .unavailable(failure)
+        }
+    }
+
+    func respond(
+        to prompt: HomeStructuredPrompt,
+        with response: HomePromptResponse
+    ) async -> HomeStructuredResponseOutcome {
+        guard let binding = currentBinding,
+              binding.conversationHandle == prompt.conversationHandle else {
+            return .rejected(.home(code: .conversationMismatch, phase: .structuredResponse))
+        }
+        guard let pendingPrompt = pendingPrompts[prompt.correlationID],
+              pendingPrompt.prompt == prompt else {
+            return .rejected(.home(code: .requestRejected, phase: .structuredResponse))
+        }
+        guard responseMatchesPrompt(prompt, response: response) else {
+            return .rejected(.home(code: .invalidRequest, phase: .structuredResponse))
+        }
+        guard !pendingPrompt.isExpired(at: Date()) else {
+            pendingPrompts.removeValue(forKey: prompt.correlationID)
+            return .rejected(.home(code: .requestRejected, phase: .structuredResponse))
+        }
+        let requestID = HomePendingRequestID()
+        do {
+            let responseFrame = try await withHomeDeadline(
+                requestID: requestID,
+                timeout: deadlines.structuredResponse,
+                clock: dependencies.clock,
+                cancelPending: { [weak self] id in await self?.cancelPending(requestID: id) },
+                operation: { [weak self] in
+                    guard let self else { throw HomeBridgeTransportError.disconnected }
+                    return try await self.request(
+                        id: requestID,
+                        method: "prompt.respond",
+                        params: self.responseParameters(for: prompt, response: response)
+                    )
+                }
+            )
+            let result = try decodeCorrelatedResult(responseFrame)
+            guard result.handle == prompt.conversationHandle,
+                  result.turnID == prompt.turnID,
+                  result.correlationID == prompt.correlationID else {
+                return .rejected(.home(code: .conversationMismatch, phase: .structuredResponse))
+            }
+            pendingPrompts.removeValue(forKey: prompt.correlationID)
+            return .accepted
+        } catch is HomeDeadlineError {
+            return .uncertain(.home(code: .transportTimeout, phase: .structuredResponse))
+        } catch is CancellationError {
+            return .uncertain(.home(code: .transportTimeout, phase: .structuredResponse))
+        } catch is HomeWireDecodingError {
+            return .rejected(.home(code: .protocolError, phase: .structuredResponse))
+        } catch {
+            let failure = failure(for: error, phase: .structuredResponse)
+            return failure.classification == .uncertain ? .uncertain(failure) : .rejected(failure)
+        }
+    }
+
+    func dispatch(_ command: HomeCommandRequest) async -> HomeCommandOutcome {
+        guard validateCurrentBinding(command.binding) == nil else {
+            return .rejected(.home(code: .conversationMismatch, phase: .command))
+        }
+        guard command.binding.capabilities.commands.contains(command.name.lowercased()) else {
+            return .rejected(.home(code: .capabilityUnavailable, phase: .command))
+        }
+        let requestID = HomePendingRequestID()
+        do {
+            var params: [String: HomeJSONValue] = [
+                "conversation_handle": .string(command.binding.conversationHandle),
+                "name": .string(command.name),
+            ]
+            if let argument = command.argument { params["argument"] = .string(argument) }
+            let requestParams = params
+            let response = try await withHomeDeadline(
+                requestID: requestID,
+                timeout: deadlines.command,
+                clock: dependencies.clock,
+                cancelPending: { [weak self] id in await self?.cancelPending(requestID: id) },
+                operation: { [weak self] in
+                    guard let self else { throw HomeBridgeTransportError.disconnected }
+                    return try await self.request(id: requestID, method: "command.dispatch", params: requestParams)
+                }
+            )
+            let result = try decodeCommandResult(response, binding: command.binding)
+            switch result.status {
+            case .accepted, .completed:
+                return .completed(result)
+            case .rejected, .unavailable:
+                return .rejected(.home(
+                    code: result.safeCode ?? .requestRejected,
+                    phase: .command
+                ))
+            }
+        } catch is HomeDeadlineError {
+            return .uncertain(.home(code: .transportTimeout, phase: .command))
+        } catch is CancellationError {
+            return .uncertain(.home(code: .transportTimeout, phase: .command))
+        } catch is HomeWireDecodingError {
+            return .rejected(.home(code: .protocolError, phase: .command))
+        } catch {
+            let failure = failure(for: error, phase: .command)
+            return failure.classification == .uncertain ? .uncertain(failure) : .rejected(failure)
+        }
+    }
+
+    func ping(binding: HomeConversationBinding) async -> HomePingOutcome {
+        guard validateCurrentBinding(binding) == nil else {
+            return .unavailable(.home(code: .conversationMismatch, phase: .ping))
+        }
+        let requestID = HomePendingRequestID()
+        do {
+            _ = try await withHomeDeadline(
+                requestID: requestID,
+                timeout: deadlines.ping,
+                clock: dependencies.clock,
+                cancelPending: { [weak self] id in await self?.cancelPending(requestID: id) },
+                operation: { [weak self] in
+                    guard let self else { throw HomeBridgeTransportError.disconnected }
+                    return try await self.request(
+                        id: requestID,
+                        method: "bridge.ping",
+                        params: ["conversation_handle": .string(binding.conversationHandle)]
+                    )
+                }
+            )
+            return .alive
+        } catch is HomeDeadlineError {
+            return .unavailable(.home(code: .transportTimeout, phase: .ping))
+        } catch is CancellationError {
+            return .unavailable(.home(code: .transportTimeout, phase: .ping))
+        } catch {
+            return .unavailable(failure(for: error, phase: .ping))
+        }
+    }
+
+    func cancelPending(requestID: HomePendingRequestID) async {
+        guard let continuation = pending.removeValue(forKey: requestID.rawValue) else { return }
+        continuation.resume(throwing: HomeBridgeTransportError.cancelled)
+    }
+
+    func events() async -> AsyncThrowingStream<HomeBridgeEvent, Error> {
+        if let eventStream { return eventStream }
+        let (stream, continuation) = AsyncThrowingStream<HomeBridgeEvent, Error>.makeStream()
+        eventStream = stream
+        eventContinuation = continuation
+        return stream
+    }
+
+    func close() async {
+        guard !closed else { return }
+        closed = true
+        generation &+= 1
+        readerTask?.cancel()
+        readerTask = nil
+        let connection = socket
+        socket = nil
+        currentClaim = nil
+        currentBinding = nil
+        audioAccumulator = nil
+        activeAudioScope = nil
+        audioGeneration = nil
+        audioTerminalReceived = false
+        pendingPrompts.removeAll()
+        let waiters = pending.values
+        pending.removeAll()
+        for waiter in waiters { waiter.resume(throwing: HomeBridgeTransportError.disconnected) }
+        eventContinuation?.finish()
+        eventContinuation = nil
+        eventStream = nil
+        await connection?.close()
+    }
+
+    private func installSocket(route: HomeApprovedRoute, profileID: UUID) async throws {
+        guard socket == nil else { return }
+        let holder = HomeConnectionHolder()
+        try await dependencies.credentialStore.withPrivateDeviceCredential(for: profileID) { [socketFactory = dependencies.socketFactory] credential in
+            var request = URLRequest(url: route.endpoint)
+            request.httpMethod = "GET"
+            request.setValue("Device \(String(decoding: credential, as: UTF8.self))", forHTTPHeaderField: "Authorization")
+            holder.connection = try await socketFactory.open(urlRequest: request)
+        }
+        guard let connection = holder.connection else { throw HomeBridgeTransportError.disconnected }
+        socket = connection
+        generation &+= 1
+        let readerGeneration = generation
+        readerTask = Task { [weak self] in
+            await self?.receiveLoop(connection: connection, generation: readerGeneration)
+        }
+    }
+
+    private func request(
+        id: HomePendingRequestID,
+        method: String,
+        params: [String: HomeJSONValue]
+    ) async throws -> HomeWireResponse {
+        guard Self.allowedMethods.contains(method), let socket else {
+            throw HomeBridgeTransportError.disconnected
+        }
+        let request = HomeJSONRPCRequest(id: id.rawValue, method: method, params: params)
+        let data = try JSONEncoder().encode(request)
+        let text = String(decoding: data, as: UTF8.self)
+        return try await withTaskCancellationHandler {
+            try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<HomeWireResponse, Error>) in
+                pending[id.rawValue] = continuation
+                Task { [weak self] in
+                    do {
+                        try await socket.send(text: text)
+                    } catch {
+                        await self?.resolvePending(id: id, throwing: error)
+                    }
+                }
+            }
+        } onCancel: {
+            Task { [weak self] in await self?.cancelPending(requestID: id) }
+        }
+    }
+
+    private func receiveLoop(
+        connection: any WebSocketConnection,
+        generation readerGeneration: UInt64
+    ) async {
+        while !Task.isCancelled {
+            do {
+                let frame = try await connection.receive()
+                guard readerGeneration == generation, !closed else { return }
+                switch frame {
+                case .text(let text):
+                    try await handleTextFrame(text)
+                case .binary(let data):
+                    try await handleBinaryFrame(data)
+                }
+            } catch is CancellationError {
+                return
+            } catch {
+                await transportLost(generation: readerGeneration)
+                return
+            }
+        }
+    }
+
+    private func handleTextFrame(_ text: String) async throws {
+        guard let data = text.data(using: .utf8),
+              let object = try JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+            throw HomeWireDecodingError.invalidShape
+        }
+        guard object["jsonrpc"] as? String == "2.0",
+              (object["schema"] as? Int ?? (object["schema"] as? NSNumber)?.intValue) == 1 else {
+            throw HomeWireDecodingError.unsupportedSchema
+        }
+        if let id = object["id"] as? String {
+            try requireKeys(object, allowed: ["jsonrpc", "schema", "id", "result", "error"])
+            let response = try decodeResponse(object)
+            resolvePending(id: HomePendingRequestID(rawValue: id), response: response)
+            return
+        }
+        try requireKeys(object, allowed: ["jsonrpc", "schema", "method", "params"])
+        guard let method = object["method"] as? String,
+              let params = object["params"] as? [String: Any] else {
+            throw HomeWireDecodingError.invalidShape
+        }
+        switch method {
+        case "event":
+            if let prompt = try decodeStructuredPrompt(params) {
+                pendingPrompts[prompt.correlationID] = HomePendingStructuredPrompt(
+                    prompt: prompt,
+                    receivedAt: Date(),
+                    expiresAt: prompt.expiresAt
+                )
+                eventContinuation?.yield(.structuredPrompt(prompt))
+            } else if let event = try decodeStandardEvent(params) {
+                eventContinuation?.yield(.standard(event))
+            }
+        case "audio.frame":
+            if let event = try decodeAudioFrame(params) {
+                eventContinuation?.yield(event)
+            }
+        default:
+            throw HomeWireDecodingError.unsupportedMethod
+        }
+    }
+
+    private func handleBinaryFrame(_ data: Data) async throws {
+        guard let scope = activeAudioScope,
+              let audioGeneration,
+              audioGeneration == generation,
+              !audioTerminalReceived,
+              var accumulator = audioAccumulator else {
+            // A late binary frame is stale transport data, never a playback
+            // candidate. Keep the control socket alive so the known text
+            // terminal can still be delivered.
+            return
+        }
+        let joined = try accumulator.append(transportChunk: data)
+        audioAccumulator = accumulator
+        if !joined.isEmpty { eventContinuation?.yield(.binaryPCM(scope, joined)) }
+    }
+
+    private func decodeStandardEvent(_ params: [String: Any]) throws -> HomeStandardEvent? {
+        try requireKeys(params, allowed: ["conversation_handle", "turn_id", "correlation_id", "type", "payload"])
+        guard let handle = params["conversation_handle"] as? String,
+              let typeName = params["type"] as? String,
+              let type = HomeStandardEventType(rawValue: typeName),
+              let binding = currentBinding,
+              handle == binding.conversationHandle else {
+            throw HomeWireDecodingError.conversationMismatch
+        }
+        let scope = HomeEventScope(
+            conversationHandle: handle,
+            turnID: params["turn_id"] as? String,
+            correlationID: params["correlation_id"] as? String
+        )
+        guard let payload = params["payload"] as? [String: Any] else {
+            throw HomeWireDecodingError.invalidShape
+        }
+        let localPayload: HomeStandardEventPayload
+        switch type {
+        case .messageStart:
+            try requireKeys(payload, allowed: ["kind"])
+            localPayload = .start(kind: payload["kind"].flatMap { $0 as? String }.flatMap(HomeStandardEventKind.init(rawValue:)))
+        case .messageDelta, .textDelta:
+            try requireKeys(payload, allowed: ["rendered", "text", "replace", "kind"])
+            localPayload = .delta(
+                rendered: payload["rendered"] as? String,
+                text: payload["text"] as? String,
+                replace: payload["replace"] as? Bool ?? false,
+                kind: payload["kind"].flatMap { $0 as? String }.flatMap(HomeStandardEventKind.init(rawValue:))
+            )
+        case .text, .textFinal, .messageComplete:
+            try requireKeys(payload, allowed: ["rendered", "text", "status", "reasoning", "failure_reason"])
+            let failureReason = (payload["failure_reason"] as? String).flatMap(HomeFailureCode.init(rawValue:))
+            localPayload = .final(
+                rendered: payload["rendered"] as? String,
+                text: payload["text"] as? String,
+                status: payload["status"] as? String,
+                reasoning: payload["reasoning"] as? String,
+                failureReason: failureReason
+            )
+        case .thinking, .reasoning, .status:
+            try requireKeys(payload, allowed: ["text", "status", "reasoning", "kind"])
+            localPayload = .activity(
+                text: payload["text"] as? String,
+                status: payload["status"] as? String,
+                reasoning: payload["reasoning"] as? String,
+                kind: payload["kind"].flatMap { $0 as? String }.flatMap(HomeStandardEventKind.init(rawValue:))
+            )
+        case .turnComplete, .turnInterrupted, .audioAbort:
+            try requireKeys(payload, allowed: ["kind"])
+            guard scope.turnID != nil else { return nil }
+            localPayload = .terminal(kind: payload["kind"].flatMap { $0 as? String }.flatMap(HomeStandardEventKind.init(rawValue:)))
+        case .error:
+            try requireKeys(payload, allowed: ["code", "phase"])
+            guard let codeString = payload["code"] as? String,
+                  let code = HomeFailureCode(rawValue: codeString),
+                  let phaseString = payload["phase"] as? String,
+                  let phase = HomeFailurePhase(rawValue: phaseString) else {
+                throw HomeWireDecodingError.invalidShape
+            }
+            localPayload = .error(HomeSafeError(code: code, phase: phase))
+        }
+        return HomeStandardEvent(type: type, scope: scope, payload: localPayload)
+    }
+
+    private func decodeStructuredPrompt(_ params: [String: Any]) throws -> HomeStructuredPrompt? {
+        try requireKeys(params, allowed: ["conversation_handle", "turn_id", "correlation_id", "type", "payload"])
+        guard let typeName = params["type"] as? String else {
+            throw HomeWireDecodingError.invalidShape
+        }
+        let kind: HomeStructuredPromptKind?
+        switch typeName {
+        case "approval.request": kind = .approval
+        case "clarify.request": kind = .clarification
+        case "secret.request": kind = .secret
+        case "sudo.request": kind = .sudo
+        default: kind = nil
+        }
+        guard let kind else { return nil }
+        guard let handle = params["conversation_handle"] as? String,
+              let turnID = params["turn_id"] as? String,
+              let correlationID = params["correlation_id"] as? String,
+              !handle.isEmpty, !turnID.isEmpty, !correlationID.isEmpty,
+              let binding = currentBinding,
+              binding.conversationHandle == handle else {
+            throw HomeWireDecodingError.conversationMismatch
+        }
+        guard let payload = params["payload"] as? [String: Any] else {
+            throw HomeWireDecodingError.invalidShape
+        }
+        try requireKeys(payload, allowed: ["options", "expires_at", "sensitive"])
+        let options = payload["options"] as? [String] ?? []
+        let expiresAt = (payload["expires_at"] as? String).flatMap(Self.parseISO8601Date)
+        let sensitive = (payload["sensitive"] as? Bool)
+            ?? (kind == .secret || kind == .sudo)
+        return HomeStructuredPrompt(
+            kind: kind,
+            conversationHandle: handle,
+            turnID: turnID,
+            correlationID: correlationID,
+            options: options,
+            expiresAt: expiresAt,
+            sensitive: sensitive
+        )
+    }
+
+    private func decodeAudioFrame(_ params: [String: Any]) throws -> HomeBridgeEvent? {
+        try requireKeys(params, allowed: [
+            "conversation_handle", "turn_id", "correlation_id", "kind",
+            "sample_rate", "channels", "sample_width", "byte_order", "code",
+        ])
+        guard let handle = params["conversation_handle"] as? String,
+              let binding = currentBinding,
+              handle == binding.conversationHandle,
+              let kind = params["kind"] as? String else {
+            throw HomeWireDecodingError.invalidAudioFrame
+        }
+        let scope = HomeEventScope(
+            conversationHandle: handle,
+            turnID: params["turn_id"] as? String,
+            correlationID: params["correlation_id"] as? String
+        )
+        guard scope.turnID != nil else { throw HomeWireDecodingError.invalidAudioFrame }
+        switch kind {
+        case "start":
+            guard activeAudioScope == nil,
+                  let sampleRate = intValue(params["sample_rate"]),
+                  let channels = intValue(params["channels"]),
+                  let sampleWidth = intValue(params["sample_width"]),
+                  let byteOrder = params["byte_order"] as? String,
+                  let order = HomeByteOrder(rawValue: byteOrder) else {
+                throw HomeWireDecodingError.invalidAudioFrame
+            }
+            let format = HomeAudioFormat(
+                sampleRate: sampleRate,
+                channels: channels,
+                sampleWidth: sampleWidth,
+                byteOrder: order
+            )
+            guard format.isValidSignedPCM else { throw HomeWireDecodingError.invalidAudioFrame }
+            activeAudioScope = scope
+            audioAccumulator = HomePCMAccumulator()
+            audioGeneration = generation
+            audioTerminalReceived = false
+            return .audioStart(scope, format)
+        case "end":
+            guard audioScopeMatches(scope),
+                  var accumulator = audioAccumulator else {
+                throw HomeWireDecodingError.invalidAudioFrame
+            }
+            do {
+                try accumulator.finish()
+                audioAccumulator = nil
+                activeAudioScope = nil
+                audioGeneration = nil
+                audioTerminalReceived = true
+                return .audioTerminal(activeAudioScope ?? scope, .end)
+            } catch {
+                audioAccumulator = nil
+                activeAudioScope = nil
+                audioGeneration = nil
+                audioTerminalReceived = true
+                return .audioTerminal(activeAudioScope ?? scope, .unavailable)
+            }
+        case "fallback", "unavailable":
+            guard audioScopeMatches(scope) else { return nil }
+            audioAccumulator = nil
+            activeAudioScope = nil
+            audioGeneration = nil
+            audioTerminalReceived = true
+            return .audioTerminal(scope, kind == "fallback" ? .fallback : .unavailable)
+        default:
+            throw HomeWireDecodingError.invalidAudioFrame
+        }
+    }
+
+    private func responseParameters(
+        for prompt: HomeStructuredPrompt,
+        response: HomePromptResponse
+    ) -> [String: HomeJSONValue] {
+        var params: [String: HomeJSONValue] = [
+            "conversation_handle": .string(prompt.conversationHandle),
+            "turn_id": .string(prompt.turnID),
+            "correlation_id": .string(prompt.correlationID),
+            "event_type": .string(prompt.eventType),
+        ]
+        switch response {
+        case .approval(let choice, let all):
+            params["choice"] = .string(choice)
+            if let all { params["all"] = .bool(all) }
+        case .clarification(let answer):
+            params["answer"] = .string(answer)
+        case .secret(let value):
+            params["value"] = .string(value)
+        case .sudo(let password):
+            params["password"] = .string(password)
+        }
+        return params
+    }
+
+    private func validateCurrentBinding(_ binding: HomeConversationBinding) -> HomeBridgeFailure? {
+        guard let currentBinding else { return .home(code: .conversationMismatch, phase: .lifecycle) }
+        guard currentBinding == binding else { return .home(code: .conversationMismatch, phase: .lifecycle) }
+        return nil
+    }
+
+    private func audioScopeMatches(_ scope: HomeEventScope) -> Bool {
+        guard let activeAudioScope,
+              activeAudioScope.conversationHandle == scope.conversationHandle,
+              activeAudioScope.turnID == scope.turnID else { return false }
+        return scope.correlationID == nil || activeAudioScope.correlationID == scope.correlationID
+    }
+
+    private static func parseISO8601Date(_ value: String) -> Date? {
+        ISO8601DateFormatter().date(from: value)
+    }
+
+    private func resolvePending(id: HomePendingRequestID, response: HomeWireResponse) {
+        guard let continuation = pending.removeValue(forKey: id.rawValue) else { return }
+        continuation.resume(returning: response)
+    }
+
+    private func resolvePending(id: HomePendingRequestID, throwing error: Error) {
+        guard let continuation = pending.removeValue(forKey: id.rawValue) else { return }
+        continuation.resume(throwing: error)
+    }
+
+    private func transportLost(generation lostGeneration: UInt64) async {
+        guard lostGeneration == generation, !closed else { return }
+        socket = nil
+        let waiters = pending.values
+        pending.removeAll()
+        for waiter in waiters {
+            waiter.resume(throwing: HomeBridgeTransportError.disconnected)
+        }
+        pendingPrompts.removeAll()
+        eventContinuation?.finish(throwing: HomeBridgeTransportError.disconnected)
+        eventContinuation = nil
+        eventStream = nil
+    }
+}
+
+private struct HomeWireResponse: @unchecked Sendable {
+    let id: String
+    let result: [String: Any]
+    let errorCode: String?
+}
+
+private func decodeResponse(_ object: [String: Any]) throws -> HomeWireResponse {
+    guard let id = object["id"] as? String,
+          !id.isEmpty else { throw HomeWireDecodingError.invalidShape }
+    let hasResult = object["result"] != nil
+    let hasError = object["error"] != nil
+    guard hasResult != hasError else { throw HomeWireDecodingError.invalidShape }
+    let result = object["result"] as? [String: Any] ?? [:]
+    let errorObject = object["error"] as? [String: Any]
+    if hasResult, object["result"] is NSNull {
+        throw HomeWireDecodingError.invalidShape
+    }
+    if hasError {
+        guard let errorObject,
+              let code = errorObject["code"] as? String,
+              !code.isEmpty else {
+            throw HomeWireDecodingError.invalidShape
+        }
+    }
+    return HomeWireResponse(
+        id: id,
+        result: result,
+        errorCode: errorObject?["code"] as? String
+    )
+}
+
+private func decodeReady(_ response: HomeWireResponse) throws -> HomeReadyWireResult {
+    if let errorCode = response.errorCode {
+        throw HomeBridgeWireFailure(code: errorCode)
+    }
+    let data = try JSONSerialization.data(withJSONObject: response.result)
+    return try JSONDecoder().decode(HomeReadyWireResult.self, from: data)
+}
+
+private struct HomeReconnectWireResult {
+    let status: HomeBridgeReadyStatus
+    let reason: HomeWireReason?
+    let unresolvedTurnID: String?
+    let resumeCursor: String?
+}
+
+private func decodeReconnect(
+    _ response: HomeWireResponse,
+    binding: HomeConversationBinding
+) throws -> HomeReconnectWireResult {
+    if let errorCode = response.errorCode { throw HomeBridgeWireFailure(code: errorCode) }
+    try requireKeys(response.result, allowed: [
+        "schema", "status", "conversation_handle", "unresolved_turn", "turn_id", "resume_cursor", "reason",
+    ])
+    guard (intValue(response.result["schema"]) ?? 0) == 1,
+          response.result["conversation_handle"] as? String == binding.conversationHandle,
+          let statusString = response.result["status"] as? String,
+          let status = HomeBridgeReadyStatus(rawValue: statusString) else {
+        throw HomeWireDecodingError.invalidShape
+    }
+    return HomeReconnectWireResult(
+        status: status,
+        reason: (response.result["reason"] as? String).flatMap(HomeWireReason.init(rawValue:)),
+        unresolvedTurnID: response.result["turn_id"] as? String
+            ?? (response.result["unresolved_turn"] as? [String: Any])?["turn_id"] as? String,
+        resumeCursor: response.result["resume_cursor"] as? String
+            ?? (response.result["unresolved_turn"] as? [String: Any])?["resume_cursor"] as? String
+    )
+}
+
+private struct HomeSubmissionWireResult {
+    let status: String
+    let turnID: String
+    let correlationID: String
+}
+
+private func decodeSubmission(
+    _ response: HomeWireResponse,
+    binding: HomeConversationBinding
+) throws -> HomeSubmissionWireResult {
+    if let errorCode = response.errorCode { throw HomeBridgeWireFailure(code: errorCode) }
+    try requireKeys(response.result, allowed: ["schema", "status", "conversation_handle", "turn_id", "correlation_id"])
+    guard (intValue(response.result["schema"]) ?? 0) == 1,
+          response.result["conversation_handle"] as? String == binding.conversationHandle,
+          let status = response.result["status"] as? String,
+          let turnID = response.result["turn_id"] as? String,
+          let correlationID = response.result["correlation_id"] as? String,
+          !turnID.isEmpty,
+          !correlationID.isEmpty else {
+        throw HomeWireDecodingError.invalidShape
+    }
+    return HomeSubmissionWireResult(status: status, turnID: turnID, correlationID: correlationID)
+}
+
+private struct HomeCorrelatedResult {
+    let handle: String
+    let turnID: String
+    let correlationID: String
+}
+
+private func decodeCorrelatedResult(_ response: HomeWireResponse) throws -> HomeCorrelatedResult {
+    if let errorCode = response.errorCode { throw HomeBridgeWireFailure(code: errorCode) }
+    try requireKeys(response.result, allowed: ["schema", "status", "conversation_handle", "turn_id", "correlation_id"])
+    guard (intValue(response.result["schema"]) ?? 0) == 1,
+          let handle = response.result["conversation_handle"] as? String,
+          let turnID = response.result["turn_id"] as? String,
+          let correlationID = response.result["correlation_id"] as? String else {
+        throw HomeWireDecodingError.invalidShape
+    }
+    return HomeCorrelatedResult(handle: handle, turnID: turnID, correlationID: correlationID)
+}
+
+private func decodeCommandResult(
+    _ response: HomeWireResponse,
+    binding: HomeConversationBinding
+) throws -> HomeCommandResult {
+    if let errorCode = response.errorCode { throw HomeBridgeWireFailure(code: errorCode) }
+    try requireKeys(response.result, allowed: [
+        "schema", "conversation_handle", "turn_id", "correlation_id", "name", "status", "code",
+    ])
+    guard (intValue(response.result["schema"]) ?? 0) == 1,
+          let handle = response.result["conversation_handle"] as? String,
+          handle == binding.conversationHandle,
+          let correlationID = response.result["correlation_id"] as? String,
+          let name = response.result["name"] as? String,
+          let statusString = response.result["status"] as? String,
+          let status = HomeCommandStatus(rawValue: statusString) else {
+        throw HomeWireDecodingError.invalidShape
+    }
+    return HomeCommandResult(
+        conversationHandle: handle,
+        turnID: response.result["turn_id"] as? String,
+        correlationID: correlationID,
+        name: name,
+        status: status,
+        safeCode: (response.result["code"] as? String).flatMap(HomeFailureCode.init(rawValue:))
+    )
+}
+
+private func responseString(_ response: HomeWireResponse, key: String) -> String? {
+    response.result[key] as? String
+}
+
+private func mapOpenReason(_ reason: HomeWireReason) -> HomeBridgeFailure {
+    switch reason {
+    case .reconnectRequired: return .reconnectRequired
+    case .routeUnavailable: return .route(.unavailable)
+    case .routeUnauthorized: return .route(.unauthorized)
+    case .routeIdentityMismatch: return .route(.identityMismatch)
+    case .routeTimeout: return .route(.timeout)
+    default: return .home(code: HomeFailureCode(rawValue: reason.rawValue) ?? .protocolError, phase: .open)
+    }
+}
+
+private func failure(for error: Error, phase: HomeFailurePhase) -> HomeBridgeFailure {
+    if let wire = error as? HomeBridgeWireFailure {
+        if let code = HomeFailureCode(rawValue: wire.code) {
+            return .home(code: code, phase: phase)
+        }
+        if let reason = HomeWireReason(rawValue: wire.code) { return mapOpenReason(reason) }
+        return .home(code: .protocolError, phase: phase)
+    }
+    if error is HomeBridgeTransportError {
+        return .home(code: .transportUnavailable, phase: phase)
+    }
+    return .home(code: .protocolError, phase: phase)
+}
+
+private struct HomeBridgeWireFailure: Error, Sendable {
+    let code: String
+}
+
+private func requireKeys(_ object: [String: Any], allowed: Set<String>) throws {
+    guard object.keys.allSatisfy(allowed.contains) else { throw HomeWireDecodingError.unknownField }
+}
+
+private func requireKeys(_ object: [String: Any], allowed: [String]) throws {
+    try requireKeys(object, allowed: Set(allowed))
+}
+
+private func intValue(_ value: Any?) -> Int? {
+    if let value = value as? Int { return value }
+    if let value = value as? NSNumber { return value.intValue }
+    return nil
+}
+
+private func responseMatchesPrompt(
+    _ prompt: HomeStructuredPrompt,
+    response: HomePromptResponse
+) -> Bool {
+    switch response {
+    case .approval:
+        return prompt.kind == .approval
+    case .clarification:
+        return prompt.kind == .clarification
+    case .secret:
+        return prompt.kind == .secret && prompt.sensitive
+    case .sudo:
+        return prompt.kind == .sudo && prompt.sensitive
+    }
+}

@@ -10,15 +10,33 @@ struct RelayProfileCollection: Codable, Equatable, Sendable {
     var schemaVersion: Int
     var profiles: [RelayProfile]
     var selectedID: UUID?
+    var homeMigrations: [UUID: HomeMigrationJournal]
 
     init(
         schemaVersion: Int = RelayProfileCollection.currentSchemaVersion,
         profiles: [RelayProfile] = [],
-        selectedID: UUID? = nil
+        selectedID: UUID? = nil,
+        homeMigrations: [UUID: HomeMigrationJournal] = [:]
     ) {
         self.schemaVersion = schemaVersion
         self.profiles = profiles
         self.selectedID = selectedID
+        self.homeMigrations = homeMigrations
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case schemaVersion, profiles, selectedID, homeMigrations
+    }
+
+    init(from decoder: Decoder) throws {
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        schemaVersion = try values.decode(Int.self, forKey: .schemaVersion)
+        profiles = try values.decode([RelayProfile].self, forKey: .profiles)
+        selectedID = try values.decodeIfPresent(UUID.self, forKey: .selectedID)
+        homeMigrations = try values.decodeIfPresent(
+            [UUID: HomeMigrationJournal].self,
+            forKey: .homeMigrations
+        ) ?? [:]
     }
 
     var selectedProfile: RelayProfile? {
@@ -38,8 +56,13 @@ struct RelayProfileCollection: Codable, Equatable, Sendable {
     /// neighbour would silently retarget the user's next Connect.
     mutating func remove(id: UUID) {
         profiles.removeAll { $0.id == id }
+        homeMigrations.removeValue(forKey: id)
         if selectedID == id {
             selectedID = nil
         }
+    }
+
+    func transportMode(for profileID: UUID) -> AppleTransportMode {
+        homeMigrations[profileID]?.selectedMode ?? .legacy
     }
 }

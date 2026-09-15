@@ -55,6 +55,18 @@
 		A100000000000000000000C8 /* DeviceDiscoveryView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A100000000000000000000C9 /* DeviceDiscoveryView.swift */; };
 		A100000000000000000000D1 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = A100000000000000000000D0 /* Assets.xcassets */; };
 		A100000000000000000000D2 /* VisualDesignTokens.swift in Sources */ = {isa = PBXBuildFile; fileRef = A100000000000000000000D3 /* VisualDesignTokens.swift */; };
+		A100000000000000000000E1 /* HomeBridgeModels.swift in Sources */ = {isa = PBXBuildFile; fileRef = A100000000000000000000E0 /* HomeBridgeModels.swift */; };
+		A100000000000000000000E2 /* HomeBridgeSessionClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = A100000000000000000000E3 /* HomeBridgeSessionClient.swift */; };
+		A100000000000000000000E4 /* FakeHomeBridgeSessionClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = A100000000000000000000E5 /* FakeHomeBridgeSessionClient.swift */; };
+		A100000000000000000000E6 /* HomeCredentialStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = A100000000000000000000E7 /* HomeCredentialStore.swift */; };
+		A100000000000000000000E8 /* HomeConfigurationMigration.swift in Sources */ = {isa = PBXBuildFile; fileRef = A100000000000000000000E9 /* HomeConfigurationMigration.swift */; };
+		A100000000000000000000F0 /* AppleLifecycleCoordinator.swift in Sources */ = {isa = PBXBuildFile; fileRef = A100000000000000000000F1 /* AppleLifecycleCoordinator.swift */; };
+		A100000000000000000000F2 /* URLSessionHomeBridgeSessionClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = A100000000000000000000F3 /* URLSessionHomeBridgeSessionClient.swift */; };
+		A100000000000000000000F4 /* HomeBridgeEnvelopeTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A100000000000000000000F5 /* HomeBridgeEnvelopeTests.swift */; };
+		A100000000000000000000F6 /* HomeBridgeSessionClientTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A100000000000000000000F7 /* HomeBridgeSessionClientTests.swift */; };
+		A100000000000000000000F8 /* HomeBridgeAudioTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A100000000000000000000F9 /* HomeBridgeAudioTests.swift */; };
+		A100000000000000000000FA /* HomeConfigurationMigrationTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A100000000000000000000FB /* HomeConfigurationMigrationTests.swift */; };
+		A100000000000000000000FC /* AppleLifecycleTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A100000000000000000000FD /* AppleLifecycleTests.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -120,6 +132,18 @@
 		A100000000000000000000C9 /* DeviceDiscoveryView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DeviceDiscoveryView.swift; sourceTree = "<group>"; };
 		A100000000000000000000D0 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
 		A100000000000000000000D3 /* VisualDesignTokens.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VisualDesignTokens.swift; sourceTree = "<group>"; };
+		A100000000000000000000E0 /* HomeBridgeModels.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HomeBridgeModels.swift; sourceTree = "<group>"; };
+		A100000000000000000000E3 /* HomeBridgeSessionClient.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HomeBridgeSessionClient.swift; sourceTree = "<group>"; };
+		A100000000000000000000E5 /* FakeHomeBridgeSessionClient.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FakeHomeBridgeSessionClient.swift; sourceTree = "<group>"; };
+		A100000000000000000000E7 /* HomeCredentialStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HomeCredentialStore.swift; sourceTree = "<group>"; };
+		A100000000000000000000E9 /* HomeConfigurationMigration.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HomeConfigurationMigration.swift; sourceTree = "<group>"; };
+		A100000000000000000000F1 /* AppleLifecycleCoordinator.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppleLifecycleCoordinator.swift; sourceTree = "<group>"; };
+		A100000000000000000000F3 /* URLSessionHomeBridgeSessionClient.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = URLSessionHomeBridgeSessionClient.swift; sourceTree = "<group>"; };
+		A100000000000000000000F5 /* HomeBridgeEnvelopeTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HomeBridgeEnvelopeTests.swift; sourceTree = "<group>"; };
+		A100000000000000000000F7 /* HomeBridgeSessionClientTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HomeBridgeSessionClientTests.swift; sourceTree = "<group>"; };
+		A100000000000000000000F9 /* HomeBridgeAudioTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HomeBridgeAudioTests.swift; sourceTree = "<group>"; };
+		A100000000000000000000FB /* HomeConfigurationMigrationTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HomeConfigurationMigrationTests.swift; sourceTree = "<group>"; };
+		A100000000000000000000FD /* AppleLifecycleTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppleLifecycleTests.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -169,6 +193,11 @@
 			children = (
 				A10000000000000000000031 /* HermesRelayTests.swift */,
 				A10000000000000000000032 /* RelayConfigurationTests.swift */,
+				A100000000000000000000F5 /* HomeBridgeEnvelopeTests.swift */,
+				A100000000000000000000F7 /* HomeBridgeSessionClientTests.swift */,
+				A100000000000000000000F9 /* HomeBridgeAudioTests.swift */,
+				A100000000000000000000FB /* HomeConfigurationMigrationTests.swift */,
+				A100000000000000000000FD /* AppleLifecycleTests.swift */,
 				A10000000000000000000037 /* HermesEventNormalizerTests.swift */,
 				A10000000000000000000039 /* URLSessionHermesSessionClientTests.swift */,
 				A100000000000000000000A9 /* ReconnectPolicyTests.swift */,
@@ -197,6 +226,7 @@
 			isa = PBXGroup;
 			children = (
 				A10000000000000000000022 /* SessionModels.swift */,
+				A100000000000000000000E0 /* HomeBridgeModels.swift */,
 				A100000000000000000000B1 /* RelayProfileCollection.swift */,
 				A10000000000000000000033 /* RelayProfile.swift */,
 				A100000000000000000000C3 /* DeviceModels.swift */,
@@ -208,6 +238,12 @@
 			isa = PBXGroup;
 			children = (
 				A10000000000000000000023 /* HermesSessionClient.swift */,
+				A100000000000000000000E3 /* HomeBridgeSessionClient.swift */,
+				A100000000000000000000F3 /* URLSessionHomeBridgeSessionClient.swift */,
+				A100000000000000000000E5 /* FakeHomeBridgeSessionClient.swift */,
+				A100000000000000000000E7 /* HomeCredentialStore.swift */,
+				A100000000000000000000E9 /* HomeConfigurationMigration.swift */,
+				A100000000000000000000F1 /* AppleLifecycleCoordinator.swift */,
 				A10000000000000000000038 /* HermesEventNormalizer.swift */,
 				A100000000000000000000A7 /* ReconnectPolicy.swift */,
 				A1000000000000000000003A /* WebSocketConnection.swift */,
@@ -386,6 +422,13 @@
 				A100000000000000000000C6 /* DeviceDiscoveryModel.swift in Sources */,
 				A100000000000000000000C8 /* DeviceDiscoveryView.swift in Sources */,
 				A100000000000000000000D2 /* VisualDesignTokens.swift in Sources */,
+				A100000000000000000000E1 /* HomeBridgeModels.swift in Sources */,
+				A100000000000000000000E2 /* HomeBridgeSessionClient.swift in Sources */,
+				A100000000000000000000F2 /* URLSessionHomeBridgeSessionClient.swift in Sources */,
+				A100000000000000000000E4 /* FakeHomeBridgeSessionClient.swift in Sources */,
+				A100000000000000000000E6 /* HomeCredentialStore.swift in Sources */,
+				A100000000000000000000E8 /* HomeConfigurationMigration.swift in Sources */,
+				A100000000000000000000F0 /* AppleLifecycleCoordinator.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -406,6 +449,11 @@
 				A10000000000000000000097 /* ConversationPersistenceTests.swift in Sources */,
 				A10000000000000000000098 /* RecoveryTests.swift in Sources */,
 				A100000000000000000000C0 /* DeviceDiscoveryTests.swift in Sources */,
+				A100000000000000000000F4 /* HomeBridgeEnvelopeTests.swift in Sources */,
+				A100000000000000000000F6 /* HomeBridgeSessionClientTests.swift in Sources */,
+				A100000000000000000000F8 /* HomeBridgeAudioTests.swift in Sources */,
+				A100000000000000000000FA /* HomeConfigurationMigrationTests.swift in Sources */,
+				A100000000000000000000FC /* AppleLifecycleTests.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
