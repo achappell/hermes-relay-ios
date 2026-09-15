@@ -96,3 +96,33 @@ stories:
     title: Add a secure macOS Check for Updates flow
     kind: local
     spec: _bmad-output/implementation-artifacts/deferred-work.md
+  - id: STD-4
+    title: Migrate the Apple client to the Standard Home boundary
+    kind: next-wave
+    spec: _bmad-output/implementation-artifacts/spec-standard-4-apple-migration.md
+    github_issue: https://github.com/achappell/hermes-relay-ios/issues/67
+    horizon: next
+  - id: IOS-HOME-01
+    title: Add the iOS Home pairing and configuration adapter
+    kind: next-wave
+    spec: _bmad-output/implementation-artifacts/spec-ios-home-pairing-adapter.md
+    github_issue: https://github.com/achappell/hermes-relay-ios/issues/68
+    horizon: next
+  - id: IOS-WATCH-01
+    title: Add the read-only Watch Safe Preview
+    kind: next-wave
+    spec: _bmad-output/implementation-artifacts/spec-ios-watch-safe-preview.md
+    github_issue: https://github.com/achappell/hermes-relay-ios/issues/69
+    horizon: later
+  - id: IOS-PERM-01
+    title: Enforce iOS endpoint permissions and masked Sensitive Entry
+    kind: next-wave
+    spec: _bmad-output/implementation-artifacts/spec-ios-permissions-sensitive-entry.md
+    github_issue: https://github.com/achappell/hermes-relay-ios/issues/70
+    horizon: later
+  - id: IOS-NOTIFY-01
+    title: Add opt-in iOS notifications and quiet hours
+    kind: next-wave
+    spec: _bmad-output/implementation-artifacts/spec-ios-notifications.md
+    github_issue: https://github.com/achappell/hermes-relay-ios/issues/71
+    horizon: later

@@ -7,3 +7,9 @@ surfaces:
 status_tracker: _bmad-output/implementation-artifacts/sprint-status.yaml
 story_index: _bmad-output/implementation-artifacts/story-index.yaml
 coordination_authority: product-hub
+story_aliases:
+  standard-4-apple-migrate-client: STD-4
+  ios-home-01: IOS-HOME-01
+  ios-watch-01: IOS-WATCH-01
+  ios-perm-01: IOS-PERM-01
+  ios-notify-01: IOS-NOTIFY-01
