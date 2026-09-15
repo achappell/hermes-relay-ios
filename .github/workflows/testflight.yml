@@ -118,7 +118,7 @@ jobs:
 
       - name: Download App Store provisioning profile
         id: profiles
-        uses: apple-actions/download-provisioning-profiles@473562c853e9f580367eeff7c180258653e416e0 # v6.1.0
+        uses: apple-actions/download-provisioning-profiles@2126b5f86a0e2863cbf4d2d312112b22b943a594 # v6.1.0
         with:
           bundle-id: ${{ env.BUNDLE_ID }}
           profile-type: IOS_APP_STORE
