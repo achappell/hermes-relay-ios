@@ -3,7 +3,7 @@ title: '[Apple] Migrate the iOS/macOS client'
 type: 'feature'
 created: '2026-09-14'
 status: 'ready-for-dev'
-review_loop_iteration: 2
+review_loop_iteration: 3
 followup_review_recommended: false
 context:
   - '{project-root}/docs/architecture.md'
@@ -137,7 +137,7 @@ The shared local types used by the client, store, and coordinator are concrete
 and equatable; they are not `[String: Any]` escape hatches:
 
 ```swift
-enum HomeFailureCode: String, Sendable {
+enum HomeFailureCode: String, Codable, Sendable {
     case invalidRequest = "invalid_request"
     case authorizationUnavailable = "authorization_unavailable"
     case unauthorized
@@ -151,14 +151,36 @@ enum HomeFailureCode: String, Sendable {
     case hermesUnavailable = "hermes_unavailable"
 }
 
-enum HomeRouteAttemptFailure: String, Sendable {
+/// Reasons permitted in an open/reconnect result. `reconnect_required` and
+/// route-attempt reasons are not ordinary turn-delivery errors and must remain
+/// distinct in the projection layer.
+enum HomeWireReason: String, Codable, Sendable {
+    case reconnectRequired = "reconnect_required"
+    case invalidRequest = "invalid_request"
+    case authorizationUnavailable = "authorization_unavailable"
+    case unauthorized
+    case staleConversation = "stale_conversation"
+    case conversationMismatch = "conversation_mismatch"
+    case requestRejected = "request_rejected"
+    case transportUnavailable = "transport_unavailable"
+    case transportTimeout = "transport_timeout"
+    case protocolError = "protocol_error"
+    case capabilityUnavailable = "capability_unavailable"
+    case hermesUnavailable = "hermes_unavailable"
+    case routeUnavailable = "route_unavailable"
+    case routeUnauthorized = "route_unauthorized"
+    case routeIdentityMismatch = "route_identity_mismatch"
+    case routeTimeout = "route_timeout"
+}
+
+enum HomeRouteAttemptFailure: String, Codable, Sendable {
     case unavailable
     case unauthorized
     case identityMismatch
     case timeout
 }
 
-enum HomeFailurePhase: String, Sendable {
+enum HomeFailurePhase: String, Codable, Sendable {
     case route, authorization, open, reconnect, submission, interrupt
     case structuredResponse, command, ping, audio, lifecycle
 }
@@ -179,6 +201,25 @@ struct HomeConversationBinding: Equatable, Sendable {
     let capabilities: HomeBridgeCapabilities
 }
 
+/// The only input needed for a first `conversation.open`. It is produced by
+/// Home pairing/configuration, not manufactured from a RelayProfile. It has
+/// no capability snapshot because capabilities become trusted only after the
+/// schema-1 ready result.
+struct HomeConversationClaim: Equatable, Sendable {
+    let profileID: UUID                 // local only; never encoded on the wire
+    let conversationHandle: String     // opaque Home grant; never a Hermes ID
+    let approvedRoute: HomeApprovedRoute
+}
+
+/// Opaque per-turn identity. `sessionID` remains reserved for the legacy
+/// Hermes binding; this value is the sole Home turn correlation passed to the
+/// store and recovery record.
+struct HomeTurnBinding: Equatable, Sendable {
+    let conversationHandle: String
+    let turnID: String
+    let correlationID: String
+}
+
 struct HomeBridgeCapabilities: Equatable, Sendable {
     let commands: Set<String>
     let heartbeat: Bool
@@ -186,7 +227,7 @@ struct HomeBridgeCapabilities: Equatable, Sendable {
     let timing: HomeTimingCapability
 }
 
-enum HomeTimingCapability: String, Sendable {
+enum HomeTimingCapability: String, Codable, Sendable {
     case absent
 }
 
@@ -218,20 +259,70 @@ protocol HomeMonotonicClock: Sendable {
     func now() -> ContinuousClock.Instant
     func sleep(until: ContinuousClock.Instant) async throws
 }
+
+struct HomePendingRequestID: RawRepresentable, Equatable, Hashable, Sendable {
+    let rawValue: String
+
+    init(rawValue: String) { self.rawValue = rawValue }
+}
+
+struct HomeOperationDeadlines: Equatable, Sendable {
+    let open: Duration
+    let reconnectAttempt: Duration
+    let reconnectOverall: Duration
+    let promptAcceptance: Duration
+    let structuredResponse: Duration
+    let command: Duration
+    let interruptAcknowledgement: Duration
+    let ping: Duration
+
+    static let `default` = HomeOperationDeadlines(
+        open: .seconds(10),
+        reconnectAttempt: .seconds(10),
+        reconnectOverall: .seconds(60),
+        promptAcceptance: .seconds(10),
+        structuredResponse: .seconds(10),
+        command: .seconds(10),
+        interruptAcknowledgement: .seconds(2),
+        ping: .seconds(5)
+    )
+}
+
+/// The helper owns the race and the request-specific cancellation. Production
+/// and fake clients use the same signature; tests replace both clock and
+/// operation with deterministic continuations.
+func withHomeDeadline<T: Sendable>(
+    requestID: HomePendingRequestID,
+    timeout: Duration,
+    clock: any HomeMonotonicClock,
+    cancelPending: @escaping @Sendable (HomePendingRequestID) async -> Void,
+    operation: @escaping @Sendable () async throws -> T
+) async throws -> T
 ```
 
 `URLSessionHomeBridgeSessionClient`, `FakeHomeBridgeSessionClient`,
 `HomeConfigurationMigration`, `ConversationStore`, and the lifecycle
 coordinator receive the same clock through their initializers. A shared
 `withHomeDeadline` helper races the operation against
-`clock.sleep(until:)`, cancels the losing task, and closes only that operation's
-pending request. It never uses wall-clock `Date` for timeout decisions. The
-10-second bound is per `conversation.open`, prompt-acceptance, and
-`conversation.reconnect` attempt; `ReconnectPolicy` supplies its existing
-finite attempt count/backoff and the caller's overall cancellation, so no
-retry can hide an unbounded wait. Lifecycle deactivation owns cancellation of
-all outstanding Home operations, and a cancelled operation cannot publish a
-late readiness or delivery result.
+`clock.sleep(until:)`, cancels the losing task, and calls
+`cancelPending(requestID:)` for only that request. It never uses wall-clock
+`Date` for timeout decisions. The 10-second bound is per
+`conversation.open`, prompt-acceptance, `prompt.respond`,
+`command.dispatch`, and `conversation.reconnect` attempt;
+`ReconnectPolicy` supplies its existing finite attempt count/backoff and the
+caller's overall cancellation, so no retry can hide an unbounded wait.
+`cancelPending(requestID:)` removes one waiter and leaves the socket, reader,
+and unrelated requests alive; only whole-transport loss or lifecycle close
+closes the socket. Lifecycle deactivation owns cancellation of all outstanding
+Home operations, and a cancelled operation cannot publish a late readiness or
+delivery result.
+
+`HomeOperationDeadlines.default` is the story-local policy: each reconnect
+attempt has a 10-second cap and the complete finite reconnect ladder has a
+60-second overall cap, while tests may inject a smaller policy. The per-attempt
+deadline is reset only for the next `ReconnectPolicy` attempt; it cannot reset
+the overall deadline. Cancellation from the caller or lifecycle wins over
+both clocks and produces no late result.
 
 | Operation | Bound | Success | Failure transition |
 |---|---:|---|---|
@@ -239,6 +330,8 @@ late readiness or delivery result.
 | `conversation.reconnect` | 10 s per attempt | Ready existing binding; retain any `unresolved_turn` | Preserve uncertainty; after `ReconnectPolicy` exhaustion, `unavailable`/`disconnected` and no new submission |
 | `prompt.submit` acceptance | 10 s | `accepted` with new opaque Home turn ID | Known Home rejection → `failedKnown`; transport/timeout → `uncertain` and persist draft/marker |
 | `session.interrupt` acknowledgement | 2 s | Keep waiting for matching interrupted/cancelled terminal event | Known rejection/unavailable stays distinct; timeout/transport uses close/reconnect fallback and `uncertain` delivery |
+| `prompt.respond` | 10 s | `accepted` for the current prompt correlation | Stale/expired/unsupported is known rejected; timeout/transport is uncertain for that prompt response, and its waiter is cancelled individually |
+| `command.dispatch` | 10 s | Typed completed/rejected command result with matching conversation/correlation | Absent capability or known rejection is not sent/failed known; timeout/transport is uncertain and never replayed |
 | `bridge.ping` | 5 s | Update liveness only | Typed unavailable/disconnected; never changes timing or turn state |
 | Audio start/terminal | 5 s to start, then bounded active-turn lifetime | Audio terminal contributes to the join | `invalid`/`unavailable` releases audio and lets known control terminal settle text; it never becomes an uncertain prompt |
 
@@ -281,6 +374,50 @@ struct HomeApprovedRoute: Codable, Equatable, Sendable {
     let householdBinding: String     // opaque, non-secret Home receipt
 }
 
+/// Do not use synthesized Codable for the endpoint route object: the wire key
+/// is `class`, while the local Swift property is `routeClass`. This result is
+/// the only route shape accepted from a contract-v1 ready response.
+struct HomeWireRoute: Codable, Equatable, Sendable {
+    let routeClass: HomeRouteClass
+    let id: String
+
+    private enum CodingKeys: String, CodingKey {
+        case routeClass = "class"
+        case id
+    }
+}
+
+enum HomeBridgeReadyStatus: String, Codable, Sendable {
+    case ready
+    case unavailable
+}
+
+struct HomeReadyWireResult: Codable, Equatable, Sendable {
+    let schema: Int
+    let status: HomeBridgeReadyStatus
+    let conversationHandle: String
+    let route: HomeWireRoute?
+    let capabilities: HomeWireCapabilities?
+    let reason: HomeWireReason?
+
+    private enum CodingKeys: String, CodingKey {
+        case schema, status
+        case conversationHandle = "conversation_handle"
+        case route, capabilities, reason
+    }
+}
+
+struct HomeWireCapabilities: Codable, Equatable, Sendable {
+    let commands: [String]
+    let heartbeat: Bool
+    let timing: HomeTimingCapability
+    let interrupt: Bool?
+
+    private enum CodingKeys: String, CodingKey {
+        case commands, heartbeat, timing, interrupt
+    }
+}
+
 protocol HomeApprovedRouteProvider: Sendable {
     func approvedRoute(for profileID: UUID) async throws -> HomeApprovedRoute?
 }
@@ -289,19 +426,29 @@ protocol HomeApprovedRouteProvider: Sendable {
 `HomeApprovedRoute` validates `wss`, the exact `/api/v1/bridge/ws` path, no
 userinfo, query, or fragment for the native adapter, and a non-empty Home
 identity/binding. The provider is backed by a pairing/configuration handoff;
-Apple does not manufacture the record. `FakeHomeBridgeSessionClient` receives
-the record in its initializer and returns the exact contract-v1 ready shape
-with deterministic route class/id metadata. URLSession never selects a route
-on its own. The contract-v1 ready result contains `route.class` and `route.id`
-but does not define a `household_binding` field: `householdBinding` remains a
-local, non-secret receipt associated with the approved record and is never
-invented as a wire field. The adapter compares the returned route class/id to
-the approved record and treats Home's successful Device authorization and
-identity-valid route selection as Home-owned proof; Apple does not re-prove
-Household Identity. If a later Home version adds an explicit opaque proof
-field, it is an optional versioned extension and must be compared only when
-present. None of these values is a Profile ID, Hermes Session ID, bearer, or
-credential.
+Apple does not manufacture the record. `HomeConversationClaim` supplies the
+opaque handle, Profile identity, approved route, and local Household receipt
+needed to construct a first-open request; it supplies no capabilities. The
+caller must obtain the claim from the same pairing/configuration record, and
+`open` verifies that the provider's current approved route equals the claim's
+route before doing any socket work. The client encodes only
+`conversation_handle` from that claim in
+`conversation.open`, then creates `HomeConversationBinding` and its capability
+snapshot only after decoding a successful ready result. `FakeHomeBridgeSessionClient`
+receives the claim in its initializer and returns the exact contract-v1 ready
+shape with deterministic route class/id metadata. URLSession never selects a
+route on its own. Decode ready through `HomeWireRoute` (not synthesized
+`HomeRouteIdentity`), require exactly `route.class` and `route.id` when status
+is ready, and reject `household_binding`, Profile IDs, runtime IDs, bearer
+fields, and other unknown route keys as `protocol_error`. The contract-v1 ready
+result does not define a `household_binding` field: `householdBinding` remains a
+local, non-secret receipt associated with the approved record. The adapter
+compares the returned route class/id to the approved record and treats Home's
+successful Device authorization and identity-valid route selection as
+Home-owned proof; Apple does not re-prove Household Identity. If a later Home
+version adds an explicit opaque proof field, it is an optional versioned
+extension and must be compared only when present. None of these values is a
+Profile ID, Hermes Session ID, bearer, or credential.
 
 Map Home's wire results without collapsing route, authorization, adapter, and
 delivery failures:
@@ -337,7 +484,7 @@ enum HomePromptSubmissionOutcome: Equatable, Sendable {
 }
 
 protocol HomeBridgeSessionClient: Sendable {
-    func open(binding: HomeConversationBinding) async -> HomeOpenOutcome
+    func open(claim: HomeConversationClaim) async -> HomeOpenOutcome
     func reconnect(binding: HomeConversationBinding) async -> HomeReconnectOutcome
     func submitPrompt(
         _ text: String,
@@ -353,6 +500,9 @@ protocol HomeBridgeSessionClient: Sendable {
     ) async -> HomeStructuredResponseOutcome
     func dispatch(_ command: HomeCommandRequest) async -> HomeCommandOutcome
     func ping(binding: HomeConversationBinding) async -> HomePingOutcome
+    /// Internal transport cancellation. It removes only this JSON-RPC waiter;
+    /// it is never shown in UI, persisted, or sent as a Home method.
+    func cancelPending(requestID: HomePendingRequestID) async
     func events() -> AsyncThrowingStream<HomeBridgeEvent, Error>
     func close() async
 }
@@ -393,6 +543,22 @@ struct HomeCommandRequest: Equatable, Sendable {
     let argument: String?
 }
 
+enum HomeCommandStatus: String, Codable, Sendable {
+    case accepted
+    case completed
+    case rejected
+    case unavailable
+}
+
+struct HomeCommandEvent: Equatable, Sendable {
+    let conversationHandle: String
+    let turnID: String?
+    let correlationID: String
+    let name: String
+    let status: HomeCommandStatus
+    let safeCode: HomeFailureCode?
+}
+
 enum HomeCommandOutcome: Equatable, Sendable {
     case completed(HomeCommandResult)
     case rejected(HomeBridgeFailure)
@@ -400,8 +566,12 @@ enum HomeCommandOutcome: Equatable, Sendable {
 }
 
 struct HomeCommandResult: Equatable, Sendable {
+    let conversationHandle: String
+    let turnID: String?
+    let correlationID: String
     let name: String
-    let status: String
+    let status: HomeCommandStatus
+    let safeCode: HomeFailureCode?
 }
 
 enum HomePingOutcome: Equatable, Sendable {
@@ -430,23 +600,26 @@ enum AppleTransportMode: String, Codable, Sendable {
 }
 ```
 
-`URLSessionHomeBridgeSessionClient.open` obtains the approved route and private
-credential through the injected dependencies, creates exactly one
+`URLSessionHomeBridgeSessionClient.open(claim:)` obtains the approved route and
+private credential through the injected dependencies, creates exactly one
 `URLSessionWebSocketTask`, starts exactly one receive loop, and publishes one
 shared `events()` stream. Every operation serializes an allowlisted JSON-RPC
-request with a fresh client request ID and waits on the pending-response table;
-operation methods never call `receive` themselves. The loop validates
-`jsonrpc/schema`, routes a matching response to its waiter, emits matching
-`event`/`audio.frame` notifications, joins binary PCM through the audio
-accumulator, and rejects mismatched opaque conversation/turn/correlation
-values. `close()` cancels the one reader, fails pending waiters with a typed
+request with a fresh `HomePendingRequestID`, retains a private waiter keyed by
+that ID, and returns the typed result listed above; operation methods never
+call `receive` themselves. The loop validates `jsonrpc/schema`, decodes the
+wire route with the explicit `class` coding key, routes a matching response to
+its waiter, emits matching `event`/`audio.frame` notifications, joins binary
+PCM through the audio accumulator, and rejects mismatched opaque
+conversation/turn/correlation values. `cancelPending(requestID:)` removes
+only that waiter and resolves its operation as a typed timeout/cancellation;
+`close()` cancels the one reader, fails every remaining waiter with a typed
 transport result, and finishes the shared stream. The production factory
 returns `UnavailableHomeBridgeSessionClient` with
 `public_adapter_unavailable` before creating a socket when the planned public
 adapter is not served; the fake is the only implementation enabled for the
-Debug evidence path. This is the complete operation/factory seam for open,
-reconnect, prompt, interrupt, structured response, command, ping, events, and
-close.
+Debug evidence path. This is the complete operation/factory seam for
+`open(claim:)`, reconnect, prompt, interrupt, structured response, command,
+ping, events, per-request cancellation, and close.
 
 The store transition is explicit: validation or a correlated Home rejection
 before acceptance is `failedKnown` with no uncertainty marker; a send with no
@@ -476,6 +649,15 @@ struct HomeStructuredPrompt: Equatable, Sendable {
     let options: [String]
     let expiresAt: Date?
     let sensitive: Bool
+
+    var eventType: String {
+        switch kind {
+        case .approval: return "approval.request"
+        case .clarification: return "clarify.request"
+        case .secret: return "secret.request"
+        case .sudo: return "sudo.request"
+        }
+    }
 }
 
 enum HomePromptResponse: Equatable, Sendable {
@@ -484,20 +666,35 @@ enum HomePromptResponse: Equatable, Sendable {
     case secret(value: String)
     case sudo(password: String)
 }
+
+/// Actor-owned pending state. The response encoder receives this exact record
+/// and never accepts a caller-provided dictionary or an unscoped correlation.
+struct HomePendingStructuredPrompt: Equatable, Sendable {
+    let prompt: HomeStructuredPrompt
+    let receivedAt: Date
+    let expiresAt: Date?
+}
 ```
 
 The encoder maps those cases only to the fixed Home keys: approval
 `choice`/optional `all`, clarification `answer`, secret `value`, and sudo
-`password`. `HomeStructuredPrompt` owns the pending request in the bridge
-actor; `respond(to:with:)` must match the opaque conversation handle, Home
-turn ID, correlation ID, event kind, and unexpired state. A stale,
-uncorrelated, unsupported, or capability-missing response returns a typed
-known rejection and does not write a frame. Secret/password values exist only
-in the transient request and the private encoder call; they are never
-`Codable`, transcript text, diagnostic fields, or test snapshots. A command
-uses `HomeCommandRequest`/`dispatch(_:)` only when its name is in the current
-capability snapshot; it never becomes `prompt.submit` text. The fake must
-exercise accepted, stale, expired, rejected, and transport-uncertain outcomes.
+`password`. `HomeStructuredPrompt` is converted to one
+`HomePendingStructuredPrompt` in the bridge actor. `respond(to:with:)` must
+match the opaque conversation handle, Home turn ID, correlation ID, exact
+`eventType`, and unexpired state; the actor removes that one pending entry
+only after a successful response write. A stale, uncorrelated, unsupported,
+expired, or capability-missing response returns a typed known rejection and
+does not write a frame. Secret/password values exist only in the transient
+request and the private encoder call; they are never `Codable`, transcript
+text, diagnostic fields, or test snapshots. A command uses
+`HomeCommandRequest`/`dispatch(_:)` only when its name is in the current
+capability snapshot. The adapter decodes only the allowlisted command event
+fields into `HomeCommandEvent` and `HomeCommandResult` (handle, optional turn,
+correlation, name, typed status, safe code); it drops raw result data and
+rejects a mismatched correlation. It never turns a command into
+`prompt.submit` text. The fake must exercise accepted, stale, expired,
+rejected, and transport-uncertain outcomes for both prompt response and
+command dispatch.
 
 ### Relaunch-safe Home conversation recovery
 
@@ -509,6 +706,10 @@ PCM, structured secret, prompt answer, or response value:
 
 ```swift
 enum PersistedHomeDeliveryState: String, Codable, Sendable {
+    /// Written before `prompt.submit` so a process death cannot make an
+    /// in-flight send look like known non-delivery. Relaunch upgrades this to
+    /// `uncertain` without resubmitting the text.
+    case awaitingAcceptance
     case accepted
     case uncertain
 }
@@ -522,6 +723,7 @@ struct PersistedHomeRecovery: Codable, Equatable, Sendable {
     let conversationHandle: String
     let turnID: String?
     let correlationID: String?
+    let submissionAttemptID: UUID? // local-only attempt identity; never wire
     let resumeCursor: String?
     let deliveryState: PersistedHomeDeliveryState
     let updatedAt: Date
@@ -550,8 +752,15 @@ struct PersistedConversation: Codable, Equatable, Sendable {
 `homeRecovery` is optional so old files decode as legacy-local state. The
 existing JSON persistence actor writes the conversation and recovery record in
 one atomic replacement and applies the existing iOS file-protection policy.
-The store writes the approved binding before exposing `ready`, writes the new
-turn and local text before treating a prompt as accepted, writes
+Before sending a new `prompt.submit`, the store atomically writes the local
+text, a fresh `submissionAttemptID`, and
+`deliveryState: awaitingAcceptance`. The JSON-RPC request ID remains an
+in-memory transport detail; `submissionAttemptID` is the persisted local
+crash marker and `correlationID` is filled only once Home accepts a turn. A
+process death or force-quit while that record is awaiting acceptance is
+upgraded to `uncertain` during load, retained with the text, and never
+resubmitted. The store writes the approved binding before exposing `ready`,
+writes the accepted turn binding before projecting acceptance, writes
 `deliveryState: uncertain` before closing after a send/acceptance loss, and
 updates the cursor/terminal state only for a matching opaque binding. It clears
 the recovery record only after the matching control terminal and audio join
@@ -585,13 +794,76 @@ struct HomeEventScope: Equatable, Sendable {
     let correlationID: String?
 }
 
+enum HomeStandardEventType: String, Codable, Sendable {
+    case messageStart = "message.start"
+    case messageDelta = "message.delta"
+    case textDelta = "text_delta"
+    case text = "text"
+    case textFinal = "text_final"
+    case messageComplete = "message.complete"
+    case thinking
+    case reasoning
+    case status
+    case turnComplete = "turn_complete"
+    case turnInterrupted = "turn_interrupted"
+    case audioAbort = "audio_abort"
+    case error
+}
+
+enum HomeStandardEventKind: String, Codable, Sendable {
+    case assistant
+    case thinking
+    case status
+    case terminal
+}
+
+enum HomeActivityKind: String, Codable, Sendable {
+    case working
+    case thinking
+    case speaking
+    case listening
+    case waiting
+    case idle
+    case stopped
+}
+
+struct HomeSafeError: Codable, Equatable, Sendable {
+    let code: HomeFailureCode
+    let phase: HomeFailurePhase
+}
+
+/// This enum is the allowlisted payload boundary. The adapter constructs it
+/// only after rejecting unknown keys and server/runtime identity fields; the
+/// existing normalizer never receives the source dictionary.
+enum HomeStandardEventPayload: Equatable, Sendable {
+    case start(kind: HomeStandardEventKind?)
+    case delta(
+        rendered: String?,
+        text: String?,
+        replace: Bool,
+        kind: HomeStandardEventKind?
+    )
+    case final(
+        rendered: String?,
+        text: String?,
+        status: String?,
+        reasoning: String?,
+        failureReason: HomeFailureCode?
+    )
+    case activity(
+        text: String?,
+        status: String?,
+        reasoning: String?,
+        kind: HomeStandardEventKind?
+    )
+    case terminal(kind: HomeStandardEventKind?)
+    case error(HomeSafeError)
+}
+
 struct HomeStandardEvent: Equatable, Sendable {
-    let type: String
+    let type: HomeStandardEventType
     let scope: HomeEventScope
-    let rendered: String?
-    let text: String?
-    let replace: Bool
-    let status: String?
+    let payload: HomeStandardEventPayload
 }
 
 enum HomeBridgeEvent: Equatable, Sendable {
@@ -600,7 +872,8 @@ enum HomeBridgeEvent: Equatable, Sendable {
     case audioTerminal(HomeEventScope, HomeAudioTerminal)
     case binaryPCM(HomeEventScope, Data)
     case structuredPrompt(HomeStructuredPrompt)
-    case activity(HomeEventScope?, String)
+    case command(HomeCommandEvent)
+    case activity(HomeEventScope?, HomeActivityKind)
 }
 
 enum HomeAudioTerminal: String, Sendable {
@@ -611,6 +884,27 @@ struct HomePCMAccumulator: Sendable {
     mutating func append(transportChunk: Data) throws -> Data
     mutating func finish() throws
 }
+
+enum HomeTurnJoinTimeout: Equatable, Sendable {
+    case audioStartMissing
+    case controlTerminalMissing
+    case audioTerminalMissing
+    case playbackDrainTimedOut
+}
+
+struct HomeTurnAudioDeadlines: Equatable, Sendable {
+    let audioStart: Duration       // 5 seconds after accepted turn
+    let controlTerminal: Duration  // 30 seconds after accepted turn
+    let audioTerminal: Duration    // 30 seconds after audio start
+    let playbackDrain: Duration    // 5 seconds after control/audio terminal
+
+    static let `default` = HomeTurnAudioDeadlines(
+        audioStart: .seconds(5),
+        controlTerminal: .seconds(30),
+        audioTerminal: .seconds(30),
+        playbackDrain: .seconds(5)
+    )
+}
 ```
 
 `HomePCMAccumulator` joins bytes across arbitrary WebSocket binary frames and
@@ -619,25 +913,45 @@ an odd aggregate; an odd individual transport chunk is valid when the next
 chunk supplies its second byte. The accumulator is created per Home turn and
 generation, is discarded on fallback/unavailable/invalid, and has no
 Codable/logging path. The audio-start deadline and active-turn cancellation
-are owned by the same operation deadline helper as control messages. The
-normalizer receives only `HomeStandardEvent` after allowlist validation; outer
-JSON-RPC/request IDs and any server-only IDs never enter the normalized model.
+are owned by the same injected-clock deadline helper as control messages. The
+per-turn coordinator also owns explicit `controlTerminal`, `audioTerminal`,
+and `playbackDrain` deadlines. If audio start is missing, it emits
+`audioStartMissing`, discards the accumulator, and settles only when the
+control terminal is known; if the control terminal is missing at its deadline,
+delivery is `uncertain` after local audio cleanup; if audio terminal or native
+drain is missing, audio is classified unavailable/stopped and a known control
+terminal still settles text. Every timeout cancels its own sleeper and clears
+the accumulator; no timeout waits on an unbounded stream. The normalizer
+receives only `HomeStandardEvent` after allowlist validation; outer JSON-RPC/
+request IDs and any server-only IDs never enter the normalized model.
+
+Home mode never constructs `RecoveringAudioOutput` with its WAV fallback. Add
+an explicit `AudioFallbackPolicy` with `.legacyWAV` and `.disabled` (or a
+non-buffering Home output); Home uses `.disabled`, clears any transient bytes
+on native-output failure, and exposes no fallback URL/file. The existing WAV
+fallback remains available only to the explicit legacy client. A test must
+assert that a Home playback failure calls no `WAVFallbackWriter` and leaves no
+file behind.
 
 ### Standard event allowlist and redaction
 
 `HomeStandardEvent` is the only input to the existing normalizer and contains
 the opaque Home binding plus an internal, non-persisted correlation. Before
 calling `HermesEventNormalizer`, the Home adapter creates a fresh object from
-an allowlist:
+an allowlist. `type` is decoded into `HomeStandardEventType`; the payload is
+decoded into `HomeStandardEventPayload` with explicit fields for rendered/text,
+replace, status, reasoning, kind, failureReason, or `HomeSafeError(code,
+phase)`. Unknown event types and unknown payload keys are rejected before this
+model is constructed. The table describes those enum cases:
 
 | Standard event | Fields allowed into the local normalizer | Redaction rule |
 |---|---|---|
 | `message.start` | event type only | No server IDs. |
 | `message.delta` / `text_delta` | `rendered`, `text`, `replace` | Text may reach local transcript/UI; never diagnostics/snapshots. |
-| `text` / `text_final` / `message.complete` | final text/rendered and local reasoning if needed | No server session/request IDs; raw error fields are dropped. |
-| thinking/reasoning/status | text/status/kind | Content is UI-only; diagnostics retain only a safe state/count. |
+| `text` / `text_final` / `message.complete` | final text/rendered, status, reasoning, and allowlisted stable `failureReason` | No server session/request IDs; raw error fields are dropped. |
+| thinking/reasoning/status | text/status/reasoning/kind | Content is UI-only; diagnostics retain only a safe state/count. |
 | `turn_complete` / `turn_interrupted` / `audio_abort` | terminal type and matching Home turn correlation | The incoming Standard ID is compared internally, then not exposed as `sessionID`. |
-| error | stable Home failure code and safe phase | Drop `message`, `error`, `failure_reason`, stack, and server metadata. |
+| error | `HomeSafeError(code, phase)` only | Drop `message`, `error`, `failure_reason`, stack, and server metadata. |
 | `speech_timing` | none in Home mode | Suppress as `timing: absent`; never manufacture timing. |
 
 Unknown payload keys, Standard runtime Session IDs, bearer-related fields,
@@ -654,13 +968,41 @@ secure store and returns only a non-secret reference/receipt to this client;
 Apple never issues one from the legacy bearer. Add these explicit seams:
 
 ```swift
+enum HomeCredentialKeychain {
+    static let service = "com.achappell.HermesRelayIOS.home-device"
+
+    static func account(for profileID: UUID) -> String {
+        "device-credential.\(profileID.uuidString)"
+    }
+}
+
+enum HomeCredentialReferenceError: Error, Equatable, Sendable {
+    case wrongServiceOrAccount
+    case invalidLifecycleDates
+}
+
 struct HomeCredentialReference: Codable, Equatable, Sendable {
-    let service: String       // com.achappell.HermesRelayIOS.home-device
-    let account: String       // device-credential.<profile UUID>
+    let service: String       // always HomeCredentialKeychain.service
+    let account: String       // always account(for: profileID)
     let issuedAt: Date
     let expiresAt: Date
     let renewAfter: Date
     let overlapUntil: Date?
+
+    func validate(for profileID: UUID) throws {
+        guard service == HomeCredentialKeychain.service,
+              account == HomeCredentialKeychain.account(for: profileID)
+        else { throw HomeCredentialReferenceError.wrongServiceOrAccount }
+
+        let ninetyDays: TimeInterval = 90 * 24 * 60 * 60
+        let fourteenDays: TimeInterval = 14 * 24 * 60 * 60
+        let tenMinutes: TimeInterval = 10 * 60
+        guard expiresAt.timeIntervalSince(issuedAt) == ninetyDays,
+              renewAfter == expiresAt.addingTimeInterval(-fourteenDays),
+              (overlapUntil == nil
+                || overlapUntil! <= expiresAt.addingTimeInterval(tenMinutes))
+        else { throw HomeCredentialReferenceError.invalidLifecycleDates }
+    }
 }
 
 enum HomeCredentialState: String, Codable, Sendable {
@@ -685,20 +1027,27 @@ protocol HomePairingCredentialHandoff: Sendable {
 protocol HomeCredentialStore: Sendable {
     func stage(preIssued: HomeCredentialReference, for profileID: UUID) async throws
     func verifiedReadBack(for profileID: UUID) async throws -> HomeCredentialRecord
-    /// The raw value is available only inside the secure adapter operation and
-    /// is never returned to a caller that owns UI, persistence, or logging.
-    func withPrivateDeviceCredential<T: Sendable>(
+    /// The raw value is available only inside this async secure adapter
+    /// operation. Void return prevents a caller from returning Data, String,
+    /// or a wrapper containing the credential to UI, persistence, or logging.
+    func withPrivateDeviceCredential(
         for profileID: UUID,
-        _ body: @Sendable (Data) throws -> T
-    ) async throws -> T
+        _ body: @Sendable (Data) async throws -> Void
+    ) async throws
     func commitHomeSelection(for profileID: UUID) async throws
     func rollbackToLegacyAtIdle(for profileID: UUID) async throws
 }
 ```
 
-`HomeCredentialStore` reads the pre-issued value privately through the
-Keychain-backed `SecureValueStore`; it never returns credential bytes to
-Codable Profiles, UI state, snapshots, logs, or diagnostics. The existing
+`HomeCredentialStore` hard-codes and validates the exact service/account for
+the Profile before every stage/read/use. It reads the pre-issued value
+privately through the Keychain-backed `SecureValueStore`; it never returns
+credential bytes to Codable Profiles, UI state, snapshots, logs, diagnostics,
+or a generic caller result. `URLSessionHomeBridgeSessionClient` constructs
+the native `Authorization: Device <credential>` upgrade request inside the
+async `withPrivateDeviceCredential` closure and passes it directly to the
+injected socket factory; the closure returns `Void`, and the request/header is
+discarded after socket setup. The existing
 legacy bearer remains under its existing service/account until an explicit
 idle-boundary rollback policy says otherwise. Persist these idempotent phases:
 `notStarted → staged → readBackVerified → fakeReadyVerified → homeSelected`,
@@ -717,19 +1066,37 @@ inject a synthetic pre-issued reference through a fake
 `HomePairingCredentialHandoff`, and pass that store to
 `FakeHomeBridgeSessionClient`; they do not invoke UI pairing and do not assert
 or print the secret value. The fake read-back compares bytes only inside the
-store and exposes metadata/state, never the bytes. A production Home pairing
-adapter may later provide the same reference/receipt without changing this
-migration seam.
+store and exposes metadata/state, never the bytes. Inject the monotonic test
+clock at the lifecycle boundaries and assert all credential states at the
+exact edges: active before expiry, renewal eligible exactly 14 days before
+expiry, expired at expiry, revoked and replaced deny new work even when their
+dates are otherwise valid, and an `overlapUntil` never extends beyond the
+ten-minute replacement overlap. A production Home pairing adapter may later
+provide the same reference/receipt without changing this migration seam.
 
 ### Migration journal and crash recovery
 
 The migration state has one persisted source of truth: extend the Codable
-`RelayProfileCollection` with `homeMigrations: [UUID: HomeMigrationJournal]`
-and write it in the same atomic profile-collection replacement as the
-Profile's selected `AppleTransportMode`. Do not create separate mode booleans
-or infer a phase from Keychain presence.
+`RelayProfileCollection` with `homeMigrations: [UUID: HomeMigrationJournal]`.
+Do not add a second `transportMode` property to `RelayProfile`, a mode
+boolean, or a Keychain-presence heuristic. `HomeMigrationJournal.selectedMode`
+is the canonical persisted mode; `RelayConfigurationStore.transportMode(for:)`
+derives `.legacy` when no journal exists and otherwise returns the journal's
+selected mode. The journal and Profile collection are replaced by one atomic
+write, so there is no observable state in which a profile mode and journal
+disagree.
 
 ```swift
+enum HomeMigrationPhase: String, Codable, Sendable {
+    case notStarted
+    case staged
+    case readBackVerified
+    case fakeReadyVerified
+    case homeSelected
+    case rollbackPending
+    case legacySelected
+}
+
 struct HomeMigrationJournal: Codable, Equatable, Sendable {
     let schemaVersion: Int       // 1
     let profileID: UUID
@@ -740,6 +1107,48 @@ struct HomeMigrationJournal: Codable, Equatable, Sendable {
     var updatedAt: Date
 }
 ```
+
+In the existing `RelayProfileCollection` declaration, add the stored field and
+initializer parameter (defaulting to `[:]`), then replace synthesized
+decoding with this backward-compatible implementation:
+
+```swift
+var homeMigrations: [UUID: HomeMigrationJournal] = [:]
+
+private enum CodingKeys: String, CodingKey {
+    case schemaVersion, profiles, selectedID, homeMigrations
+}
+
+init(from decoder: Decoder) throws {
+    let values = try decoder.container(keyedBy: CodingKeys.self)
+    schemaVersion = try values.decode(Int.self, forKey: .schemaVersion)
+    profiles = try values.decode([RelayProfile].self, forKey: .profiles)
+    selectedID = try values.decodeIfPresent(UUID.self, forKey: .selectedID)
+    homeMigrations = try values.decodeIfPresent(
+        [UUID: HomeMigrationJournal].self, forKey: .homeMigrations
+    ) ?? [:]
+}
+```
+
+The existing memberwise initializer must assign `homeMigrations` after its
+new optional parameter. Keep this derived accessor as the only mode lookup:
+
+```swift
+extension RelayProfileCollection {
+    func transportMode(for profileID: UUID) -> AppleTransportMode {
+        homeMigrations[profileID]?.selectedMode ?? .legacy
+    }
+}
+```
+
+`decodeIfPresent(... homeMigrations) ?? [:]` is required for an existing
+collection file that predates Home. `RelayConfigurationStore.loadCollection`
+must therefore attempt the collection decoder first and fall back to the
+single-`RelayProfile` legacy decoder only when the top-level collection shape
+itself is invalid; absence of `homeMigrations` or a future optional collection
+field is not a legacy-profile failure. Add round-trip tests for an old
+collection, an old single-profile file, and a journal-less collection, all of
+which select `.legacy` without losing the Profile or local conversation.
 
 `RelayConfigurationStore` owns `loadHomeMigration`,
 `stageHomeMigration`, `recordHomeReadBack`, `recordFakeReady`,
@@ -753,14 +1162,21 @@ verify read-back and record `readBackVerified`, (6) run fake-ready
 Home mode plus `homeSelected`. The legacy credential is retained throughout.
 
 At launch, `HomeConfigurationMigration` recovers the journal before client
-construction: `staged`, `readBackVerified`, or `fakeReadyVerified` forces
-legacy mode and remains retryable; `homeSelected` is accepted only if the
-Home reference is still readable and its lifecycle state is active, otherwise
-the store atomically writes `rollbackPending`/`legacySelected` and constructs
-legacy mode. A crashed `commitHomeMigration` therefore cannot leave a profile
-claiming Home while its verified phase is missing. Explicit rollback performs
-one idle-boundary atomic write to legacy mode, retains both references, and
-never deletes the Home credential merely because the public adapter is absent.
+construction. `notStarted`, `staged`, `readBackVerified`, and
+`fakeReadyVerified` all select legacy and remain retryable; `homeSelected`
+selects Home only if its reference is still readable, validates for the same
+Profile, and has lifecycle state `.active`; `rollbackPending` and
+`legacySelected` select legacy and finish/retain the rollback journal. An
+unknown journal schema or phase is treated as `rollbackPending` and safely
+selects legacy. `commitHomeMigration` is idempotent: repeating it verifies the
+same Profile, reference, fake-ready receipt, and phase before the same atomic
+replacement, while a missing verification refuses the commit. A crash at any
+point therefore cannot leave a Profile claiming Home while its verified phase
+is missing. Explicit rollback performs one idle-boundary atomic write to
+`legacySelected`, retains both references, and never deletes the Home
+credential merely because the public adapter is absent. No caller reads mode
+from a stale in-memory Profile; every launch/client selection goes through the
+journal-derived accessor.
 
 ### Apple lifecycle inputs and transitions
 
@@ -775,10 +1191,22 @@ Home operations`. `ConversationStore.lifecycleWillDeactivate()` and
 `VoiceSessionCoordinator.stopForLifecycle()` are the explicit methods; neither
 performs network work while inactive.
 
+The coordinator owns the current Home client instance, not merely its factory:
+it creates one client for an active Profile, stores it in `activeHomeClient`,
+and `closeHomeClient()` atomically clears that slot on the main actor before
+awaiting `client.close()`. Close is therefore once-per-client; the factory
+cannot create a replacement while a previous client is still owned. The
+client's one reader and pending table are closed through that same handle.
+
 The concrete boundary is `@MainActor` and has async semantics so callers cannot
 declare deactivation complete before persistence and native teardown finish:
 
 ```swift
+enum AppleLifecycleOutcome: Equatable, Sendable {
+    case completed
+    case persistenceFailed
+}
+
 enum AppleLifecycleInput: Sendable {
     case active
     case inactive
@@ -797,7 +1225,7 @@ final class AppleLifecycleCoordinator {
         clock: any HomeMonotonicClock
     )
 
-    func handle(_ input: AppleLifecycleInput) async
+    func handle(_ input: AppleLifecycleInput) async -> AppleLifecycleOutcome
 }
 ```
 
@@ -805,13 +1233,26 @@ All inputs are serialized on the main actor. A deactivation increments a
 generation token, marks the surface inactive, and awaits
 `store.lifecycleWillDeactivate()` followed by
 `voice.stopForLifecycle()`; those methods return only after local persistence,
-task cancellation, capture stop, and playback stop/drain have completed. The
-coordinator then closes the Home client and suppresses any late result whose
-generation is stale. A later `.active`/`.relaunch` starts a new generation,
-restores `ConversationPersistence`, obtains the approved route, and performs
-Home open/reconnect only after restoration. If active arrives during teardown,
-the serialized handler completes the deactivation first; no cancelled task may
-publish `ready`, acceptance, terminal, or playback state afterward. Repeated
+task cancellation, capture stop, and playback stop/drain have completed. Both
+methods are async and `lifecycleWillDeactivate()` reports persistence failure
+instead of hiding it. If the atomic snapshot fails, the coordinator returns
+`.persistenceFailed`, publishes a safe retryable local error, does not close
+the Home client or stop an uncertain operation, and leaves deactivation
+pending; the next lifecycle input retries the snapshot before any teardown.
+After a successful snapshot the coordinator cancels outstanding work, stops
+native resources, calls `closeHomeClient()`, and suppresses any late result
+whose generation is stale.
+
+Each Home acceptance/terminal callback enters a main-actor commit gate with
+its generation. A result that commits before the deactivation generation is
+incremented wins; one arriving after it is classified as persisted uncertainty
+when delivery could have crossed the boundary, and it cannot clear the saved
+record or publish playback. A later `.active`/`.relaunch` starts a new
+generation, restores `ConversationPersistence`, obtains the approved route,
+constructs/retains exactly one Home client, and performs Home open/reconnect
+only after restoration. If active arrives during teardown, the serialized
+handler completes the deactivation first; no cancelled task may publish
+`ready`, acceptance, terminal, or playback state afterward. Repeated
 inactive/window-disappeared events are idempotent. iOS maps `scenePhase` to
 these inputs; macOS maps scene/window appearance and disappearance to the same
 coordinator, with no platform-specific network path. `ContentView` and the app
@@ -875,14 +1316,19 @@ an existing binding and never clears uncertainty merely because the app resumed.
   JSON-RPC envelopes, approved route identity, opaque conversation/turn
   binding, bridge/delivery/audio states, capabilities, stable failures,
   structured prompts/commands, typed interruption outcomes, deadlines,
+  explicit `HomeConversationClaim`/`HomeTurnBinding`, the
+  `HomeStandardEventType`/payload allowlist and `HomeSafeError`,
   `HomeBridgeEvent`/`HomePCMAccumulator`, and migration records. This file
   does not exist yet.
 - `HermesRelay/Services/HomeBridgeSessionClient.swift`,
   `HermesRelay/Services/URLSessionHomeBridgeSessionClient.swift`, and
   `HermesRelay/Services/FakeHomeBridgeSessionClient.swift` -- add the Home
   session boundary, opt-in URLSession adapter, deterministic fake, one-reader
-  JSON/binary demultiplexing, request correlation, and production
-  `public_adapter_unavailable` gate. These files do not exist yet.
+  JSON/binary demultiplexing, request correlation, request-specific pending
+  cancellation, typed seven-operation results, and production
+  `public_adapter_unavailable` gate. First open consumes a
+  `HomeConversationClaim`; later work uses a ready `HomeConversationBinding`.
+  These files do not exist yet.
 - `HermesRelay/ViewModels/ConversationStore.swift:18-161,163-306,375-508`
   and `HermesRelay/Services/ReconnectPolicy.swift:7-30` -- current binding
   proof, local transcript/draft/uncertainty persistence, reconnect ladder, and
@@ -897,9 +1343,10 @@ an existing binding and never clears uncertainty merely because the app resumed.
   `HermesRelay/Models/RelayProfileCollection.swift:7-44`,
   `HermesRelay/Services/RelayConfigurationStore.swift:24-177`, and
   `HermesRelay/Services/SecureValueStore.swift:4-70` -- profile identity and
-  verified Keychain copy/read-back; extend them with Home/legacy mode, a
-  secure-only pre-issued Device credential reference, and crash-safe phase
-  storage without altering legacy token deletion semantics for unrelated users.
+  verified Keychain copy/read-back; keep Profile identity unchanged, derive
+  Home/legacy mode solely from the collection's crash-safe migration journal,
+  and add the canonical secure-only pre-issued Device credential reference
+  without altering legacy token deletion semantics for unrelated users.
 - `HermesRelay/Services/HomeCredentialStore.swift` and
   `HermesRelay/Services/HomeConfigurationMigration.swift` -- new secure
   credential-reference and reversible conversion seams. Store no raw
@@ -919,7 +1366,8 @@ an existing binding and never clears uncertainty merely because the app resumed.
   `HermesRelay/Services/AppleAudioOutput.swift:4-173`, and
   `HermesRelay/Views/RecentTranscriptRail.swift:111-175,418-605` -- strict
   PCM validation, frame accumulation, platform playback, and verified local
-  timing projection.
+  timing projection. Add the explicit legacy-only WAV fallback policy; Home
+  playback uses the disabled/non-buffering branch and has no fallback URL.
 - `HermesRelay/Views/AmbientHUD.swift:86-259,281-285`,
   `HermesRelay/Views/ContentView.swift:85-220,223-375`,
   `HermesRelay/Views/RelayConfigurationView.swift:121-475`, and
@@ -977,8 +1425,11 @@ an existing binding and never clears uncertainty merely because the app resumed.
    `reconnect_required` open result, typed deadlines, capability
    `timing: absent`, and strict audio-frame metadata. Preserve Standard event
    names, semantic payload meaning, cumulative replacement, and global-event
-   rules at the existing normalizer seam; map `sessionID` only for the legacy
-   case and expose the typed `HomePromptSubmissionOutcome` to the store.
+   rules at the existing normalizer seam; construct only the
+   `HomeStandardEventType`/`HomeStandardEventPayload` allowlist with explicit
+   reasoning, kind, failureReason, and `HomeSafeError(code, phase)`; map
+   `sessionID` only for the legacy case and expose the typed
+   `HomePromptSubmissionOutcome` to the store.
 2. `HermesRelay/Services/HomeBridgeSessionClient.swift`,
    `HermesRelay/Services/URLSessionHomeBridgeSessionClient.swift`,
    `HermesRelay/Services/FakeHomeBridgeSessionClient.swift`, and
@@ -997,9 +1448,14 @@ an existing binding and never clears uncertainty merely because the app resumed.
    the upgrade, keep the credential and server/runtime identifiers out of all
    other frames, and make the production factory return
    `public_adapter_unavailable` while the public Home adapter is absent. The
-   Debug fake must accept an injected approved-route record and be explicit and
+   Debug fake must accept an injected `HomeConversationClaim`/approved-route
+   record and be explicit and
    deterministic; it may model Home's internal Standard gateway/audio join but
-   must never open vanilla `/api/ws` or `/api/audio/speak-stream`.
+   must never open vanilla `/api/ws` or `/api/audio/speak-stream`. The
+   operation implementation must use one reader, a correlated pending table,
+   typed results for all seven methods, and request-specific
+   `cancelPending(requestID:)`; `open` consumes a `HomeConversationClaim`, not
+   a fabricated empty `HomeConversationBinding`.
 3. `HermesRelay/Models/RelayProfile.swift`,
    `HermesRelay/Models/RelayProfileCollection.swift`,
    `HermesRelay/Services/SecureValueStore.swift`,
@@ -1013,6 +1469,9 @@ an existing binding and never clears uncertainty merely because the app resumed.
    private Keychain read-back before probing a fake Home `conversation.open`.
    Persist Home mode only after the binding is `ready`; leave legacy mode and
    its bearer available after any write/read-back/fake-ready/crash failure.
+   Treat `HomeMigrationJournal.selectedMode` as the sole persisted mode source;
+   custom-decode missing `homeMigrations` as an empty legacy map and fall back
+   to the old single-profile decoder only for an invalid top-level collection.
    Tests seed an in-memory secure store and inject the non-secret reference;
    no UI pairing or credential bytes are required. Allow explicit rollback
    only at an idle boundary and never derive or issue a Device credential in
@@ -1024,8 +1483,11 @@ an existing binding and never clears uncertainty merely because the app resumed.
    turn-delivery state. Extend the atomic per-Profile persistence record with
    optional `PersistedHomeRecovery` (route endpoint/class/id, local Household
    receipt, opaque conversation/turn/correlation, cursor, and accepted or
-   uncertain state) and decode old files with that field absent. Write the
-   binding/turn/uncertainty updates before their corresponding UI or teardown
+   uncertain state) and decode old files with that field absent. Write
+   `awaitingAcceptance`, `submissionAttemptID`, and local text before the
+   corresponding `prompt.submit` send; restore a pre-acceptance crash as
+   uncertain and never resend. Write the binding/turn/uncertainty updates
+   before their corresponding UI or teardown
    transitions, restore them before auto-connect, and preserve mismatches for
    safe unavailable projection. Consume the typed `HomePromptSubmissionOutcome` seam:
    classify `request_rejected` as known non-delivery and
@@ -1054,7 +1516,12 @@ an existing binding and never clears uncertainty merely because the app resumed.
    discard the accumulator on fallback/unavailable/invalid. Keep text usable
    after audio failure. Treat Home `timing: absent` and legacy
    `speech_timing` as non-authoritative in Home mode; expose unavailable timing
-   or the already verified local playback clock/final PCM duration only.
+   or the already verified local playback clock/final PCM duration only. Use
+   the injected `HomeTurnAudioDeadlines` for missing audio start, control
+   terminal, audio terminal, and playback drain, with explicit timeout
+   classification and cleanup. Construct Home playback with disabled WAV
+   fallback/non-buffering output; only the legacy client may write a fallback
+   WAV.
 6. `HermesRelay/Services/HermesSessionClient.swift`,
    `HermesRelay/Services/URLSessionHermesSessionClient.swift`,
    `HermesRelay/ViewModels/ConversationStore.swift`,
@@ -1065,9 +1532,12 @@ an existing binding and never clears uncertainty merely because the app resumed.
    interrupt acknowledgement bound, wait for the matching
    `interrupted`/`cancelled` terminal before showing Interrupted, and use
    close/reconnect fallback for timeout or transport loss without replay.
-   Apply the 10-second open/reconnect and prompt-acceptance, 5-second ping,
-   and 5-second audio-start bounds through injected clocks/sleepers; preserve
-   late-event and generation guards.
+   Apply the injected `HomeOperationDeadlines` policy: 10-second
+   open/reconnect-attempt/prompt-acceptance/structured-response/command,
+   60-second overall reconnect, 5-second ping/audio-start, and 2-second
+   interrupt acknowledgement bounds through the injected clock/sleeper;
+   preserve late-event and generation guards. `cancelPending(requestID:)`
+   must cancel only the timed-out waiter.
 7. `HermesRelay/Services/AppleLifecycleCoordinator.swift`,
    `HermesRelay/ViewModels/VoiceSessionCoordinator.swift`,
    `HermesRelay/ViewModels/ConversationStore.swift`, and
@@ -1083,7 +1553,8 @@ an existing binding and never clears uncertainty merely because the app resumed.
    capture-before-submit, awaiting acceptance, accepted/uncertain delivery,
    audio draining, reconnect cancellation, resume, and relaunch.
    The coordinator owns the async `handle(_:)` input boundary, generation token,
-   cancellation precedence, and `close()` ordering; ContentView/app scene
+   cancellation precedence, persistence-failure retry, the current client's
+   close-once handle, and `close()` ordering; ContentView/app scene
    hooks only map platform events to it and do not independently connect or
    tear down.
 8. `HermesRelay/Views/AmbientHUD.swift`,
@@ -1114,6 +1585,10 @@ an existing binding and never clears uncertainty merely because the app resumed.
    delivery, no-replay/fresh action, interrupt terminal confirmation,
    structured prompt/command gating, strict PCM and control/audio joining,
    timing absence, crash-safe migration/rollback, and iOS/macOS lifecycle.
+   Add injected-clock assertions for active/renewal-eligible/expired and
+   revoked/replaced credentials, the awaiting-acceptance crash marker,
+   per-request timeout cancellation, missing audio/control/drain sides, the
+   disabled Home WAV fallback, and pre/post-deactivation commit precedence.
    Fixtures may construct synthetic, non-sensitive in-memory placeholders (for
    example `delta-1`/`delta-2`, fixed structured keys, and a numeric PCM sample
    array) solely to prove ordering, cumulative replacement, schema, and byte
@@ -1140,6 +1615,12 @@ an existing binding and never clears uncertainty merely because the app resumed.
   the Apple surface selects Home mode; the Profile identity and local state
   survive, the exact Home Keychain reference is used, and the legacy
   credential remains available for idle-boundary rollback.
+- Given a Home credential reference, when its service/account, 90-day expiry,
+  14-day renewal boundary, ten-minute replacement overlap, or lifecycle state
+  is checked, then only the canonical Profile-scoped reference is accepted;
+  active is usable, renewal eligibility is observable, and expired, revoked,
+  or replaced is refused for new Home work. The secure accessor cannot return
+  credential bytes to its caller.
 - Given a `HomeApprovedRoute` supplied by `HomeApprovedRouteProvider` and an
   opaque conversation handle, when schema-1 `conversation.open` returns
   `status: ready` with the same handle, matching `route.class`/`route.id`, and
@@ -1148,6 +1629,12 @@ an existing binding and never clears uncertainty merely because the app resumed.
   successful Home Device authorization and identity-valid route selection are
   Home-owned proof. Route reachability alone, Apple-side discovery,
   `unavailable`, `reconnect_required`, refusal, or `404` never does.
+- Given a first-open `HomeConversationClaim`, when the client sends
+  `conversation.open`, then its wire params contain only the opaque
+  `conversation_handle`; the ready decoder maps `route.class` explicitly to
+  the local route type, requires route class/id, creates capabilities only
+  from ready, and rejects `household_binding` or any Profile/runtime identity
+  on the wire. A fabricated empty `HomeConversationBinding` is never used.
 - Given a route attempt or open/reconnect result with
   `route_unavailable`, `route_unauthorized`, `route_identity_mismatch`,
   `route_timeout`, or `reconnect_required`, when the result is projected,
@@ -1175,11 +1662,23 @@ an existing binding and never clears uncertainty merely because the app resumed.
   without resubmission until a fresh user action. A transport loss after
   `prompt.submit` is sent but before acceptance is uncertain, not a known
   rejection.
+- Given a fresh prompt, when it is about to send, then the store atomically
+  persists local text, `submissionAttemptID`, and `awaitingAcceptance` first;
+  if the process dies before acceptance, relaunch upgrades that record to
+  uncertain and never resubmits it. A known pre-acceptance rejection clears
+  only that attempt; an accepted or uncertain result retains its matching
+  opaque Home turn record.
 - Given a valid or invalid Home audio sequence, when control and audio
   terminals arrive in either permitted order, then the surface plays only
   validated mono signed-16 little-endian PCM and settles text/audio after the
   control terminal plus an audio terminal or typed audio failure; late or
   invalid audio cannot create a second answer or erase readable text.
+- Given a missing audio start, control terminal, audio terminal, or native
+  playback drain, when the injected per-turn deadline expires, then the
+  corresponding timeout reason is recorded, the transient accumulator/output
+  is cleaned up, and a known control terminal still settles text while a
+  missing control terminal leaves delivery uncertain. Home playback never
+  invokes the legacy WAV fallback or leaves a fallback file.
 - Given `timing: absent` and either a legacy timing-shaped event or ping
   response, when the Apple surface presents the turn, then it reports timing
   absence or uses only verified local playback duration/clock and never treats
@@ -1190,6 +1689,11 @@ an existing binding and never clears uncertainty merely because the app resumed.
   typed response key or advertised command only, preserves handle/turn/
   correlation and sensitivity metadata, and keeps secret/password values out
   of transcript, persistence, diagnostics, and evidence.
+- Given a structured prompt or command result, when it arrives, then the
+  actor-owned pending record and typed result must match conversation handle,
+  turn, correlation, event/name, expiry, and advertised capability. The
+  allowlisted command result carries only typed status and safe code; stale,
+  expired, or mismatched responses cannot resolve another pending operation.
 - Given interrupt support is advertised, when an acknowledgement is received
   without a matching `interrupted`/`cancelled` terminal, then the surface does
   not show Interrupted; the bounded timeout/transport path stops local audio,
@@ -1204,6 +1708,16 @@ an existing binding and never clears uncertainty merely because the app resumed.
   uncertain prompt or response is replayed. Capture-before-submit,
   awaiting-acceptance, accepted/uncertain delivery, audio draining, and
   macOS-window disappearance are each covered.
+- Given lifecycle persistence fails or a Home acceptance/terminal races
+  deactivation, when `handle(_:)` runs, then the failure is observable and
+  retryable before teardown; a pre-generation commit wins, a post-generation
+  result becomes persisted uncertainty, the current Home client is closed
+  exactly once after a successful snapshot, and no late result can clear the
+  record or publish playback.
+- Given an existing collection without `homeMigrations`, when it loads, then
+  it decodes as a valid journal-less legacy collection; only an invalid
+  top-level shape uses the single-profile fallback, and no Profile/history is
+  lost.
 - Given deterministic fake traffic, when tests prove cumulative text,
   structured response keys, split PCM joining, or redaction, then all payloads
   and samples are synthetic and in-memory only; no real/private content,
@@ -1217,6 +1731,13 @@ an existing binding and never clears uncertainty merely because the app resumed.
 
 ## Spec Change Log
 
+- 2026-09-14: Repair pass after the independent plan gate added an explicit
+  first-open claim and `class`-keyed ready wire model, typed Home turn and
+  command/prompt correlation, canonical journal-derived mode and old-file
+  decoding, awaiting-acceptance crash persistence, request-specific
+  cancellation and reconnect budgets, credential lifecycle edge tests,
+  missing audio/control/drain deadlines, Home's disabled WAV fallback, and
+  lifecycle client ownership plus persistence-failure race handling.
 - 2026-09-14: Rewritten against the now-published Home bridge contract. The
   Apple-facing transport is one planned Home WebSocket; Standard's two sockets
   remain Home-owned internals. Added typed binding/state/outcome models,
@@ -1246,6 +1767,14 @@ an existing binding and never clears uncertainty merely because the app resumed.
   test mapping. Added those implementation contracts and the focused seam
   matrix. Source implementation remains intentionally deferred until this
   gate passes.
+- 2026-09-14: The third independent review found fifteen remaining
+  implementer-guess points in the route wire encoder, first-open claim, typed
+  prompt/command correlation, event payload allowlist, credential accessor,
+  migration source of truth, old collection decoding, pre-acceptance crash
+  marker, request deadlines, audio join timeouts, Home WAV privacy, lifecycle
+  client ownership/races, and credential boundary tests. This repair pass
+  closes each point; source implementation remains deferred until the next
+  independent gate returns pass.
 
 ## Design Notes
 
@@ -1284,11 +1813,14 @@ hide an untested migration branch:
 | Standard payload allowlist, cumulative replacement, global-event isolation, and timing absence | `HomeBridgeEnvelopeTests`, `HermesEventNormalizerTests` |
 | Split binary PCM, start metadata, terminal join, late generations, and audio failure preserving text | `HomeBridgeAudioTests`, `AudioOutputTests`, `VoiceSessionCoordinatorTests` |
 | Home credential reference/account, private read-back, idempotent journal, crash recovery, fake-ready commit, and idle rollback | `HomeConfigurationMigrationTests`, `RelayConfigurationTests`, `RecoveryTests` |
+| Credential lifecycle boundaries: 90-day expiry, 14-day renewal eligibility, ten-minute replacement overlap, active/expired/revoked/replaced denial | `HomeConfigurationMigrationTests` |
 | Persisted opaque binding/cursor, old-file decode, uncertainty-before-teardown, mismatch preservation, relaunch restore, and no replay/fresh action | `ConversationPersistenceTests`, `HomeConfigurationMigrationTests`, `ConversationStoreReconnectTests` |
 | Known rejection versus uncertain transport, route-loss phases, reconnect exhaustion, and legacy no-replay regressions | `ConversationStoreTransportTests`, `ConversationStoreReconnectTests`, `ReconnectPolicyTests`, `URLSessionHermesSessionClientTests` |
 | Typed structured prompt/command response keys, pending ownership, expiry, stale correlation, capability gating, and secret exclusion | `HomeBridgeSessionClientTests`, `HomeBridgeEnvelopeTests` |
 | Interrupt acknowledgement versus matching terminal, timeout fallback, and stale generation suppression | `HomeBridgeSessionClientTests`, `VoiceSessionCoordinatorTests`, `ConversationStoreTransportTests` |
 | Injected monotonic deadlines and cancellation of per-attempt versus overall reconnect work | `HomeBridgeSessionClientTests`, `ConversationStoreReconnectTests`, `ReconnectPolicyTests` |
+| Awaiting-acceptance crash marker, process death before marker replacement, save failure retry, and pre/post-deactivation commit precedence | `ConversationPersistenceTests`, `AppleLifecycleTests`, `ConversationStoreTransportTests` |
+| Home non-buffering audio fallback, no WAV URL/file, explicit missing audio/control/drain side classification | `HomeBridgeAudioTests`, `AudioOutputTests`, `VoiceSessionCoordinatorTests` |
 | iOS scenePhase/macOS window mapping, persist-before-stop, inactive suppression, close ordering, cancellation races, and relaunch | `AppleLifecycleTests` |
 | Existing legacy protocol remains explicit rollback-only and all fake evidence is synthetic | `URLSessionHermesSessionClientTests`, `RelayConfigurationTests`, `HermesRelayTests` |
 
