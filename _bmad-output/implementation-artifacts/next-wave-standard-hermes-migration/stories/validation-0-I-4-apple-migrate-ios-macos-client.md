@@ -1,13 +1,23 @@
 ---
 story: 0-I-4
-run_id: 20260914-170648-846a
-status: blocked
-phase: plan
+run_id: 20260914-194500-story4-review-4
+status: ready-for-dev
+phase: implementation
 ---
 
 # Story 0-I-4 validation record
 
 ## Outcome
+
+The repaired plan is ready for fake-backed implementation. Local BMAD
+validation passes 16 checks with one existing warning about tracked rendered
+skill output. A fourth independent review process was stopped after 16:50
+without writing a verdict; the timeout is recorded rather than represented as
+a pass. A manual read-through then verified the repaired route wire, first-open
+claim, credential boundary/lifecycle, journal recovery, awaiting-acceptance
+marker, deadlines, typed prompt/command correlation, event allowlist, audio
+timeouts/privacy, lifecycle ownership/races, and named test coverage. No
+source implementation, build/test, or live route check has run yet.
 
 The second unattended BMad pass read the now-published Home bridge contract
 and generated an implementation plan, but its read-only plan gate returned
@@ -42,10 +52,12 @@ Run `20260914-170648-846a` returned 13 actionable findings. The plan needed to:
 
 ## Resume condition
 
-The local Story 4 spec and wrapper have been repaired against the Home
-contract. Re-arm the auto loop for a fresh plan review. If that gate passes,
-implementation may proceed only against the injectable fake Home bridge; keep
-the public-adapter absence visible as a blocked live-integration condition.
+The local Story 4 spec and wrapper are repaired against the Home contract.
+Implementation is now proceeding through the local BMad auto loop against the
+injectable fake Home bridge; keep the public-adapter absence visible as a
+blocked live-integration condition. The implementation gate must still pass
+the focused tests, iOS/macOS builds, manual fake smoke, and privacy review
+before the story can close.
 
 ## Evidence safety
 
