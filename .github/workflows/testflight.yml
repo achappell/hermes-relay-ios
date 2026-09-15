@@ -224,7 +224,7 @@ jobs:
           echo "IPA_PATH=$ipa_path" >> "$GITHUB_ENV"
 
       - name: Upload build to TestFlight
-        uses: apple-actions/upload-testflight-build@6fd267a887d75a215682c05c861278a67801855c # v5.3.0
+        uses: apple-actions/upload-testflight-build@5e75ff58276689011512ba87a381d93dc67dbcf8 # v5.3.0
         with:
           app-path: ${{ env.IPA_PATH }}
           app-type: ios
