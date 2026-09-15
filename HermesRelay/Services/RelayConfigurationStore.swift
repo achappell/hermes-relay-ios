@@ -27,10 +27,16 @@ actor RelayConfigurationStore {
 
     private let secureStore: any SecureValueStore
     private let profileURL: URL
+    private let now: @Sendable () -> Date
 
-    init(secureStore: any SecureValueStore, profileURL: URL) {
+    init(
+        secureStore: any SecureValueStore,
+        profileURL: URL,
+        now: @escaping @Sendable () -> Date = Date.init
+    ) {
         self.secureStore = secureStore
         self.profileURL = profileURL
+        self.now = now
     }
 
     static func tokenAccount(for id: UUID) -> String { id.uuidString }
@@ -54,6 +60,91 @@ actor RelayConfigurationStore {
             at: directoryURL, withIntermediateDirectories: true
         )
         try JSONEncoder().encode(collection).write(to: profileURL, options: .atomic)
+    }
+
+    func transportMode(for profileID: UUID) async throws -> AppleTransportMode {
+        try await loadCollection().transportMode(for: profileID)
+    }
+
+    func loadHomeMigration(for profileID: UUID) async throws -> HomeMigrationJournal? {
+        try await loadCollection().homeMigrations[profileID]
+    }
+
+    func stageHomeMigration(
+        for profileID: UUID,
+        credential: HomeCredentialReference
+    ) async throws {
+        try credential.validate(for: profileID)
+        var collection = try await loadCollection()
+        guard collection.profiles.contains(where: { $0.id == profileID }) else {
+            throw RelayConfigurationError.invalidProfile
+        }
+        collection.homeMigrations[profileID] = HomeMigrationJournal(
+            schemaVersion: 1,
+            profileID: profileID,
+            phase: .staged,
+            selectedMode: .legacy,
+            credential: credential,
+            legacyCredentialRetained: true,
+            updatedAt: now()
+        )
+        try await saveCollection(collection)
+    }
+
+    func stageHomeMigration(
+        profileID: UUID,
+        credential: HomeCredentialReference
+    ) async throws {
+        try await stageHomeMigration(for: profileID, credential: credential)
+    }
+
+    func recordHomeReadBack(
+        for profileID: UUID,
+        credential: HomeCredentialReference? = nil
+    ) async throws {
+        try await updateHomeJournal(for: profileID, phase: .readBackVerified, credential: credential)
+    }
+
+    func recordHomeReadBack(
+        profileID: UUID,
+        credential: HomeCredentialReference? = nil
+    ) async throws {
+        try await recordHomeReadBack(for: profileID, credential: credential)
+    }
+
+    func recordFakeReady(for profileID: UUID) async throws {
+        try await updateHomeJournal(for: profileID, phase: .fakeReadyVerified)
+    }
+
+    func recordFakeReady(profileID: UUID) async throws {
+        try await recordFakeReady(for: profileID)
+    }
+
+    func commitHomeMigration(for profileID: UUID) async throws {
+        var collection = try await loadCollection()
+        guard var journal = collection.homeMigrations[profileID],
+              journal.profileID == profileID,
+              journal.phase == .fakeReadyVerified,
+              journal.credential != nil else {
+            throw RelayConfigurationError.invalidProfile
+        }
+        journal.phase = .homeSelected
+        journal.selectedMode = .home
+        journal.legacyCredentialRetained = true
+        journal.updatedAt = now()
+        collection.homeMigrations[profileID] = journal
+        try await saveCollection(collection)
+    }
+
+    func rollbackHomeMigrationAtIdle(for profileID: UUID) async throws {
+        var collection = try await loadCollection()
+        guard var journal = collection.homeMigrations[profileID] else { return }
+        journal.phase = .legacySelected
+        journal.selectedMode = .legacy
+        journal.legacyCredentialRetained = true
+        journal.updatedAt = now()
+        collection.homeMigrations[profileID] = journal
+        try await saveCollection(collection)
     }
 
     func saveProfile(_ profile: RelayProfile) async throws {
@@ -126,6 +217,32 @@ actor RelayConfigurationStore {
         let normalized = token.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !normalized.isEmpty else { throw RelayConfigurationError.emptyToken }
         return normalized
+    }
+
+    private func updateHomeJournal(
+        for profileID: UUID,
+        phase: HomeMigrationPhase,
+        credential: HomeCredentialReference? = nil
+    ) async throws {
+        var collection = try await loadCollection()
+        guard var journal = collection.homeMigrations[profileID],
+              journal.profileID == profileID else {
+            throw RelayConfigurationError.invalidProfile
+        }
+        guard phase == .readBackVerified
+                ? journal.phase == .staged
+                : journal.phase == .readBackVerified else {
+            throw RelayConfigurationError.invalidProfile
+        }
+        if let credential {
+            try credential.validate(for: profileID)
+            journal.credential = credential
+        }
+        journal.phase = phase
+        journal.selectedMode = .legacy
+        journal.updatedAt = now()
+        collection.homeMigrations[profileID] = journal
+        try await saveCollection(collection)
     }
 
     /// Copy, verify, then delete. A crash at any step leaves the token

@@ -9,15 +9,18 @@ struct PersistedConversation: Codable, Equatable, Sendable {
     let messages: [TranscriptMessage]
     let draft: String
     let unconfirmedTurnText: String?
+    let homeRecovery: PersistedHomeRecovery?
 
     init(
         messages: [TranscriptMessage],
         draft: String,
-        unconfirmedTurnText: String? = nil
+        unconfirmedTurnText: String? = nil,
+        homeRecovery: PersistedHomeRecovery? = nil
     ) {
         self.messages = messages
         self.draft = draft
         self.unconfirmedTurnText = unconfirmedTurnText
+        self.homeRecovery = homeRecovery
     }
 }
 

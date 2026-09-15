@@ -173,15 +173,36 @@ enum VoiceState: Equatable, Sendable {
     }
 }
 
+enum HermesSessionBindingIdentity: Equatable, Sendable {
+    case legacy(sessionID: String)
+    case home(conversation: HomeConversationBinding, turn: HomeTurnBinding?)
+}
+
 struct SessionMetadata: Equatable, Sendable {
-    let sessionID: String
+    /// Legacy clients expose their fork session ID here. Home metadata keeps
+    /// this nil: its conversation and turn handles belong to the typed
+    /// binding identity below and are never smuggled through this field.
+    let sessionID: String?
     let model: String?
     let capabilities: [String]
+    let binding: HermesSessionBindingIdentity
 
     init(sessionID: String, model: String?, capabilities: [String] = []) {
         self.sessionID = sessionID
         self.model = model
         self.capabilities = capabilities
+        self.binding = .legacy(sessionID: sessionID)
+    }
+
+    init(
+        homeConversation: HomeConversationBinding,
+        model: String? = nil,
+        capabilities: [String] = []
+    ) {
+        self.sessionID = nil
+        self.model = model
+        self.capabilities = capabilities
+        self.binding = .home(conversation: homeConversation, turn: nil)
     }
 
     var supportsInterrupt: Bool {
@@ -196,13 +217,54 @@ struct SessionMetadata: Equatable, Sendable {
 /// the same binding rule without inventing configuration state.
 struct HermesTurnBinding: Equatable, Sendable {
     let profileID: UUID?
-    let sessionID: String
+    /// Non-nil only for the legacy fork binding. Home uses `identity`.
+    let sessionID: String?
+    let identity: HermesSessionBindingIdentity
+
+    init(profileID: UUID?, sessionID: String) {
+        self.profileID = profileID
+        self.sessionID = sessionID
+        self.identity = .legacy(sessionID: sessionID)
+    }
+
+    init(
+        profileID: UUID?,
+        homeConversation: HomeConversationBinding,
+        turn: HomeTurnBinding? = nil
+    ) {
+        self.profileID = profileID
+        self.sessionID = nil
+        self.identity = .home(conversation: homeConversation, turn: turn)
+    }
+
+    var homeConversation: HomeConversationBinding? {
+        guard case .home(let conversation, _) = identity else { return nil }
+        return conversation
+    }
+
+    var homeTurn: HomeTurnBinding? {
+        guard case .home(_, let turn) = identity else { return nil }
+        return turn
+    }
 }
 
 struct AudioFormat: Equatable, Sendable {
     let sampleRate: Int
     let channels: Int
     let sampleWidth: Int
+    let byteOrder: HomeByteOrder
+
+    init(
+        sampleRate: Int,
+        channels: Int,
+        sampleWidth: Int,
+        byteOrder: HomeByteOrder = .little
+    ) {
+        self.sampleRate = sampleRate
+        self.channels = channels
+        self.sampleWidth = sampleWidth
+        self.byteOrder = byteOrder
+    }
 }
 
 /// A word boundary measured from the beginning of the active inbound audio stream.

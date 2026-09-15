@@ -14,6 +14,32 @@ final class ConversationStore {
     private let now: @Sendable () -> Date
     private let reconnectPolicy: ReconnectPolicy
     private let sleep: @Sendable (UInt64) async -> Void
+    private var homeClientFactory: (any HomeBridgeSessionClientFactory)?
+    private var homeClaimProvider: (any HomeConversationClaimProvider)?
+    private let homeClock: any HomeMonotonicClock
+    private let homeOperationDeadlines: HomeOperationDeadlines
+    private let homeTurnAudioDeadlines: HomeTurnAudioDeadlines
+    private var homeClient: (any HomeBridgeSessionClient)?
+    private var homeClaim: HomeConversationClaim?
+    private var homeConversationBinding: HomeConversationBinding?
+    private var homeTurnBinding: HomeTurnBinding?
+    private var homeRecovery: PersistedHomeRecovery?
+    private var homeEventTask: Task<Void, Never>?
+    private var homeTurnWaiter: CheckedContinuation<Bool, Never>?
+    private var homeAudioTerminalWaiter: CheckedContinuation<Void, Never>?
+    private var homeTurnResult: Bool?
+    private var homeEventHandler: (@MainActor @Sendable (HermesEvent) async -> Void)?
+    private var homeNormalizer = HermesEventNormalizer()
+    private var homeControlTerminal = false
+    private var homeAudioTerminal = true
+    private var homeAudioTerminalProcessing = false
+    private var homeAudioRequested = false
+    private var homeControlTimeoutTask: Task<Void, Never>?
+    private var homeAudioStartTimeoutTask: Task<Void, Never>?
+    private var homeAudioTimeoutTask: Task<Void, Never>?
+    private(set) var homeJoinTimeout: HomeTurnJoinTimeout?
+    private var homeOperationsSuppressed = false
+    private var activeTurnText: String?
 
     var connectionState: ConnectionState = .disconnected
     var sessionMetadata: SessionMetadata?
@@ -26,15 +52,38 @@ final class ConversationStore {
     var activityText: String?
     var isSending = false
     var unconfirmedTurnText: String?
+    private(set) var homeBridgeState: HomeBridgeState = .unconfigured
+    private(set) var homeRouteState = HomeRouteState(
+        status: .unattempted,
+        identity: nil,
+        failure: nil
+    )
+    private(set) var homeTurnDeliveryState: HomeTurnDeliveryState = .idle
+    private(set) var homeAudioState: HomeAudioState = .notRequested
+    private(set) var pendingHomePrompt: HomePendingStructuredPrompt?
+    private(set) var homeCommandEvents: [HomeCommandEvent] = []
+    private(set) var isLifecycleActive = true
+
+    var isHomeMode: Bool { transportMode == .home }
+
+    private var transportMode: AppleTransportMode = .legacy
 
     /// A turn may begin only from a connection that completed the Hermes
     /// handshake. `connectionState` alone is deliberately insufficient: the
     /// metadata is the proof that `hello_ack` was accepted.
     var verifiedTurnBinding: HermesTurnBinding? {
-        guard connectionState.isConnected, let sessionMetadata else { return nil }
+        guard connectionState.isConnected, !homeOperationsSuppressed else { return nil }
+        if let homeConversationBinding, transportMode == .home {
+            return HermesTurnBinding(
+                profileID: activeProfileID,
+                homeConversation: homeConversationBinding,
+                turn: homeTurnBinding
+            )
+        }
+        guard let sessionMetadata, let sessionID = sessionMetadata.sessionID else { return nil }
         return HermesTurnBinding(
             profileID: activeProfileID,
-            sessionID: sessionMetadata.sessionID
+            sessionID: sessionID
         )
     }
 
@@ -68,7 +117,12 @@ final class ConversationStore {
         makePersistence: (@Sendable (UUID) -> any ConversationPersistence)? = nil,
         now: @escaping @Sendable () -> Date = Date.init,
         reconnectPolicy: ReconnectPolicy = .default,
-        sleep: @escaping @Sendable (UInt64) async -> Void = { try? await Task.sleep(nanoseconds: $0) }
+        sleep: @escaping @Sendable (UInt64) async -> Void = { try? await Task.sleep(nanoseconds: $0) },
+        homeClientFactory: (any HomeBridgeSessionClientFactory)? = nil,
+        homeClaimProvider: (any HomeConversationClaimProvider)? = nil,
+        homeClock: any HomeMonotonicClock = ContinuousHomeMonotonicClock(),
+        homeOperationDeadlines: HomeOperationDeadlines = .default,
+        homeTurnAudioDeadlines: HomeTurnAudioDeadlines = .default
     ) {
         self.client = client
         self.configurationStore = configurationStore
@@ -78,6 +132,19 @@ final class ConversationStore {
         self.now = now
         self.reconnectPolicy = reconnectPolicy
         self.sleep = sleep
+        self.homeClientFactory = homeClientFactory
+        self.homeClaimProvider = homeClaimProvider
+        self.homeClock = homeClock
+        self.homeOperationDeadlines = homeOperationDeadlines
+        self.homeTurnAudioDeadlines = homeTurnAudioDeadlines
+    }
+
+    func configureHomeClientFactory(
+        _ factory: any HomeBridgeSessionClientFactory,
+        claimProvider: (any HomeConversationClaimProvider)? = nil
+    ) {
+        homeClientFactory = factory
+        if let claimProvider { homeClaimProvider = claimProvider }
     }
 
     func loadPersistedConversation() async {
@@ -88,6 +155,67 @@ final class ConversationStore {
             messages = conversation.messages
             draft = conversation.draft
             unconfirmedTurnText = conversation.unconfirmedTurnText
+            homeRecovery = conversation.homeRecovery
+            if let recovery = conversation.homeRecovery {
+                let recoveryText = conversation.unconfirmedTurnText
+                    ?? messages.last(where: { $0.role == .user })?.text
+                    ?? ""
+                let recoveryBinding = HomeTurnBinding(
+                    conversationHandle: recovery.conversationHandle,
+                    turnID: recovery.turnID ?? "unconfirmed",
+                    correlationID: recovery.correlationID ?? "unconfirmed"
+                )
+                let persistedTurn: HomeTurnBinding? = if let turnID = recovery.turnID,
+                                                        let correlationID = recovery.correlationID {
+                    HomeTurnBinding(
+                        conversationHandle: recovery.conversationHandle,
+                        turnID: turnID,
+                        correlationID: correlationID
+                    )
+                } else {
+                    nil
+                }
+                homeTurnBinding = persistedTurn
+                if recovery.deliveryState == .awaitingAcceptance {
+                    homeRecovery = PersistedHomeRecovery(
+                        profileID: recovery.profileID,
+                        endpoint: recovery.endpoint,
+                        route: recovery.route,
+                        householdBinding: recovery.householdBinding,
+                        conversationHandle: recovery.conversationHandle,
+                        turnID: recovery.turnID,
+                        correlationID: recovery.correlationID,
+                        submissionAttemptID: recovery.submissionAttemptID,
+                        resumeCursor: recovery.resumeCursor,
+                        deliveryState: .uncertain,
+                        updatedAt: now()
+                    )
+                    unconfirmedTurnText = recoveryText
+                    homeTurnDeliveryState = .uncertain(
+                        recovery.turnID == nil ? nil : recoveryBinding
+                    )
+                    try? await persistence.save(
+                        PersistedConversation(
+                            messages: messages,
+                            draft: draft,
+                            unconfirmedTurnText: unconfirmedTurnText,
+                            homeRecovery: homeRecovery
+                        )
+                    )
+                } else if recovery.deliveryState == .accepted {
+                    if let persistedTurn {
+                        homeTurnDeliveryState = .accepted(persistedTurn)
+                    } else {
+                        homeTurnDeliveryState = .uncertain(nil)
+                    }
+                    unconfirmedTurnText = conversation.unconfirmedTurnText
+                } else {
+                    homeTurnDeliveryState = .uncertain(
+                        persistedTurn
+                    )
+                    unconfirmedTurnText = recoveryText
+                }
+            }
             activeAssistantID = nil
         } catch {
             transientError = "The saved conversation could not be restored."
@@ -107,12 +235,49 @@ final class ConversationStore {
             }
             activeProfileID = profile.id
             activeProfileDisplayName = profile.displayName
+            if let makePersistence {
+                persistence = makePersistence(profile.id)
+            }
+
+            transportMode = try await configurationStore.transportMode(for: profile.id)
+            if transportMode == .home {
+                homeOperationsSuppressed = false
+                homeConversationBinding = nil
+                if homeRecovery == nil {
+                    homeTurnBinding = nil
+                    homeTurnDeliveryState = .idle
+                }
+                guard let homeClaimProvider,
+                      let claim = try await homeClaimProvider.conversationClaim(for: profile.id) else {
+                    homeClaim = nil
+                    homeClient = nil
+                    homeBridgeState = .unavailable(
+                        .home(code: .authorizationUnavailable, phase: .lifecycle)
+                    )
+                    transientError = "Home pairing is unavailable for this Hermes Profile."
+                    return false
+                }
+                homeClaim = claim
+                homeRouteState = HomeRouteState(
+                    status: .unattempted,
+                    identity: claim.approvedRoute.identity,
+                    failure: nil
+                )
+                homeClient = (homeClientFactory ?? UnavailableHomeBridgeSessionClientFactory())
+                    .make(profileID: profile.id, mode: .home)
+                homeBridgeState = .disconnected(
+                    .home(code: .transportUnavailable, phase: .lifecycle)
+                )
+                sessionMetadata = nil
+                sessionStartedAt = nil
+                transientError = nil
+                didAttemptAutomaticConnection = false
+                return true
+            }
+
             guard let token = try await configurationStore.loadToken() else {
                 transientError = "Add a Hermes relay token before connecting."
                 return false
-            }
-            if let makePersistence {
-                persistence = makePersistence(profile.id)
             }
             client = URLSessionHermesSessionClient(
                 profile: profile,
@@ -122,6 +287,11 @@ final class ConversationStore {
                     self?.handleUnexpectedTransportLoss()
                 }
             )
+            homeClient = nil
+            homeClaim = nil
+            homeConversationBinding = nil
+            homeTurnBinding = nil
+            homeBridgeState = .unconfigured
             transientError = nil
             return true
         } catch {
@@ -131,18 +301,34 @@ final class ConversationStore {
     }
 
     func isCurrentTurnBinding(_ binding: HermesTurnBinding) -> Bool {
-        verifiedTurnBinding == binding
+        guard connectionState.isConnected, !homeOperationsSuppressed else { return false }
+        guard binding.profileID == nil || binding.profileID == activeProfileID else { return false }
+        if let conversation = binding.homeConversation {
+            guard let current = homeConversationBinding, current == conversation else { return false }
+            if let expectedTurn = binding.homeTurn {
+                return homeTurnBinding == expectedTurn
+            }
+            return true
+        }
+        return verifiedTurnBinding == binding
     }
 
     func autoConnectIfNeeded() async {
-        guard !didAttemptAutomaticConnection else { return }
+        guard isLifecycleActive, !homeOperationsSuppressed,
+              !didAttemptAutomaticConnection else { return }
         didAttemptAutomaticConnection = true
         guard await loadConfiguredClient() else { return }
         await connect()
     }
 
     func connect() async {
-        guard connectionState != .connecting else { return }
+        guard isLifecycleActive, !homeOperationsSuppressed,
+              connectionState != .connecting else { return }
+
+        if transportMode == .home {
+            await connectHome()
+            return
+        }
 
         connectionState = .connecting
         do {
@@ -158,6 +344,353 @@ final class ConversationStore {
             connectionState = .failed(message)
             transientError = message
         }
+    }
+
+    private func connectHome() async {
+        guard !homeOperationsSuppressed else { return }
+        guard let claim = homeClaim, let homeClient else {
+            let failure = HomeBridgeFailure.home(
+                code: .authorizationUnavailable,
+                phase: .open
+            )
+            homeBridgeState = .unavailable(failure)
+            connectionState = .failed(failure.safeReason)
+            transientError = "Home pairing is unavailable for this Hermes Profile."
+            return
+        }
+
+        homeBridgeState = .connecting
+        homeRouteState = HomeRouteState(
+            status: .attempting,
+            identity: claim.approvedRoute.identity,
+            failure: nil
+        )
+        connectionState = .connecting
+        let outcome = await homeClient.open(claim: claim)
+        guard !homeOperationsSuppressed else { return }
+
+        switch outcome {
+        case .ready(let binding, let capabilities):
+            guard binding.profileID == activeProfileID,
+                  binding.conversationHandle == claim.conversationHandle,
+                  binding.route == claim.approvedRoute.identity else {
+                let failure = HomeBridgeFailure.home(code: .conversationMismatch, phase: .open)
+                applyHomeConnectionFailure(failure, unavailable: true)
+                return
+            }
+            homeConversationBinding = binding
+            let restoredTurn = homeTurnBinding
+            homeTurnBinding = restoredTurn
+            homeBridgeState = .ready(binding)
+            homeRouteState = HomeRouteState(
+                status: .reachable,
+                identity: binding.route,
+                failure: nil
+            )
+            sessionMetadata = SessionMetadata(
+                homeConversation: binding,
+                capabilities: capabilities.commands.sorted()
+                    + (capabilities.heartbeat ? ["heartbeat"] : [])
+                    + (capabilities.interrupt ? ["interrupt"] : [])
+            )
+            if homeRecovery != nil {
+                connectionState = .reconnecting(attempt: 1, of: reconnectPolicy.maxAttempts)
+                switch await homeClient.reconnect(binding: binding) {
+                case .ready(let reconnectBinding, let unresolvedTurn):
+                    guard reconnectBinding == binding else {
+                        applyHomeConnectionFailure(
+                            .home(code: .conversationMismatch, phase: .reconnect),
+                            unavailable: true
+                        )
+                        return
+                    }
+                    if let unresolvedTurn {
+                        homeTurnBinding = HomeTurnBinding(
+                            conversationHandle: binding.conversationHandle,
+                            turnID: unresolvedTurn.turnID,
+                            correlationID: restoredTurn?.correlationID ?? "unresolved"
+                        )
+                        homeTurnDeliveryState = .uncertain(homeTurnBinding)
+                        if let recovery = homeRecovery {
+                            homeRecovery = PersistedHomeRecovery(
+                                profileID: recovery.profileID,
+                                endpoint: recovery.endpoint,
+                                route: recovery.route,
+                                householdBinding: recovery.householdBinding,
+                                conversationHandle: recovery.conversationHandle,
+                                turnID: unresolvedTurn.turnID,
+                                correlationID: recovery.correlationID,
+                                submissionAttemptID: recovery.submissionAttemptID,
+                                resumeCursor: unresolvedTurn.resumeCursor,
+                                deliveryState: .uncertain,
+                                updatedAt: now()
+                            )
+                        }
+                    }
+                    sessionStartedAt = now()
+                    connectionState = .connected
+                    transientError = nil
+                case .unavailable(let failure):
+                    applyHomeConnectionFailure(failure, unavailable: true)
+                    return
+                case .disconnected(let failure):
+                    applyHomeConnectionFailure(failure, unavailable: false)
+                    return
+                }
+            } else {
+                sessionStartedAt = now()
+                connectionState = .connected
+                transientError = nil
+            }
+            startHomeEventPump(client: homeClient)
+        case .unavailable(let failure):
+            applyHomeConnectionFailure(failure, unavailable: true)
+        case .disconnected(let failure):
+            applyHomeConnectionFailure(failure, unavailable: false)
+        }
+    }
+
+    private func applyHomeConnectionFailure(
+        _ failure: HomeBridgeFailure,
+        unavailable: Bool
+    ) {
+        homeBridgeState = unavailable ? .unavailable(failure) : .disconnected(failure)
+        if case .route(let routeFailure) = failure {
+            homeRouteState = HomeRouteState(
+                status: .failed,
+                identity: homeClaim?.approvedRoute.identity,
+                failure: routeFailure
+            )
+        }
+        connectionState = unavailable ? .failed(failure.safeReason) : .disconnected
+        sessionMetadata = nil
+        sessionStartedAt = nil
+        transientError = failure.safeReason
+    }
+
+    private func startHomeEventPump(client: any HomeBridgeSessionClient) {
+        homeEventTask?.cancel()
+        homeEventTask = Task { [weak self] in
+            let stream = await client.events()
+            do {
+                for try await event in stream {
+                    guard !Task.isCancelled else { return }
+                    await self?.handleHomeEvent(event)
+                }
+            } catch {
+                guard !Task.isCancelled else { return }
+                self?.handleUnexpectedHomeTransportLoss()
+            }
+        }
+    }
+
+    private func handleHomeEvent(_ event: HomeBridgeEvent) async {
+        guard isLifecycleActive, !homeOperationsSuppressed else { return }
+        guard let binding = homeConversationBinding else { return }
+
+        switch event {
+        case .standard(let standard):
+            guard standard.scope.conversationHandle == binding.conversationHandle else { return }
+            guard isCurrentHomeEvent(standard.scope) else { return }
+            let normalized = homeNormalizer.normalizeHome(standard)
+            for event in normalized {
+                apply(event)
+                if let homeEventHandler { await homeEventHandler(event) }
+                if case .turnComplete = event {
+                    finishHomeControlTurn(success: true)
+                } else if case .turnInterrupted = event {
+                    finishHomeControlTurn(success: false)
+                }
+            }
+        case .audioStart(let scope, let format):
+            guard isCurrentHomeEvent(scope) else { return }
+            guard format.isValidSignedPCM else {
+                await markHomeAudioFailure(generation: nextTurnGeneration)
+                return
+            }
+            homeAudioRequested = true
+            homeAudioTerminal = false
+            homeAudioStartTimeoutTask?.cancel()
+            homeAudioStartTimeoutTask = nil
+            homeAudioState = .streaming(format: format, generation: nextTurnGeneration)
+            scheduleHomeAudioDeadline(for: homeTurnBinding)
+            for event in homeNormalizer.normalizeHomeAudio(event) {
+                if let homeEventHandler { await homeEventHandler(event) }
+            }
+        case .binaryPCM(let scope, let data):
+            guard isCurrentHomeEvent(scope), !data.isEmpty else { return }
+            for event in homeNormalizer.normalizeHomeAudio(event) {
+                if let homeEventHandler { await homeEventHandler(event) }
+            }
+        case .audioTerminal(let scope, let terminal):
+            guard isCurrentHomeEvent(scope) else { return }
+            homeAudioTerminalProcessing = true
+            switch terminal {
+            case .end:
+                homeAudioState = .ended(generation: nextTurnGeneration)
+            case .fallback:
+                homeAudioState = .fallback(generation: nextTurnGeneration)
+            case .unavailable:
+                homeAudioState = .unavailable(generation: nextTurnGeneration)
+            }
+            homeAudioTimeoutTask?.cancel()
+            homeAudioTimeoutTask = nil
+            homeAudioStartTimeoutTask?.cancel()
+            homeAudioStartTimeoutTask = nil
+            for event in homeNormalizer.normalizeHomeAudio(event) {
+                if let homeEventHandler { await homeEventHandler(event) }
+            }
+            homeAudioTerminalProcessing = false
+            homeAudioTerminal = true
+            resumeHomeAudioTerminalWaiter()
+        case .structuredPrompt(let prompt):
+            guard prompt.conversationHandle == binding.conversationHandle,
+                  isCurrentHomeEvent(HomeEventScope(
+                    conversationHandle: prompt.conversationHandle,
+                    turnID: prompt.turnID,
+                    correlationID: prompt.correlationID
+                  )) else { return }
+            pendingHomePrompt = HomePendingStructuredPrompt(
+                prompt: prompt,
+                receivedAt: now(),
+                expiresAt: prompt.expiresAt
+            )
+        case .command(let command):
+            guard command.conversationHandle == binding.conversationHandle else { return }
+            homeCommandEvents.append(command)
+            if homeCommandEvents.count > 20 { homeCommandEvents.removeFirst() }
+        case .activity(let scope, let activity):
+            if let scope, !isCurrentHomeEvent(scope) { return }
+            activityText = activity == .idle || activity == .stopped ? nil : activity.rawValue
+        }
+    }
+
+    private func isCurrentHomeEvent(_ scope: HomeEventScope) -> Bool {
+        guard scope.conversationHandle == homeConversationBinding?.conversationHandle else { return false }
+        guard let active = homeTurnBinding else { return scope.turnID == nil }
+        guard let turnID = scope.turnID, turnID == active.turnID else { return false }
+        return scope.correlationID == nil || scope.correlationID == active.correlationID
+    }
+
+    private func finishHomeControlTurn(success: Bool) {
+        guard let turn = homeTurnBinding else { return }
+        homeControlTerminal = true
+        if !success {
+            homeAudioTerminal = true
+            resumeHomeAudioTerminalWaiter()
+        }
+        homeControlTimeoutTask?.cancel()
+        homeControlTimeoutTask = nil
+        homeTurnDeliveryState = success ? .completed(turn) : .interrupted(turn)
+        homeTurnResult = success
+        homeTurnWaiter?.resume(returning: success)
+        homeTurnWaiter = nil
+    }
+
+    private func scheduleHomeControlDeadline(for turn: HomeTurnBinding) {
+        homeControlTimeoutTask?.cancel()
+        let deadline = homeClock.now().advanced(
+            by: homeTurnAudioDeadlines.controlTerminal
+        )
+        homeControlTimeoutTask = Task { [weak self] in
+            do {
+                try await self?.homeClock.sleep(until: deadline)
+            } catch {
+                return
+            }
+            guard let self,
+                  self.homeTurnBinding == turn,
+                  !self.homeControlTerminal else { return }
+            self.homeJoinTimeout = .controlTerminalMissing
+            let conversation = self.homeConversationBinding
+            let text = self.activeTurnText
+                ?? self.unconfirmedTurnText
+                ?? self.messages.last(where: { $0.role == .user })?.text
+                ?? ""
+            if let conversation {
+                await self.markHomeSubmissionUncertain(
+                    failure: .home(code: .transportTimeout, phase: .reconnect),
+                    text: text,
+                    conversation: conversation,
+                    attemptID: self.homeRecovery?.submissionAttemptID ?? UUID(),
+                    turn: turn
+                )
+            }
+            self.homeTurnWaiter?.resume(returning: false)
+            self.homeTurnWaiter = nil
+        }
+    }
+
+    private func scheduleHomeAudioDeadline(for turn: HomeTurnBinding?) {
+        guard let turn else { return }
+        homeAudioTimeoutTask?.cancel()
+        let deadline = homeClock.now().advanced(
+            by: homeTurnAudioDeadlines.audioTerminal
+        )
+        homeAudioTimeoutTask = Task { [weak self] in
+            do {
+                try await self?.homeClock.sleep(until: deadline)
+            } catch {
+                return
+            }
+            guard let self,
+                  self.homeTurnBinding == turn else { return }
+            guard case .streaming = self.homeAudioState,
+                  !self.homeAudioTerminal,
+                  !self.homeAudioTerminalProcessing else { return }
+            self.homeJoinTimeout = .audioTerminalMissing
+            await self.markHomeAudioUnavailable(generation: self.nextTurnGeneration)
+        }
+    }
+
+    private func scheduleHomeAudioStartDeadline(for turn: HomeTurnBinding) {
+        homeAudioStartTimeoutTask?.cancel()
+        let deadline = homeClock.now().advanced(
+            by: homeTurnAudioDeadlines.audioStart
+        )
+        homeAudioStartTimeoutTask = Task { [weak self] in
+            do {
+                try await self?.homeClock.sleep(until: deadline)
+            } catch {
+                return
+            }
+            guard let self,
+                  self.homeTurnBinding == turn,
+                  !self.homeAudioRequested,
+                  !self.homeAudioTerminal,
+                  !self.homeAudioTerminalProcessing else { return }
+            self.homeJoinTimeout = .audioStartMissing
+            await self.markHomeAudioUnavailable(generation: self.nextTurnGeneration)
+        }
+    }
+
+    private func markHomeAudioFailure(generation: UInt64) async {
+        await finishHomeAudio(
+            state: .invalid(generation: generation),
+            reason: "invalid Home PCM audio"
+        )
+    }
+
+    private func markHomeAudioUnavailable(generation: UInt64) async {
+        await finishHomeAudio(
+            state: .unavailable(generation: generation),
+            reason: "unavailable"
+        )
+    }
+
+    private func finishHomeAudio(state: HomeAudioState, reason: String) async {
+        guard !homeAudioTerminal, !homeAudioTerminalProcessing else { return }
+        homeAudioState = state
+        homeAudioTerminalProcessing = true
+        if let homeEventHandler {
+            await homeEventHandler(.audioAbort(
+                turnID: homeTurnBinding?.turnID ?? "home",
+                reason: reason
+            ))
+        }
+        homeAudioTerminalProcessing = false
+        homeAudioTerminal = true
+        resumeHomeAudioTerminalWaiter()
     }
 
     @discardableResult
@@ -194,6 +727,13 @@ final class ConversationStore {
     ) async -> Bool {
         let text = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !text.isEmpty else { return false }
+        if transportMode == .home {
+            return await sendHomeTurn(
+                text: text,
+                expectedBinding: expectedBinding,
+                eventHandler: eventHandler
+            )
+        }
         guard let currentBinding = verifiedTurnBinding else {
             if draft.isEmpty {
                 draft = text
@@ -222,6 +762,7 @@ final class ConversationStore {
         nextTurnGeneration &+= 1
         let turnGeneration = nextTurnGeneration
         activeTurnGeneration = turnGeneration
+        activeTurnText = text
         messages.append(TranscriptMessage(role: .user, text: text))
         var didComplete = false
 
@@ -264,6 +805,7 @@ final class ConversationStore {
         interruptedTurnGeneration = nil
         interruptionConfirmedTurnGeneration = nil
         activeTurnGeneration = nil
+        activeTurnText = nil
         if wasInterrupted {
             isSending = false
             activeAssistantID = nil
@@ -281,8 +823,448 @@ final class ConversationStore {
     }
 
     @discardableResult
+    private func sendHomeTurn(
+        text: String,
+        expectedBinding: HermesTurnBinding?,
+        eventHandler: (@MainActor @Sendable (HermesEvent) async -> Void)?
+    ) async -> Bool {
+        guard let currentBinding = verifiedTurnBinding,
+              let conversation = currentBinding.homeConversation,
+              let homeClient else {
+            if draft.isEmpty { draft = text }
+            transientError = turnUnavailableMessage
+            await persistConversation()
+            return false
+        }
+        guard expectedBinding == nil || isCurrentTurnBinding(expectedBinding!) else {
+            transientError = "The selected Hermes Profile changed. Start a new turn."
+            return false
+        }
+        let replacingExistingRecovery = homeRecovery != nil
+            && unconfirmedTurnText == text
+        let previousHomeRecovery = homeRecovery
+        let previousDeliveryState = homeTurnDeliveryState
+        let previousUnconfirmedText = unconfirmedTurnText
+        let previousHomeTurnBinding = homeTurnBinding
+        guard !isSending,
+              (homeRecovery == nil || replacingExistingRecovery),
+              homeTurnDeliveryState == .idle || replacingExistingRecovery else {
+            transientError = "A Hermes turn is already in progress or awaiting resolution."
+            return false
+        }
+
+        isSending = true
+        activeTurnText = text
+        activeAssistantID = nil
+        activityText = nil
+        transientError = nil
+        turnCompleted = false
+        homeControlTerminal = false
+        homeAudioRequested = false
+        homeAudioState = .notRequested
+        homeAudioTerminal = eventHandler == nil
+        homeAudioTerminalProcessing = false
+        homeNormalizer = HermesEventNormalizer()
+        homeEventHandler = eventHandler
+        homeTurnResult = nil
+        nextTurnGeneration &+= 1
+        activeTurnGeneration = nextTurnGeneration
+        let attemptID = UUID()
+        homeTurnDeliveryState = .awaitingAcceptance(attemptID: attemptID)
+        // This marker is the local copy that makes an awaiting-acceptance
+        // record actionable after a crash. The recovery schema deliberately
+        // contains no prompt text; the text lives in the existing local
+        // conversation field instead.
+        unconfirmedTurnText = text
+        homeRecovery = makeHomeRecovery(
+            conversation: conversation,
+            turn: nil,
+            attemptID: attemptID,
+            deliveryState: .awaitingAcceptance,
+            resumeCursor: nil
+        )
+        guard await persistConversation() else {
+            homeRecovery = previousHomeRecovery
+            homeTurnDeliveryState = previousDeliveryState
+            unconfirmedTurnText = previousUnconfirmedText
+            homeEventHandler = nil
+            activeTurnText = nil
+            isSending = false
+            return false
+        }
+
+        let outcome = await homeClient.submitPrompt(text, binding: conversation)
+        guard isLifecycleActive, !homeOperationsSuppressed else {
+            await markHomeSubmissionUncertain(
+                failure: .home(code: .transportUnavailable, phase: .submission),
+                text: text,
+                conversation: conversation,
+                attemptID: attemptID
+            )
+            return false
+        }
+
+        switch outcome {
+        case .accepted(let turn):
+            let recovery = makeHomeRecovery(
+                conversation: conversation,
+                turn: turn,
+                attemptID: attemptID,
+                deliveryState: .accepted,
+                resumeCursor: nil
+            )
+            homeTurnBinding = turn
+            homeTurnDeliveryState = .accepted(turn)
+            homeRecovery = recovery
+            unconfirmedTurnText = text
+            // The accepted opaque binding reaches disk before the visible
+            // user message or any normalized response event.
+            guard await persistConversation() else {
+                await markHomeSubmissionUncertain(
+                    failure: .home(code: .transportUnavailable, phase: .lifecycle),
+                    text: text,
+                    conversation: conversation,
+                    attemptID: attemptID,
+                    turn: turn
+                )
+                return false
+            }
+            messages.append(TranscriptMessage(role: .user, text: text))
+            await persistConversation()
+            scheduleHomeControlDeadline(for: turn)
+            scheduleHomeAudioStartDeadline(for: turn)
+            let completed = await waitForHomeTurnCompletion(turn: turn)
+            if completed, eventHandler != nil {
+                await waitForHomeAudioTerminal(turn: turn)
+            }
+            homeEventHandler = nil
+            activeTurnText = nil
+            if !completed {
+                if case .interrupted = homeTurnDeliveryState {
+                    await completeHomeTurnAfterAudio()
+                }
+                isSending = false
+                await persistConversation()
+                return false
+            }
+            // Voice playback owns the final drain. Text-only callers can
+            // explicitly settle through completeHomeTurnAfterAudio().
+            if eventHandler == nil {
+                await completeHomeTurnAfterAudio()
+            }
+            return true
+        case .rejected(let failure):
+            homeRecovery = previousHomeRecovery
+            homeTurnBinding = previousHomeTurnBinding
+            homeTurnDeliveryState = previousHomeRecovery == nil
+                ? .failedKnown(failure)
+                : previousDeliveryState
+            homeEventHandler = nil
+            activeTurnText = nil
+            isSending = false
+            unconfirmedTurnText = previousUnconfirmedText
+            transientError = failure.safeReason
+            await persistConversation()
+            return false
+        case .uncertain(let failure):
+            await markHomeSubmissionUncertain(
+                failure: failure,
+                text: text,
+                conversation: conversation,
+                attemptID: attemptID
+            )
+            return false
+        }
+    }
+
+    private func waitForHomeTurnCompletion(turn: HomeTurnBinding) async -> Bool {
+        guard homeTurnBinding == turn else { return false }
+        if let homeTurnResult { return homeTurnResult }
+        return await withCheckedContinuation { continuation in
+            homeTurnWaiter = continuation
+        }
+    }
+
+    private func waitForHomeAudioTerminal(turn: HomeTurnBinding) async {
+        guard homeTurnBinding == turn, !homeAudioTerminal else { return }
+        await withCheckedContinuation { continuation in
+            homeAudioTerminalWaiter = continuation
+            if homeAudioTerminal {
+                homeAudioTerminalWaiter = nil
+                continuation.resume()
+            }
+        }
+    }
+
+    private func resumeHomeAudioTerminalWaiter() {
+        guard !homeAudioTerminalProcessing,
+              let waiter = homeAudioTerminalWaiter else { return }
+        homeAudioTerminalWaiter = nil
+        waiter.resume()
+    }
+
+    private func makeHomeRecovery(
+        conversation: HomeConversationBinding,
+        turn: HomeTurnBinding?,
+        attemptID: UUID?,
+        deliveryState: PersistedHomeDeliveryState,
+        resumeCursor: String?
+    ) -> PersistedHomeRecovery {
+        PersistedHomeRecovery(
+            profileID: conversation.profileID,
+            endpoint: conversation.endpoint,
+            route: conversation.route,
+            householdBinding: conversation.householdBinding,
+            conversationHandle: conversation.conversationHandle,
+            turnID: turn?.turnID,
+            correlationID: turn?.correlationID,
+            submissionAttemptID: attemptID,
+            resumeCursor: resumeCursor,
+            deliveryState: deliveryState,
+            updatedAt: now()
+        )
+    }
+
+    private func markHomeSubmissionUncertain(
+        failure: HomeBridgeFailure,
+        text: String,
+        conversation: HomeConversationBinding,
+        attemptID: UUID,
+        turn: HomeTurnBinding? = nil
+    ) async {
+        homeRecovery = makeHomeRecovery(
+            conversation: conversation,
+            turn: turn,
+            attemptID: attemptID,
+            deliveryState: .uncertain,
+            resumeCursor: nil
+        )
+        homeTurnBinding = turn
+        homeTurnDeliveryState = .uncertain(turn)
+        unconfirmedTurnText = text
+        transientError = failure.safeReason
+        isSending = false
+        activeTurnText = nil
+        homeEventHandler = nil
+        homeEventTask?.cancel()
+        homeEventTask = nil
+        homeControlTimeoutTask?.cancel()
+        homeControlTimeoutTask = nil
+        homeAudioTimeoutTask?.cancel()
+        homeAudioTimeoutTask = nil
+        homeAudioTerminalWaiter?.resume()
+        homeAudioTerminalWaiter = nil
+        homeAudioTerminal = true
+        homeAudioTerminalProcessing = false
+        homeBridgeState = .disconnected(failure)
+        connectionState = .disconnected
+        sessionMetadata = nil
+        sessionStartedAt = nil
+        let oldClient = homeClient
+        homeClient = nil
+        await oldClient?.close()
+        homeClient = homeClientFactory?.make(
+            profileID: conversation.profileID,
+            mode: .home
+        )
+        await persistConversation()
+    }
+
+    /// Playback owns the last part of a Home turn. The control terminal is
+    /// known before native audio has necessarily drained, so this is the only
+    /// method allowed to clear the persisted accepted binding.
+    func completeHomeTurnAfterAudio() async {
+        guard isHomeMode, homeTurnBinding != nil else { return }
+        guard homeControlTerminal, homeAudioTerminal else { return }
+        homeRecovery = nil
+        homeControlTimeoutTask?.cancel()
+        homeControlTimeoutTask = nil
+        homeAudioTimeoutTask?.cancel()
+        homeAudioTimeoutTask = nil
+        homeAudioStartTimeoutTask?.cancel()
+        homeAudioStartTimeoutTask = nil
+        homeJoinTimeout = nil
+        homeTurnBinding = nil
+        homeTurnDeliveryState = .idle
+        homeAudioState = .notRequested
+        homeAudioTerminal = true
+        homeAudioTerminalProcessing = false
+        homeAudioTerminalWaiter?.resume()
+        homeAudioTerminalWaiter = nil
+        activeTurnGeneration = nil
+        activeTurnText = nil
+        isSending = false
+        homeEventHandler = nil
+        await persistConversation()
+    }
+
+    func respondToHomePrompt(
+        _ response: HomePromptResponse
+    ) async -> HomeStructuredResponseOutcome {
+        guard let pending = pendingHomePrompt, let homeClient else {
+            return .rejected(.home(code: .requestRejected, phase: .structuredResponse))
+        }
+        let outcome = await homeClient.respond(to: pending.prompt, with: response)
+        if case .accepted = outcome { pendingHomePrompt = nil }
+        return outcome
+    }
+
+    func dispatchHomeCommand(
+        name: String,
+        argument: String? = nil
+    ) async -> HomeCommandOutcome {
+        guard let binding = homeConversationBinding, let homeClient else {
+            return .rejected(.home(code: .transportUnavailable, phase: .command))
+        }
+        let command = HomeCommandRequest(binding: binding, name: name, argument: argument)
+        return await homeClient.dispatch(command)
+    }
+
+    func pingHome() async -> HomePingOutcome {
+        guard let binding = homeConversationBinding, let homeClient else {
+            return .unavailable(.home(code: .transportUnavailable, phase: .ping))
+        }
+        return await homeClient.ping(binding: binding)
+    }
+
+    func currentHomeClientForLifecycle() -> (any HomeBridgeSessionClient)? {
+        homeClient
+    }
+
+    func takeHomeClientForLifecycle() -> (any HomeBridgeSessionClient)? {
+        homeEventTask?.cancel()
+        homeEventTask = nil
+        homeControlTimeoutTask?.cancel()
+        homeControlTimeoutTask = nil
+        homeAudioStartTimeoutTask?.cancel()
+        homeAudioStartTimeoutTask = nil
+        homeAudioTimeoutTask?.cancel()
+        homeAudioTimeoutTask = nil
+        homeAudioTerminalWaiter?.resume()
+        homeAudioTerminalWaiter = nil
+        homeAudioTerminal = true
+        homeAudioTerminalProcessing = false
+        let activeClient = homeClient
+        homeClient = nil
+        homeConversationBinding = nil
+        homeTurnBinding = nil
+        return activeClient
+    }
+
+    /// Persist the exact local state that crosses a lifecycle boundary. This
+    /// method deliberately does not close a socket; the lifecycle owner does
+    /// that only after the snapshot and native teardown succeed.
+    func lifecycleWillDeactivate() async -> Bool {
+        guard isLifecycleActive else { return true }
+
+        if isSending {
+            if isHomeMode, let recovery = homeRecovery {
+                let recoveryText = unconfirmedTurnText
+                    ?? messages.last(where: { $0.role == .user })?.text
+                    ?? ""
+                homeRecovery = PersistedHomeRecovery(
+                    profileID: recovery.profileID,
+                    endpoint: recovery.endpoint,
+                    route: recovery.route,
+                    householdBinding: recovery.householdBinding,
+                    conversationHandle: recovery.conversationHandle,
+                    turnID: recovery.turnID,
+                    correlationID: recovery.correlationID,
+                    submissionAttemptID: recovery.submissionAttemptID,
+                    resumeCursor: recovery.resumeCursor,
+                    deliveryState: .uncertain,
+                    updatedAt: now()
+                )
+                homeTurnDeliveryState = .uncertain(homeTurnBinding)
+                unconfirmedTurnText = recoveryText
+            } else if let activeTurnText {
+                unconfirmedTurnText = activeTurnText
+            }
+        }
+
+        guard await persistConversation() else {
+            transientError = "The local conversation could not be saved. Try again before leaving."
+            return false
+        }
+
+        isLifecycleActive = false
+        homeOperationsSuppressed = true
+        reconnectTask?.cancel()
+        reconnectTask = nil
+        homeEventTask?.cancel()
+        homeEventTask = nil
+        homeControlTimeoutTask?.cancel()
+        homeControlTimeoutTask = nil
+        homeAudioStartTimeoutTask?.cancel()
+        homeAudioStartTimeoutTask = nil
+        homeAudioTimeoutTask?.cancel()
+        homeAudioTimeoutTask = nil
+        homeTurnWaiter?.resume(returning: false)
+        homeTurnWaiter = nil
+        homeAudioTerminalWaiter?.resume()
+        homeAudioTerminalWaiter = nil
+        homeAudioTerminal = true
+        homeAudioTerminalProcessing = false
+        homeTurnResult = false
+        return true
+    }
+
+    func setLifecycleActive(_ active: Bool) {
+        isLifecycleActive = active
+        homeOperationsSuppressed = !active
+        if active {
+            homeTurnResult = nil
+        }
+    }
+
+    /// Clears ownership before awaiting the actor's close. Calling this twice
+    /// therefore cannot close the same Home client twice.
+    func closeHomeClient() async {
+        let activeClient = takeHomeClientForLifecycle()
+        await activeClient?.close()
+    }
+
+    @discardableResult
     func interruptActiveTurn() async -> Bool {
-        guard isSending, let turnGeneration = activeTurnGeneration else { return false }
+        guard isSending else { return false }
+
+        if transportMode == .home {
+            guard let binding = homeConversationBinding,
+                  let turn = homeTurnBinding,
+                  let homeClient else { return false }
+            let outcome = await homeClient.interrupt(binding: binding, turnID: turn.turnID)
+            switch outcome {
+            case .acknowledged:
+                // The Home acknowledgement is not the user-visible terminal;
+                // wait for the matching turn_interrupted event.
+                homeTurnResult = nil
+                let confirmed = await waitForHomeTurnCompletion(turn: turn)
+                if confirmed { return false }
+                await completeHomeTurnAfterAudio()
+                isSending = false
+                activeTurnGeneration = nil
+                activeTurnText = nil
+                return true
+            case .rejected(let failure), .unavailable(let failure):
+                transientError = failure.safeReason
+                return false
+            case .uncertain(let failure):
+                await markHomeSubmissionUncertain(
+                    failure: failure,
+                    text: unconfirmedTurnText
+                        ?? activeTurnText
+                        ?? messages.last(where: { $0.role == .user })?.text
+                        ?? "",
+                    conversation: binding,
+                    attemptID: homeRecovery?.submissionAttemptID ?? UUID(),
+                    turn: turn
+                )
+                activeTurnGeneration = nil
+                return false
+            }
+        }
+
+        guard let turnGeneration = activeTurnGeneration else { return false }
 
         interruptedTurnGeneration = turnGeneration
         if await client.interruptActiveTurn() {
@@ -295,6 +1277,7 @@ final class ConversationStore {
         interruptedTurnGeneration = nil
         interruptionConfirmedTurnGeneration = nil
         activeTurnGeneration = nil
+        activeTurnText = nil
         isExpectedDisconnect = true
         await client.disconnect()
         isExpectedDisconnect = false
@@ -330,6 +1313,7 @@ final class ConversationStore {
         isExpectedDisconnect = true
         await client.disconnect()
         isExpectedDisconnect = false
+        await closeHomeClient()
 
         connectionState = .disconnected
         sessionMetadata = nil
@@ -349,9 +1333,22 @@ final class ConversationStore {
         transientError = nil
         isSending = false
         activeTurnGeneration = nil
+        activeTurnText = nil
         interruptedTurnGeneration = nil
         interruptionConfirmedTurnGeneration = nil
         turnCompleted = false
+        homeRecovery = nil
+        homeControlTimeoutTask?.cancel()
+        homeControlTimeoutTask = nil
+        homeAudioTimeoutTask?.cancel()
+        homeAudioTimeoutTask = nil
+        homeJoinTimeout = nil
+        homeConversationBinding = nil
+        homeTurnBinding = nil
+        homeTurnDeliveryState = .idle
+        homeAudioState = .notRequested
+        homeBridgeState = .unconfigured
+        homeOperationsSuppressed = false
         if clearPersistence {
             persistence = nil
         }
@@ -374,6 +1371,10 @@ final class ConversationStore {
 
     /// Called when the transport reports a loss the user did not ask for.
     func handleUnexpectedTransportLoss() {
+        if transportMode == .home {
+            handleUnexpectedHomeTransportLoss()
+            return
+        }
         sessionMetadata = nil
         sessionStartedAt = nil
         guard !isExpectedDisconnect else {
@@ -393,14 +1394,137 @@ final class ConversationStore {
         await reconnectTask?.value
     }
 
+    private func handleUnexpectedHomeTransportLoss() {
+        guard isLifecycleActive, !homeOperationsSuppressed else { return }
+        if let recovery = homeRecovery,
+           recovery.deliveryState != .uncertain {
+            homeRecovery = PersistedHomeRecovery(
+                profileID: recovery.profileID,
+                endpoint: recovery.endpoint,
+                route: recovery.route,
+                householdBinding: recovery.householdBinding,
+                conversationHandle: recovery.conversationHandle,
+                turnID: recovery.turnID,
+                correlationID: recovery.correlationID,
+                submissionAttemptID: recovery.submissionAttemptID,
+                resumeCursor: recovery.resumeCursor,
+                deliveryState: .uncertain,
+                updatedAt: now()
+            )
+            homeTurnDeliveryState = .uncertain(homeTurnBinding)
+            if unconfirmedTurnText == nil {
+                unconfirmedTurnText = messages.last(where: { $0.role == .user })?.text
+            }
+        }
+        homeBridgeState = .disconnected(
+            .home(code: .transportUnavailable, phase: .reconnect)
+        )
+        connectionState = .disconnected
+        sessionMetadata = nil
+        sessionStartedAt = nil
+        if reconnectTask == nil {
+            Task { await persistConversation() }
+            reconnectTask = Task { [weak self] in
+                await self?.runHomeReconnectLoop()
+            }
+        }
+    }
+
+    private func runHomeReconnectLoop() async {
+        defer { reconnectTask = nil }
+        guard let binding = homeConversationBinding,
+              let homeClient else { return }
+        let deadline = homeClock.now().advanced(by: homeOperationDeadlines.reconnectOverall)
+        var attempt = 1
+        while homeClock.now() < deadline,
+              let delay = reconnectPolicy.delayNanoseconds(forAttempt: attempt) {
+            connectionState = .reconnecting(
+                attempt: attempt,
+                of: reconnectPolicy.maxAttempts
+            )
+            do {
+                try await homeClock.sleep(
+                    until: homeClock.now().advanced(
+                        by: .nanoseconds(Int64(delay))
+                    )
+                )
+            } catch { return }
+            if Task.isCancelled || !isLifecycleActive { return }
+
+            switch await homeClient.reconnect(binding: binding) {
+            case .ready(let readyBinding, let unresolvedTurn):
+                guard readyBinding == binding else {
+                    applyHomeConnectionFailure(
+                        .home(code: .conversationMismatch, phase: .reconnect),
+                        unavailable: true
+                    )
+                    return
+                }
+                if let unresolvedTurn {
+                    homeTurnBinding = HomeTurnBinding(
+                        conversationHandle: binding.conversationHandle,
+                        turnID: unresolvedTurn.turnID,
+                        correlationID: homeRecovery?.correlationID ?? "unresolved"
+                    )
+                    homeTurnDeliveryState = .uncertain(homeTurnBinding)
+                    if let homeRecovery {
+                        self.homeRecovery = PersistedHomeRecovery(
+                            profileID: homeRecovery.profileID,
+                            endpoint: homeRecovery.endpoint,
+                            route: homeRecovery.route,
+                            householdBinding: homeRecovery.householdBinding,
+                            conversationHandle: homeRecovery.conversationHandle,
+                            turnID: unresolvedTurn.turnID,
+                            correlationID: homeRecovery.correlationID,
+                            submissionAttemptID: homeRecovery.submissionAttemptID,
+                            resumeCursor: unresolvedTurn.resumeCursor,
+                            deliveryState: .uncertain,
+                            updatedAt: now()
+                        )
+                    }
+                }
+                homeConversationBinding = readyBinding
+                homeBridgeState = .ready(readyBinding)
+                homeRouteState = HomeRouteState(
+                    status: .reachable,
+                    identity: readyBinding.route,
+                    failure: nil
+                )
+                sessionMetadata = SessionMetadata(
+                    homeConversation: readyBinding,
+                    capabilities: readyBinding.capabilities.commands.sorted()
+                )
+                connectionState = .connected
+                transientError = nil
+                startHomeEventPump(client: homeClient)
+                await persistConversation()
+                return
+            case .unavailable(let failure):
+                applyHomeConnectionFailure(failure, unavailable: true)
+                return
+            case .disconnected(let failure):
+                if attempt == reconnectPolicy.maxAttempts {
+                    applyHomeConnectionFailure(failure, unavailable: false)
+                    return
+                }
+            }
+            attempt += 1
+        }
+        applyHomeConnectionFailure(
+            .home(code: .transportTimeout, phase: .reconnect),
+            unavailable: false
+        )
+    }
+
     private func runReconnectLoop() async {
         defer { reconnectTask = nil }
 
         var attempt = 1
         while let delay = reconnectPolicy.delayNanoseconds(forAttempt: attempt) {
+            guard isLifecycleActive, !homeOperationsSuppressed else { return }
             connectionState = .reconnecting(attempt: attempt, of: reconnectPolicy.maxAttempts)
             await sleep(delay)
-            if Task.isCancelled { return }
+            if Task.isCancelled || !isLifecycleActive || homeOperationsSuppressed { return }
 
             do {
                 let metadata = try await client.connect()
@@ -490,20 +1614,24 @@ final class ConversationStore {
         return messages.firstIndex { $0.id == activeAssistantID }
     }
 
-    private func persistConversation() async {
-        guard let persistence else { return }
+    @discardableResult
+    private func persistConversation() async -> Bool {
+        guard let persistence else { return true }
         do {
             try await persistence.save(
                 PersistedConversation(
                     messages: messages,
                     draft: draft,
-                    unconfirmedTurnText: unconfirmedTurnText
+                    unconfirmedTurnText: unconfirmedTurnText,
+                    homeRecovery: homeRecovery
                 )
             )
+            return true
         } catch {
             if transientError == nil {
                 transientError = "The local conversation could not be saved."
             }
+            return false
         }
     }
 }

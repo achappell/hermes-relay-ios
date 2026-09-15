@@ -16,8 +16,8 @@ Run from the repository root with Xcode 26.6 or newer:
 
 ```bash
 xcodebuild \
-  -project HermesRelayIOS.xcodeproj \
-  -scheme HermesRelayIOS \
+  -project 'Hermes Relay.xcodeproj' \
+  -scheme HermesRelay \
   -destination 'generic/platform=iOS Simulator' \
   CODE_SIGNING_ALLOWED=NO \
   build-for-testing
@@ -28,18 +28,23 @@ local test runner:
 
 ```bash
 xcodebuild \
-  -project HermesRelayIOS.xcodeproj \
-  -scheme HermesRelayIOS \
-  -destination 'platform=macOS,arch=arm64' \
+  -project 'Hermes Relay.xcodeproj' \
+  -scheme HermesRelay \
+  -destination 'platform=macOS' \
   CODE_SIGNING_ALLOWED=NO \
   CODE_SIGN_IDENTITY='' \
   test \
-  -only-testing:HermesRelayIOSTests/ConversationStoreTransportTests \
-  -only-testing:HermesRelayIOSTests/SpeechInputTests \
-  -only-testing:HermesRelayIOSTests/AudioOutputTests \
-  -only-testing:HermesRelayIOSTests/VoiceSessionCoordinatorTests \
-  -only-testing:HermesRelayIOSTests/ConversationPersistenceTests \
-  -only-testing:HermesRelayIOSTests/RecoveryTests
+  '-only-testing:Hermes RelayTests/ConversationStoreTransportTests' \
+  '-only-testing:Hermes RelayTests/SpeechInputTests' \
+  '-only-testing:Hermes RelayTests/AudioOutputTests' \
+  '-only-testing:Hermes RelayTests/VoiceSessionCoordinatorTests' \
+  '-only-testing:Hermes RelayTests/ConversationPersistenceTests' \
+  '-only-testing:Hermes RelayTests/RecoveryTests' \
+  '-only-testing:Hermes RelayTests/HomeBridgeEnvelopeTests' \
+  '-only-testing:Hermes RelayTests/HomeBridgeSessionClientTests' \
+  '-only-testing:Hermes RelayTests/HomeBridgeAudioTests' \
+  '-only-testing:Hermes RelayTests/HomeConfigurationMigrationTests' \
+  '-only-testing:Hermes RelayTests/AppleLifecycleTests'
 ```
 
 Run the complete test target on an installed iOS simulator runtime and record
@@ -47,8 +52,8 @@ the destination used:
 
 ```bash
 xcodebuild \
-  -project HermesRelayIOS.xcodeproj \
-  -scheme HermesRelayIOS \
+  -project 'Hermes Relay.xcodeproj' \
+  -scheme HermesRelay \
   -destination 'platform=iOS Simulator,name=<installed iPhone>' \
   CODE_SIGNING_ALLOWED=NO \
   test
@@ -111,9 +116,9 @@ Build the shared target explicitly:
 
 ```bash
 xcodebuild \
-  -project HermesRelayIOS.xcodeproj \
-  -scheme HermesRelayIOS \
-  -destination 'platform=macOS,arch=arm64' \
+  -project 'Hermes Relay.xcodeproj' \
+  -scheme HermesRelay \
+  -destination 'platform=macOS' \
   CODE_SIGNING_ALLOWED=NO \
   build
 ```
@@ -122,8 +127,8 @@ Confirm the build settings include macOS 26, the `macosx` supported platform,
 the sandbox entitlement file, and outgoing network access:
 
 ```bash
-xcodebuild -project HermesRelayIOS.xcodeproj -scheme HermesRelayIOS \
-  -destination 'platform=macOS,arch=arm64' -showBuildSettings \
+xcodebuild -project 'Hermes Relay.xcodeproj' -scheme HermesRelay \
+  -destination 'platform=macOS' -showBuildSettings \
   | rg 'MACOSX_DEPLOYMENT_TARGET|SUPPORTED_PLATFORMS|CODE_SIGN_ENTITLEMENTS|ENABLE_APP_SANDBOX|com.apple.security.network.client'
 ```
 

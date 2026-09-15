@@ -2,7 +2,9 @@
 title: '[Apple] Migrate the iOS/macOS client'
 type: 'feature'
 created: '2026-09-14'
-status: 'ready-for-dev'
+baseline_revision: 'cae50c2ed61df0296f9ca64e7d5463ff3d0e6879'
+baseline_commit: 'cae50c2ed61df0296f9ca64e7d5463ff3d0e6879'
+status: 'in-progress'
 review_loop_iteration: 3
 followup_review_recommended: false
 context:
@@ -1860,12 +1862,14 @@ hide an untested migration branch:
 
 ## Auto Run Result
 
-Status: ready-for-dev.
+Status: in-progress.
 
-Planning result: the story has a file-anchored, fake-backed implementation
-plan. The normalized session boundary, schema-1 Home envelope, approved Device
-credential boundary, opaque handles, explicit rollback, fresh-action recovery,
-strict Standard audio/event meaning, timing absence, and Apple lifecycle
-ownership are all specified. The public Home adapter remains an explicit
-blocked evidence gate; no implementation, build, test, or live-route check ran
-in this planning pass.
+Implementation result: the BMAD auto loop produced the first Apple migration
+slice and its deterministic evidence. The normalized session boundary,
+schema-1 Home envelope, approved Device credential boundary, opaque handles,
+explicit rollback, fresh-action recovery, strict Standard audio/event meaning,
+timing absence, Apple lifecycle ownership, and safe Home status projection are
+now represented in source and tests. The public Home adapter remains an
+explicit blocked evidence gate; no live-route check was run or claimed. The
+manual fake UI walkthrough remains pending because the available computer-use
+surface could not attach to the iOS Simulator window.

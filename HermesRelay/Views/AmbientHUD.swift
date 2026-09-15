@@ -326,6 +326,13 @@ struct AmbientHUDView: View {
     let onConnect: () -> Void
     let onShowHistory: () -> Void
     let settingsURL: URL?
+    let homeBridgeState: HomeBridgeState?
+    let homeRouteState: HomeRouteState?
+    let homeTurnDeliveryState: HomeTurnDeliveryState?
+    let homeAudioState: HomeAudioState?
+    let homeTimingCapability: HomeTimingCapability?
+    let pendingHomePromptKind: HomeStructuredPromptKind?
+    let homeCommandEventCount: Int
 
     init(
         presentation: AmbientHUDPresentation,
@@ -348,7 +355,14 @@ struct AmbientHUDView: View {
         onConfigure: @escaping () -> Void,
         onConnect: @escaping () -> Void,
         onShowHistory: @escaping () -> Void,
-        settingsURL: URL? = nil
+        settingsURL: URL? = nil,
+        homeBridgeState: HomeBridgeState? = nil,
+        homeRouteState: HomeRouteState? = nil,
+        homeTurnDeliveryState: HomeTurnDeliveryState? = nil,
+        homeAudioState: HomeAudioState? = nil,
+        homeTimingCapability: HomeTimingCapability? = nil,
+        pendingHomePromptKind: HomeStructuredPromptKind? = nil,
+        homeCommandEventCount: Int = 0
     ) {
         self.presentation = presentation
         self.connectionState = connectionState
@@ -371,6 +385,13 @@ struct AmbientHUDView: View {
         self.onConnect = onConnect
         self.onShowHistory = onShowHistory
         self.settingsURL = settingsURL
+        self.homeBridgeState = homeBridgeState
+        self.homeRouteState = homeRouteState
+        self.homeTurnDeliveryState = homeTurnDeliveryState
+        self.homeAudioState = homeAudioState
+        self.homeTimingCapability = homeTimingCapability
+        self.pendingHomePromptKind = pendingHomePromptKind
+        self.homeCommandEventCount = homeCommandEventCount
     }
 
     private var liveProvisionalText: String {
@@ -440,6 +461,10 @@ struct AmbientHUDView: View {
 
             if let unconfirmedTurnText {
                 unconfirmedTurnNotice(text: unconfirmedTurnText)
+            }
+
+            if let homeBridgeState {
+                homeStatusNotice(bridge: homeBridgeState)
             }
 
             Spacer(minLength: 20)
@@ -611,6 +636,60 @@ struct AmbientHUDView: View {
         .padding(.top, 8)
         .accessibilityElement(children: .contain)
         .accessibilityLabel("Unconfirmed turn, \(text). It was not sent again automatically.")
+    }
+
+    private func homeStatusNotice(bridge: HomeBridgeState) -> some View {
+        let tint = bridge.isReady
+            ? HermesVisualTokens.live
+            : bridge.displayReason == nil
+                ? HermesVisualTokens.secondaryInk
+                : HermesVisualTokens.unavailable
+
+        return VStack(alignment: .leading, spacing: 5) {
+            HStack(spacing: 8) {
+                Image(systemName: bridge.isReady ? "house.fill" : "house")
+                Text("Home bridge · \(bridge.displayLabel)")
+                    .font(.footnote.weight(.semibold))
+                Spacer(minLength: 8)
+            }
+
+            if let homeRouteState {
+                Text("Route · \(homeRouteState.displayLabel)")
+            }
+            if let homeTurnDeliveryState,
+               homeTurnDeliveryState != .idle {
+                Text("Delivery · \(homeTurnDeliveryState.displayLabel)")
+            }
+            if let homeAudioState,
+               homeAudioState != .notRequested {
+                Text("Audio · \(homeAudioState.displayLabel)")
+            }
+            if homeTimingCapability == .absent {
+                Text("Timing · Absent in the pinned Standard baseline")
+            }
+            if let pendingHomePromptKind {
+                Text("Structured request · \(pendingHomePromptKind.displayLabel)")
+            }
+            if homeCommandEventCount > 0 {
+                Text("Command events · \(homeCommandEventCount)")
+            }
+            if let reason = bridge.displayReason {
+                Text("Reason · \(reason)")
+                    .foregroundStyle(HermesVisualTokens.secondaryInk)
+            }
+        }
+        .font(.caption)
+        .foregroundStyle(tint)
+        .padding(.horizontal, 14)
+        .padding(.vertical, 10)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .relayPanel(cornerRadius: 16, fill: HermesVisualTokens.panel)
+        .padding(.top, 8)
+        .accessibilityElement(children: .combine)
+        .accessibilityIdentifier("home-bridge-status")
+        .accessibilityLabel(
+            "Home bridge \(bridge.displayLabel), \(homeRouteState?.displayLabel ?? "route not attempted")"
+        )
     }
 
     private var sessionHeader: some View {

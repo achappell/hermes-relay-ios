@@ -164,6 +164,81 @@ struct HermesEventNormalizer: Sendable {
         }
     }
 
+    /// Home has already passed its strict schema and redaction boundary. This
+    /// method is the only bridge from that typed event into the existing
+    /// normalized seam; Home never gets a second Standard parser.
+    mutating func normalizeHome(_ event: HomeStandardEvent) -> [HermesEvent] {
+        switch event.type {
+        case .messageStart:
+            return [.messageStart]
+        case .messageDelta, .textDelta:
+            guard case .delta(let rendered, let text, let replace, _) = event.payload else { return [] }
+            return normalizePreview(rendered ?? text ?? "", replace: replace)
+        case .text, .textFinal:
+            guard case .final(let rendered, let text, _, _, _) = event.payload else { return [] }
+            return normalizeFinalText(text ?? rendered ?? "")
+        case .messageComplete:
+            guard case .final(let rendered, let text, _, let reasoning, let failureReason) = event.payload else { return [] }
+            let finalText = text ?? rendered ?? ""
+            let update = normalizeFinalText(finalText)
+            return update + [
+                .messageComplete(
+                    text: finalText,
+                    reasoning: reasoning ?? "",
+                    failureReason: failureReason?.rawValue ?? ""
+                )
+            ]
+        case .thinking, .reasoning:
+            guard case .activity(let text, _, let reasoning, _) = event.payload else { return [] }
+            let activity = text ?? reasoning ?? ""
+            return activity.isEmpty ? [] : [.thinkingDelta(activity)]
+        case .status:
+            guard case .activity(let text, let status, _, let kind) = event.payload else { return [] }
+            let activity = text ?? status ?? ""
+            return activity.isEmpty ? [] : [.status(text: activity, kind: kind?.rawValue)]
+        case .turnComplete:
+            guard event.scope.turnID != nil else { return [] }
+            return [.turnComplete(turnID: event.scope.turnID!)]
+        case .turnInterrupted:
+            guard event.scope.turnID != nil else { return [] }
+            return [.turnInterrupted(turnID: event.scope.turnID!, reason: "turn interrupted")]
+        case .audioAbort:
+            guard event.scope.turnID != nil else { return [] }
+            return [.audioAbort(turnID: event.scope.turnID!, reason: "audio aborted")]
+        case .error:
+            guard case .error(let safeError) = event.payload else { return [] }
+            return [.error(safeError.code.rawValue)]
+        }
+    }
+
+    mutating func normalizeHomeAudio(
+        _ event: HomeBridgeEvent
+    ) -> [HermesEvent] {
+        switch event {
+        case .audioStart(_, let format):
+            return [
+                .audioStart(
+                    AudioFormat(
+                        sampleRate: format.sampleRate,
+                        channels: format.channels,
+                        sampleWidth: format.sampleWidth,
+                        byteOrder: format.byteOrder
+                    )
+                )
+            ]
+        case .binaryPCM(_, let data):
+            return [.audioChunk(data)]
+        case .audioTerminal(_, let terminal):
+            switch terminal {
+            case .end: return [.audioEnd]
+            case .fallback, .unavailable:
+                return [.audioAbort(turnID: "home", reason: terminal.rawValue)]
+            }
+        default:
+            return []
+        }
+    }
+
     func normalizeBinary(_ data: Data, audioFileActive: Bool) -> HermesEvent {
         audioFileActive ? .audioFileChunk(data) : .audioChunk(data)
     }

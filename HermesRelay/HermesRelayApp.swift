@@ -10,6 +10,8 @@ struct HermesRelayIOSApp: App {
     private let deviceSetupDraftStore: any DeviceSetupDraftStore
     private let deviceConfigurationStore: any DeviceConfigurationStore
     private let appDirectory: URL
+    private let homeClientFactory: AppHomeBridgeSessionClientFactory
+    private let homeClaimProvider: AppHomeConversationClaimProvider
 
     init() {
         let applicationSupport = FileManager.default.urls(
@@ -20,6 +22,12 @@ struct HermesRelayIOSApp: App {
         let configuration = RelayConfigurationStore(
             secureStore: KeychainSecureValueStore(),
             profileURL: appDirectory.appendingPathComponent("profile.json")
+        )
+        let homeFakeEnabled = ProcessInfo.processInfo.arguments.contains("-HomeBridgeFake")
+        let homeClaimProvider = AppHomeConversationClaimProvider(fakeEnabled: homeFakeEnabled)
+        let homeClientFactory = AppHomeBridgeSessionClientFactory(
+            enabled: homeFakeEnabled,
+            claimProvider: homeClaimProvider
         )
         // One conversation per relay profile. The store swaps to the selected
         // profile's file when the client is configured.
@@ -32,7 +40,9 @@ struct HermesRelayIOSApp: App {
                             in: appDirectory, for: profileID
                         )
                     )
-                }
+                },
+                homeClientFactory: homeClientFactory,
+                homeClaimProvider: homeClaimProvider
             )
         )
         self.appDirectory = appDirectory
@@ -44,6 +54,8 @@ struct HermesRelayIOSApp: App {
         self.deviceAdministrationClient = DeviceAdministrationClientFactory.make()
         self.deviceSetupDraftStore = DeviceSetupDraftStoreFactory.make(in: appDirectory)
         self.deviceConfigurationStore = DeviceConfigurationStoreFactory.make(in: appDirectory)
+        self.homeClientFactory = homeClientFactory
+        self.homeClaimProvider = homeClaimProvider
     }
 
     var body: some Scene {
@@ -55,23 +67,10 @@ struct HermesRelayIOSApp: App {
                 deviceDiscoveryClient: deviceDiscoveryClient,
                 deviceAdministrationClient: deviceAdministrationClient,
                 deviceSetupDraftStore: deviceSetupDraftStore,
-                deviceConfigurationStore: deviceConfigurationStore
+                deviceConfigurationStore: deviceConfigurationStore,
+                homeClientFactory: homeClientFactory,
+                homeClaimProvider: homeClaimProvider
             )
-                .task {
-                    // Hand the pre-profiles conversation to whichever profile
-                    // is active before anything reads it.
-                    if let activeID = try? await configuration.loadProfile()?.id {
-                        ConversationPersistenceMigrator.migrateLegacyConversation(
-                            in: appDirectory, to: activeID
-                        )
-                    }
-                    // Resolve the active profile first: it decides which
-                    // conversation file to read. Loading before this ran
-                    // against no persistence at all and restored nothing.
-                    await store.loadConfiguredClient()
-                    await store.loadPersistedConversation()
-                    await store.autoConnectIfNeeded()
-                }
         }
     }
 }

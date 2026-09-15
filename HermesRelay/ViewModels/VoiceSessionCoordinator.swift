@@ -744,6 +744,53 @@ final class VoiceSessionCoordinator {
         }
     }
 
+    /// Lifecycle teardown is intentionally local. It cancels recognition and
+    /// response work, stops native playback, and never sends an interrupt or
+    /// reconnect while the surface is inactive.
+    func stopForLifecycle() async {
+        responseGeneration &+= 1
+        handsFreeCaptureGeneration &+= 1
+        handsFreeSilenceTask?.cancel()
+        handsFreeSilenceTask = nil
+        captureFinishTask?.cancel()
+        captureFinishTask = nil
+
+        await input.cancel()
+        await handsFreeInput?.cancel()
+        handsFreeTask?.cancel()
+        if let handsFreeTask { await handsFreeTask.value }
+        self.handsFreeTask = nil
+
+        _ = await captureStartGate.cancel()
+        captureTask?.cancel()
+        if let captureTask { await captureTask.value }
+        self.captureTask = nil
+
+        responseTask?.cancel()
+        if let responseTask { await responseTask.value }
+        self.responseTask = nil
+
+        await output.stop()
+        stopPlaybackPositionObservation()
+        isHandsFreeArmed = false
+        isHandsFreeCaptureActive = false
+        handsFreeStatus = .disarmed
+        isFinishingHandsFreeInput = false
+        provisionalText = ""
+        finalText = nil
+        captureBinding = nil
+        captureFailureMessage = nil
+        handsFreeFinalText = nil
+        audioStreamActive = false
+        audioFileStreamActive = false
+        audioDeliveryStarted = false
+        audioFileBuffer.removeAll(keepingCapacity: false)
+        playbackFailed = false
+        turnDidComplete = false
+        resetSpeechTiming()
+        state = .idle
+    }
+
     func interruptAndBeginCapture() async {
         guard responseTask != nil else { return }
 
@@ -755,7 +802,10 @@ final class VoiceSessionCoordinator {
     func interruptActiveTurn() async -> Bool {
         guard let activeResponseTask = responseTask else { return false }
 
-        state = .interrupted
+        let isHomeTurn = store.isHomeMode
+        if !isHomeTurn {
+            state = .interrupted
+        }
         await output.stop()
         resetSpeechTiming()
         // The relay may already have sent turn_end while local audio is still
@@ -784,6 +834,12 @@ final class VoiceSessionCoordinator {
         guard didReconnect else {
             state = .failed(store.transientError ?? "The Hermes relay could not be restored after interruption.")
             return false
+        }
+
+        if isHomeTurn {
+            // Home only becomes Interrupted after the matching terminal event;
+            // the store's interrupt call does not return before that gate.
+            state = .interrupted
         }
 
         if isHandsFreeArmed {
@@ -905,6 +961,10 @@ final class VoiceSessionCoordinator {
             state = .failed(store.transientError ?? "The voice turn could not be completed.")
         } else if completed, !isFailed, state != .interrupted {
             await finishPlaybackAndEndResponse(generation: generation)
+        } else if completed, store.isHomeMode {
+            // Control delivery is known even when native playback failed. Do
+            // not leave an accepted Home binding permanently in-flight.
+            await store.completeHomeTurnAfterAudio()
         }
     }
 
@@ -1042,9 +1102,13 @@ final class VoiceSessionCoordinator {
             await output.stop()
             guard isCurrentResponse(generation, allowingPlaybackFailure: true) else { return }
             state = .failed(message)
-        case .audioAbort:
+        case .audioAbort(_, let reason):
             guard !state.isTerminal else { return }
-            await stopInterruptedPlayback(generation: generation)
+            if store.isHomeMode, Self.isHomeAudioFailure(reason) {
+                await handlePlaybackFailure(generation: generation)
+            } else {
+                await stopInterruptedPlayback(generation: generation)
+            }
         case .turnInterrupted:
             guard !state.isTerminal else { return }
             await stopInterruptedPlayback(generation: generation)
@@ -1119,6 +1183,8 @@ final class VoiceSessionCoordinator {
             audioFileBuffer.removeAll(keepingCapacity: false)
         } else if completed, !isFailed, state != .interrupted {
             await finishPlaybackAndEndResponse(generation: generation)
+        } else if completed, store.isHomeMode {
+            await store.completeHomeTurnAfterAudio()
         }
     }
 
@@ -1149,6 +1215,9 @@ final class VoiceSessionCoordinator {
             return
         }
         endResponse()
+        if store.isHomeMode {
+            await store.completeHomeTurnAfterAudio()
+        }
     }
 
     private func handlePlaybackFailure(generation: UInt64) async {
@@ -1166,6 +1235,15 @@ final class VoiceSessionCoordinator {
         guard isCurrentResponse(generation, allowingPlaybackFailure: true) else { return }
         state = .failed("Audio playback failed. The response text is still available.")
         store.settleActiveAssistantPresentation()
+    }
+
+    private static func isHomeAudioFailure(_ reason: String) -> Bool {
+        switch reason {
+        case "fallback", "unavailable", "invalid Home PCM audio":
+            return true
+        default:
+            return false
+        }
     }
 
     private func isCurrentResponse(
