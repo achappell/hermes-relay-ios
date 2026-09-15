@@ -3,7 +3,7 @@ title: '[Apple] Migrate the iOS/macOS client'
 type: 'feature'
 created: '2026-09-14'
 status: 'ready-for-dev'
-review_loop_iteration: 0
+review_loop_iteration: 1
 followup_review_recommended: false
 context:
   - '{project-root}/docs/architecture.md'
@@ -108,11 +108,11 @@ seam explicit about the two transport families:
 
 | Type | Required meaning |
 |---|---|
-| `HomeRouteIdentity` / `HomeRouteState` | The safe class/label supplied by Home (`home`, `tailscale`, or explicitly enabled `public`) and the route attempt result. Apple does not discover unapproved routes or prove Household Identity itself; it accepts only Home's same-identity proof and rejects a missing or changed route binding. |
+| `HomeRouteIdentity` / `HomeRouteState` | The safe class/label supplied by Home (`home`, `tailscale`, or explicitly enabled `public`) and the route attempt result. Apple does not discover unapproved routes or prove Household Identity itself; it accepts only a `HomeApprovedRoute` record and Home's same-identity proof, then rejects a missing or changed route binding. |
 | `HomeConversationBinding` | Profile UUID plus opaque Home conversation handle, selected route identity, and safe capability snapshot. It contains no Profile ID on the wire and no Standard runtime Session ID. |
 | `HomeBridgeState` | `unconfigured`, `connecting`, `ready`, `disconnected`, or `unavailable` with safe Home reason. Only a schema-1 `conversation.open`/`conversation.reconnect` result with `status: ready` can project to `Connected`. |
 | `HomeTurnDeliveryState` | `idle`, `awaitingAcceptance`, `accepted`, `completed`, `interrupted`, `failedKnown`, or `uncertain`, carrying the opaque Home turn/correlation. It is independent from route and bridge state. |
-| `HomeBridgeFailure` | Stable Home code (`invalid_request`, `authorization_unavailable`, `unauthorized`, `stale_conversation`, `conversation_mismatch`, `request_rejected`, `transport_unavailable`, `transport_timeout`, `protocol_error`, `capability_unavailable`, `hermes_unavailable`, or `public_adapter_unavailable`) plus safe phase and delivery classification. |
+| `HomeBridgeFailure` | Stable Home code (`invalid_request`, `authorization_unavailable`, `unauthorized`, `stale_conversation`, `conversation_mismatch`, `request_rejected`, `transport_unavailable`, `transport_timeout`, `protocol_error`, `capability_unavailable`, or `hermes_unavailable`) or a separate `HomeRouteAttemptFailure` (`route_unavailable`, `route_unauthorized`, `route_identity_mismatch`, `route_timeout`), plus safe phase and delivery classification. `public_adapter_unavailable` is Apple-local adapter state, never a Home wire error. |
 | `HomeBridgeCapabilities` | Advertised commands, heartbeat support, interrupt support, and `timing: absent`; absent optional capabilities produce typed unavailable results. |
 | `HomeStructuredPrompt` / `HomeCommandResult` | Correlated approval, clarify, secret, or sudo request with fixed response keys, sensitivity, options, expiry, handle, turn, and correlation; commands are dispatchable only when advertised. |
 | `HomeAudioState` | `notRequested`, `waitingForStart`, `streaming`, `ended`, `fallback`, `unavailable`, or `invalid`, with one validated format/generation. Invalid or late PCM is never passed to playback. |
@@ -158,6 +158,166 @@ uncertain. Late frames are rejected by the turn/generation guard.
 | After acceptance before control terminal | Keep the opaque turn unresolved; reconnect may resume the existing binding/cursor when Home provides it, but must not replay the old response or prompt. |
 | After control terminal while audio drains | Keep the route frozen until audio settles. If audio fails, mark audio unavailable and finish text honestly; do not reopen a route or make the known turn uncertain. |
 | Reconnect mismatch, revocation, expired credential, or exhausted attempts | Stop new capture/submission, preserve local uncertainty, expose the safe unavailable/disconnected reason, and require fresh authorization or a fresh user action. Never attach another Profile or Household. |
+
+### Approved-route input and wire-reason mapping
+
+The Apple adapter receives a Home-approved route record from pairing or the
+persisted Home configuration. It never performs discovery, mDNS, Tailscale
+probing, public-route guessing, or Household Identity proof. Define the input
+seam explicitly:
+
+```swift
+enum HomeRouteClass: String, Codable, Sendable {
+    case home, tailscale, `public`
+}
+
+struct HomeRouteIdentity: Equatable, Sendable {
+    let routeClass: HomeRouteClass
+    let id: String
+}
+
+struct HomeApprovedRoute: Equatable, Sendable {
+    let endpoint: URL                 // production: wss://.../api/v1/bridge/ws
+    let identity: HomeRouteIdentity  // class plus Home-provided safe label
+    let householdBinding: String     // opaque, non-secret Home receipt
+}
+
+protocol HomeApprovedRouteProvider: Sendable {
+    func approvedRoute(for profileID: UUID) async throws -> HomeApprovedRoute?
+}
+```
+
+`HomeApprovedRoute` validates `wss`, the exact `/api/v1/bridge/ws` path, no
+userinfo, query, or fragment for the native adapter, and a non-empty Home
+identity/binding. The provider is backed by a pairing/configuration handoff;
+Apple does not manufacture the record. `FakeHomeBridgeSessionClient` receives
+the record in its initializer and returns deterministic route metadata and
+identity proof. URLSession never selects a route on its own. The binding is
+used only to compare Home's result with the approved record; it is not a
+Profile ID, Hermes Session ID, bearer, or credential.
+
+Map Home's wire results without collapsing route, authorization, adapter, and
+delivery failures:
+
+| Wire result | Apple typed result/state | Turn effect |
+|---|---|---|
+| `route_unavailable` | `HomeBridgeFailure.route(.unavailable)` → `HomeBridgeState.unavailable(.routeUnavailable)` | No turn uncertainty when opening idle; keep any existing marker unchanged. |
+| `route_unauthorized` | `HomeBridgeFailure.route(.unauthorized)` → unavailable with a route reason, not credential replacement | Do not label the Device credential invalid or try a bearer. |
+| `route_identity_mismatch` | `HomeBridgeFailure.route(.identityMismatch)` → unavailable and discard that route attempt | Never create a binding, Profile, or turn through that route; the provider may supply the next approved route at a new boundary. |
+| `route_timeout` | `HomeBridgeFailure.route(.timeout)` → disconnected/unavailable after the bounded attempt | Preserve an existing uncertain turn; no replacement submission. |
+| `conversation.open` result `status: unavailable`, `reason: reconnect_required` | `HomeBridgeFailure.reconnectRequired` → disconnected/unavailable, never `ready` | With a persisted binding, issue only `conversation.reconnect` on the same route while active; retain `unresolved_turn`. Without one, require fresh readiness. |
+| Home `unauthorized` / `authorization_unavailable` | Credential/authorization failure in `HomeBridgeState.unavailable` | Stop new work and request fresh Home authorization; never reinterpret it as a route class or derive a credential. |
+| `stale_conversation` / `conversation_mismatch` | Binding failure in unavailable state | An active accepted turn remains unresolved; do not attach another handle or Profile. |
+| `request_rejected` / invalid request / absent capability | `HomeTurnDeliveryState.failedKnown` | The prompt was not accepted; do not persist `unconfirmedTurnText`. The bridge may remain ready. |
+| `transport_unavailable` / `transport_timeout` | disconnected transport failure | `awaitingAcceptance` and `accepted` both become `uncertain`; persist the marker before teardown and never replay. |
+| Apple-local `public_adapter_unavailable` | Adapter-unavailable state before any Home wire call | This is a planned endpoint gate, not a Home response or credential failure; no direct vanilla call is allowed. |
+
+The mapping is implemented as distinct Swift cases and tested by asserting the
+safe state/reason pair. A reconnect-ready result may restore the bridge while
+`HomeTurnDeliveryState` remains `uncertain`; readiness never settles an older
+turn.
+
+### Typed prompt submission and delivery seam
+
+The Home client must return a typed acceptance result instead of making the
+store infer delivery from a thrown stream:
+
+```swift
+enum HomePromptSubmissionOutcome: Equatable, Sendable {
+    case accepted(HomeTurnBinding)
+    case rejected(HomeBridgeFailure)  // request_rejected/invalid/capability
+    case uncertain(HomeBridgeFailure) // transport loss or timeout after send
+}
+
+protocol HomeBridgeSessionClient: Sendable {
+    func submitPrompt(_ text: String) async -> HomePromptSubmissionOutcome
+    var events: AsyncThrowingStream<HomeBridgeEvent, Error> { get }
+}
+```
+
+The store transition is explicit: validation or a correlated Home rejection
+before acceptance is `failedKnown` with no uncertainty marker; a send with no
+acceptance response is `uncertain` and persists the local draft/marker before
+transport teardown; an accepted binding becomes `accepted`; a later loss keeps
+that same opaque binding and becomes unresolved/`uncertain` until a terminal
+event or an explicit safe failure. Reconnect restores only that binding and
+cursor, never calls `submitPrompt` for the old input, and never replays an old
+response. Only a fresh user action creates a new Home turn and may clear or
+replace the marker after its own outcome is classified.
+
+### Credential handoff and migration transaction
+
+The production pairing handoff supplies a pre-issued Device credential to the
+secure store and returns only a non-secret reference/receipt to this client;
+Apple never issues one from the legacy bearer. Add these explicit seams:
+
+```swift
+struct HomeCredentialReference: Equatable, Sendable {
+    let service: String       // com.achappell.HermesRelayIOS.home-device
+    let account: String       // device-credential.<profile UUID>
+    let issuedAt: Date
+    let expiresAt: Date
+    let renewAfter: Date
+}
+
+protocol HomePairingCredentialHandoff: Sendable {
+    /// Pairing writes the pre-issued value to this reference and returns no
+    /// credential material to the migration/UI layer.
+    func preIssuedReference(for profileID: UUID) async throws -> HomeCredentialReference
+}
+
+protocol HomeCredentialStore: Sendable {
+    func stage(preIssued: HomeCredentialReference, for profileID: UUID) async throws
+    func verifiedReadBack(for profileID: UUID) async throws -> HomeCredentialRecord
+    func commitHomeSelection(for profileID: UUID) async throws
+    func retainLegacySelection(for profileID: UUID) async throws
+}
+```
+
+`HomeCredentialStore` reads the pre-issued value privately through the
+Keychain-backed `SecureValueStore`; it never returns credential bytes to
+Codable Profiles, UI state, snapshots, logs, or diagnostics. The existing
+legacy bearer remains under its existing service/account until an explicit
+idle-boundary rollback policy says otherwise. Persist these idempotent phases:
+`notStarted → staged → readBackVerified → fakeReadyVerified → homeSelected`,
+with `rollbackPending`/`legacySelected` for recovery. The migration transaction
+must stage, verify secure read-back, run fake-ready `conversation.open`, then
+atomically select Home mode. Any write/read-back/fake-ready/crash failure leaves
+legacy mode selected and the Home reference retryable; rollback is refused
+while capture, playback, reconnect, or an active/uncertain turn exists.
+
+Tests seed an in-memory `SecureValueStore` at the exact Home service/account
+and inject a synthetic pre-issued reference plus `FakeHomeBridgeSessionClient`;
+they do not invoke UI pairing and do not assert or print the secret value. A
+production Home pairing adapter may later provide the same reference/receipt
+without changing this migration seam.
+
+### Apple lifecycle inputs and transitions
+
+`AppleLifecycleCoordinator` is a main-actor boundary with injected inputs from
+iOS `scenePhase` and macOS scene/window visibility. It exposes
+`handle(.active)`, `handle(.inactive)`, `handle(.background)`,
+`handle(.suspended)`, `handle(.windowDisappeared)`, and `handle(.relaunch)`;
+tests inject those events rather than depending on UIKit/AppKit notifications.
+Its deactivation order is `persist local history/draft/uncertainty → cancel
+send/reconnect tasks → stop capture → stop or drain native playback → suppress
+Home operations`. `ConversationStore.lifecycleWillDeactivate()` and
+`VoiceSessionCoordinator.stopForLifecycle()` are the explicit methods; neither
+performs network work while inactive.
+
+| Lifecycle point | Required transition |
+|---|---|
+| Before capture or before submit | Cancel local action; preserve text draft if present; never persist microphone PCM; no turn marker is invented. |
+| Capture or `awaitingAcceptance` | Persist the text/delivery record before stopping resources; if the request may have crossed the boundary, classify it `uncertain`; never send after deactivation. |
+| Accepted/uncertain turn | Freeze Profile, route, Household binding, handle, and turn; persist unresolved state; stop capture/playback safely; resume with same-binding reconnect only. |
+| Control terminal while audio drains | Preserve the known text terminal; stop/drain playback at the boundary and classify only audio as stopped/unavailable, not the prompt as newly uncertain. |
+| Reconnect in flight | Cancel the bounded attempt and retain the binding/marker; restart from persisted state only after active and Home-ready prerequisites. |
+| Relaunch or foreground | Restore per-Profile local history/draft/uncertainty first, then obtain the approved route and perform Home-ready open/reconnect; do not project `Connected` before that result. |
+| macOS window disappearance | Treat as deactivation with the same persist-before-stop and no-network guarantees; a later appearance is a fresh active transition. |
+
+On active, a later route boundary may choose a higher-priority approved route
+only when no active/uncertain turn is frozen. The coordinator never retargets
+an existing binding and never clears uncertainty merely because the app resumed.
 
 ## I/O & Edge-Case Matrix
 
@@ -287,10 +447,12 @@ uncertain. Late frames are rejected by the turn/generation guard.
    endpoint-safe schema-1 request/response/notification envelope and the
    Home-versus-legacy binding. Validate `jsonrpc: "2.0"`, `schema: 1`, unique
    request IDs, matching opaque conversation/turn/correlation fields, stable
-   Home failure codes, typed deadlines, capability `timing: absent`, and
-   strict audio-frame metadata. Preserve Standard event names, semantic
-   payload meaning, cumulative replacement, and global-event rules at the
-   existing normalizer seam; map `sessionID` only for the legacy case.
+   Home failure codes plus separate route-attempt reasons, the explicit
+   `reconnect_required` open result, typed deadlines, capability
+   `timing: absent`, and strict audio-frame metadata. Preserve Standard event
+   names, semantic payload meaning, cumulative replacement, and global-event
+   rules at the existing normalizer seam; map `sessionID` only for the legacy
+   case and expose the typed `HomePromptSubmissionOutcome` to the store.
 2. `HermesRelay/Services/HomeBridgeSessionClient.swift`,
    `HermesRelay/Services/URLSessionHomeBridgeSessionClient.swift`,
    `HermesRelay/Services/FakeHomeBridgeSessionClient.swift`, and
@@ -300,37 +462,47 @@ uncertain. Late frames are rejected by the turn/generation guard.
    `conversation.open`, `conversation.reconnect`, `prompt.submit`,
    `session.interrupt`, `prompt.respond`, `command.dispatch`, and
    `bridge.ping`; carry `event`/`audio.frame` JSON and binary PCM on that
-   socket. Send only `Authorization: Device <device-credential>` on the
-   upgrade, keep the credential and server/runtime identifiers out of all
+   socket. Consume a `HomeApprovedRoute` from
+   `HomeApprovedRouteProvider`, validate its exact `wss` endpoint/path and
+   expected route/Household binding, and never perform Apple-side discovery or
+   route selection. Send only `Authorization: Device <device-credential>` on
+   the upgrade, keep the credential and server/runtime identifiers out of all
    other frames, and make the production factory return
    `public_adapter_unavailable` while the public Home adapter is absent. The
-   Debug fake must be explicit and deterministic; it may model Home's internal
-   Standard gateway/audio join but must never open vanilla `/api/ws` or
-   `/api/audio/speak-stream`.
+   Debug fake must accept an injected approved-route record and be explicit and
+   deterministic; it may model Home's internal Standard gateway/audio join but
+   must never open vanilla `/api/ws` or `/api/audio/speak-stream`.
 3. `HermesRelay/Models/RelayProfile.swift`,
    `HermesRelay/Models/RelayProfileCollection.swift`,
    `HermesRelay/Services/SecureValueStore.swift`,
    `HermesRelay/Services/HomeCredentialStore.swift`,
    `HermesRelay/Services/HomeConfigurationMigration.swift`, and
    `HermesRelay/Services/RelayConfigurationStore.swift` -- add explicit
-   Home/legacy mode and Home-provided approved-route metadata, store only a
-   reference to a pre-issued endpoint Device credential in secure storage,
-   persist idempotent migration phases, and verify Keychain read-back before
-   probing a fake Home `conversation.open`. Persist Home mode only after the
-   binding is `ready`; leave legacy mode and its bearer available after any
-   write/read-back/fake-ready/crash failure. Allow explicit rollback only at an
-   idle boundary and never derive or issue a Device credential in Apple code.
+   Home/legacy mode and the exact Home-approved route reference, consume only a
+   pairing-supplied `HomeCredentialReference` at the
+   `com.achappell.HermesRelayIOS.home-device` / `device-credential.<profile
+   UUID>` Keychain location, persist idempotent migration phases, and verify
+   private Keychain read-back before probing a fake Home `conversation.open`.
+   Persist Home mode only after the binding is `ready`; leave legacy mode and
+   its bearer available after any write/read-back/fake-ready/crash failure.
+   Tests seed an in-memory secure store and inject the non-secret reference;
+   no UI pairing or credential bytes are required. Allow explicit rollback
+   only at an idle boundary and never derive or issue a Device credential in
+   Apple code.
 4. `HermesRelay/ViewModels/ConversationStore.swift`,
    `HermesRelay/Services/ConversationPersistence.swift`, and
    `HermesRelay/Services/ReconnectPolicy.swift` -- keep local Profile
    messages/drafts intact while separating route state, Home bridge state, and
-   turn-delivery state. Classify `request_rejected` as known non-delivery and
+   turn-delivery state. Consume the typed `HomePromptSubmissionOutcome` seam:
+   classify `request_rejected` as known non-delivery and
    `transport_unavailable`/`transport_timeout` as uncertain; persist
    `unconfirmedTurnText` only for the latter, retain it through reconnect, and
    clear/replace it only after a fresh explicit user action creates a new
    Home turn. Freeze Profile, Household, route, conversation handle, and
    active turn identity while active or uncertain; reconnect the same binding
-   with bounded 10-second operations and never resend or replay.
+   with bounded 10-second operations and never resend or replay. Cover the
+   pre-acceptance rejection, no-response-after-send, accepted-then-loss,
+   reconnect-with-unresolved-marker, and fresh-action transitions explicitly.
 5. `HermesRelay/ViewModels/VoiceSessionCoordinator.swift`,
    `HermesRelay/Services/AudioOutput.swift`,
    `HermesRelay/Services/AppleAudioOutput.swift`, and
@@ -359,12 +531,16 @@ uncertain. Late frames are rejected by the turn/generation guard.
    `HermesRelay/ViewModels/VoiceSessionCoordinator.swift`,
    `HermesRelay/ViewModels/ConversationStore.swift`, and
    `HermesRelay/Views/ContentView.swift` -- add a main-actor Apple lifecycle
-   seam used by both iOS and macOS. On inactive/background/suspension/window
-   disappearance, stop capture and playback, cancel or freeze reconnect/send
-   work, preserve local history/draft/uncertainty, and prevent readiness claims
-   or Home operations until active again. On relaunch/foreground, restore the
-   per-Profile local state before a fresh Home-ready reconnect; never retarget
-   an active or uncertain binding.
+   seam used by both iOS and macOS. Feed it iOS `scenePhase` and macOS
+   scene/window visibility through the named lifecycle inputs; on
+   inactive/background/suspension/window disappearance, persist local
+   history/draft/uncertainty before stopping capture/playback, cancel or freeze
+   reconnect/send work, and prevent readiness claims or Home operations until
+   active again. On relaunch/foreground, restore the per-Profile local state
+   before a fresh Home-approved-route and Home-ready reconnect; never retarget
+   an active or uncertain binding. Test every delivery phase, including
+   capture-before-submit, awaiting acceptance, accepted/uncertain delivery,
+   audio draining, reconnect cancellation, resume, and relaunch.
 8. `HermesRelay/Views/AmbientHUD.swift`,
    `HermesRelay/Views/RelayConfigurationView.swift`,
    `HermesRelay/Views/VoiceControl.swift`, and
@@ -393,8 +569,13 @@ uncertain. Late frames are rejected by the turn/generation guard.
    delivery, no-replay/fresh action, interrupt terminal confirmation,
    structured prompt/command gating, strict PCM and control/audio joining,
    timing absence, crash-safe migration/rollback, and iOS/macOS lifecycle.
-   Keep all fixtures free of prompts, responses, credentials, raw frames, and
-   PCM bytes; use numeric counts and safe reason codes in assertions.
+   Fixtures may construct synthetic, non-sensitive in-memory placeholders (for
+   example `delta-1`/`delta-2`, fixed structured keys, and a numeric PCM sample
+   array) solely to prove ordering, cumulative replacement, schema, and byte
+   joining. They must never use real/private prompts or responses, real
+   credentials, microphone captures, or persisted/logged/snapshotted raw
+   frames or PCM; validation assertions record only counts, safe reason codes,
+   format metadata, and ordering.
 10. `Hermes Relay.xcodeproj/project.pbxproj`, `.github/workflows/ci.yml`,
     `docs/plans/2026-08-30-ios-voice-interface-testing-plan.md`, and
     `_bmad-output/implementation-artifacts/next-wave-standard-hermes-migration/stories/validation-0-I-4-apple-migrate-ios-macos-client.md`
@@ -408,16 +589,25 @@ uncertain. Late frames are rejected by the turn/generation guard.
 **Acceptance Criteria:**
 
 - Given a selected Profile with local history, draft, uncertainty marker, and
-  legacy credential, when a pre-issued Home Device credential is staged and
-  the user explicitly starts conversion, then Keychain read-back and a
-  fake-ready `conversation.open` binding are required before the Apple surface
-  selects Home mode; the Profile identity and local state survive, and the
-  legacy credential remains available for idle-boundary rollback.
-- Given a Home-provided approved route and opaque conversation handle, when
-  schema-1 `conversation.open` returns `status: ready` with the same handle,
-  route identity, and capabilities, then the Apple surface may show Connected
-  and accept input; route reachability alone, `unavailable`,
+  legacy credential, when a pairing-supplied `HomeCredentialReference` is
+  staged and the user explicitly starts conversion, then private Keychain
+  read-back and a fake-ready `conversation.open` binding are required before
+  the Apple surface selects Home mode; the Profile identity and local state
+  survive, the exact Home Keychain reference is used, and the legacy
+  credential remains available for idle-boundary rollback.
+- Given a `HomeApprovedRoute` supplied by `HomeApprovedRouteProvider` and an
+  opaque conversation handle, when schema-1 `conversation.open` returns
+  `status: ready` with the same handle, route identity, Household binding, and
+  capabilities, then the Apple surface may show Connected and accept input;
+  route reachability alone, Apple-side discovery, `unavailable`,
   `reconnect_required`, refusal, or `404` never does.
+- Given a route attempt or open/reconnect result with
+  `route_unavailable`, `route_unauthorized`, `route_identity_mismatch`,
+  `route_timeout`, or `reconnect_required`, when the result is projected,
+  then the typed route reason remains distinct from Device authorization,
+  `public_adapter_unavailable`, and turn delivery; only an existing binding
+  may issue same-binding reconnect for `reconnect_required`, and no reason
+  alone projects to Connected.
 - Given Home mode is selected while the public adapter is absent, when the app
   loads the selected Profile, then it shows typed
   `public_adapter_unavailable` and offers explicit recovery/rollback without
@@ -430,11 +620,14 @@ uncertain. Late frames are rejected by the turn/generation guard.
   cumulative-preview and terminal meaning intact, and the Apple surface never
   exposes a Standard runtime Session ID.
 - Given an accepted or rejected input operation, when the transport returns
-  success, `request_rejected`, or `transport_timeout`/`transport_unavailable`,
-  then the surface distinguishes completed/known-failed/uncertain delivery,
-  persists the uncertainty marker only for the uncertain cases, and on
-  reconnect retains the same binding without resubmission until a fresh user
-  action.
+  an accepted result, `request_rejected`, or
+  `transport_timeout`/`transport_unavailable` through
+  `HomePromptSubmissionOutcome`, then the surface distinguishes
+  completed/known-failed/uncertain delivery, persists the uncertainty marker
+  only for the uncertain cases, and on reconnect retains the same binding
+  without resubmission until a fresh user action. A transport loss after
+  `prompt.submit` is sent but before acceptance is uncertain, not a known
+  rejection.
 - Given a valid or invalid Home audio sequence, when control and audio
   terminals arrive in either permitted order, then the surface plays only
   validated mono signed-16 little-endian PCM and settles text/audio after the
@@ -458,9 +651,17 @@ uncertain. Late frames are rejected by the turn/generation guard.
 - Given route loss, revocation, or lifecycle deactivation occurs before,
   during, or after a turn, when recovery or relaunch runs, then route,
   Profile, Household, handle, and delivery state follow the route-loss matrix,
-  native resources stop at the Apple boundary, inactive operations are
-  suppressed, local state restores before Home readiness, and no uncertain
-  prompt or response is replayed.
+  `AppleLifecycleCoordinator` persists before stopping native resources at the
+  Apple boundary, inactive operations are suppressed, local state restores
+  before Home readiness, reconnect cancellation/resume is bounded, and no
+  uncertain prompt or response is replayed. Capture-before-submit,
+  awaiting-acceptance, accepted/uncertain delivery, audio draining, and
+  macOS-window disappearance are each covered.
+- Given deterministic fake traffic, when tests prove cumulative text,
+  structured response keys, split PCM joining, or redaction, then all payloads
+  and samples are synthetic and in-memory only; no real/private content,
+  credential bytes, microphone capture, raw frame, or PCM bytes appear in a
+  log, snapshot, persisted record, or validation artifact.
 - Given the deterministic fake suite and iOS/macOS gates pass, when the
   validation record is reviewed, then it contains only safe states, counts,
   timings from approved local clocks, reason codes, build/test destinations,
@@ -485,6 +686,12 @@ uncertain. Late frames are rejected by the turn/generation guard.
   The Home contract is now readable and stable enough for fake-backed
   implementation; only the public live adapter remains an explicit external
   gate.
+- 2026-09-14: The independent repair review found six remaining gaps in the
+  route/error mapping, approved-route input, credential handoff, typed
+  acceptance result, lifecycle transition source, and synthetic fixture
+  wording. Added exact provider/Keychain/handoff seams, wire-to-state tables,
+  delivery and lifecycle transition matrices, and the safe fixture rule. The
+  public adapter remains blocked and no live route is implied.
 
 ## Design Notes
 
@@ -556,4 +763,3 @@ strict Standard audio/event meaning, timing absence, and Apple lifecycle
 ownership are all specified. The public Home adapter remains an explicit
 blocked evidence gate; no implementation, build, test, or live-route check ran
 in this planning pass.
-
