@@ -25,7 +25,7 @@ session_budget_grace_s = 240 # enforce mode: seconds a tripped session gets to w
 
 [verify]
 # Deterministic gates run by the orchestrator after a clean review, before commit.
-commands = []                # e.g. ["pytest -q", "ruff check ."]
+commands = ["bash .bmad-loop/ci-status.sh"]
 stream_capture_kb = 256      # per-stream cap (KiB) on the verifier stdout/stderr retained under the run's verify/ directory; the TAIL is kept and the journal records the full byte count plus a truncation flag. 0 = capture nothing (records still land, with null pointers)
 
 [notify]
@@ -148,7 +148,7 @@ max_parallel = 1             # units in flight at once (parallel fan-out unbuilt
 # (claude -> .mcp.json/.claude/settings.json, codex -> .codex/config.toml, etc.)
 # into the worktree; worktree_seed adds extra project-specific gitignored paths.
 seed_adapter_defaults = true # seed each loaded adapter's default gitignored configs into worktrees
-worktree_seed = []           # extra gitignored files to copy into each worktree, on top of adapter defaults
+worktree_seed = [".bmad-loop/ci-status.sh", ".bmad-loop/plugins/close-trace-mr"]
 
 [plugins]
 # Plugin trust allowlist. A plugin dropped under .bmad-loop/plugins/<name>/ loads
