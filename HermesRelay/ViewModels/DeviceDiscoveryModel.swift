@@ -392,8 +392,13 @@ final class DeviceDiscoveryModel {
     private func setupStatus(for state: DeviceConfigurationState) -> DeviceSetupStatus {
         switch state.identityStatus {
         case .verificationRequired:
-            return .verificationRequired
+            return state.homeEligibility?.allowsOperation == false
+                ? .unavailable
+                : .verificationRequired
         case .verified:
+            if state.homeEligibility?.allowsOperation == false {
+                return .unavailable
+            }
             return state.pendingConfiguration == nil ? .ready : .updatePending
         case .unavailable:
             return .unavailable
@@ -425,6 +430,7 @@ final class DeviceDiscoveryModel {
         guard requestID == discoveryRequestID,
               let currentDevice = approvedDevices.first(where: { $0.id == device.id }),
               let state = configurationStates[device.id],
+              state.homeEligibility?.allowsOperation != false,
               state.identityStatus != .revocationPending,
               state.identityStatus != .revoked
         else {
@@ -561,9 +567,14 @@ final class DeviceSetupModel {
     private let administrationClient: any DeviceAdministrationClient
     private let draftStore: any DeviceSetupDraftStore
     private let configurationStore: any DeviceConfigurationStore
+    private let homeServiceClient: (any HomeServiceClient)?
 
     private(set) var step: DeviceSetupStep = .room
     private(set) var errorMessage: String?
+    private(set) var homeStatusMessage: String?
+    private(set) var homeConfigurationRevision: Int?
+    private(set) var homeRooms: [HomeRoom] = []
+    private(set) var homeMappingCatalog: [CanonicalWakeMapping] = []
     private(set) var isPublishing = false
     private(set) var isActive = false
     private(set) var hasDraft = false
@@ -573,16 +584,24 @@ final class DeviceSetupModel {
     var room = ""
     var wakeMappings: [DeviceWakeMapping] = []
 
+    private(set) var isHomeBacked: Bool
+
+    private var homeSnapshot: HomeConfigurationSnapshot?
+    private var homeDeviceConfiguration: DeviceSetupConfiguration?
+
     init(
         device: HouseholdDevice,
         administrationClient: any DeviceAdministrationClient,
         draftStore: any DeviceSetupDraftStore = NoopDeviceSetupDraftStore(),
-        configurationStore: any DeviceConfigurationStore = NoopDeviceConfigurationStore()
+        configurationStore: any DeviceConfigurationStore = NoopDeviceConfigurationStore(),
+        homeServiceClient: (any HomeServiceClient)? = nil
     ) {
         self.device = device
         self.administrationClient = administrationClient
         self.draftStore = draftStore
         self.configurationStore = configurationStore
+        self.homeServiceClient = homeServiceClient
+        self.isHomeBacked = homeServiceClient != nil
     }
 
     func loadDraft() async {
@@ -592,14 +611,56 @@ final class DeviceSetupModel {
         defer { isLoadingDraft = false }
 
         do {
-            guard let draft = try await draftStore.load(for: device.id) else {
-                return
+            let draft = try await draftStore.load(for: device.id)
+            if let homeServiceClient,
+               try await homeServiceClient.hasApprovedRoute() {
+                isHomeBacked = true
+                let snapshot = try await homeServiceClient.fetchConfiguration()
+                guard snapshot.isCompleteHomeSnapshot else {
+                    throw HomeServiceError.invalidResponse
+                }
+                homeSnapshot = snapshot
+                homeConfigurationRevision = snapshot.revision
+                homeRooms = snapshot.rooms
+                homeMappingCatalog = snapshot.wakeMappings
+                guard let homeDevice = snapshot.devices.first(where: {
+                    $0.deviceID == device.id
+                }) else {
+                    errorMessage = HomeServiceError.notFound.userMessage
+                    throw HomeServiceError.notFound
+                }
+                homeDeviceConfiguration = homeDevice
+                guard homeDevice.wakeClaimEnabled else {
+                    errorMessage = "Home has disabled wake claims for this Device. It cannot become Ready."
+                    homeStatusMessage = errorMessage
+                    return
+                }
+                // Home owns the canonical mappings. A local draft may retain
+                // the Room selection, but it cannot redefine the catalog.
+                if let draft {
+                    room = draft.room
+                    step = draft.step == .complete ? .ready : draft.step
+                    hasDraft = true
+                } else {
+                    room = homeDevice.room
+                    wakeMappings = homeDevice.wakeMappings
+                    step = .room
+                }
+                if draft != nil {
+                    wakeMappings = homeDevice.wakeMappings
+                }
+            } else {
+                isHomeBacked = false
+                if let draft {
+                    room = draft.room
+                    wakeMappings = draft.wakeMappings
+                    step = draft.step == .complete ? .ready : draft.step
+                    hasDraft = true
+                }
             }
-            room = draft.room
-            wakeMappings = draft.wakeMappings
-            step = draft.step == .complete ? .ready : draft.step
-            hasDraft = true
             errorMessage = nil
+        } catch let error as HomeServiceError {
+            errorMessage = error.userMessage
         } catch {
             errorMessage = "The saved Device setup draft could not be loaded. Try again."
         }
@@ -614,7 +675,9 @@ final class DeviceSetupModel {
         defer { isSavingDraft = false }
         let draft = DeviceSetupDraft(
             deviceID: device.id,
-            room: room.trimmingCharacters(in: .whitespacesAndNewlines),
+            room: isHomeBacked
+                ? room
+                : room.trimmingCharacters(in: .whitespacesAndNewlines),
             wakeMappings: normalizedWakeMappings,
             step: step
         )
@@ -652,30 +715,71 @@ final class DeviceSetupModel {
 
     @discardableResult
     func continueFromRoom() -> Bool {
-        let normalizedRoom = room.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !normalizedRoom.isEmpty else {
-            errorMessage = "Assign this Device to a Room."
-            return false
+        if isHomeBacked {
+            guard let homeSnapshot else {
+                errorMessage = "Home Rooms could not be loaded. Reload before continuing."
+                return false
+            }
+            if let exactRoom = homeSnapshot.rooms.first(where: { $0.id == room }) {
+                room = exactRoom.id
+                errorMessage = nil
+                step = .wakeMappings
+                return true
+            }
+            let normalizedRoom = room.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !normalizedRoom.isEmpty else {
+                errorMessage = "Assign this Device to a Room."
+                return false
+            }
+            let foldedRoom = normalizedRoom.folding(
+                options: [.caseInsensitive, .diacriticInsensitive],
+                locale: Locale(identifier: "en_US_POSIX")
+            )
+            guard let homeRoom = homeSnapshot.rooms.first(where: { room in
+                room.id == normalizedRoom
+                    || room.name.folding(
+                        options: [.caseInsensitive, .diacriticInsensitive],
+                        locale: Locale(identifier: "en_US_POSIX")
+                    ) == foldedRoom
+            }) else {
+                errorMessage = "Home does not have that Room. Choose an existing Home Room."
+                return false
+            }
+            room = homeRoom.id
+        } else {
+            let normalizedRoom = room.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !normalizedRoom.isEmpty else {
+                errorMessage = "Assign this Device to a Room."
+                return false
+            }
+            room = normalizedRoom
         }
 
-        room = normalizedRoom
         errorMessage = nil
         step = .wakeMappings
         return true
     }
 
     func addWakeMapping() {
+        guard !isHomeBacked else {
+            errorMessage = "Home owns the household Wake Mapping catalog. It cannot be edited on this Device."
+            return
+        }
         wakeMappings.append(DeviceWakeMapping())
         errorMessage = nil
     }
 
     func removeWakeMapping(id: UUID) {
+        guard !isHomeBacked else {
+            errorMessage = "Home owns the household Wake Mapping catalog. It cannot be edited on this Device."
+            return
+        }
         wakeMappings.removeAll { $0.id == id }
         errorMessage = nil
     }
 
     func editWakeMappings() {
-        guard step == .ready else { return }
+        guard step == .ready, !isHomeBacked else { return }
         step = .wakeMappings
         errorMessage = nil
     }
@@ -698,7 +802,9 @@ final class DeviceSetupModel {
             normalized.wakePhrase = mapping.wakePhrase.trimmingCharacters(
                 in: .whitespacesAndNewlines
             )
-            normalized.profileIdentifier = mapping.normalizedProfileIdentifier
+            if !isHomeBacked {
+                normalized.profileIdentifier = mapping.normalizedProfileIdentifier
+            }
             return normalized
         }
         errorMessage = nil
@@ -719,21 +825,48 @@ final class DeviceSetupModel {
 
         let configuration = DeviceSetupConfiguration(
             deviceID: device.id,
-            room: room.trimmingCharacters(in: .whitespacesAndNewlines),
+            room: isHomeBacked
+                ? room
+                : room.trimmingCharacters(in: .whitespacesAndNewlines),
             wakeMappings: normalizedWakeMappings
         )
 
         do {
-            let receipt = try await administrationClient.configure(configuration)
-            guard receipt.matches(configuration) else {
-                throw DeviceAdministrationError.unexpectedResponse
+            let activeConfiguration: DeviceSetupConfiguration
+            if isHomeBacked {
+                guard let homeServiceClient else {
+                    throw HomeServiceError.notConfigured
+                }
+                activeConfiguration = try await publishToHome(
+                    configuration,
+                    using: homeServiceClient
+                )
+                let receipt = try await administrationClient.verify(
+                    device,
+                    against: activeConfiguration
+                )
+                guard receipt.deviceID == device.id,
+                      receipt.matches(activeConfiguration) else {
+                    throw DeviceAdministrationError.unexpectedResponse
+                }
+                guard receipt.status == .verified else {
+                    throw DeviceAdministrationError.unexpectedResponse
+                }
+            } else {
+                let receipt = try await administrationClient.configure(configuration)
+                guard receipt.matches(configuration) else {
+                    throw DeviceAdministrationError.unexpectedResponse
+                }
+                activeConfiguration = configuration
             }
 
-            try? await configurationStore.save(
+            try await configurationStore.save(
                 DeviceConfigurationState(
                     approvedDevice: device,
-                    verifiedConfiguration: configuration,
+                    verifiedConfiguration: activeConfiguration,
                     pendingConfiguration: nil,
+                    homeConfigurationRevision: homeConfigurationRevision,
+                    homeEligibility: isHomeBacked ? .eligible : nil,
                     identityStatus: .verified
                 )
             )
@@ -748,6 +881,10 @@ final class DeviceSetupModel {
             isActive = true
             step = .complete
             return true
+        } catch let error as HomeServiceError {
+            homeStatusMessage = error.userMessage
+            errorMessage = error.userMessage
+            return false
         } catch let error as DeviceAdministrationError {
             errorMessage = error.userMessage
             return false
@@ -757,24 +894,90 @@ final class DeviceSetupModel {
         }
     }
 
+    private func publishToHome(
+        _ configuration: DeviceSetupConfiguration,
+        using homeServiceClient: any HomeServiceClient
+    ) async throws -> DeviceSetupConfiguration {
+        let currentSnapshot = try await homeServiceClient.fetchConfiguration()
+        guard currentSnapshot.isCompleteHomeSnapshot else {
+            throw HomeServiceError.invalidResponse
+        }
+        homeConfigurationRevision = currentSnapshot.revision
+
+        guard let homeDevice = currentSnapshot.devices.first(where: {
+            $0.deviceID == configuration.deviceID
+        }) else {
+            throw HomeServiceError.notFound
+        }
+        guard homeDevice.wakeClaimEnabled else {
+            throw HomeServiceError.invalidConfiguration
+        }
+
+        guard let candidate = currentSnapshot.replacingDevice(
+            configuration,
+            preservingHomeMetadata: true
+        ),
+        candidate.isCompleteHomeSnapshot,
+        let candidateDevice = candidate.devices.first(where: {
+            $0.deviceID == configuration.deviceID
+        }) else {
+            throw HomeServiceError.invalidConfiguration
+        }
+
+        let publishedSnapshot = try await homeServiceClient.publish(
+            candidate,
+            expectedRevision: currentSnapshot.revision
+        )
+        guard publishedSnapshot.matchesCandidate(
+            candidate,
+            minimumRevision: currentSnapshot.revision
+        ),
+        let publishedDevice = publishedSnapshot.devices.first(where: {
+            $0.deviceID == configuration.deviceID
+        }),
+        DeviceConfigurationReceipt(
+            deviceID: publishedDevice.deviceID,
+            configuration: publishedDevice,
+            homeConfigurationRevision: publishedSnapshot.revision
+        ).matches(
+            candidateDevice,
+            minimumHomeRevision: currentSnapshot.revision
+        ) else {
+            throw HomeServiceError.invalidResponse
+        }
+
+        homeSnapshot = publishedSnapshot
+        homeConfigurationRevision = publishedSnapshot.revision
+        homeStatusMessage = "Home configuration published at revision \(publishedSnapshot.revision)."
+        return publishedDevice
+    }
+
     private var normalizedWakeMappings: [DeviceWakeMapping] {
         wakeMappings.map { mapping in
             var normalized = mapping
             normalized.wakePhrase = mapping.wakePhrase.trimmingCharacters(
                 in: .whitespacesAndNewlines
             )
-            normalized.profileIdentifier = mapping.normalizedProfileIdentifier
+            if !isHomeBacked {
+                normalized.profileIdentifier = mapping.normalizedProfileIdentifier
+            }
             return normalized
         }
     }
 
     private func setupValidationMessage() -> String? {
-        let normalizedRoom = room.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !normalizedRoom.isEmpty else {
+        if isHomeBacked {
+            guard let homeSnapshot,
+                  homeSnapshot.rooms.contains(where: { $0.id == room }) else {
+                return "Choose an existing Home Room."
+            }
+        } else if room.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
             return "Assign this Device to a Room."
         }
         guard !wakeMappings.isEmpty else {
-            return "Add at least one Wake Mapping."
+            return isHomeBacked
+                ? "Home has no Wake Mappings for this Device. Add a mapping to Home's canonical catalog before continuing."
+                : "Add at least one Wake Mapping."
         }
         guard wakeMappings.allSatisfy(\.hasValidValues) else {
             return "Each Wake Mapping needs a wake phrase and Hermes Profile identifier."
@@ -783,6 +986,30 @@ final class DeviceSetupModel {
         var seenPhrases = Set<String>()
         guard wakeMappings.allSatisfy({ seenPhrases.insert($0.normalizedWakePhrase).inserted }) else {
             return "Each Wake Mapping must use a unique wake phrase."
+        }
+
+        let profiles = Set(wakeMappings.map(\.normalizedProfileIdentifier))
+        guard profiles.count == 1 else {
+            return "A Device must use exactly one Hermes Profile identifier."
+        }
+
+        if let homeDeviceConfiguration {
+            guard homeDeviceConfiguration.wakeClaimEnabled else {
+                return "Home has disabled wake claims for this Device. It cannot become Ready."
+            }
+            let mappingsMatchHome = wakeMappings.count == homeDeviceConfiguration.wakeMappings.count
+                && zip(wakeMappings, homeDeviceConfiguration.wakeMappings).allSatisfy { local, home in
+                    local.canonicalID == home.canonicalID
+                        && local.normalizedWakePhrase == home.normalizedWakePhrase
+                        && local.normalizedProfileIdentifier == home.normalizedProfileIdentifier
+                }
+            guard mappingsMatchHome else {
+                return "Home owns the canonical Wake Mapping catalog. Reload before continuing."
+            }
+            if let homeProfile = homeDeviceConfiguration.profileIdentifier,
+               profiles.first != homeProfile.trimmingCharacters(in: .whitespacesAndNewlines) {
+                return "This Device is assigned to a different Hermes Profile by Home."
+            }
         }
         return nil
     }
@@ -794,15 +1021,22 @@ final class DeviceConfigurationModel {
     let device: HouseholdDevice
     private let administrationClient: any DeviceAdministrationClient
     private let configurationStore: any DeviceConfigurationStore
+    private let homeServiceClient: (any HomeServiceClient)?
 
     private(set) var verifiedConfiguration: DeviceSetupConfiguration
     private(set) var pendingConfiguration: DeviceSetupConfiguration?
     private(set) var publicationStatus: DeviceConfigurationPublicationStatus = .verified
     private(set) var errorMessage: String?
+    private(set) var homeStatusMessage: String?
+    private(set) var homeConfigurationRevision: Int?
+    private(set) var homeRooms: [HomeRoom] = []
+    private(set) var homeMappingCatalog: [CanonicalWakeMapping] = []
     private(set) var isPublishing = false
     private(set) var isRevoking = false
     private(set) var isActive = false
     private(set) var identityStatus: DeviceIdentityStatus = .verificationRequired
+    private(set) var homeEligibility: HomeDeviceEligibility?
+    private(set) var isHomeBacked: Bool
     private var didLoad = false
 
     var room: String
@@ -811,11 +1045,14 @@ final class DeviceConfigurationModel {
     init(
         device: HouseholdDevice,
         administrationClient: any DeviceAdministrationClient,
-        configurationStore: any DeviceConfigurationStore = NoopDeviceConfigurationStore()
+        configurationStore: any DeviceConfigurationStore = NoopDeviceConfigurationStore(),
+        homeServiceClient: (any HomeServiceClient)? = nil
     ) {
         self.device = device
         self.administrationClient = administrationClient
         self.configurationStore = configurationStore
+        self.homeServiceClient = homeServiceClient
+        self.isHomeBacked = homeServiceClient != nil
         self.verifiedConfiguration = DeviceSetupConfiguration(
             deviceID: device.id,
             room: "",
@@ -836,20 +1073,158 @@ final class DeviceConfigurationModel {
             }
             verifiedConfiguration = state.verifiedConfiguration
             pendingConfiguration = state.pendingConfiguration
+            homeConfigurationRevision = state.homeConfigurationRevision
+            homeEligibility = state.homeEligibility
+            isHomeBacked = state.homeEligibility != nil
+                || state.homeConfigurationRevision != nil
             let editableConfiguration = state.pendingConfiguration ?? state.verifiedConfiguration
             room = editableConfiguration.room
             wakeMappings = editableConfiguration.wakeMappings
             publicationStatus = state.pendingConfiguration == nil ? .verified : .pending
             identityStatus = state.identityStatus
             isActive = state.identityStatus.isOperational
+                && (!isHomeBacked || homeEligibility?.allowsOperation == true)
             errorMessage = nil
+            if let homeServiceClient {
+                if isHomeBacked {
+                    isActive = false
+                    _ = await reloadHomeConfiguration()
+                } else {
+                    do {
+                        if try await homeServiceClient.hasApprovedRoute() {
+                            isHomeBacked = true
+                            homeEligibility = .unavailable
+                            isActive = false
+                            _ = await reloadHomeConfiguration()
+                        } else {
+                            isHomeBacked = false
+                            isActive = identityStatus.isOperational
+                        }
+                    } catch {
+                        isHomeBacked = true
+                        homeEligibility = .unavailable
+                        isActive = false
+                        homeStatusMessage = HomeServiceError.invalidEndpoint.userMessage
+                        _ = await persistCurrentState()
+                    }
+                }
+            } else if isHomeBacked {
+                homeEligibility = .unavailable
+                isActive = false
+                homeStatusMessage = HomeServiceError.notConfigured.userMessage
+                _ = await persistCurrentState()
+            }
         } catch {
             errorMessage = "The verified Device configuration could not be loaded."
         }
     }
 
+    @discardableResult
+    func reloadHomeConfiguration() async -> Bool {
+        guard let homeServiceClient else {
+            homeEligibility = .unavailable
+            isActive = false
+            homeStatusMessage = HomeServiceError.notConfigured.userMessage
+            _ = await persistCurrentState()
+            return false
+        }
+
+        do {
+            let snapshot = try await homeServiceClient.fetchConfiguration()
+            guard snapshot.isCompleteHomeSnapshot else {
+                throw HomeServiceError.invalidResponse
+            }
+            homeSnapshot = snapshot
+            homeConfigurationRevision = snapshot.revision
+            homeRooms = snapshot.rooms
+            homeMappingCatalog = snapshot.wakeMappings
+
+            guard let homeDevice = snapshot.devices.first(where: {
+                $0.deviceID == device.id
+            }) else {
+                homeEligibility = .ineligible
+                identityStatus = .verificationRequired
+                isActive = false
+                homeStatusMessage = "Home no longer lists this Device. It remains inactive."
+                errorMessage = HomeServiceError.notFound.userMessage
+                return await persistCurrentState()
+            }
+
+            let projectionChanged = !DeviceConfigurationReceipt(
+                deviceID: homeDevice.deviceID,
+                configuration: homeDevice
+            ).matches(verifiedConfiguration)
+            verifiedConfiguration = homeDevice
+            homeEligibility = homeDevice.wakeClaimEnabled ? .eligible : .ineligible
+            var roomResetAfterCatalogChange = false
+            if let existingPending = pendingConfiguration {
+                let pendingRoomIsStillHomeOwned = snapshot.rooms.contains {
+                    $0.id == existingPending.room
+                }
+                let rebasedRoom = pendingRoomIsStillHomeOwned
+                    ? existingPending.room
+                    : homeDevice.room
+                roomResetAfterCatalogChange = !pendingRoomIsStillHomeOwned
+                    && existingPending.room != rebasedRoom
+                let rebasedPending = DeviceSetupConfiguration(
+                    deviceID: homeDevice.deviceID,
+                    room: rebasedRoom,
+                    wakeMappings: homeDevice.wakeMappings,
+                    arbitrationPriority: homeDevice.arbitrationPriority,
+                    displayName: homeDevice.displayName,
+                    profileIdentifier: homeDevice.profileIdentifier,
+                    wakeClaimEnabled: homeDevice.wakeClaimEnabled
+                )
+                pendingConfiguration = rebasedPending
+                room = rebasedRoom
+                wakeMappings = homeDevice.wakeMappings
+                publicationStatus = .pending
+            } else {
+                room = homeDevice.room
+                wakeMappings = homeDevice.wakeMappings
+                publicationStatus = .verified
+            }
+
+            if !homeDevice.wakeClaimEnabled {
+                identityStatus = .verificationRequired
+                isActive = false
+            } else if projectionChanged, identityStatus == .verified {
+                // Home configuration is not a Device identity proof. A
+                // changed projection must be checked by the Device seam again
+                // before it can become operational.
+                identityStatus = .verificationRequired
+                isActive = false
+            } else {
+                isActive = identityStatus.isOperational
+                    && homeEligibility?.allowsOperation == true
+            }
+            homeStatusMessage = roomResetAfterCatalogChange
+                ? "Home configuration changed and the previous Room is no longer available. The Device now uses its current Home Room."
+                : "Home configuration revision \(snapshot.revision) loaded."
+            return await persistCurrentState()
+        } catch let error as HomeServiceError {
+            homeEligibility = .unavailable
+            isActive = false
+            homeStatusMessage = error.userMessage
+            _ = await persistCurrentState()
+            return false
+        } catch {
+            homeEligibility = .unavailable
+            isActive = false
+            homeStatusMessage = HomeServiceError.transportUnavailable.userMessage
+            _ = await persistCurrentState()
+            return false
+        }
+    }
+
     func publish() async -> Bool {
         guard !isPublishing else { return false }
+        guard !isHomeBacked || homeEligibility?.allowsOperation == true else {
+            errorMessage = homeEligibility == .ineligible
+                ? "Home has disabled wake claims for this Device. It cannot be updated."
+                : "Home availability must be confirmed before updating this Device. Reload Home configuration."
+            return false
+        }
         guard identityStatus.isOperational else {
             switch identityStatus {
             case .revoked:
@@ -866,6 +1241,7 @@ final class DeviceConfigurationModel {
         isPublishing = true
         errorMessage = nil
         defer { isPublishing = false }
+        let usesHomeService = isHomeBacked
 
         pendingConfiguration = configuration
         publicationStatus = .pending
@@ -875,28 +1251,73 @@ final class DeviceConfigurationModel {
                     approvedDevice: device,
                     verifiedConfiguration: verifiedConfiguration,
                     pendingConfiguration: configuration,
+                    homeConfigurationRevision: homeConfigurationRevision,
+                    homeEligibility: homeEligibility,
                     identityStatus: identityStatus
                 )
             )
-            let receipt = try await administrationClient.configure(configuration)
-            guard receipt.matches(configuration) else {
-                throw DeviceAdministrationError.unexpectedResponse
+            let activeConfiguration: DeviceSetupConfiguration
+            if isHomeBacked {
+                guard let homeServiceClient else {
+                    throw HomeServiceError.notConfigured
+                }
+                activeConfiguration = try await publishToHome(
+                    configuration,
+                    using: homeServiceClient
+                )
+                let verification = try await administrationClient.verify(
+                    device,
+                    against: activeConfiguration
+                )
+                guard verification.deviceID == device.id,
+                      verification.status == .verified,
+                      verification.matches(activeConfiguration) else {
+                    throw DeviceAdministrationError.unexpectedResponse
+                }
+            } else {
+                let receipt = try await administrationClient.configure(configuration)
+                guard receipt.matches(configuration) else {
+                    throw DeviceAdministrationError.unexpectedResponse
+                }
+                activeConfiguration = configuration
             }
-            verifiedConfiguration = configuration
+            let completedState = DeviceConfigurationState(
+                approvedDevice: device,
+                verifiedConfiguration: activeConfiguration,
+                pendingConfiguration: nil,
+                homeConfigurationRevision: homeConfigurationRevision,
+                homeEligibility: isHomeBacked ? .eligible : nil,
+                identityStatus: .verified
+            )
+            do {
+                try await configurationStore.save(completedState)
+            } catch {
+                isActive = false
+                errorMessage = "The Device was published and verified, but its local receipt could not be saved. Reload before continuing."
+                return false
+            }
+            verifiedConfiguration = activeConfiguration
             pendingConfiguration = nil
             publicationStatus = .verified
             identityStatus = .verified
+            homeEligibility = completedState.homeEligibility
             isActive = true
-            try? await configurationStore.save(
-                DeviceConfigurationState(
-                    approvedDevice: device,
-                    verifiedConfiguration: configuration,
-                    pendingConfiguration: nil,
-                    identityStatus: .verified
-                )
-            )
             return true
+        } catch let error as HomeServiceError {
+            if error == .revisionConflict || error == .invalidResponse {
+                homeSnapshot = nil
+                homeConfigurationRevision = nil
+            }
+            _ = await persistCurrentState()
+            homeStatusMessage = error.userMessage
+            errorMessage = error.userMessage
+            return false
         } catch let error as DeviceAdministrationError {
+            if usesHomeService {
+                identityStatus = .unavailable
+                isActive = false
+                _ = await persistCurrentState()
+            }
             errorMessage = publicationErrorMessage(for: error)
             return false
         } catch {
@@ -919,6 +1340,8 @@ final class DeviceConfigurationModel {
             approvedDevice: device,
             verifiedConfiguration: verifiedConfiguration,
             pendingConfiguration: pendingConfiguration,
+            homeConfigurationRevision: homeConfigurationRevision,
+            homeEligibility: homeEligibility,
             identityStatus: .revocationPending
         )
         do {
@@ -948,6 +1371,8 @@ final class DeviceConfigurationModel {
                     approvedDevice: device,
                     verifiedConfiguration: verifiedConfiguration,
                     pendingConfiguration: nil,
+                    homeConfigurationRevision: homeConfigurationRevision,
+                    homeEligibility: homeEligibility,
                     identityStatus: .revoked
                 )
             )
@@ -963,6 +1388,10 @@ final class DeviceConfigurationModel {
     }
 
     func removeWakeMapping(id: UUID) {
+        guard !isHomeBacked else {
+            errorMessage = "Home owns the household Wake Mapping catalog. It cannot be edited on this Device."
+            return
+        }
         wakeMappings.removeAll { $0.id == id }
         errorMessage = nil
     }
@@ -982,6 +1411,8 @@ final class DeviceConfigurationModel {
                         approvedDevice: device,
                         verifiedConfiguration: verifiedConfiguration,
                         pendingConfiguration: nil,
+                        homeConfigurationRevision: homeConfigurationRevision,
+                        homeEligibility: homeEligibility,
                         identityStatus: identityStatus
                     )
                 )
@@ -1001,6 +1432,8 @@ final class DeviceConfigurationModel {
                     approvedDevice: device,
                     verifiedConfiguration: verifiedConfiguration,
                     pendingConfiguration: configuration,
+                    homeConfigurationRevision: homeConfigurationRevision,
+                    homeEligibility: homeEligibility,
                     identityStatus: identityStatus
                 )
             )
@@ -1015,12 +1448,20 @@ final class DeviceConfigurationModel {
 
     private func validatedConfiguration() -> DeviceSetupConfiguration? {
         let normalizedRoom = room.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !normalizedRoom.isEmpty else {
+        if isHomeBacked {
+            guard let homeSnapshot,
+                  homeSnapshot.rooms.contains(where: { $0.id == room }) else {
+                errorMessage = "Choose an existing Home Room."
+                return nil
+            }
+        } else if normalizedRoom.isEmpty {
             errorMessage = "Assign this Device to a Room."
             return nil
         }
         guard !wakeMappings.isEmpty else {
-            errorMessage = "Add at least one Wake Mapping."
+            errorMessage = isHomeBacked
+                ? "Home has no Wake Mappings for this Device. Add a mapping to Home's canonical catalog before continuing."
+                : "Add at least one Wake Mapping."
             return nil
         }
         guard wakeMappings.allSatisfy(\.hasValidValues) else {
@@ -1036,25 +1477,138 @@ final class DeviceConfigurationModel {
             return nil
         }
 
-        return normalizedConfiguration(room: normalizedRoom)
+        let profiles = Set(wakeMappings.map(\.normalizedProfileIdentifier))
+        guard profiles.count == 1 else {
+            errorMessage = "A Device must use exactly one Hermes Profile identifier."
+            return nil
+        }
+
+        if isHomeBacked, let homeSnapshot {
+            guard let homeDevice = homeSnapshot.devices.first(where: {
+                $0.deviceID == device.id
+            }) else {
+                errorMessage = HomeServiceError.notFound.userMessage
+                return nil
+            }
+            guard homeDevice.wakeClaimEnabled else {
+                errorMessage = "Home has disabled wake claims for this Device. It cannot be updated."
+                return nil
+            }
+            guard wakeMappings.count == homeDevice.wakeMappings.count,
+                  zip(wakeMappings, homeDevice.wakeMappings).allSatisfy({ local, home in
+                      local.canonicalID == home.canonicalID
+                          && local.normalizedWakePhrase == home.normalizedWakePhrase
+                          && local.normalizedProfileIdentifier == home.normalizedProfileIdentifier
+                  }) else {
+                errorMessage = "Home owns the canonical Wake Mapping catalog. Reload before publishing."
+                return nil
+            }
+        }
+
+        return normalizedConfiguration(room: isHomeBacked ? room : normalizedRoom)
     }
 
     private func normalizedConfiguration(
         room normalizedRoom: String? = nil
     ) -> DeviceSetupConfiguration {
-        DeviceSetupConfiguration(
+        let homeDevice = homeSnapshot?.devices.first { $0.deviceID == device.id }
+        let metadata = isHomeBacked ? homeDevice : verifiedConfiguration
+        return DeviceSetupConfiguration(
             deviceID: device.id,
-            room: normalizedRoom
-                ?? room.trimmingCharacters(in: .whitespacesAndNewlines),
+            room: normalizedRoom ?? (isHomeBacked
+                ? room
+                : room.trimmingCharacters(in: .whitespacesAndNewlines)),
             wakeMappings: wakeMappings.map { mapping in
                 var normalized = mapping
                 normalized.wakePhrase = mapping.wakePhrase.trimmingCharacters(
                     in: .whitespacesAndNewlines
                 )
-                normalized.profileIdentifier = mapping.normalizedProfileIdentifier
+                if !isHomeBacked {
+                    normalized.profileIdentifier = mapping.normalizedProfileIdentifier
+                }
                 return normalized
-            }
+            },
+            arbitrationPriority: metadata?.arbitrationPriority,
+            displayName: metadata?.displayName,
+            profileIdentifier: metadata?.profileIdentifier,
+            wakeClaimEnabled: metadata?.wakeClaimEnabled ?? true
         )
+    }
+
+    private var homeSnapshot: HomeConfigurationSnapshot?
+
+    @discardableResult
+    private func persistCurrentState() async -> Bool {
+        do {
+            try await configurationStore.save(
+                DeviceConfigurationState(
+                    approvedDevice: device,
+                    verifiedConfiguration: verifiedConfiguration,
+                    pendingConfiguration: pendingConfiguration,
+                    homeConfigurationRevision: homeConfigurationRevision,
+                    homeEligibility: homeEligibility,
+                    identityStatus: identityStatus
+                )
+            )
+            return true
+        } catch {
+            isActive = false
+            errorMessage = "Home eligibility could not be saved locally. The Device remains inactive until you reload."
+            homeStatusMessage = errorMessage
+            return false
+        }
+    }
+
+    private func publishToHome(
+        _ configuration: DeviceSetupConfiguration,
+        using homeServiceClient: any HomeServiceClient
+    ) async throws -> DeviceSetupConfiguration {
+        // Re-read immediately before the atomic replacement. A cached
+        // revision is useful for display, never for a write precondition.
+        let currentSnapshot = try await homeServiceClient.fetchConfiguration()
+        guard currentSnapshot.isCompleteHomeSnapshot else {
+            throw HomeServiceError.invalidResponse
+        }
+        homeSnapshot = currentSnapshot
+        homeConfigurationRevision = currentSnapshot.revision
+
+        guard let candidate = currentSnapshot.replacingDevice(
+            configuration,
+            preservingHomeMetadata: true
+        ),
+        candidate.isCompleteHomeSnapshot,
+        let candidateDevice = candidate.devices.first(where: {
+            $0.deviceID == configuration.deviceID
+        }) else {
+            throw HomeServiceError.invalidConfiguration
+        }
+
+        let publishedSnapshot = try await homeServiceClient.publish(
+            candidate,
+            expectedRevision: currentSnapshot.revision
+        )
+        guard publishedSnapshot.matchesCandidate(
+            candidate,
+            minimumRevision: currentSnapshot.revision
+        ),
+        let publishedDevice = publishedSnapshot.devices.first(where: {
+            $0.deviceID == configuration.deviceID
+        }),
+        DeviceConfigurationReceipt(
+            deviceID: publishedDevice.deviceID,
+            configuration: publishedDevice,
+            homeConfigurationRevision: publishedSnapshot.revision
+        ).matches(
+            candidateDevice,
+            minimumHomeRevision: currentSnapshot.revision
+        ) else {
+            throw HomeServiceError.invalidResponse
+        }
+
+        homeSnapshot = publishedSnapshot
+        homeConfigurationRevision = publishedSnapshot.revision
+        homeStatusMessage = "Home configuration published at revision \(publishedSnapshot.revision)."
+        return publishedDevice
     }
 
     private func publicationErrorMessage(for error: DeviceAdministrationError) -> String {
