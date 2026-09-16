@@ -2,26 +2,40 @@ import Foundation
 
 struct AppHomeConversationClaimProvider: HomeConversationClaimProvider {
     let fakeEnabled: Bool
+    let liveStore: (any HomeLiveConfigurationStore)?
 
-    init(fakeEnabled: Bool = false) {
+    init(
+        fakeEnabled: Bool = false,
+        liveStore: (any HomeLiveConfigurationStore)? = nil
+    ) {
         self.fakeEnabled = fakeEnabled
+        self.liveStore = liveStore
     }
 
     func conversationClaim(for profileID: UUID) async throws -> HomeConversationClaim? {
         #if DEBUG
-        guard fakeEnabled else { return nil }
-        return HomeDemoFixtures.claim(for: profileID)
-        #else
-        // A production pairing adapter has not been shipped. Do not invent a
-        // Home claim from a Hermes Profile or make a route appear approved.
-        return nil
+        if fakeEnabled {
+            return HomeDemoFixtures.claim(for: profileID)
+        }
         #endif
+        return try await liveStore?.conversationClaim(for: profileID)
     }
 }
 
 struct AppHomeBridgeSessionClientFactory: HomeBridgeSessionClientFactory {
     let enabled: Bool
     let claimProvider: AppHomeConversationClaimProvider
+    let liveFactory: (any HomeBridgeSessionClientFactory)?
+
+    init(
+        enabled: Bool,
+        claimProvider: AppHomeConversationClaimProvider,
+        liveFactory: (any HomeBridgeSessionClientFactory)? = nil
+    ) {
+        self.enabled = enabled
+        self.claimProvider = claimProvider
+        self.liveFactory = liveFactory
+    }
 
     func make(
         profileID: UUID,
@@ -45,6 +59,9 @@ struct AppHomeBridgeSessionClientFactory: HomeBridgeSessionClientFactory {
             )
         }
         #endif
+        if let liveFactory {
+            return liveFactory.make(profileID: profileID, mode: mode)
+        }
         return UnavailableHomeBridgeSessionClient()
     }
 }

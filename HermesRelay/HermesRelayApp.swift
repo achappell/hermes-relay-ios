@@ -10,6 +10,8 @@ struct HermesRelayIOSApp: App {
     private let deviceSetupDraftStore: any DeviceSetupDraftStore
     private let deviceConfigurationStore: any DeviceConfigurationStore
     private let appDirectory: URL
+    private let homeLiveConfigurationStore: JSONHomeLiveConfigurationStore
+    private let homeCredentialStore: KeychainHomeCredentialStore
     private let homeClientFactory: AppHomeBridgeSessionClientFactory
     private let homeClaimProvider: AppHomeConversationClaimProvider
 
@@ -24,10 +26,27 @@ struct HermesRelayIOSApp: App {
             profileURL: appDirectory.appendingPathComponent("profile.json")
         )
         let homeFakeEnabled = ProcessInfo.processInfo.arguments.contains("-HomeBridgeFake")
-        let homeClaimProvider = AppHomeConversationClaimProvider(fakeEnabled: homeFakeEnabled)
+        let homeLiveConfigurationStore = JSONHomeLiveConfigurationStore(
+            fileURL: appDirectory.appendingPathComponent("home-live-configurations.json")
+        )
+        let homeCredentialStore = KeychainHomeCredentialStore(
+            secureStore: KeychainSecureValueStore()
+        )
+        let liveHomeFactory = DefaultHomeBridgeSessionClientFactory(
+            dependencies: HomeBridgeClientDependencies(
+                routeProvider: homeLiveConfigurationStore,
+                credentialStore: homeCredentialStore,
+                publicAdapterEnabled: true
+            )
+        )
+        let homeClaimProvider = AppHomeConversationClaimProvider(
+            fakeEnabled: homeFakeEnabled,
+            liveStore: homeLiveConfigurationStore
+        )
         let homeClientFactory = AppHomeBridgeSessionClientFactory(
             enabled: homeFakeEnabled,
-            claimProvider: homeClaimProvider
+            claimProvider: homeClaimProvider,
+            liveFactory: liveHomeFactory
         )
         // One conversation per relay profile. The store swaps to the selected
         // profile's file when the client is configured.
@@ -54,6 +73,8 @@ struct HermesRelayIOSApp: App {
         self.deviceAdministrationClient = DeviceAdministrationClientFactory.make()
         self.deviceSetupDraftStore = DeviceSetupDraftStoreFactory.make(in: appDirectory)
         self.deviceConfigurationStore = DeviceConfigurationStoreFactory.make(in: appDirectory)
+        self.homeLiveConfigurationStore = homeLiveConfigurationStore
+        self.homeCredentialStore = homeCredentialStore
         self.homeClientFactory = homeClientFactory
         self.homeClaimProvider = homeClaimProvider
     }
@@ -69,7 +90,9 @@ struct HermesRelayIOSApp: App {
                 deviceSetupDraftStore: deviceSetupDraftStore,
                 deviceConfigurationStore: deviceConfigurationStore,
                 homeClientFactory: homeClientFactory,
-                homeClaimProvider: homeClaimProvider
+                homeClaimProvider: homeClaimProvider,
+                homeLiveConfigurationStore: homeLiveConfigurationStore,
+                homeCredentialStore: homeCredentialStore
             )
         }
     }

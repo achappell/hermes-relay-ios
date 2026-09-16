@@ -22,6 +22,9 @@ struct ContentView: View {
     private let deviceConfigurationStore: any DeviceConfigurationStore
     private let activityStore: AudioActivityStore
     private let lifecycleCoordinator: AppleLifecycleCoordinator
+    private let homeClientFactory: any HomeBridgeSessionClientFactory
+    private let homeLiveConfigurationStore: (any HomeLiveConfigurationStore)?
+    private let homeCredentialStore: (any HomeCredentialProvisioningStore)?
 
     private enum FocusField: Hashable {
         case composer
@@ -39,6 +42,8 @@ struct ContentView: View {
         activityStore providedActivityStore: AudioActivityStore? = nil,
         homeClientFactory: any HomeBridgeSessionClientFactory = UnavailableHomeBridgeSessionClientFactory(),
         homeClaimProvider: (any HomeConversationClaimProvider)? = nil,
+        homeLiveConfigurationStore: (any HomeLiveConfigurationStore)? = nil,
+        homeCredentialStore: (any HomeCredentialProvisioningStore)? = nil,
         homeClock: any HomeMonotonicClock = ContinuousHomeMonotonicClock()
     ) {
         _store = State(initialValue: store)
@@ -93,6 +98,9 @@ struct ContentView: View {
         self.deviceAdministrationClient = deviceAdministrationClient
         self.deviceSetupDraftStore = deviceSetupDraftStore
         self.deviceConfigurationStore = deviceConfigurationStore
+        self.homeClientFactory = homeClientFactory
+        self.homeLiveConfigurationStore = homeLiveConfigurationStore
+        self.homeCredentialStore = homeCredentialStore
         self.lifecycleCoordinator = AppleLifecycleCoordinator(
             store: store,
             voice: resolvedVoiceCoordinator,
@@ -187,7 +195,10 @@ struct ContentView: View {
                     deviceDiscoveryClient: deviceDiscoveryClient,
                     deviceAdministrationClient: deviceAdministrationClient,
                     deviceSetupDraftStore: deviceSetupDraftStore,
-                    deviceConfigurationStore: deviceConfigurationStore
+                    deviceConfigurationStore: deviceConfigurationStore,
+                    homeLiveConfigurationStore: homeLiveConfigurationStore,
+                    homeCredentialStore: homeCredentialStore,
+                    homeClientFactory: homeClientFactory
                 ) {
                     // The selected profile may have changed, so reconnect to
                     // whichever relay is now active rather than only reloading
