@@ -1,6 +1,6 @@
 ---
 story: 0-I-4
-run_id: 20260915-172301-story4-review-5
+run_id: 20260915-190606-story4-review-6
 status: review
 phase: review
 ---
@@ -25,9 +25,10 @@ responded; it does not prove that the public Home adapter is available. The
 live gate is therefore `public_adapter_unavailable`.
 
 The BMAD auto loop preserved the existing Story 4 implementation and used a
-focused audit pass to close the remaining contract gaps. The strict typed
-payload checks were verified with a deterministic RED run (two failures) and a
-GREEN run (two passes) before the broader suites.
+focused audit pass to close the remaining contract gaps. The review regression
+tests were added first; the initial deterministic run failed 15 of 22 tests,
+then the smallest production fixes produced a 22/22 GREEN run before the
+broader suites.
 
 The upstream contract is no longer the implementation blocker: it defines the
 planned schema-1 `/api/v1/bridge/ws`, one endpoint-facing WebSocket, opaque
@@ -43,16 +44,23 @@ The following local gates passed after the contract audit:
 - `xcodebuild -list`: project `Hermes Relay.xcodeproj`, scheme `HermesRelay`,
   test target `Hermes RelayTests`.
 - Focused deterministic coverage across the requested Home, lifecycle,
-  persistence, recovery, transport, voice, audio, and configuration seams: 211
+  persistence, recovery, transport, voice, audio, and configuration seams: 223
   passed, 0 failed on macOS.
-- Complete macOS XCTest: 349 passed, 0 failed.
-- Complete iOS Simulator XCTest: 350 passed, 0 failed on the discovered
+- Complete macOS XCTest: 361 passed, 0 failed.
+- Complete iOS Simulator XCTest: 362 passed, 0 failed on the freshly resolved
   iPhone 17 Pro simulator, iOS 26.5.
 - Generic iOS Simulator build: passed.
 - Generic macOS build: passed.
 - `git diff --check`: passed.
 - Production factory gate: `public_adapter_unavailable` is returned before
   any Home socket operation when the public adapter is disabled.
+
+The eleven BMAD review patches are all checked off in the owning story. The
+focused Home bridge class passed 22/22, including strict Boolean/integer
+validation, typed JSON-RPC fallback errors, fractional expiry parsing,
+conversation mismatch preservation, unknown-event handling, exact malformed
+envelope errors, contract-valid audio-unavailable settlement, and typed
+failure/expiry negatives.
 
 The manual fake UI walkthrough could not be completed in this environment. The
 discovered simulator accepted installation and a `-HomeBridgeFake` launch

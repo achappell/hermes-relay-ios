@@ -627,6 +627,12 @@ actor URLSessionHomeBridgeSessionClient: HomeBridgeSessionClient {
                 }
             } catch is CancellationError {
                 return
+            } catch let error as HomeWireDecodingError {
+                await transportLost(
+                    generation: readerGeneration,
+                    decodingError: error
+                )
+                return
             } catch {
                 await transportLost(generation: readerGeneration)
                 return
@@ -640,7 +646,7 @@ actor URLSessionHomeBridgeSessionClient: HomeBridgeSessionClient {
             throw HomeWireDecodingError.invalidShape
         }
         guard object["jsonrpc"] as? String == "2.0",
-              (object["schema"] as? Int ?? (object["schema"] as? NSNumber)?.intValue) == 1 else {
+              intValue(object["schema"]) == 1 else {
             throw HomeWireDecodingError.unsupportedSchema
         }
         if let id = object["id"] as? String {
@@ -702,10 +708,14 @@ actor URLSessionHomeBridgeSessionClient: HomeBridgeSessionClient {
               let event = params["event"] as? [String: Any],
               let type = event["type"] as? String,
               !type.isEmpty,
-              let payload = event["payload"] as? [String: Any],
-              let binding = currentBinding,
-              handle == binding.conversationHandle else {
+              let payload = event["payload"] as? [String: Any] else {
             throw HomeWireDecodingError.invalidShape
+        }
+        guard let binding = currentBinding else {
+            throw HomeWireDecodingError.invalidShape
+        }
+        guard handle == binding.conversationHandle else {
+            throw HomeWireDecodingError.conversationMismatch
         }
         try requireKeys(event, allowed: ["type", "payload"])
 
@@ -741,9 +751,13 @@ actor URLSessionHomeBridgeSessionClient: HomeBridgeSessionClient {
     }
 
     private func decodeStandardEvent(_ envelope: HomeEventEnvelope) throws -> HomeStandardEvent? {
-        guard let type = HomeStandardEventType(rawValue: envelope.type),
-              let binding = currentBinding,
-              envelope.scope.conversationHandle == binding.conversationHandle else {
+        guard let type = HomeStandardEventType(rawValue: envelope.type) else {
+            throw HomeWireDecodingError.invalidShape
+        }
+        guard let binding = currentBinding else {
+            throw HomeWireDecodingError.invalidShape
+        }
+        guard envelope.scope.conversationHandle == binding.conversationHandle else {
             throw HomeWireDecodingError.conversationMismatch
         }
         let scope = envelope.scope
@@ -950,8 +964,11 @@ actor URLSessionHomeBridgeSessionClient: HomeBridgeSessionClient {
         return scope.correlationID == nil || activeAudioScope.correlationID == scope.correlationID
     }
 
-    private static func parseISO8601Date(_ value: String) -> Date? {
-        ISO8601DateFormatter().date(from: value)
+    fileprivate static func parseISO8601Date(_ value: String) -> Date? {
+        let fractionalFormatter = ISO8601DateFormatter()
+        fractionalFormatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        return fractionalFormatter.date(from: value)
+            ?? ISO8601DateFormatter().date(from: value)
     }
 
     private func resolvePending(id: HomePendingRequestID, response: HomeWireResponse) {
@@ -964,16 +981,20 @@ actor URLSessionHomeBridgeSessionClient: HomeBridgeSessionClient {
         continuation.resume(throwing: error)
     }
 
-    private func transportLost(generation lostGeneration: UInt64) async {
+    private func transportLost(
+        generation lostGeneration: UInt64,
+        decodingError: HomeWireDecodingError? = nil
+    ) async {
         guard lostGeneration == generation, !closed else { return }
         socket = nil
+        let failure: Error = decodingError ?? HomeBridgeTransportError.disconnected
         let waiters = pending.values
         pending.removeAll()
         for waiter in waiters {
-            waiter.resume(throwing: HomeBridgeTransportError.disconnected)
+            waiter.resume(throwing: failure)
         }
         pendingPrompts.removeAll()
-        eventContinuation?.finish(throwing: HomeBridgeTransportError.disconnected)
+        eventContinuation?.finish(throwing: failure)
         eventContinuation = nil
         eventStream = nil
     }
@@ -1014,11 +1035,7 @@ private func decodeResponse(_ object: [String: Any]) throws -> HomeWireResponse 
 }
 
 private func jsonRPCErrorCode(_ value: Any?) -> Int? {
-    if let value = value as? Int { return value }
-    guard let value = value as? NSNumber, !(value is Bool) else { return nil }
-    let doubleValue = value.doubleValue
-    guard doubleValue.isFinite, doubleValue.rounded() == doubleValue else { return nil }
-    return value.intValue
+    intValue(value)
 }
 
 private func decodeReady(_ response: HomeWireResponse) throws -> HomeReadyWireResult {
@@ -1196,7 +1213,9 @@ private func optionalStringArray(_ object: [String: Any], key: String) throws ->
 private func optionalBool(_ object: [String: Any], key: String) throws -> Bool? {
     guard let value = object[key] else { return nil }
     if value is NSNull { return nil }
-    guard let value = value as? Bool else { throw HomeWireDecodingError.invalidShape }
+    guard isJSONBoolean(value), let value = value as? Bool else {
+        throw HomeWireDecodingError.invalidShape
+    }
     return value
 }
 
@@ -1224,16 +1243,28 @@ private func optionalISO8601Date(
     key: String
 ) throws -> Date? {
     guard let value = try optionalString(object, key: key) else { return nil }
-    guard let date = ISO8601DateFormatter().date(from: value) else {
+    guard let date = URLSessionHomeBridgeSessionClient.parseISO8601Date(value) else {
         throw HomeWireDecodingError.invalidShape
     }
     return date
 }
 
 private func intValue(_ value: Any?) -> Int? {
+    guard let value, !isJSONBoolean(value) else { return nil }
     if let value = value as? Int { return value }
-    if let value = value as? NSNumber { return value.intValue }
-    return nil
+    guard let value = value as? NSNumber else { return nil }
+    let doubleValue = value.doubleValue
+    guard doubleValue.isFinite,
+          doubleValue.rounded() == doubleValue,
+          let integer = Int(exactly: doubleValue) else {
+        return nil
+    }
+    return integer
+}
+
+private func isJSONBoolean(_ value: Any) -> Bool {
+    guard let number = value as? NSNumber else { return value is Bool }
+    return CFGetTypeID(number) == CFBooleanGetTypeID()
 }
 
 private func responseMatchesPrompt(
