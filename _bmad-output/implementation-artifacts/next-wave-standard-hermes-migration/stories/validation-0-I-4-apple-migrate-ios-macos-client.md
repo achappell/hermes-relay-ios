@@ -1,6 +1,6 @@
 ---
 story: 0-I-4
-run_id: 20260915-190606-story4-review-6
+run_id: 20260915-222240-story4-review-7
 status: review
 phase: review
 ---
@@ -25,10 +25,11 @@ responded; it does not prove that the public Home adapter is available. The
 live gate is therefore `public_adapter_unavailable`.
 
 The BMAD auto loop preserved the existing Story 4 implementation and used a
-focused audit pass to close the remaining contract gaps. The review regression
-tests were added first; the initial deterministic run failed 15 of 22 tests,
-then the smallest production fixes produced a 22/22 GREEN run before the
-broader suites.
+focused audit pass to close the remaining contract gaps. The parent re-review
+added deterministic fake-based coverage first. That pass caught a shared Home
+turn-waiter race and a stale uncertainty marker during the matching-terminal
+test; the smallest production fixes now settle both callers and clear only a
+fully settled turn.
 
 The upstream contract is no longer the implementation blocker: it defines the
 planned schema-1 `/api/v1/bridge/ws`, one endpoint-facing WebSocket, opaque
@@ -44,10 +45,10 @@ The following local gates passed after the contract audit:
 - `xcodebuild -list`: project `Hermes Relay.xcodeproj`, scheme `HermesRelay`,
   test target `Hermes RelayTests`.
 - Focused deterministic coverage across the requested Home, lifecycle,
-  persistence, recovery, transport, voice, audio, and configuration seams: 223
-  passed, 0 failed on macOS.
-- Complete macOS XCTest: 361 passed, 0 failed.
-- Complete iOS Simulator XCTest: 362 passed, 0 failed on the freshly resolved
+  persistence, recovery, transport, voice, audio, and configuration seams: 237
+  passed, 0 failed on arm64 macOS 27.0.
+- Complete macOS XCTest: 375 passed, 0 failed on arm64 macOS 27.0.
+- Complete iOS Simulator XCTest: 376 passed, 0 failed on the runtime-resolved
   iPhone 17 Pro simulator, iOS 26.5.
 - Generic iOS Simulator build: passed.
 - Generic macOS build: passed.
@@ -55,18 +56,28 @@ The following local gates passed after the contract audit:
 - Production factory gate: `public_adapter_unavailable` is returned before
   any Home socket operation when the public adapter is disabled.
 
-The eleven BMAD review patches are all checked off in the owning story. The
-focused Home bridge class passed 22/22, including strict Boolean/integer
-validation, typed JSON-RPC fallback errors, fractional expiry parsing,
-conversation mismatch preservation, unknown-event handling, exact malformed
-envelope errors, contract-valid audio-unavailable settlement, and typed
-failure/expiry negatives.
+The eleven delegated BMAD review patches and seven parent-review findings are
+checked off in the owning story. The Home bridge tests pass with strict
+Boolean/integer validation, typed JSON-RPC fallback errors, fractional expiry
+parsing, conversation mismatch preservation, unknown-event handling, exact
+malformed envelope errors, typed audio-invalid settlement, reconnect audio
+reset, known rejection retry, typed prompt resolution, and Store/Recovery/
+Voice interruption and text-preservation coverage.
 
 The manual fake UI walkthrough could not be completed in this environment. The
 discovered simulator accepted installation and a `-HomeBridgeFake` launch
 request, but the available computer-use surface could not attach to the iOS
 Simulator window. No manual scenario is marked passed. No microphone capture,
 screenshot, or private content was used.
+
+## Parent review evidence
+
+The bounded delegated re-review layers returned no findings, so the parent
+review traced the complete diff against the Home bridge contract and its Store
+callers. All seven parent findings were patched with deterministic TDD. The
+matching-terminal regression then exposed and closed the two caller-level
+defects recorded above. Final focused, iOS Simulator, macOS, build, and diff
+gates passed after those fixes.
 
 ## Review evidence
 

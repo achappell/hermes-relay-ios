@@ -119,6 +119,44 @@ final class HomeBridgeSessionClientTests: XCTestCase {
         await client.close()
     }
 
+    func testURLSessionClientMapsKnownOpenErrorToUnavailable() async throws {
+        let fixture = try await makeFixture()
+        await fixture.socket.setNextError(
+            for: "conversation.open",
+            jsonRPCCode: -32_000,
+            homeCode: "unauthorized"
+        )
+
+        let outcome = await fixture.client.open(claim: fixture.claim)
+
+        XCTAssertEqual(
+            outcome,
+            .unavailable(.home(code: .unauthorized, phase: .open))
+        )
+        await fixture.client.close()
+    }
+
+    func testURLSessionClientMapsKnownReconnectErrorToUnavailable() async throws {
+        let fixture = try await makeFixture()
+        let client = fixture.client
+        guard case .ready(let binding, _) = await client.open(claim: fixture.claim) else {
+            return XCTFail("A valid Home bridge response must become ready")
+        }
+        await fixture.socket.setNextError(
+            for: "conversation.reconnect",
+            jsonRPCCode: -32_000,
+            homeCode: "stale_conversation"
+        )
+
+        let outcome = await client.reconnect(binding: binding)
+
+        XCTAssertEqual(
+            outcome,
+            .unavailable(.home(code: .staleConversation, phase: .reconnect))
+        )
+        await client.close()
+    }
+
     func testURLSessionClientRejectsNumericBooleanEventField() async throws {
         let fixture = try await makeFixture()
         let client = fixture.client
@@ -621,6 +659,163 @@ final class HomeBridgeSessionClientTests: XCTestCase {
         await client.close()
     }
 
+    func testURLSessionClientSurfacesInvalidAudioAndKeepsTheReaderAlive() async throws {
+        let fixture = try await makeFixture()
+        let client = fixture.client
+        let stream = await client.events()
+        var events = stream.makeAsyncIterator()
+        guard case .ready(let binding, _) = await client.open(claim: fixture.claim) else {
+            return XCTFail("The bridge must open before it can deliver audio")
+        }
+        let submission = await client.submitPrompt("synthetic prompt", binding: binding)
+        guard case .accepted(let turn) = submission else {
+            return XCTFail("The prompt must establish the audio scope")
+        }
+        let scope = HomeEventScope(
+            conversationHandle: binding.conversationHandle,
+            turnID: turn.turnID,
+            correlationID: turn.correlationID
+        )
+
+        await fixture.socket.enqueue(.text(try audioFrame(
+            scope: scope,
+            kind: "start",
+            sampleWidth: 3
+        )))
+        let invalidAudio = try await events.next()
+        XCTAssertEqual(invalidAudio, .audioTerminal(scope, .invalid))
+
+        await fixture.socket.enqueue(.text(try contractEventFrame(
+            scope: scope,
+            type: "message.complete",
+            payload: ["rendered": "text survives", "status": "completed"]
+        )))
+        let textEvent = try await events.next()
+        guard case .standard(let standard) = textEvent else {
+            return XCTFail("The invalid audio must not end the Home reader")
+        }
+        XCTAssertEqual(standard.type, .messageComplete)
+        await client.close()
+    }
+
+    func testURLSessionClientClassifiesBinaryBeforeStartAsInvalidAudio() async throws {
+        let fixture = try await makeFixture()
+        let client = fixture.client
+        let stream = await client.events()
+        var events = stream.makeAsyncIterator()
+        guard case .ready(let binding, _) = await client.open(claim: fixture.claim) else {
+            return XCTFail("The bridge must open before it can accept a prompt")
+        }
+        let submission = await client.submitPrompt("synthetic prompt", binding: binding)
+        guard case .accepted(let turn) = submission else {
+            return XCTFail("The prompt must establish the audio scope")
+        }
+        let scope = HomeEventScope(
+            conversationHandle: binding.conversationHandle,
+            turnID: turn.turnID,
+            correlationID: turn.correlationID
+        )
+
+        await fixture.socket.enqueue(.binary(Data([0x01, 0x02])))
+        await fixture.socket.enqueue(.text(try contractEventFrame(
+            scope: scope,
+            type: "message.complete",
+            payload: ["rendered": "text survives", "status": "completed"]
+        )))
+
+        let invalidAudioEvent = try await events.next()
+        XCTAssertEqual(invalidAudioEvent, .audioTerminal(scope, .invalid))
+        let textEvent = try await events.next()
+        guard case .standard(let standard) = textEvent else {
+            return XCTFail("The Home reader must continue after invalid PCM")
+        }
+        XCTAssertEqual(standard.type, .messageComplete)
+        await client.close()
+    }
+
+    func testURLSessionClientReopensAfterTransportLossInsteadOfUsingCachedBinding() async throws {
+        let fixture = try await makeFixture()
+        let client = fixture.client
+        let stream = await client.events()
+        var events = stream.makeAsyncIterator()
+        guard case .ready = await client.open(claim: fixture.claim) else {
+            return XCTFail("The bridge must open before transport loss")
+        }
+
+        await fixture.socket.enqueue(.text(try contractEventFrame(
+            scope: HomeEventScope(
+                conversationHandle: fixture.claim.conversationHandle,
+                turnID: "turn-1",
+                correlationID: "correlation-1"
+            ),
+            type: "future.event",
+            payload: [:]
+        )))
+        do {
+            _ = try await events.next()
+            XCTFail("The unsupported event must close the current reader")
+        } catch {
+            XCTAssertEqual(error as? HomeWireDecodingError, .invalidShape)
+        }
+
+        guard case .ready = await client.open(claim: fixture.claim) else {
+            return XCTFail("A second open must establish a fresh binding")
+        }
+        let factoryOpenCount = await fixture.factory.openCount
+        let secondSentMethods = try await fixture.secondSocket.sentMethods()
+        XCTAssertEqual(factoryOpenCount, 2)
+        XCTAssertEqual(secondSentMethods, ["conversation.open"])
+        await client.close()
+    }
+
+    func testURLSessionClientAcceptsFreshAudioStartAfterTransportLoss() async throws {
+        let fixture = try await makeFixture()
+        let client = fixture.client
+        let stream = await client.events()
+        var events = stream.makeAsyncIterator()
+        guard case .ready(let binding, _) = await client.open(claim: fixture.claim) else {
+            return XCTFail("The bridge must open before it can deliver audio")
+        }
+        let scope = HomeEventScope(
+            conversationHandle: binding.conversationHandle,
+            turnID: "turn-1",
+            correlationID: "correlation-1"
+        )
+        await fixture.socket.enqueue(.text(try audioFrame(scope: scope, kind: "start")))
+        let firstAudioEvent = try await events.next()
+        XCTAssertEqual(firstAudioEvent, .audioStart(
+            scope,
+            HomeAudioFormat(sampleRate: 24_000, channels: 1, sampleWidth: 2)
+        ))
+
+        await fixture.socket.enqueue(.text(try contractEventFrame(
+            scope: scope,
+            type: "future.event",
+            payload: [:]
+        )))
+        do {
+            _ = try await events.next()
+            XCTFail("The unsupported event must close the current reader")
+        } catch {
+            XCTAssertEqual(error as? HomeWireDecodingError, .invalidShape)
+        }
+
+        let reconnectOutcome = await client.reconnect(binding: binding)
+        guard case .ready = reconnectOutcome else {
+            return XCTFail("The binding must reconnect: \(reconnectOutcome)")
+        }
+        let reconnectedStream = await client.events()
+        var reconnectedEvents = reconnectedStream.makeAsyncIterator()
+        await fixture.secondSocket.enqueue(.text(try audioFrame(scope: scope, kind: "start")))
+
+        let reconnectedAudioEvent = try await reconnectedEvents.next()
+        XCTAssertEqual(
+            reconnectedAudioEvent,
+            .audioStart(scope, HomeAudioFormat(sampleRate: 24_000, channels: 1, sampleWidth: 2))
+        )
+        await client.close()
+    }
+
     func testStructuredPromptIsCorrelatedAndResponsesUseTheFixedOperation() async throws {
         let fixture = try await makeFixture()
         let client = fixture.client
@@ -660,6 +855,90 @@ final class HomeBridgeSessionClientTests: XCTestCase {
         XCTAssertEqual(responseOutcome, .accepted)
         let sentMethods = try await fixture.socket.sentMethods()
         XCTAssertEqual(sentMethods, ["conversation.open", "prompt.respond"])
+        await client.close()
+    }
+
+    func testURLSessionClientRejectsEmptyTypedStructuredResponses() async throws {
+        let fixture = try await makeFixture()
+        let client = fixture.client
+        let stream = await client.events()
+        var events = stream.makeAsyncIterator()
+        guard case .ready(let binding, _) = await client.open(claim: fixture.claim) else {
+            return XCTFail("The bridge must be ready before prompts are accepted")
+        }
+
+        let cases: [(HomeStructuredPromptKind, HomePromptResponse, Bool)] = [
+            (.approval, .approval(choice: "", all: nil), false),
+            (.clarification, .clarification(answer: ""), false),
+            (.secret, .secret(value: ""), true),
+            (.sudo, .sudo(password: ""), true),
+        ]
+        for (index, item) in cases.enumerated() {
+            let prompt = HomeStructuredPrompt(
+                kind: item.0,
+                conversationHandle: binding.conversationHandle,
+                turnID: "turn-\(index + 1)",
+                correlationID: "empty-\(index + 1)",
+                options: item.0 == .approval ? ["yes"] : [],
+                expiresAt: nil,
+                sensitive: item.2
+            )
+            await fixture.socket.enqueue(.text(try eventFrame(
+                conversationHandle: prompt.conversationHandle,
+                turnID: prompt.turnID,
+                correlationID: prompt.correlationID,
+                type: prompt.eventType,
+                payload: [
+                    "options": prompt.options,
+                    "sensitive": item.2,
+                ]
+            )))
+            _ = try await events.next()
+            let outcome = await client.respond(to: prompt, with: item.1)
+            XCTAssertEqual(
+                outcome,
+                .rejected(.home(code: .invalidRequest, phase: .structuredResponse)),
+                "Empty response for \(prompt.eventType) must be rejected locally"
+            )
+        }
+        await client.close()
+    }
+
+    func testURLSessionClientRejectsPromptResolutionWithoutAcceptanceProof() async throws {
+        let fixture = try await makeFixture()
+        let client = fixture.client
+        let stream = await client.events()
+        var events = stream.makeAsyncIterator()
+        guard case .ready(let binding, _) = await client.open(claim: fixture.claim) else {
+            return XCTFail("The bridge must be ready before prompts are accepted")
+        }
+        let prompt = HomeStructuredPrompt(
+            kind: .approval,
+            conversationHandle: binding.conversationHandle,
+            turnID: "turn-1",
+            correlationID: "approval-status",
+            options: ["yes"],
+            expiresAt: nil,
+            sensitive: false
+        )
+        await fixture.socket.enqueue(.text(try eventFrame(
+            conversationHandle: prompt.conversationHandle,
+            turnID: prompt.turnID,
+            correlationID: prompt.correlationID,
+            type: prompt.eventType,
+            payload: ["options": prompt.options, "sensitive": false]
+        )))
+        _ = try await events.next()
+        await fixture.socket.setNextPromptResponseStatus("rejected")
+
+        let outcome = await client.respond(
+            to: prompt,
+            with: .approval(choice: "yes", all: nil)
+        )
+        XCTAssertEqual(
+            outcome,
+            .rejected(.home(code: .requestRejected, phase: .structuredResponse))
+        )
         await client.close()
     }
 
@@ -814,8 +1093,12 @@ final class HomeBridgeSessionClientTests: XCTestCase {
             for: profileID
         )
         let socket = TestHomeSocket(claim: claim)
+        let secondSocket = TestHomeSocket(claim: claim)
         let requests = TestHomeRequestRecorder()
-        let socketFactory = TestHomeSocketFactory(socket: socket, recorder: requests)
+        let socketFactory = TestHomeSocketFactory(
+            sockets: [socket, secondSocket],
+            recorder: requests
+        )
         let dependencies = HomeBridgeClientDependencies(
             routeProvider: StaticRouteProvider(route: route),
             credentialStore: credentialStore,
@@ -826,6 +1109,8 @@ final class HomeBridgeSessionClientTests: XCTestCase {
             claim: claim,
             client: URLSessionHomeBridgeSessionClient(dependencies: dependencies),
             socket: socket,
+            secondSocket: secondSocket,
+            factory: socketFactory,
             requests: requests
         )
     }
@@ -889,7 +1174,8 @@ final class HomeBridgeSessionClientTests: XCTestCase {
         kind: String,
         reason: String? = nil,
         outerSchema: Any = 1,
-        paramsSchema: Any = 1
+        paramsSchema: Any = 1,
+        sampleWidth: Int = 2
     ) throws -> String {
         var params: [String: Any] = [
             "schema": paramsSchema,
@@ -903,7 +1189,7 @@ final class HomeBridgeSessionClientTests: XCTestCase {
                 "kind": kind,
                 "sample_rate": 24_000,
                 "channels": 1,
-                "sample_width": 2,
+                "sample_width": sampleWidth,
                 "byte_order": "little",
             ]
         }
@@ -924,6 +1210,8 @@ private struct Fixture: Sendable {
     let claim: HomeConversationClaim
     let client: URLSessionHomeBridgeSessionClient
     let socket: TestHomeSocket
+    let secondSocket: TestHomeSocket
+    let factory: TestHomeSocketFactory
     let requests: TestHomeRequestRecorder
 }
 
@@ -951,18 +1239,23 @@ private actor TestHomeRequestRecorder {
     func count() -> Int { values.count }
 }
 
-private final class TestHomeSocketFactory: WebSocketConnectionFactory, @unchecked Sendable {
-    private let socket: TestHomeSocket
+private actor TestHomeSocketFactory: WebSocketConnectionFactory {
+    private let sockets: [TestHomeSocket]
     private let recorder: TestHomeRequestRecorder
+    private var nextSocketIndex = 0
+    private(set) var openCount = 0
 
-    init(socket: TestHomeSocket, recorder: TestHomeRequestRecorder) {
-        self.socket = socket
+    init(sockets: [TestHomeSocket], recorder: TestHomeRequestRecorder) {
+        self.sockets = sockets
         self.recorder = recorder
     }
 
     func open(urlRequest: URLRequest) async throws -> any WebSocketConnection {
         await recorder.record(urlRequest)
-        return socket
+        openCount += 1
+        let index = min(nextSocketIndex, sockets.count - 1)
+        nextSocketIndex += 1
+        return sockets[index]
     }
 }
 
@@ -974,6 +1267,7 @@ private actor TestHomeSocket: WebSocketConnection {
     private var closed = false
     private var closes = 0
     private var nextError: (method: String, jsonRPCCode: TestJSONRPCCode, homeCode: String?)?
+    private var nextPromptResponseStatus: String?
 
     init(claim: HomeConversationClaim) {
         self.claim = claim
@@ -1015,7 +1309,7 @@ private actor TestHomeSocket: WebSocketConnection {
         }
         let result: [String: Any]
         switch method {
-        case "conversation.open", "conversation.reconnect":
+        case "conversation.open":
             result = [
                 "schema": 1,
                 "status": "ready",
@@ -1027,6 +1321,12 @@ private actor TestHomeSocket: WebSocketConnection {
                     "timing": "absent",
                     "interrupt": true,
                 ],
+            ]
+        case "conversation.reconnect":
+            result = [
+                "schema": 1,
+                "status": "ready",
+                "conversation_handle": claim.conversationHandle,
             ]
         case "prompt.submit":
             result = [
@@ -1041,11 +1341,12 @@ private actor TestHomeSocket: WebSocketConnection {
         case "prompt.respond":
             result = [
                 "schema": 1,
-                "status": "accepted",
+                "status": nextPromptResponseStatus ?? "accepted",
                 "conversation_handle": params["conversation_handle"] as? String ?? claim.conversationHandle,
                 "turn_id": params["turn_id"] as? String ?? "turn-1",
                 "correlation_id": params["correlation_id"] as? String ?? "correlation-1",
             ]
+            nextPromptResponseStatus = nil
         case "command.dispatch":
             result = [
                 "schema": 1,
@@ -1111,6 +1412,10 @@ private actor TestHomeSocket: WebSocketConnection {
         homeCode: String?
     ) {
         nextError = (method, code, homeCode)
+    }
+
+    func setNextPromptResponseStatus(_ status: String) {
+        nextPromptResponseStatus = status
     }
 
     func closeCount() -> Int { closes }

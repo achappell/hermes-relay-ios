@@ -1239,7 +1239,7 @@ final class VoiceSessionCoordinator {
 
     private static func isHomeAudioFailure(_ reason: String) -> Bool {
         switch reason {
-        case "fallback", "unavailable", "invalid Home PCM audio":
+        case "fallback", "unavailable", "invalid", "invalid Home PCM audio":
             return true
         default:
             return false

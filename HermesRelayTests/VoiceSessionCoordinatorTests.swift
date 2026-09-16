@@ -1219,6 +1219,68 @@ final class VoiceSessionCoordinatorTests: XCTestCase {
     }
 
     @MainActor
+    func testHomeVoiceInvalidAudioPreservesTextAndReportsPlaybackFailure() async throws {
+        let fixture = try await makeHomeVoiceReviewFixture()
+        defer { try? FileManager.default.removeItem(at: fixture.profileURL.deletingLastPathComponent()) }
+        let configured = await fixture.store.loadConfiguredClient()
+        XCTAssertTrue(configured)
+        await fixture.store.connect()
+
+        let output = CoordinatorAudioOutput()
+        let coordinator = VoiceSessionCoordinator(
+            store: fixture.store,
+            input: CoordinatorSpeechInput(),
+            output: output
+        )
+        fixture.store.draft = "Home voice request"
+
+        let responseTask = Task { @MainActor in
+            await coordinator.sendDraft()
+        }
+        await waitForHomeVoiceSubmission(fixture.client, atLeast: 1)
+
+        let scope = HomeEventScope(
+            conversationHandle: fixture.claim.conversationHandle,
+            turnID: "turn-1",
+            correlationID: "correlation-1"
+        )
+        await fixture.client.emit(.audioTerminal(scope, .invalid))
+        await fixture.client.emit(
+            .standard(
+                HomeStandardEvent(
+                    type: .messageComplete,
+                    scope: scope,
+                    payload: .final(
+                        rendered: nil,
+                        text: "Home text survives invalid audio",
+                        status: "complete",
+                        reasoning: nil,
+                        failureReason: nil
+                    )
+                )
+            )
+        )
+        await fixture.client.emit(
+            .standard(
+                HomeStandardEvent(
+                    type: .turnComplete,
+                    scope: scope,
+                    payload: .terminal(kind: .terminal)
+                )
+            )
+        )
+        await responseTask.value
+
+        XCTAssertEqual(
+            coordinator.state,
+            .failed("Audio playback failed. The response text is still available.")
+        )
+        XCTAssertEqual(fixture.store.messages.last?.text, "Home text survives invalid audio")
+        let submittedTexts = await fixture.client.submittedTexts
+        XCTAssertEqual(submittedTexts, ["Home voice request"])
+    }
+
+    @MainActor
     func testFileAudioKeepsResponseActiveUntilFileDeliveryFinishes() async throws {
         let writer = WAVFallbackWriter()
         let format = AudioFormat(sampleRate: 24_000, channels: 1, sampleWidth: 2)
@@ -2072,6 +2134,80 @@ final class VoiceSessionCoordinatorTests: XCTestCase {
         await store.connect()
         return store
     }
+
+    @MainActor
+    private func makeHomeVoiceReviewFixture() async throws -> HomeVoiceReviewFixture {
+        let profileID = UUID(uuidString: "EEEEEEEE-FFFF-0000-1111-222222222222")!
+        let profile = try RelayProfile(
+            id: profileID,
+            endpoint: URL(string: "wss://legacy.example/session")!,
+            clientID: "hermes-apple",
+            deviceID: "apple-device",
+            displayName: "Voice Home"
+        )
+        let profileURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("HermesRelayIOS-HomeVoiceReview-\(UUID().uuidString)")
+            .appendingPathExtension("json")
+        let configurationStore = RelayConfigurationStore(
+            secureStore: HomeVoiceReviewSecureValueStore(),
+            profileURL: profileURL
+        )
+        let journal = HomeMigrationJournal(
+            schemaVersion: 1,
+            profileID: profileID,
+            phase: .homeSelected,
+            selectedMode: .home,
+            credential: nil,
+            legacyCredentialRetained: true,
+            updatedAt: Date(timeIntervalSince1970: 0)
+        )
+        try await configurationStore.saveCollection(
+            RelayProfileCollection(
+                profiles: [profile],
+                selectedID: profileID,
+                homeMigrations: [profileID: journal]
+            )
+        )
+        let claim = HomeDemoFixtures.claim(for: profileID)
+        let client = FakeHomeBridgeSessionClient(claim: claim)
+        let store = ConversationStore(
+            configurationStore: configurationStore,
+            homeClientFactory: FakeHomeBridgeSessionClientFactory(client: client),
+            homeClaimProvider: StaticHomeConversationClaimProvider(claim: claim)
+        )
+        return HomeVoiceReviewFixture(
+            store: store,
+            client: client,
+            claim: claim,
+            profileURL: profileURL
+        )
+    }
+
+    @MainActor
+    private func waitForHomeVoiceSubmission(
+        _ client: FakeHomeBridgeSessionClient,
+        atLeast count: Int
+    ) async {
+        for _ in 0..<100 {
+            if (await client.submittedTexts).count >= count { return }
+            await Task.yield()
+        }
+        XCTFail("The Home voice fake did not receive the prompt")
+    }
+}
+
+@MainActor
+private struct HomeVoiceReviewFixture {
+    let store: ConversationStore
+    let client: FakeHomeBridgeSessionClient
+    let claim: HomeConversationClaim
+    let profileURL: URL
+}
+
+private final class HomeVoiceReviewSecureValueStore: SecureValueStore, @unchecked Sendable {
+    func read(service: String, account: String) throws -> Data? { nil }
+    func write(_ value: Data, service: String, account: String) throws {}
+    func delete(service: String, account: String) throws {}
 }
 
 private actor CoordinatorHandsFreeInput: HandsFreeInput {

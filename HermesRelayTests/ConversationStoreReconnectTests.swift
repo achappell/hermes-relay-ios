@@ -158,6 +158,28 @@ final class ConversationStoreReconnectTests: XCTestCase {
         XCTAssertEqual(store.connectionState, .connected)
     }
 
+    @MainActor
+    func testHomeReconnectDoesNotReplayAnUncertainPrompt() async throws {
+        let fixture = try await makeHomeReconnectReviewFixture()
+        defer { try? FileManager.default.removeItem(at: fixture.profileURL.deletingLastPathComponent()) }
+        await fixture.store.loadConfiguredClient()
+        await fixture.store.connect()
+        await fixture.firstClient.setNextSubmissionOutcome(
+            .uncertain(.home(code: .transportTimeout, phase: .submission))
+        )
+
+        let completed = await fixture.store.sendTurn(text: "maybe sent")
+
+        XCTAssertFalse(completed)
+        await fixture.store.connect()
+        let firstSubmittedTexts = await fixture.firstClient.submittedTexts
+        let secondSubmittedTexts = await fixture.secondClient.submittedTexts
+        XCTAssertEqual(firstSubmittedTexts, ["maybe sent"])
+        XCTAssertEqual(secondSubmittedTexts, [])
+        XCTAssertEqual(fixture.store.connectionState, .connected)
+        XCTAssertEqual(fixture.store.homeTurnDeliveryState, .uncertain(nil))
+    }
+
 
 
     // Switching must clear the previous account's transcript before the new
@@ -187,6 +209,89 @@ final class ConversationStoreReconnectTests: XCTestCase {
             reconnectPolicy: .default,
             sleep: { nanoseconds in await sleeps.record(nanoseconds) }
         )
+    }
+
+    @MainActor
+    private func makeHomeReconnectReviewFixture() async throws -> HomeReconnectReviewFixture {
+        let profileID = UUID(uuidString: "BBBBBBBB-CCCC-DDDD-EEEE-FFFFFFFFFFFF")!
+        let profile = try RelayProfile(
+            id: profileID,
+            endpoint: URL(string: "wss://legacy.example/session")!,
+            clientID: "hermes-apple",
+            deviceID: "apple-device",
+            displayName: "Test Apple"
+        )
+        let profileURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("HermesRelayIOS-HomeReconnectReview-\(UUID().uuidString)")
+            .appendingPathExtension("json")
+        let configurationStore = RelayConfigurationStore(
+            secureStore: HomeReconnectReviewSecureValueStore(),
+            profileURL: profileURL
+        )
+        let journal = HomeMigrationJournal(
+            schemaVersion: 1,
+            profileID: profileID,
+            phase: .homeSelected,
+            selectedMode: .home,
+            credential: nil,
+            legacyCredentialRetained: true,
+            updatedAt: Date(timeIntervalSince1970: 0)
+        )
+        try await configurationStore.saveCollection(
+            RelayProfileCollection(
+                profiles: [profile],
+                selectedID: profileID,
+                homeMigrations: [profileID: journal]
+            )
+        )
+        let claim = HomeDemoFixtures.claim(for: profileID)
+        let firstClient = FakeHomeBridgeSessionClient(claim: claim)
+        let secondClient = FakeHomeBridgeSessionClient(claim: claim)
+        let store = ConversationStore(
+            configurationStore: configurationStore,
+            homeClientFactory: RotatingHomeBridgeSessionClientFactory(
+                clients: [firstClient, secondClient]
+            ),
+            homeClaimProvider: StaticHomeConversationClaimProvider(claim: claim)
+        )
+        return HomeReconnectReviewFixture(
+            store: store,
+            firstClient: firstClient,
+            secondClient: secondClient,
+            profileURL: profileURL
+        )
+    }
+}
+
+@MainActor
+private struct HomeReconnectReviewFixture {
+    let store: ConversationStore
+    let firstClient: FakeHomeBridgeSessionClient
+    let secondClient: FakeHomeBridgeSessionClient
+    let profileURL: URL
+}
+
+private final class HomeReconnectReviewSecureValueStore: SecureValueStore, @unchecked Sendable {
+    func read(service: String, account: String) throws -> Data? { nil }
+    func write(_ value: Data, service: String, account: String) throws {}
+    func delete(service: String, account: String) throws {}
+}
+
+private final class RotatingHomeBridgeSessionClientFactory: HomeBridgeSessionClientFactory, @unchecked Sendable {
+    private let clients: [any HomeBridgeSessionClient]
+    private let lock = NSLock()
+    private var nextIndex = 0
+
+    init(clients: [any HomeBridgeSessionClient]) {
+        self.clients = clients
+    }
+
+    func make(profileID: UUID, mode: AppleTransportMode) -> any HomeBridgeSessionClient {
+        lock.lock()
+        defer { lock.unlock() }
+        let client = clients[min(nextIndex, clients.count - 1)]
+        nextIndex += 1
+        return client
     }
 }
 

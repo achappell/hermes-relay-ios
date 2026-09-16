@@ -5,7 +5,7 @@ created: '2026-09-14'
 baseline_revision: '7cd4f31'
 baseline_commit: '7cd4f31'
 status: 'review'
-review_loop_iteration: 5
+review_loop_iteration: 7
 followup_review_recommended: false
 context:
   - '{project-root}/docs/architecture.md'
@@ -1797,10 +1797,33 @@ implementation; no live Home adapter or manual UI evidence is inferred.
 - [x] [Review][Patch] Add explicit negative coverage for typed failure reasons and malformed expiry [HermesRelayTests/HomeBridgeSessionClientTests.swift:182-209] — low; verification gap V5. The strict `failure_reason` enum rejection and malformed `expires_at` branch are not directly asserted; add deterministic cases that prove each is rejected for the intended reason.
 - [x] [Review][Patch] Document tolerant unknown event-kind mapping [HermesRelay/Services/HomeBridgeSessionClient.swift:1203-1209] — low; verification gap V8. `optionalEventKind` safely maps an unknown optional presentation kind to `nil`, while `optionalFailureCode` rejects unknown stable failure codes. Add a test documenting that deliberate distinction so a future strictness change does not break forward-compatible event handling.
 
-All eleven review patches were applied and verified by the focused and full
-platform suites. No high or medium review findings remain unresolved. The
-story stays `review` because the public Home adapter and attachable fake UI
-evidence remain unavailable.
+All eleven review patches from the delegated review pass were applied and
+verified by the focused and full platform suites. No findings from that pass
+remain unresolved. The story stays `review` because the public Home adapter
+and attachable fake UI evidence remain unavailable. The manual parent
+re-review below is a separate pass over the complete branch diff.
+
+#### Manual parent re-review (2026-09-15)
+
+The four delegated re-review layers did not return findings within their
+bounded runs, including when the diff was reduced to one changed file. The
+parent review therefore traced the implementation against the Home bridge
+contract, the Store callers, and the existing test seams. Seven actionable
+findings were identified and patched:
+
+- [x] [Review][Patch] Surface typed audio faults without converting them into transport loss [HermesRelay/Services/HomeBridgeSessionClient.swift:614-641,685-699,847-928; HermesRelay/ViewModels/ConversationStore.swift:487-545,667-694] — high. `HomeWireDecodingError.invalidAudioFrame` from malformed metadata, duplicate starts, bad terminals, or an incomplete PCM sample is caught by the single reader and passed to `transportLost`; the Store then turns an accepted/recoverable turn into uncertain state. Binary PCM before a valid start is silently discarded. The contract requires pre-start, invalid, duplicate, and incomplete audio to be typed audio failures while readable control text remains usable. Add deterministic reader-to-Store coverage and route these faults through the existing typed audio-failure/unavailable settlement instead of ending the Home control stream.
+- [x] [Review][Patch] Clear per-generation audio join state on transport loss [HermesRelay/Services/HomeBridgeSessionClient.swift:872-910,984-1000] — high. `transportLost` clears the socket and pending work but retains `activeAudioScope`, `audioAccumulator`, `audioGeneration`, and `audioTerminalReceived`. A valid `audio.frame` start after same-binding reconnect can therefore be rejected as a duplicate, while old-generation PCM is only dropped indirectly. Reset the accumulator, scope, terminal, and generation at the loss boundary, then add a reconnect fixture proving a fresh audio start works and stale PCM cannot join it.
+- [x] [Review][Patch] Do not report a cached binding as ready without a live authenticated socket [HermesRelay/Services/HomeBridgeSessionClient.swift:166-176,239-297,984-1000] — medium. After transport loss, `currentBinding` remains populated while `socket` and the event stream are gone. A later `open` returns `.ready` from the cached binding without reopening/authenticating or sending `conversation.open`; the Store can project Connected and accept a prompt that immediately becomes uncertain. Require a live ready binding/socket (or clear the cached ready projection) and close failed reconnect bindings before reporting readiness.
+- [x] [Review][Patch] Allow a fresh user action after known pre-acceptance rejection [HermesRelay/ViewModels/ConversationStore.swift:849-853,956-968] — medium. A known `request_rejected` correctly avoids an uncertainty marker, but leaves `homeTurnDeliveryState` as `.failedKnown`. The send guard only permits `.idle`, so the next fresh prompt is rejected forever until a broader reset. The contract says known rejection clears only that attempt, leaves the bridge usable, and permits a subsequent fresh action. Add a deterministic rejection-then-fresh-send Store test and restore the idle boundary without preserving the failed attempt as active delivery state.
+- [x] [Review][Patch] Preserve unavailable semantics for known open/reconnect failures [HermesRelay/Services/HomeBridgeSessionClient.swift:228-236,288-296,1164-1175; HermesRelay/ViewModels/ConversationStore.swift:433-449,1433-1517] — medium. JSON-RPC Home codes such as `unauthorized`, `stale_conversation`, `conversation_mismatch`, and `hermes_unavailable` are mapped as known failures, but the `open` and `reconnect` catch paths always return `.disconnected`. The contract requires open/reconnect result failures to be `.unavailable`, while only transport loss/timeout is disconnected/uncertain; the current result can trigger the wrong recovery loop and UI state. Add deterministic known-error open/reconnect coverage and classify the outcomes at that boundary.
+- [x] [Review][Patch] Require valid typed prompt input and successful resolution proof [HermesRelay/Services/HomeBridgeSessionClient.swift:400-443,1104-1119,1270-1284] — medium. Local response matching checks only prompt kind and secret/sudo sensitivity, so empty required `choice`/`answer`/`value`/`password` values pass. More seriously, `decodeCorrelatedResult` requires a `status` key but discards it, so a matching `status: rejected` or `status: error` response is reported as `.accepted`. Validate the fixed typed fields and preserve/validate the Home resolution proof (`ok`, `accepted`, `resolved`, `complete`, or `completed`); keep explicit rejection distinct and leave the pending prompt intact when resolution is not accepted.
+- [x] [Review][Patch] Add Home-aware Store seam coverage instead of relying on client-only tests [HermesRelayTests/ConversationStoreTransportTests.swift; HermesRelayTests/ConversationStoreReconnectTests.swift; HermesRelayTests/RecoveryTests.swift; HermesRelayTests/VoiceSessionCoordinatorTests.swift; story verification matrix:1859-1865] — medium. These suites contain no Home Store/voice/recovery cases, while the matrix claims they prove known-versus-uncertain delivery, no-replay reconnect, interrupt confirmation, control/audio joining, and audio-failure text preservation. The green client tests do not exercise the callers where the first four findings manifest. Add deterministic fake Home fixtures for known rejection followed by a fresh send, loss before/during/after acceptance, reconnect without replay, audio failure with readable text, matching interrupt terminal, and a fresh post-reconnect audio generation.
+
+All seven parent findings were applied with deterministic fake-based TDD. The
+new matching-terminal Store test also exposed two caller-level state defects:
+the sender and interrupter shared one continuation slot, and a settled Home
+turn left the local uncertainty marker behind. Both were fixed and covered by
+the focused and complete platform suites. No parent-review findings remain.
 
 #### Rejected
 
@@ -1870,11 +1893,11 @@ hide an untested migration branch:
 
 **Commands:**
 
-- `xcodebuild -project "Hermes Relay.xcodeproj" -scheme HermesRelay -destination 'platform=macOS' CODE_SIGNING_ALLOWED=NO CODE_SIGN_IDENTITY="" test -only-testing:'Hermes RelayTests/HomeBridgeEnvelopeTests' -only-testing:'Hermes RelayTests/HomeBridgeSessionClientTests' -only-testing:'Hermes RelayTests/HomeBridgeAudioTests' -only-testing:'Hermes RelayTests/HomeConfigurationMigrationTests' -only-testing:'Hermes RelayTests/AppleLifecycleTests' -only-testing:'Hermes RelayTests/HermesEventNormalizerTests' -only-testing:'Hermes RelayTests/ConversationPersistenceTests' -only-testing:'Hermes RelayTests/ConversationStoreTransportTests' -only-testing:'Hermes RelayTests/ConversationStoreReconnectTests' -only-testing:'Hermes RelayTests/RecoveryTests' -only-testing:'Hermes RelayTests/URLSessionHermesSessionClientTests' -only-testing:'Hermes RelayTests/VoiceSessionCoordinatorTests' -only-testing:'Hermes RelayTests/AudioOutputTests' -only-testing:'Hermes RelayTests/RelayConfigurationTests'` -- observed: 223 tests passed, 0 failed.
+- `xcodebuild -project "Hermes Relay.xcodeproj" -scheme HermesRelay -destination 'platform=macOS,arch=arm64' CODE_SIGNING_ALLOWED=NO CODE_SIGN_IDENTITY="" test -parallel-testing-enabled NO -only-testing:'Hermes RelayTests/HomeBridgeEnvelopeTests' -only-testing:'Hermes RelayTests/HomeBridgeSessionClientTests' -only-testing:'Hermes RelayTests/HomeBridgeAudioTests' -only-testing:'Hermes RelayTests/HomeConfigurationMigrationTests' -only-testing:'Hermes RelayTests/AppleLifecycleTests' -only-testing:'Hermes RelayTests/HermesEventNormalizerTests' -only-testing:'Hermes RelayTests/ConversationPersistenceTests' -only-testing:'Hermes RelayTests/ConversationStoreTransportTests' -only-testing:'Hermes RelayTests/ConversationStoreReconnectTests' -only-testing:'Hermes RelayTests/RecoveryTests' -only-testing:'Hermes RelayTests/URLSessionHermesSessionClientTests' -only-testing:'Hermes RelayTests/VoiceSessionCoordinatorTests' -only-testing:'Hermes RelayTests/AudioOutputTests' -only-testing:'Hermes RelayTests/RelayConfigurationTests'` -- observed: 237 tests passed, 0 failed.
 - `xcodebuild -project "Hermes Relay.xcodeproj" -scheme HermesRelay -destination 'generic/platform=iOS Simulator' CODE_SIGNING_ALLOWED=NO CODE_SIGN_IDENTITY="" build` -- observed: build succeeded.
-- `xcrun simctl list devices available | rg 'iPhone 17 Pro'` followed by `xcodebuild -project "Hermes Relay.xcodeproj" -scheme HermesRelay -destination 'platform=iOS Simulator,id=032066B0-9B2C-4EC7-96A0-BCD9F46D47C2' CODE_SIGNING_ALLOWED=NO CODE_SIGN_IDENTITY="" test` -- observed: the runtime-discovered Booted iPhone 17 Pro on iOS 26.5 ran 362 tests with 0 failures.
+- `xcrun simctl list devices available | rg 'iPhone 17 Pro'` followed by `xcodebuild -project "Hermes Relay.xcodeproj" -scheme HermesRelay -destination 'platform=iOS Simulator,id=032066B0-9B2C-4EC7-96A0-BCD9F46D47C2' CODE_SIGNING_ALLOWED=NO CODE_SIGN_IDENTITY="" test -parallel-testing-enabled NO` -- observed: the runtime-discovered Booted iPhone 17 Pro on iOS 26.5 ran 376 tests with 0 failures.
 - `xcodebuild -project "Hermes Relay.xcodeproj" -scheme HermesRelay -destination 'generic/platform=macOS' CODE_SIGNING_ALLOWED=NO CODE_SIGN_IDENTITY="" build` -- observed: build succeeded.
-- `xcodebuild -project "Hermes Relay.xcodeproj" -scheme HermesRelay -destination 'platform=macOS' CODE_SIGNING_ALLOWED=NO CODE_SIGN_IDENTITY="" test` -- observed: 361 tests passed, 0 failed.
+- `xcodebuild -project "Hermes Relay.xcodeproj" -scheme HermesRelay -destination 'platform=macOS,arch=arm64' CODE_SIGNING_ALLOWED=NO CODE_SIGN_IDENTITY="" test -parallel-testing-enabled NO` -- observed: 375 tests passed, 0 failed.
 - `git diff --check` -- observed: passed with no whitespace errors.
 
 **Manual checks:**
@@ -1905,7 +1928,9 @@ hide an untested migration branch:
 Status: review.
 
 Implementation result: the BMAD auto loop preserved the Apple migration slice
-and closed all eleven review patches with deterministic TDD coverage. The
+and closed all eleven delegated review patches plus seven parent findings with
+deterministic TDD coverage. The new parent seam also caught and fixed the
+shared Home turn waiter and stale uncertainty-marker defects. The
 normalized session boundary, schema-1 Home envelope, approved Device
 credential boundary, opaque handles, explicit rollback, fresh-action recovery,
 strict Standard audio/event meaning, timing absence, Apple lifecycle
@@ -1916,8 +1941,8 @@ mismatch classification, unknown-event handling, JSON-RPC fallback mapping,
 audio-unavailable settlement, exact malformed-envelope assertions, and
 forward-compatible optional event-kind mapping.
 
-The focused deterministic Apple gates (223 tests), complete iOS XCTest (362
-tests), complete macOS XCTest (361 tests), and generic iOS/macOS build gates
+The focused deterministic Apple gates (237 tests), complete iOS XCTest (376
+tests), complete macOS XCTest (375 tests), and generic iOS/macOS build gates
 pass. The public Home adapter remains an explicit blocked evidence gate:
 the deployed listener returned `status: unavailable` with
 `reason: hermes_unavailable` to a schema-1 `conversation.open` probe using a

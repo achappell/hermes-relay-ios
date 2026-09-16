@@ -133,12 +133,14 @@ actor URLSessionHomeBridgeSessionClient: HomeBridgeSessionClient {
     private var generation: UInt64 = 0
     private var currentClaim: HomeConversationClaim?
     private var currentBinding: HomeConversationBinding?
+    private var bridgeReady = false
     private var capabilities = HomeBridgeCapabilities()
     private var pending: [String: CheckedContinuation<HomeWireResponse, Error>] = [:]
     private var pendingPrompts: [String: HomePendingStructuredPrompt] = [:]
     private var eventContinuation: AsyncThrowingStream<HomeBridgeEvent, Error>.Continuation?
     private var eventStream: AsyncThrowingStream<HomeBridgeEvent, Error>?
     private var activeAudioScope: HomeEventScope?
+    private var pendingAudioScope: HomeEventScope?
     private var audioAccumulator: HomePCMAccumulator?
     private var audioGeneration: UInt64?
     private var audioTerminalReceived = false
@@ -171,8 +173,11 @@ actor URLSessionHomeBridgeSessionClient: HomeBridgeSessionClient {
                       currentBinding.householdBinding == claim.approvedRoute.householdBinding else {
                     return .unavailable(.home(code: .conversationMismatch, phase: .open))
                 }
-                return .ready(binding: currentBinding, capabilities: capabilities)
+                if bridgeReady, socket != nil {
+                    return .ready(binding: currentBinding, capabilities: capabilities)
+                }
             }
+            bridgeReady = false
             try await installSocket(route: claim.approvedRoute, profileID: claim.profileID)
             currentClaim = claim
 
@@ -224,6 +229,7 @@ actor URLSessionHomeBridgeSessionClient: HomeBridgeSessionClient {
                 capabilities: capabilities
             )
             currentBinding = binding
+            bridgeReady = true
             return .ready(binding: binding, capabilities: capabilities)
         } catch is HomeWireDecodingError {
             return .unavailable(.home(code: .protocolError, phase: .open))
@@ -232,16 +238,20 @@ actor URLSessionHomeBridgeSessionClient: HomeBridgeSessionClient {
         } catch is CancellationError {
             return .disconnected(.home(code: .transportTimeout, phase: .open))
         } catch {
-            return .disconnected(failure(for: error, phase: .open))
+            let failure = failure(for: error, phase: .open)
+            return failure.classification == .uncertain
+                ? .disconnected(failure)
+                : .unavailable(failure)
         }
     }
 
     func reconnect(binding: HomeConversationBinding) async -> HomeReconnectOutcome {
         guard !closed else { return .disconnected(.home(code: .transportUnavailable, phase: .lifecycle)) }
         do {
-            guard validateCurrentBinding(binding) == nil else {
+            guard validateBindingIdentity(binding) == nil else {
                 return .unavailable(.home(code: .conversationMismatch, phase: .reconnect))
             }
+            bridgeReady = false
             if socket == nil {
                 let route = HomeApprovedRoute(
                     endpoint: binding.endpoint,
@@ -278,6 +288,7 @@ actor URLSessionHomeBridgeSessionClient: HomeBridgeSessionClient {
                 let unresolved = result.unresolvedTurnID.map {
                     HomeUnresolvedTurn(turnID: $0, resumeCursor: result.resumeCursor)
                 }
+                bridgeReady = true
                 return .ready(binding: binding, unresolvedTurn: unresolved)
             case .unavailable:
                 if result.reason == .reconnectRequired {
@@ -292,7 +303,10 @@ actor URLSessionHomeBridgeSessionClient: HomeBridgeSessionClient {
         } catch is CancellationError {
             return .disconnected(.home(code: .transportTimeout, phase: .reconnect))
         } catch {
-            return .disconnected(failure(for: error, phase: .reconnect))
+            let failure = failure(for: error, phase: .reconnect)
+            return failure.classification == .uncertain
+                ? .disconnected(failure)
+                : .unavailable(failure)
         }
     }
 
@@ -329,13 +343,18 @@ actor URLSessionHomeBridgeSessionClient: HomeBridgeSessionClient {
             guard result.status == "accepted" else {
                 return .rejected(.home(code: .requestRejected, phase: .submission))
             }
-            return .accepted(
-                HomeTurnBinding(
-                    conversationHandle: binding.conversationHandle,
-                    turnID: result.turnID,
-                    correlationID: result.correlationID
-                )
+            let turn = HomeTurnBinding(
+                conversationHandle: binding.conversationHandle,
+                turnID: result.turnID,
+                correlationID: result.correlationID
             )
+            clearAudioStreamState()
+            pendingAudioScope = HomeEventScope(
+                conversationHandle: turn.conversationHandle,
+                turnID: turn.turnID,
+                correlationID: turn.correlationID
+            )
+            return .accepted(turn)
         } catch is HomeDeadlineError {
             return .uncertain(.home(code: .transportTimeout, phase: .submission))
         } catch is CancellationError {
@@ -438,8 +457,15 @@ actor URLSessionHomeBridgeSessionClient: HomeBridgeSessionClient {
                   result.correlationID == prompt.correlationID else {
                 return .rejected(.home(code: .conversationMismatch, phase: .structuredResponse))
             }
-            pendingPrompts.removeValue(forKey: prompt.correlationID)
-            return .accepted
+            switch result.status.lowercased() {
+            case "ok", "accepted", "resolved", "complete", "completed":
+                pendingPrompts.removeValue(forKey: prompt.correlationID)
+                return .accepted
+            case "rejected", "denied", "expired", "failed", "error", "unavailable":
+                return .rejected(.home(code: .requestRejected, phase: .structuredResponse))
+            default:
+                return .rejected(.home(code: .protocolError, phase: .structuredResponse))
+            }
         } catch is HomeDeadlineError {
             return .uncertain(.home(code: .transportTimeout, phase: .structuredResponse))
         } catch is CancellationError {
@@ -552,8 +578,10 @@ actor URLSessionHomeBridgeSessionClient: HomeBridgeSessionClient {
         socket = nil
         currentClaim = nil
         currentBinding = nil
+        bridgeReady = false
         audioAccumulator = nil
         activeAudioScope = nil
+        pendingAudioScope = nil
         audioGeneration = nil
         audioTerminalReceived = false
         pendingPrompts.removeAll()
@@ -674,8 +702,16 @@ actor URLSessionHomeBridgeSessionClient: HomeBridgeSessionClient {
                 eventContinuation?.yield(.standard(event))
             }
         case "audio.frame":
-            if let event = try decodeAudioFrame(params) {
-                eventContinuation?.yield(event)
+            do {
+                if let event = try decodeAudioFrame(params) {
+                    eventContinuation?.yield(event)
+                }
+            } catch let error as HomeWireDecodingError {
+                guard error == .invalidAudioFrame,
+                      let scope = audioFailureScope(from: params) else {
+                    throw error
+                }
+                finishInvalidAudio(scope: scope)
             }
         default:
             throw HomeWireDecodingError.unsupportedMethod
@@ -683,6 +719,10 @@ actor URLSessionHomeBridgeSessionClient: HomeBridgeSessionClient {
     }
 
     private func handleBinaryFrame(_ data: Data) async throws {
+        if let pendingAudioScope, activeAudioScope == nil, !audioTerminalReceived {
+            finishInvalidAudio(scope: pendingAudioScope)
+            return
+        }
         guard let scope = activeAudioScope,
               let audioGeneration,
               audioGeneration == generation,
@@ -885,6 +925,7 @@ actor URLSessionHomeBridgeSessionClient: HomeBridgeSessionClient {
             )
             guard format.isValidSignedPCM else { throw HomeWireDecodingError.invalidAudioFrame }
             activeAudioScope = scope
+            pendingAudioScope = nil
             audioAccumulator = HomePCMAccumulator()
             audioGeneration = generation
             audioTerminalReceived = false
@@ -897,17 +938,21 @@ actor URLSessionHomeBridgeSessionClient: HomeBridgeSessionClient {
             }
             do {
                 try accumulator.finish()
+                let finishedScope = activeAudioScope ?? scope
                 audioAccumulator = nil
                 activeAudioScope = nil
+                pendingAudioScope = nil
                 audioGeneration = nil
                 audioTerminalReceived = true
-                return .audioTerminal(activeAudioScope ?? scope, .end)
+                return .audioTerminal(finishedScope, .end)
             } catch {
+                let failedScope = activeAudioScope ?? scope
                 audioAccumulator = nil
                 activeAudioScope = nil
+                pendingAudioScope = nil
                 audioGeneration = nil
                 audioTerminalReceived = true
-                return .audioTerminal(activeAudioScope ?? scope, .unavailable)
+                return .audioTerminal(failedScope, .invalid)
             }
         case "fallback", "unavailable":
             try requireKeys(frame, allowed: kind == "unavailable" ? ["kind", "reason"] : ["kind"])
@@ -919,6 +964,7 @@ actor URLSessionHomeBridgeSessionClient: HomeBridgeSessionClient {
             guard audioScopeMatches(scope) else { return nil }
             audioAccumulator = nil
             activeAudioScope = nil
+            pendingAudioScope = nil
             audioGeneration = nil
             audioTerminalReceived = true
             return .audioTerminal(scope, kind == "fallback" ? .fallback : .unavailable)
@@ -952,6 +998,13 @@ actor URLSessionHomeBridgeSessionClient: HomeBridgeSessionClient {
     }
 
     private func validateCurrentBinding(_ binding: HomeConversationBinding) -> HomeBridgeFailure? {
+        guard bridgeReady, socket != nil else {
+            return .home(code: .transportUnavailable, phase: .lifecycle)
+        }
+        return validateBindingIdentity(binding)
+    }
+
+    private func validateBindingIdentity(_ binding: HomeConversationBinding) -> HomeBridgeFailure? {
         guard let currentBinding else { return .home(code: .conversationMismatch, phase: .lifecycle) }
         guard currentBinding == binding else { return .home(code: .conversationMismatch, phase: .lifecycle) }
         return nil
@@ -962,6 +1015,51 @@ actor URLSessionHomeBridgeSessionClient: HomeBridgeSessionClient {
               activeAudioScope.conversationHandle == scope.conversationHandle,
               activeAudioScope.turnID == scope.turnID else { return false }
         return scope.correlationID == nil || activeAudioScope.correlationID == scope.correlationID
+    }
+
+    private func pendingAudioScopeMatches(_ scope: HomeEventScope) -> Bool {
+        guard let pendingAudioScope,
+              pendingAudioScope.conversationHandle == scope.conversationHandle,
+              pendingAudioScope.turnID == scope.turnID else { return false }
+        return scope.correlationID == nil || pendingAudioScope.correlationID == scope.correlationID
+    }
+
+    private func audioFailureScope(from params: [String: Any]) -> HomeEventScope? {
+        guard intValue(params["schema"]) == 1,
+              let handle = params["conversation_handle"] as? String,
+              !handle.isEmpty,
+              let turnID = params["turn_id"] as? String,
+              !turnID.isEmpty,
+              let binding = currentBinding,
+              binding.conversationHandle == handle else { return nil }
+        let correlationID: String?
+        if let value = params["correlation_id"] {
+            guard let value = value as? String, !value.isEmpty else { return nil }
+            correlationID = value
+        } else {
+            correlationID = nil
+        }
+        let scope = HomeEventScope(
+            conversationHandle: handle,
+            turnID: turnID,
+            correlationID: correlationID
+        )
+        guard audioScopeMatches(scope) || pendingAudioScopeMatches(scope) else { return nil }
+        return scope
+    }
+
+    private func clearAudioStreamState() {
+        activeAudioScope = nil
+        audioAccumulator = nil
+        audioGeneration = nil
+        audioTerminalReceived = false
+    }
+
+    private func finishInvalidAudio(scope: HomeEventScope) {
+        clearAudioStreamState()
+        pendingAudioScope = nil
+        audioTerminalReceived = true
+        eventContinuation?.yield(.audioTerminal(scope, .invalid))
     }
 
     fileprivate static func parseISO8601Date(_ value: String) -> Date? {
@@ -987,6 +1085,11 @@ actor URLSessionHomeBridgeSessionClient: HomeBridgeSessionClient {
     ) async {
         guard lostGeneration == generation, !closed else { return }
         socket = nil
+        bridgeReady = false
+        if let activeAudioScope {
+            pendingAudioScope = activeAudioScope
+        }
+        clearAudioStreamState()
         let failure: Error = decodingError ?? HomeBridgeTransportError.disconnected
         let waiters = pending.values
         pending.removeAll()
@@ -1105,6 +1208,7 @@ private struct HomeCorrelatedResult {
     let handle: String
     let turnID: String
     let correlationID: String
+    let status: String
 }
 
 private func decodeCorrelatedResult(_ response: HomeWireResponse) throws -> HomeCorrelatedResult {
@@ -1113,10 +1217,20 @@ private func decodeCorrelatedResult(_ response: HomeWireResponse) throws -> Home
     guard (intValue(response.result["schema"]) ?? 0) == 1,
           let handle = response.result["conversation_handle"] as? String,
           let turnID = response.result["turn_id"] as? String,
-          let correlationID = response.result["correlation_id"] as? String else {
+          let correlationID = response.result["correlation_id"] as? String,
+          let status = response.result["status"] as? String,
+          !handle.isEmpty,
+          !turnID.isEmpty,
+          !correlationID.isEmpty,
+          !status.isEmpty else {
         throw HomeWireDecodingError.invalidShape
     }
-    return HomeCorrelatedResult(handle: handle, turnID: turnID, correlationID: correlationID)
+    return HomeCorrelatedResult(
+        handle: handle,
+        turnID: turnID,
+        correlationID: correlationID,
+        status: status
+    )
 }
 
 private func decodeCommandResult(
@@ -1272,13 +1386,13 @@ private func responseMatchesPrompt(
     response: HomePromptResponse
 ) -> Bool {
     switch response {
-    case .approval:
-        return prompt.kind == .approval
-    case .clarification:
-        return prompt.kind == .clarification
-    case .secret:
-        return prompt.kind == .secret && prompt.sensitive
-    case .sudo:
-        return prompt.kind == .sudo && prompt.sensitive
+    case .approval(let choice, _):
+        return prompt.kind == .approval && !choice.isEmpty
+    case .clarification(let answer):
+        return prompt.kind == .clarification && !answer.isEmpty
+    case .secret(let value):
+        return prompt.kind == .secret && prompt.sensitive && !value.isEmpty
+    case .sudo(let password):
+        return prompt.kind == .sudo && prompt.sensitive && !password.isEmpty
     }
 }

@@ -231,7 +231,7 @@ struct HermesEventNormalizer: Sendable {
         case .audioTerminal(_, let terminal):
             switch terminal {
             case .end: return [.audioEnd]
-            case .fallback, .unavailable:
+            case .fallback, .unavailable, .invalid:
                 return [.audioAbort(turnID: "home", reason: terminal.rawValue)]
             }
         default:

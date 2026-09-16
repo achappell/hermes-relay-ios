@@ -746,7 +746,7 @@ struct HomeStandardEvent: Equatable, Sendable {
 }
 
 enum HomeAudioTerminal: String, Sendable {
-    case end, fallback, unavailable
+    case end, fallback, unavailable, invalid
 }
 
 enum HomeBridgeEvent: Equatable, Sendable {
