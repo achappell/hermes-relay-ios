@@ -25,7 +25,7 @@ final class ConversationStore {
     private var homeTurnBinding: HomeTurnBinding?
     private var homeRecovery: PersistedHomeRecovery?
     private var homeEventTask: Task<Void, Never>?
-    private var homeTurnWaiter: CheckedContinuation<Bool, Never>?
+    private var homeTurnWaiters: [CheckedContinuation<Bool, Never>] = []
     private var homeAudioTerminalWaiter: CheckedContinuation<Void, Never>?
     private var homeTurnResult: Bool?
     private var homeEventHandler: (@MainActor @Sendable (HermesEvent) async -> Void)?
@@ -503,7 +503,9 @@ final class ConversationStore {
                 }
             }
         case .audioStart(let scope, let format):
-            guard isCurrentHomeEvent(scope) else { return }
+            guard isCurrentHomeEvent(scope),
+                  !homeAudioTerminal,
+                  !homeAudioTerminalProcessing else { return }
             guard format.isValidSignedPCM else {
                 await markHomeAudioFailure(generation: nextTurnGeneration)
                 return
@@ -518,12 +520,17 @@ final class ConversationStore {
                 if let homeEventHandler { await homeEventHandler(event) }
             }
         case .binaryPCM(let scope, let data):
-            guard isCurrentHomeEvent(scope), !data.isEmpty else { return }
+            guard isCurrentHomeEvent(scope),
+                  !homeAudioTerminal,
+                  !homeAudioTerminalProcessing,
+                  !data.isEmpty else { return }
             for event in homeNormalizer.normalizeHomeAudio(event) {
                 if let homeEventHandler { await homeEventHandler(event) }
             }
         case .audioTerminal(let scope, let terminal):
-            guard isCurrentHomeEvent(scope) else { return }
+            guard isCurrentHomeEvent(scope),
+                  !homeAudioTerminal,
+                  !homeAudioTerminalProcessing else { return }
             homeAudioTerminalProcessing = true
             switch terminal {
             case .end:
@@ -532,6 +539,8 @@ final class ConversationStore {
                 homeAudioState = .fallback(generation: nextTurnGeneration)
             case .unavailable:
                 homeAudioState = .unavailable(generation: nextTurnGeneration)
+            case .invalid:
+                homeAudioState = .invalid(generation: nextTurnGeneration)
             }
             homeAudioTimeoutTask?.cancel()
             homeAudioTimeoutTask = nil
@@ -583,8 +592,7 @@ final class ConversationStore {
         homeControlTimeoutTask = nil
         homeTurnDeliveryState = success ? .completed(turn) : .interrupted(turn)
         homeTurnResult = success
-        homeTurnWaiter?.resume(returning: success)
-        homeTurnWaiter = nil
+        resumeHomeTurnWaiters(returning: success)
     }
 
     private func scheduleHomeControlDeadline(for turn: HomeTurnBinding) {
@@ -616,8 +624,7 @@ final class ConversationStore {
                     turn: turn
                 )
             }
-            self.homeTurnWaiter?.resume(returning: false)
-            self.homeTurnWaiter = nil
+            self.resumeHomeTurnWaiters(returning: false)
         }
     }
 
@@ -846,9 +853,15 @@ final class ConversationStore {
         let previousDeliveryState = homeTurnDeliveryState
         let previousUnconfirmedText = unconfirmedTurnText
         let previousHomeTurnBinding = homeTurnBinding
+        let knownFailureCanBeRetried: Bool
+        if case .failedKnown = homeTurnDeliveryState {
+            knownFailureCanBeRetried = true
+        } else {
+            knownFailureCanBeRetried = false
+        }
         guard !isSending,
               (homeRecovery == nil || replacingExistingRecovery),
-              homeTurnDeliveryState == .idle || replacingExistingRecovery else {
+              homeTurnDeliveryState == .idle || knownFailureCanBeRetried || replacingExistingRecovery else {
             transientError = "A Hermes turn is already in progress or awaiting resolution."
             return false
         }
@@ -981,8 +994,14 @@ final class ConversationStore {
         guard homeTurnBinding == turn else { return false }
         if let homeTurnResult { return homeTurnResult }
         return await withCheckedContinuation { continuation in
-            homeTurnWaiter = continuation
+            homeTurnWaiters.append(continuation)
         }
+    }
+
+    private func resumeHomeTurnWaiters(returning result: Bool) {
+        let waiters = homeTurnWaiters
+        homeTurnWaiters.removeAll()
+        waiters.forEach { $0.resume(returning: result) }
     }
 
     private func waitForHomeAudioTerminal(turn: HomeTurnBinding) async {
@@ -1086,6 +1105,7 @@ final class ConversationStore {
         homeJoinTimeout = nil
         homeTurnBinding = nil
         homeTurnDeliveryState = .idle
+        unconfirmedTurnText = nil
         homeAudioState = .notRequested
         homeAudioTerminal = true
         homeAudioTerminalProcessing = false
@@ -1199,8 +1219,7 @@ final class ConversationStore {
         homeAudioStartTimeoutTask = nil
         homeAudioTimeoutTask?.cancel()
         homeAudioTimeoutTask = nil
-        homeTurnWaiter?.resume(returning: false)
-        homeTurnWaiter = nil
+        resumeHomeTurnWaiters(returning: false)
         homeAudioTerminalWaiter?.resume()
         homeAudioTerminalWaiter = nil
         homeAudioTerminal = true

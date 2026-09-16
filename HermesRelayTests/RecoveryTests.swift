@@ -46,6 +46,92 @@ final class RecoveryTests: XCTestCase {
         XCTAssertEqual(client.sentTurns, ["First attempt", "Second attempt"])
         XCTAssertNil(store.unconfirmedTurnText)
     }
+
+    @MainActor
+    func testHomeRecoveryRestoresUncertaintyWithoutReplayingPrompt() async throws {
+        let profileID = UUID(uuidString: "CCCCCCCC-DDDD-EEEE-FFFF-000000000000")!
+        let profile = try RelayProfile(
+            id: profileID,
+            endpoint: URL(string: "wss://legacy.example/session")!,
+            clientID: "hermes-apple",
+            deviceID: "apple-device",
+            displayName: "Recovery Home"
+        )
+        let profileURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("HermesRelayIOS-HomeRecoveryReview-\(UUID().uuidString)")
+            .appendingPathExtension("json")
+        defer { try? FileManager.default.removeItem(at: profileURL.deletingLastPathComponent()) }
+
+        let configurationStore = RelayConfigurationStore(
+            secureStore: HomeRecoverySecureValueStore(),
+            profileURL: profileURL
+        )
+        let journal = HomeMigrationJournal(
+            schemaVersion: 1,
+            profileID: profileID,
+            phase: .homeSelected,
+            selectedMode: .home,
+            credential: nil,
+            legacyCredentialRetained: true,
+            updatedAt: Date(timeIntervalSince1970: 0)
+        )
+        try await configurationStore.saveCollection(
+            RelayProfileCollection(
+                profiles: [profile],
+                selectedID: profileID,
+                homeMigrations: [profileID: journal]
+            )
+        )
+
+        let claim = HomeDemoFixtures.claim(for: profileID)
+        let turn = HomeTurnBinding(
+            conversationHandle: claim.conversationHandle,
+            turnID: "turn-recovery",
+            correlationID: "correlation-recovery"
+        )
+        let recovery = PersistedHomeRecovery(
+            profileID: profileID,
+            endpoint: claim.approvedRoute.endpoint,
+            route: claim.approvedRoute.identity,
+            householdBinding: claim.approvedRoute.householdBinding,
+            conversationHandle: claim.conversationHandle,
+            turnID: turn.turnID,
+            correlationID: turn.correlationID,
+            submissionAttemptID: UUID(uuidString: "DDDDDDDD-EEEE-FFFF-0000-111111111111"),
+            resumeCursor: "cursor-recovery",
+            deliveryState: .uncertain,
+            updatedAt: Date(timeIntervalSince1970: 1)
+        )
+        let persistence = HomeRecoveryConversationPersistence(
+            conversation: PersistedConversation(
+                messages: [TranscriptMessage(role: .user, text: "Uncertain Home prompt")],
+                draft: "",
+                unconfirmedTurnText: "Uncertain Home prompt",
+                homeRecovery: recovery
+            )
+        )
+        let client = FakeHomeBridgeSessionClient(claim: claim)
+        let store = ConversationStore(
+            configurationStore: configurationStore,
+            persistence: persistence,
+            homeClientFactory: FakeHomeBridgeSessionClientFactory(client: client),
+            homeClaimProvider: StaticHomeConversationClaimProvider(claim: claim)
+        )
+
+        let configured = await store.loadConfiguredClient()
+        XCTAssertTrue(configured)
+        await store.loadPersistedConversation()
+        XCTAssertEqual(store.homeTurnDeliveryState, .uncertain(turn))
+        XCTAssertEqual(store.unconfirmedTurnText, "Uncertain Home prompt")
+
+        await store.connect()
+
+        XCTAssertTrue(store.connectionState.isConnected)
+        XCTAssertTrue(store.homeBridgeState.isReady)
+        XCTAssertEqual(store.homeTurnDeliveryState, .uncertain(turn))
+        let submittedTexts = await client.submittedTexts
+        XCTAssertEqual(submittedTexts, [])
+    }
 }
 
 private actor RecordingConversationPersistence: ConversationPersistence {
@@ -62,6 +148,26 @@ private actor RecordingConversationPersistence: ConversationPersistence {
     func lastSaved() -> PersistedConversation? {
         savedConversation
     }
+}
+
+private actor HomeRecoveryConversationPersistence: ConversationPersistence {
+    private let conversation: PersistedConversation
+
+    init(conversation: PersistedConversation) {
+        self.conversation = conversation
+    }
+
+    func load() async throws -> PersistedConversation {
+        conversation
+    }
+
+    func save(_ conversation: PersistedConversation) async throws {}
+}
+
+private final class HomeRecoverySecureValueStore: SecureValueStore, @unchecked Sendable {
+    func read(service: String, account: String) throws -> Data? { nil }
+    func write(_ value: Data, service: String, account: String) throws {}
+    func delete(service: String, account: String) throws {}
 }
 
 private final class RecoveryHermesSessionClient: HermesSessionClient, @unchecked Sendable {

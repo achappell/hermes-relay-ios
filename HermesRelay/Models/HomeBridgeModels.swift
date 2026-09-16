@@ -746,7 +746,7 @@ struct HomeStandardEvent: Equatable, Sendable {
 }
 
 enum HomeAudioTerminal: String, Sendable {
-    case end, fallback, unavailable
+    case end, fallback, unavailable, invalid
 }
 
 enum HomeBridgeEvent: Equatable, Sendable {
@@ -1209,24 +1209,34 @@ struct HomeJSONRPCResponse: Codable, Equatable, Sendable {
 }
 
 struct HomeJSONRPCError: Codable, Equatable, Sendable {
-    let code: String
+    /// JSON-RPC reserves this field for the numeric protocol error code. The
+    /// Home-specific stable failure code lives in `data.code` instead.
+    let code: Int
     let data: [String: HomeJSONValue]?
 
     private enum CodingKeys: String, CodingKey, CaseIterable {
-        case code, data
+        case code, message, data
     }
 
-    init(code: String, data: [String: HomeJSONValue]? = nil) {
+    init(code: Int, data: [String: HomeJSONValue]? = nil) {
         self.code = code
         self.data = data
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var values = encoder.container(keyedBy: CodingKeys.self)
+        try values.encode(code, forKey: .code)
+        try values.encodeIfPresent(data, forKey: .data)
     }
 
     init(from decoder: Decoder) throws {
         let values = try decoder.container(keyedBy: CodingKeys.self)
         try HomeCoding.requireExactKeys(decoder, allowed: CodingKeys.allCases)
-        code = try values.decode(String.self, forKey: .code)
+        code = try values.decode(Int.self, forKey: .code)
+        // JSON-RPC messages are useful to a peer but are deliberately not
+        // retained in the endpoint-safe model.
+        _ = try values.decodeIfPresent(String.self, forKey: .message)
         data = try values.decodeIfPresent([String: HomeJSONValue].self, forKey: .data)
-        guard !code.isEmpty else { throw HomeWireDecodingError.invalidShape }
     }
 }
 
