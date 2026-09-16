@@ -157,6 +157,126 @@ final class HomeBridgeSessionClientTests: XCTestCase {
         await client.close()
     }
 
+    func testURLSessionClientAcceptsLiveHomeOpenAndSubmissionReplies() async throws {
+        let fixture = try await makeFixture()
+        let client = fixture.client
+        let stream = await client.events()
+        var events = stream.makeAsyncIterator()
+        // Shapes observed from the deployed Home adapter: `unresolved_turn: false`,
+        // an `audio` capability, no `heartbeat`, and a submission without a correlation ID.
+        await fixture.socket.setNextResultJSON(for: "conversation.open", """
+        {"schema":1,"status":"ready","conversation_handle":"opaque-home-conversation",\
+        "route":{"class":"home","id":"home-a"},\
+        "capabilities":{"commands":[],"timing":"absent","interrupt":true,"audio":true},\
+        "unresolved_turn":false}
+        """)
+        await fixture.socket.setNextResultJSON(for: "prompt.submit", """
+        {"schema":1,"conversation_handle":"opaque-home-conversation","turn_id":"turn-live","status":"submitted"}
+        """)
+
+        guard case .ready(let binding, let capabilities) = await client.open(claim: fixture.claim) else {
+            return XCTFail("The live Home ready reply must open the bridge")
+        }
+        XCTAssertFalse(capabilities.heartbeat)
+        XCTAssertTrue(capabilities.interrupt)
+        XCTAssertEqual(capabilities.timing, .absent)
+
+        guard case .accepted(let turn) = await client.submitPrompt("hello", binding: binding) else {
+            return XCTFail("The live Home submission reply must accept the prompt")
+        }
+        XCTAssertEqual(turn.turnID, "turn-live")
+        XCTAssertNil(turn.correlationID)
+
+        await fixture.socket.enqueue(.text(try eventFrame(
+            conversationHandle: binding.conversationHandle,
+            turnID: turn.turnID,
+            correlationID: "standard-request-1",
+            type: "message.delta",
+            payload: ["rendered": "Hello from Home", "kind": "assistant"]
+        )))
+        let event = try await events.next()
+        guard case .standard(let standard) = event else {
+            return XCTFail("The turn's Standard event must be delivered")
+        }
+        XCTAssertEqual(standard.scope.turnID, turn.turnID)
+        XCTAssertTrue(homeCorrelationMatches(expected: turn.correlationID, received: standard.scope.correlationID))
+        await client.close()
+    }
+
+    func testURLSessionClientRequiresReconnectWhenOpenReportsAnUnresolvedTurn() async throws {
+        let fixture = try await makeFixture()
+        await fixture.socket.setNextResultJSON(for: "conversation.open", """
+        {"schema":1,"status":"ready","conversation_handle":"opaque-home-conversation",\
+        "route":{"class":"home","id":"home-a"},\
+        "capabilities":{"commands":[],"timing":"absent","interrupt":true,"audio":true},\
+        "unresolved_turn":{"turn_id":"turn-old","resume_cursor":"cursor-1"}}
+        """)
+
+        let outcome = await fixture.client.open(claim: fixture.claim)
+
+        XCTAssertEqual(outcome, .unavailable(.reconnectRequired))
+        await fixture.client.close()
+
+        let wrongRoute = try await makeFixture()
+        await wrongRoute.socket.setNextResultJSON(for: "conversation.open", """
+        {"schema":1,"status":"ready","conversation_handle":"opaque-home-conversation",\
+        "route":{"class":"home","id":"other-route"},\
+        "capabilities":{"commands":[],"timing":"absent"},"unresolved_turn":true}
+        """)
+
+        let wrongRouteOutcome = await wrongRoute.client.open(claim: wrongRoute.claim)
+
+        XCTAssertEqual(wrongRouteOutcome, .unavailable(.route(.identityMismatch)))
+        await wrongRoute.client.close()
+    }
+
+    func testURLSessionClientStillRejectsUnknownReadyCapabilityAndMalformedUnresolvedTurn() async throws {
+        for result in [
+            """
+            {"schema":1,"status":"ready","conversation_handle":"opaque-home-conversation",\
+            "route":{"class":"home","id":"home-a"},\
+            "capabilities":{"commands":[],"timing":"absent","speech":true}}
+            """,
+            """
+            {"schema":1,"status":"ready","conversation_handle":"opaque-home-conversation",\
+            "route":{"class":"home","id":"home-a"},\
+            "capabilities":{"commands":[],"timing":"absent"},"unresolved_turn":"yes"}
+            """,
+        ] {
+            let fixture = try await makeFixture()
+            await fixture.socket.setNextResultJSON(for: "conversation.open", result)
+
+            let outcome = await fixture.client.open(claim: fixture.claim)
+
+            XCTAssertEqual(outcome, .unavailable(.home(code: .protocolError, phase: .open)))
+            await fixture.client.close()
+        }
+    }
+
+    func testURLSessionClientRejectsEmptySubmissionCorrelationID() async throws {
+        let fixture = try await makeFixture()
+        guard case .ready(let binding, _) = await fixture.client.open(claim: fixture.claim) else {
+            return XCTFail("A valid Home bridge response must become ready")
+        }
+        await fixture.socket.setNextResultJSON(for: "prompt.submit", """
+        {"schema":1,"conversation_handle":"opaque-home-conversation","turn_id":"turn-1",\
+        "correlation_id":"","status":"accepted"}
+        """)
+
+        let outcome = await fixture.client.submitPrompt("hello", binding: binding)
+
+        XCTAssertEqual(outcome, .rejected(.home(code: .protocolError, phase: .submission)))
+        await fixture.client.close()
+    }
+
+    func testCorrelationMatchingFallsBackToTurnIDOnlyWhenEitherSideIsAbsent() {
+        XCTAssertTrue(homeCorrelationMatches(expected: nil, received: "standard-request-1"))
+        XCTAssertTrue(homeCorrelationMatches(expected: "correlation-1", received: nil))
+        XCTAssertTrue(homeCorrelationMatches(expected: "correlation-1", received: "correlation-1"))
+        XCTAssertFalse(homeCorrelationMatches(expected: "correlation-1", received: "correlation-2"))
+        XCTAssertFalse(homeCorrelationMatches(expected: "unresolved", received: "correlation-1"))
+    }
+
     func testURLSessionClientRejectsNumericBooleanEventField() async throws {
         let fixture = try await makeFixture()
         let client = fixture.client
@@ -1268,6 +1388,7 @@ private actor TestHomeSocket: WebSocketConnection {
     private var closes = 0
     private var nextError: (method: String, jsonRPCCode: TestJSONRPCCode, homeCode: String?)?
     private var nextPromptResponseStatus: String?
+    private var resultOverrides: [String: String] = [:]
 
     init(claim: HomeConversationClaim) {
         self.claim = claim
@@ -1303,6 +1424,18 @@ private actor TestHomeSocket: WebSocketConnection {
                 "schema": 1,
                 "id": id,
                 "error": error,
+            ]
+            enqueue(.text(String(decoding: try JSONSerialization.data(withJSONObject: response), as: UTF8.self)))
+            return
+        }
+        if let override = resultOverrides.removeValue(forKey: method) {
+            let response: [String: Any] = [
+                "jsonrpc": "2.0",
+                "schema": 1,
+                "id": id,
+                "result": try XCTUnwrap(
+                    JSONSerialization.jsonObject(with: Data(override.utf8)) as? [String: Any]
+                ),
             ]
             enqueue(.text(String(decoding: try JSONSerialization.data(withJSONObject: response), as: UTF8.self)))
             return
@@ -1416,6 +1549,11 @@ private actor TestHomeSocket: WebSocketConnection {
 
     func setNextPromptResponseStatus(_ status: String) {
         nextPromptResponseStatus = status
+    }
+
+    /// Replaces the next `result` for `method` with a raw JSON object, e.g. a live Home reply.
+    func setNextResultJSON(for method: String, _ json: String) {
+        resultOverrides[method] = json
     }
 
     func closeCount() -> Int { closes }

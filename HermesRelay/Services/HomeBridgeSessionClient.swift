@@ -219,6 +219,10 @@ actor URLSessionHomeBridgeSessionClient: HomeBridgeSessionClient {
             guard ready.reason == nil else {
                 return .unavailable(mapOpenReason(ready.reason!))
             }
+            // Only after the route identity is proven: an unresolved turn is never replayed here.
+            guard !ready.unresolvedTurn else {
+                return .unavailable(.reconnectRequired)
+            }
             capabilities = HomeBridgeCapabilities(wireCapabilities)
             let binding = HomeConversationBinding(
                 profileID: claim.profileID,
@@ -340,7 +344,8 @@ actor URLSessionHomeBridgeSessionClient: HomeBridgeSessionClient {
                 }
             )
             let result = try decodeSubmission(response, binding: binding)
-            guard result.status == "accepted" else {
+            // Home passes Standard's acceptance through as either label.
+            guard result.status == "accepted" || result.status == "submitted" else {
                 return .rejected(.home(code: .requestRejected, phase: .submission))
             }
             let turn = HomeTurnBinding(
@@ -1014,14 +1019,14 @@ actor URLSessionHomeBridgeSessionClient: HomeBridgeSessionClient {
         guard let activeAudioScope,
               activeAudioScope.conversationHandle == scope.conversationHandle,
               activeAudioScope.turnID == scope.turnID else { return false }
-        return scope.correlationID == nil || activeAudioScope.correlationID == scope.correlationID
+        return homeCorrelationMatches(expected: activeAudioScope.correlationID, received: scope.correlationID)
     }
 
     private func pendingAudioScopeMatches(_ scope: HomeEventScope) -> Bool {
         guard let pendingAudioScope,
               pendingAudioScope.conversationHandle == scope.conversationHandle,
               pendingAudioScope.turnID == scope.turnID else { return false }
-        return scope.correlationID == nil || pendingAudioScope.correlationID == scope.correlationID
+        return homeCorrelationMatches(expected: pendingAudioScope.correlationID, received: scope.correlationID)
     }
 
     private func audioFailureScope(from params: [String: Any]) -> HomeEventScope? {
@@ -1183,7 +1188,7 @@ private func decodeReconnect(
 private struct HomeSubmissionWireResult {
     let status: String
     let turnID: String
-    let correlationID: String
+    let correlationID: String?
 }
 
 private func decodeSubmission(
@@ -1196,10 +1201,19 @@ private func decodeSubmission(
           response.result["conversation_handle"] as? String == binding.conversationHandle,
           let status = response.result["status"] as? String,
           let turnID = response.result["turn_id"] as? String,
-          let correlationID = response.result["correlation_id"] as? String,
-          !turnID.isEmpty,
-          !correlationID.isEmpty else {
+          !turnID.isEmpty else {
         throw HomeWireDecodingError.invalidShape
+    }
+    // The pinned contract's submission reply has no correlation ID; when one is
+    // present it must still be a non-empty string.
+    let correlationID: String?
+    if let value = response.result["correlation_id"] {
+        guard let string = value as? String, !string.isEmpty else {
+            throw HomeWireDecodingError.invalidShape
+        }
+        correlationID = string
+    } else {
+        correlationID = nil
     }
     return HomeSubmissionWireResult(status: status, turnID: turnID, correlationID: correlationID)
 }

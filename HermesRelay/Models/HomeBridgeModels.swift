@@ -112,30 +112,35 @@ struct HomeWireCapabilities: Codable, Equatable, Sendable {
     let heartbeat: Bool
     let timing: HomeTimingCapability
     let interrupt: Bool?
+    let audio: Bool?
 
     private enum CodingKeys: String, CodingKey, CaseIterable {
-        case commands, heartbeat, timing, interrupt
+        case commands, heartbeat, timing, interrupt, audio
     }
 
     init(
         commands: [String],
         heartbeat: Bool,
         timing: HomeTimingCapability,
-        interrupt: Bool? = nil
+        interrupt: Bool? = nil,
+        audio: Bool? = nil
     ) {
         self.commands = commands
         self.heartbeat = heartbeat
         self.timing = timing
         self.interrupt = interrupt
+        self.audio = audio
     }
 
     init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         try HomeCoding.requireExactKeys(decoder, allowed: CodingKeys.allCases)
         commands = try container.decode([String].self, forKey: .commands)
-        heartbeat = try container.decode(Bool.self, forKey: .heartbeat)
+        // The live Home adapter forwards `heartbeat` only when Standard supplies it.
+        heartbeat = try container.decodeIfPresent(Bool.self, forKey: .heartbeat) ?? false
         timing = try container.decode(HomeTimingCapability.self, forKey: .timing)
         interrupt = try container.decodeIfPresent(Bool.self, forKey: .interrupt)
+        audio = try container.decodeIfPresent(Bool.self, forKey: .audio)
     }
 }
 
@@ -146,11 +151,14 @@ struct HomeReadyWireResult: Codable, Equatable, Sendable {
     let route: HomeWireRoute?
     let capabilities: HomeWireCapabilities?
     let reason: HomeWireReason?
+    /// True when Home reports an unresolved turn on open; the caller must reconnect instead.
+    let unresolvedTurn: Bool
 
     private enum CodingKeys: String, CodingKey, CaseIterable {
         case schema, status
         case conversationHandle = "conversation_handle"
         case route, capabilities, reason
+        case unresolvedTurn = "unresolved_turn"
     }
 
     init(
@@ -159,7 +167,8 @@ struct HomeReadyWireResult: Codable, Equatable, Sendable {
         conversationHandle: String,
         route: HomeWireRoute?,
         capabilities: HomeWireCapabilities?,
-        reason: HomeWireReason?
+        reason: HomeWireReason?,
+        unresolvedTurn: Bool = false
     ) {
         self.schema = schema
         self.status = status
@@ -167,6 +176,7 @@ struct HomeReadyWireResult: Codable, Equatable, Sendable {
         self.route = route
         self.capabilities = capabilities
         self.reason = reason
+        self.unresolvedTurn = unresolvedTurn
     }
 
     init(from decoder: Decoder) throws {
@@ -178,6 +188,16 @@ struct HomeReadyWireResult: Codable, Equatable, Sendable {
         route = try container.decodeIfPresent(HomeWireRoute.self, forKey: .route)
         capabilities = try container.decodeIfPresent(HomeWireCapabilities.self, forKey: .capabilities)
         reason = try container.decodeIfPresent(HomeWireReason.self, forKey: .reason)
+        // The live Home adapter sends `unresolved_turn: false` on every ready open;
+        // a true value or a turn object means an older turn is still unresolved.
+        switch try container.decodeIfPresent(HomeJSONValue.self, forKey: .unresolvedTurn) {
+        case nil, .null?, .bool(false)?:
+            unresolvedTurn = false
+        case .bool(true)?, .object?:
+            unresolvedTurn = true
+        default:
+            throw HomeWireDecodingError.invalidShape
+        }
     }
 }
 
@@ -299,7 +319,8 @@ struct HomeConversationClaim: Equatable, Sendable {
 struct HomeTurnBinding: Equatable, Sendable {
     let conversationHandle: String
     let turnID: String
-    let correlationID: String
+    /// Absent when Home's submission reply carries none; the turn ID then scopes the turn.
+    let correlationID: String?
 }
 
 struct HomeBridgeCapabilities: Equatable, Sendable {
@@ -630,6 +651,13 @@ struct HomeEventScope: Equatable, Sendable {
     let conversationHandle: String
     let turnID: String?
     let correlationID: String?
+}
+
+/// Correlation IDs only disambiguate when both sides carry one. A turn Home
+/// accepted without a correlation ID is scoped by its turn ID alone.
+func homeCorrelationMatches(expected: String?, received: String?) -> Bool {
+    guard let expected, let received else { return true }
+    return expected == received
 }
 
 struct HomeStructuredPrompt: Equatable, Sendable {
