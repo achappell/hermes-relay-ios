@@ -711,6 +711,21 @@ enum HomeStandardEventType: String, Codable, Sendable {
     case turnInterrupted = "turn_interrupted"
     case audioAbort = "audio_abort"
     case error
+
+    /// Resolves a Standard gateway event name, including Standard's dotted
+    /// activity names, to the event this client renders; nil means not rendered.
+    init?(standardName: String) {
+        if let type = HomeStandardEventType(rawValue: standardName) {
+            self = type
+            return
+        }
+        switch standardName {
+        case "status.update": self = .status
+        case "thinking.delta": self = .thinking
+        case "reasoning.delta": self = .reasoning
+        default: return nil
+        }
+    }
 }
 
 enum HomeStandardEventKind: String, Codable, Sendable {

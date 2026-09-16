@@ -86,3 +86,28 @@ the same as `accepted`. Tests use fixtures shaped like the live Home reply.
   gated on the flag (contract), and absent heartbeat already mapped to `false`
   in `HomeBridgeCapabilities`' default.
 
+
+## Follow-up — live event vocabulary and reconnect reply (2026-09-16)
+
+- Live pilot evidence: after activation the app failed with `protocol_error`.
+  Captured Home frames showed Standard's full event vocabulary
+  (`session.info`, `sessions.changed`, `status.update`, `thinking.delta`,
+  `reasoning.delta`, `tool.*`, `session.usage`, ...), extra payload keys
+  (`usage`, `warning`, `billing`), Standard `error` payloads as `{message}`, and
+  a `conversation.reconnect` ready reply that includes `route` and
+  `capabilities`. A scripted live turn round-tripped through Home in under two
+  seconds; replaying its 22 frames through the client (including live ordering
+  behind the submit reply) decoded cleanly after this change.
+- `HomeStandardEventType(standardName:)` maps `status.update`,
+  `thinking.delta`, and `reasoning.delta`; unknown event types are ignored
+  rather than ending the reader. Event payloads read only the fields used,
+  still type-checked; an unknown `failure_reason` becomes nil; a Standard
+  `{message}` error maps to `hermes_unavailable` without surfacing server text.
+  The JSON-RPC and event envelopes remain strict.
+- `decodeReconnect` accepts `route` and `capabilities`, validates both, and
+  returns `route_identity_mismatch` when the route differs from the binding.
+- Tests: unknown-event tolerance, live Standard vocabulary, unknown failure
+  reason, live reconnect reply, reconnect route mismatch; the two
+  transport-loss tests now force loss with a malformed event envelope.
+- Verification: focused Home suites 44 passed; full iOS simulator suite 433
+  passed; macOS arm64 build passed.

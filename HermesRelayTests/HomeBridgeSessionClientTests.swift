@@ -453,7 +453,7 @@ final class HomeBridgeSessionClientTests: XCTestCase {
         await client.close()
     }
 
-    func testURLSessionClientRejectsUnknownStructuredFailureReason() async throws {
+    func testURLSessionClientDropsAnUnknownFailureReasonWithoutEndingTheTurn() async throws {
         let fixture = try await makeFixture()
         let client = fixture.client
         let stream = await client.events()
@@ -461,13 +461,14 @@ final class HomeBridgeSessionClientTests: XCTestCase {
         guard case .ready(let binding, _) = await client.open(claim: fixture.claim) else {
             return XCTFail("A valid Home bridge response must become ready")
         }
+        let scope = HomeEventScope(
+            conversationHandle: binding.conversationHandle,
+            turnID: "turn-1",
+            correlationID: "correlation-1"
+        )
 
         await fixture.socket.enqueue(.text(try contractEventFrame(
-            scope: HomeEventScope(
-                conversationHandle: binding.conversationHandle,
-                turnID: "turn-1",
-                correlationID: "correlation-1"
-            ),
+            scope: scope,
             type: "message.complete",
             payload: [
                 "rendered": "synthetic response",
@@ -475,12 +476,18 @@ final class HomeBridgeSessionClientTests: XCTestCase {
             ]
         )))
 
-        do {
-            _ = try await events.next()
-            XCTFail("Unknown stable failure reasons must be rejected")
-        } catch {
-            XCTAssertEqual(error as? HomeWireDecodingError, .invalidShape)
-        }
+        let event = try await events.next()
+        XCTAssertEqual(event, .standard(HomeStandardEvent(
+            type: .messageComplete,
+            scope: scope,
+            payload: .final(
+                rendered: "synthetic response",
+                text: nil,
+                status: nil,
+                reasoning: nil,
+                failureReason: nil
+            )
+        )))
         await client.close()
     }
 
@@ -575,7 +582,7 @@ final class HomeBridgeSessionClientTests: XCTestCase {
         await client.close()
     }
 
-    func testURLSessionClientRejectsUnknownEventTypeAsInvalidShape() async throws {
+    func testURLSessionClientIgnoresUnknownEventTypesAndKeepsReading() async throws {
         let fixture = try await makeFixture()
         let client = fixture.client
         let stream = await client.events()
@@ -583,23 +590,132 @@ final class HomeBridgeSessionClientTests: XCTestCase {
         guard case .ready(let binding, _) = await client.open(claim: fixture.claim) else {
             return XCTFail("A valid Home bridge response must become ready")
         }
+        let scope = HomeEventScope(
+            conversationHandle: binding.conversationHandle,
+            turnID: "turn-1",
+            correlationID: "correlation-1"
+        )
 
         await fixture.socket.enqueue(.text(try contractEventFrame(
-            scope: HomeEventScope(
-                conversationHandle: binding.conversationHandle,
-                turnID: "turn-1",
-                correlationID: "correlation-1"
-            ),
+            scope: scope,
             type: "future.event",
             payload: [:]
         )))
+        await fixture.socket.enqueue(.text(try contractEventFrame(
+            scope: scope,
+            type: "message.start",
+            payload: [:]
+        )))
 
-        do {
-            _ = try await events.next()
-            XCTFail("Unknown Home event types must be rejected")
-        } catch {
-            XCTAssertEqual(error as? HomeWireDecodingError, .invalidShape)
+        let event = try await events.next()
+        XCTAssertEqual(
+            event,
+            .standard(HomeStandardEvent(type: .messageStart, scope: scope, payload: .start(kind: nil)))
+        )
+        await client.close()
+    }
+
+    func testURLSessionClientAcceptsTheLiveHomeReconnectReply() async throws {
+        let fixture = try await makeFixture()
+        guard case .ready(let binding, _) = await fixture.client.open(claim: fixture.claim) else {
+            return XCTFail("A valid Home bridge response must become ready")
         }
+        // The deployed adapter answers reconnect with the full ready shape.
+        await fixture.socket.setNextResultJSON(for: "conversation.reconnect", """
+        {"schema":1,"status":"ready","conversation_handle":"opaque-home-conversation",\
+        "route":{"class":"home","id":"home-a"},\
+        "capabilities":{"commands":["status"],"heartbeat":true,"interrupt":true,"audio":true,"timing":"absent"},\
+        "unresolved_turn":false}
+        """)
+
+        let outcome = await fixture.client.reconnect(binding: binding)
+
+        XCTAssertEqual(outcome, .ready(binding: binding, unresolvedTurn: nil))
+        await fixture.client.close()
+    }
+
+    func testURLSessionClientRejectsAReconnectReplyForAnotherRoute() async throws {
+        let fixture = try await makeFixture()
+        guard case .ready(let binding, _) = await fixture.client.open(claim: fixture.claim) else {
+            return XCTFail("A valid Home bridge response must become ready")
+        }
+        await fixture.socket.setNextResultJSON(for: "conversation.reconnect", """
+        {"schema":1,"status":"ready","conversation_handle":"opaque-home-conversation",\
+        "route":{"class":"home","id":"other-route"},\
+        "capabilities":{"commands":[],"timing":"absent"},"unresolved_turn":false}
+        """)
+
+        let outcome = await fixture.client.reconnect(binding: binding)
+
+        XCTAssertEqual(outcome, .unavailable(.route(.identityMismatch)))
+        await fixture.client.close()
+    }
+
+    func testURLSessionClientRendersTheLiveStandardEventVocabulary() async throws {
+        let fixture = try await makeFixture()
+        let client = fixture.client
+        let stream = await client.events()
+        var events = stream.makeAsyncIterator()
+        guard case .ready(let binding, _) = await client.open(claim: fixture.claim) else {
+            return XCTFail("A valid Home bridge response must become ready")
+        }
+        let global = HomeEventScope(
+            conversationHandle: binding.conversationHandle,
+            turnID: nil,
+            correlationID: nil
+        )
+        let turn = HomeEventScope(
+            conversationHandle: binding.conversationHandle,
+            turnID: "turn-1",
+            correlationID: nil
+        )
+        // Shapes emitted by the Standard gateway (tui_gateway) and forwarded by Home.
+        for (scope, type, payload) in [
+            (global, "session.info", ["model": "model-a", "tools": ["web": ["search"]]] as [String: Any]),
+            (global, "sessions.changed", [:]),
+            (turn, "tool.start", ["name": "search"]),
+            (turn, "status.update", ["kind": "process", "text": "Searching"]),
+            (turn, "reasoning.delta", ["text": "Considering", "verbose": true]),
+            (turn, "message.complete", [
+                "text": "Done", "usage": ["input": 1], "status": "complete",
+                "warning": "note", "failure_reason": "billing_blocked",
+            ]),
+            (turn, "error", ["message": "server detail that must not surface"]),
+        ] {
+            // eventFrame omits absent turn/correlation IDs, as the live adapter does.
+            await fixture.socket.enqueue(.text(try eventFrame(
+                conversationHandle: scope.conversationHandle,
+                turnID: scope.turnID,
+                correlationID: scope.correlationID,
+                type: type,
+                payload: payload
+            )))
+        }
+
+        let status = try await events.next()
+        XCTAssertEqual(status, .standard(HomeStandardEvent(
+            type: .status,
+            scope: turn,
+            payload: .activity(text: "Searching", status: nil, reasoning: nil, kind: nil)
+        )))
+        let reasoning = try await events.next()
+        XCTAssertEqual(reasoning, .standard(HomeStandardEvent(
+            type: .reasoning,
+            scope: turn,
+            payload: .activity(text: "Considering", status: nil, reasoning: nil, kind: nil)
+        )))
+        let complete = try await events.next()
+        XCTAssertEqual(complete, .standard(HomeStandardEvent(
+            type: .messageComplete,
+            scope: turn,
+            payload: .final(rendered: nil, text: "Done", status: "complete", reasoning: nil, failureReason: nil)
+        )))
+        let error = try await events.next()
+        XCTAssertEqual(error, .standard(HomeStandardEvent(
+            type: .error,
+            scope: turn,
+            payload: .error(HomeSafeError(code: .hermesUnavailable, phase: .submission))
+        )))
         await client.close()
     }
 
@@ -868,12 +984,13 @@ final class HomeBridgeSessionClientTests: XCTestCase {
                 turnID: "turn-1",
                 correlationID: "correlation-1"
             ),
-            type: "future.event",
-            payload: [:]
+            type: "message.start",
+            payload: [:],
+            paramsSchema: 2
         )))
         do {
             _ = try await events.next()
-            XCTFail("The unsupported event must close the current reader")
+            XCTFail("A malformed event envelope must close the current reader")
         } catch {
             XCTAssertEqual(error as? HomeWireDecodingError, .invalidShape)
         }
@@ -910,12 +1027,13 @@ final class HomeBridgeSessionClientTests: XCTestCase {
 
         await fixture.socket.enqueue(.text(try contractEventFrame(
             scope: scope,
-            type: "future.event",
-            payload: [:]
+            type: "message.start",
+            payload: [:],
+            paramsSchema: 2
         )))
         do {
             _ = try await events.next()
-            XCTFail("The unsupported event must close the current reader")
+            XCTFail("A malformed event envelope must close the current reader")
         } catch {
             XCTAssertEqual(error as? HomeWireDecodingError, .invalidShape)
         }
