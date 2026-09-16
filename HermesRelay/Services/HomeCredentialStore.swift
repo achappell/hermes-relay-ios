@@ -2,19 +2,48 @@ import Foundation
 
 enum HomeCredentialStoreError: Error, Equatable, Sendable {
     case missingCredential
+    case emptyCredential
     case invalidReference
     case unusableState(HomeCredentialState)
+}
+
+/// The one-time operator handoff used by the live Home setup surface. The
+/// credential is accepted as Data only long enough to write it to Keychain;
+/// no caller receives it back from this API.
+protocol HomeCredentialProvisioningStore: HomeCredentialStore {
+    func provision(
+        preIssuedCredential: Data,
+        reference: HomeCredentialReference,
+        for profileID: UUID
+    ) async throws
 }
 
 /// The reference metadata and the pre-issued value live in separate secure
 /// records. The public API never returns the value; it exists only for the
 /// duration of the private accessor closure.
-actor KeychainHomeCredentialStore: HomeCredentialStore {
+actor KeychainHomeCredentialStore: HomeCredentialProvisioningStore {
     private let secureStore: any SecureValueStore
     private var states: [UUID: HomeCredentialState] = [:]
 
     init(secureStore: any SecureValueStore) {
         self.secureStore = secureStore
+    }
+
+    func provision(
+        preIssuedCredential: Data,
+        reference: HomeCredentialReference,
+        for profileID: UUID
+    ) async throws {
+        try reference.validate(for: profileID)
+        guard !preIssuedCredential.isEmpty else {
+            throw HomeCredentialStoreError.emptyCredential
+        }
+        try secureStore.write(
+            preIssuedCredential,
+            service: reference.service,
+            account: reference.account
+        )
+        try await stage(preIssued: reference, for: profileID)
     }
 
     func stage(preIssued: HomeCredentialReference, for profileID: UUID) async throws {
@@ -103,7 +132,7 @@ actor KeychainHomeCredentialStore: HomeCredentialStore {
 /// A deterministic secure-store implementation for Home migration tests and
 /// the Debug fake. It records metadata and compares values internally without
 /// exposing them through a migration result.
-actor InMemoryHomeCredentialStore: HomeCredentialStore {
+actor InMemoryHomeCredentialStore: HomeCredentialProvisioningStore {
     private var values: [String: Data]
     private var references: [UUID: HomeCredentialReference] = [:]
     private var states: [UUID: HomeCredentialState] = [:]
@@ -131,6 +160,19 @@ actor InMemoryHomeCredentialStore: HomeCredentialStore {
         values[Self.key(reference)] = credential
         references[profileID] = reference
         states[profileID] = .active
+    }
+
+    func provision(
+        preIssuedCredential: Data,
+        reference: HomeCredentialReference,
+        for profileID: UUID
+    ) async throws {
+        try reference.validate(for: profileID)
+        guard !preIssuedCredential.isEmpty else {
+            throw HomeCredentialStoreError.emptyCredential
+        }
+        values[Self.key(reference)] = preIssuedCredential
+        try await stage(preIssued: reference, for: profileID)
     }
 
     func stage(preIssued: HomeCredentialReference, for profileID: UUID) async throws {

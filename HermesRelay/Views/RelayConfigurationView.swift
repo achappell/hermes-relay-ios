@@ -61,6 +61,251 @@ final class RelayProfileListModel {
 }
 
 @MainActor
+struct HomeLiveSetupView: View {
+    let configurationStore: RelayConfigurationStore
+    let credentialStore: any HomeCredentialProvisioningStore
+    let liveConfigurationStore: any HomeLiveConfigurationStore
+    let homeClientFactory: any HomeBridgeSessionClientFactory
+    let onActivated: @MainActor () async -> Void
+
+    @Environment(\.dismiss) private var dismiss
+    @State private var profile: RelayProfile?
+    @State private var endpoint = ""
+    @State private var routeID = "local"
+    @State private var householdBinding = ""
+    @State private var conversationHandle = ""
+    @State private var deviceCredential = ""
+    @State private var hasStoredCredential = false
+    @State private var isLoading = false
+    @State private var isActivating = false
+    @State private var errorMessage: String?
+    @State private var statusMessage: String?
+
+    init(
+        configurationStore: RelayConfigurationStore,
+        credentialStore: any HomeCredentialProvisioningStore,
+        liveConfigurationStore: any HomeLiveConfigurationStore,
+        homeClientFactory: any HomeBridgeSessionClientFactory,
+        onActivated: @escaping @MainActor () async -> Void = {}
+    ) {
+        self.configurationStore = configurationStore
+        self.credentialStore = credentialStore
+        self.liveConfigurationStore = liveConfigurationStore
+        self.homeClientFactory = homeClientFactory
+        self.onActivated = onActivated
+    }
+
+    var body: some View {
+        NavigationStack {
+            Form {
+                if let profile {
+                    Section {
+                        LabeledContent("Profile", value: profile.displayName)
+                        Text("The live Home claim and credential will be bound to this Profile. Switch Profiles in the previous screen before setting up another one.")
+                            .font(.footnote)
+                            .foregroundStyle(HermesVisualTokens.secondaryInk)
+                    } header: {
+                        Text("Selected Hermes Profile")
+                    }
+                }
+
+                Section {
+                    TextField("wss://home-host/api/v1/bridge/ws", text: $endpoint)
+                        .autocorrectionDisabled()
+                        #if os(iOS)
+                        .textInputAutocapitalization(.never)
+                        .keyboardType(.URL)
+                        #endif
+                } header: {
+                    Text("Approved Home route")
+                } footer: {
+                    Text("Use the tailnet-only wss:// Home route. The path must be exactly /api/v1/bridge/ws; credentials and query strings are rejected.")
+                }
+
+                Section {
+                    TextField("Route ID", text: $routeID)
+                        .autocorrectionDisabled()
+                        #if os(iOS)
+                        .textInputAutocapitalization(.never)
+                        .keyboardType(.asciiCapable)
+                        #endif
+                    TextField("Household receipt", text: $householdBinding)
+                        .autocorrectionDisabled()
+                    TextField("Opaque conversation handle", text: $conversationHandle)
+                        .autocorrectionDisabled()
+                        #if os(iOS)
+                        .textInputAutocapitalization(.never)
+                        .keyboardType(.asciiCapable)
+                        #endif
+                } header: {
+                    Text("Approved Home claim")
+                } footer: {
+                    Text("Copy the handle from the active Home conversation grant. Route ID must match HERMES_HOME_BRIDGE_ROUTE_ID. Household receipt is a local label for the approved household binding.")
+                }
+
+                Section {
+                    SecureField("Pre-issued Device credential", text: $deviceCredential)
+                        .autocorrectionDisabled()
+                        #if os(iOS)
+                        .textInputAutocapitalization(.never)
+                        .keyboardType(.asciiCapable)
+                        #endif
+                    if hasStoredCredential {
+                        Label(
+                            "A Home Device credential is already stored. Leave this blank to reuse it, or enter a value to replace it.",
+                            systemImage: "checkmark.shield"
+                        )
+                        .font(.footnote)
+                        .foregroundStyle(HermesVisualTokens.secondaryInk)
+                    }
+                    Text("The credential is written directly to Keychain and is never saved in this form, the profile file, logs, or validation artifacts.")
+                        .font(.footnote)
+                        .foregroundStyle(HermesVisualTokens.secondaryInk)
+                } header: {
+                    Text("Device authorization")
+                }
+
+                if let errorMessage {
+                    Section {
+                        Label(errorMessage, systemImage: "exclamationmark.triangle")
+                            .foregroundStyle(HermesVisualTokens.unavailable)
+                    }
+                }
+
+                if let statusMessage {
+                    Section {
+                        Label(statusMessage, systemImage: "checkmark.circle")
+                            .foregroundStyle(HermesVisualTokens.secondaryInk)
+                    }
+                }
+
+                Section {
+                    Button("Activate Home bridge") {
+                        Task { await activate() }
+                    }
+                    .disabled(
+                        profile == nil
+                            || isLoading
+                            || isActivating
+                    )
+                    .accessibilityIdentifier("activate-home-bridge")
+                } footer: {
+                    Text("Activation performs one live conversation.open handshake. If it fails, the app stays on the legacy relay path and keeps the metadata available for correction and retry.")
+                }
+            }
+            .navigationTitle("Live Home setup")
+            #if os(iOS)
+            .navigationBarTitleDisplayMode(.inline)
+            #endif
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Done") {
+                        dismiss()
+                    }
+                }
+            }
+            .overlay {
+                if isLoading || isActivating {
+                    ProgressView(isActivating ? "Proving Home bridge…" : "Loading Home setup…")
+                        .padding(20)
+                        .relayPanel(cornerRadius: 16, fill: HermesVisualTokens.panel)
+                }
+            }
+            .task {
+                await load()
+            }
+        }
+    }
+
+    private func load() async {
+        guard profile == nil else { return }
+        isLoading = true
+        errorMessage = nil
+
+        do {
+            guard let loadedProfile = try await configurationStore.loadProfile() else {
+                errorMessage = "Select or save a Hermes Profile before setting up Home."
+                isLoading = false
+                return
+            }
+            profile = loadedProfile
+            if let configuration = try await liveConfigurationStore.configuration(
+                for: loadedProfile.id
+            ) {
+                endpoint = configuration.approvedRoute.endpoint.absoluteString
+                routeID = configuration.approvedRoute.identity.id
+                householdBinding = configuration.approvedRoute.householdBinding
+                conversationHandle = configuration.conversationHandle
+            }
+            hasStoredCredential = (try? await credentialStore.verifiedReadBack(
+                for: loadedProfile.id
+            )) != nil
+        } catch {
+            errorMessage = error.localizedDescription
+        }
+
+        isLoading = false
+    }
+
+    private func activate() async {
+        guard let profile else {
+            errorMessage = "Select a Hermes Profile before activating Home."
+            return
+        }
+
+        let normalizedEndpoint = endpoint.trimmingCharacters(
+            in: .whitespacesAndNewlines
+        )
+        guard let endpointURL = URL(string: normalizedEndpoint) else {
+            errorMessage = "Enter the approved Home wss:// bridge route."
+            return
+        }
+
+        do {
+            let route = HomeApprovedRoute(
+                endpoint: endpointURL,
+                identity: HomeRouteIdentity(
+                    routeClass: .home,
+                    id: routeID
+                ),
+                householdBinding: householdBinding
+            )
+            let liveConfiguration = try HomeLiveConfiguration(
+                profileID: profile.id,
+                conversationHandle: conversationHandle,
+                approvedRoute: route
+            )
+            isActivating = true
+            errorMessage = nil
+            statusMessage = nil
+            let activation = HomeLiveActivation(
+                configurationStore: configurationStore,
+                credentialStore: credentialStore,
+                liveConfigurationStore: liveConfigurationStore,
+                homeClientFactory: homeClientFactory
+            )
+            let result = try await activation.activate(
+                profileID: profile.id,
+                liveConfiguration: liveConfiguration,
+                deviceCredential: Data(deviceCredential.utf8)
+            )
+            guard result == .selectedHome else {
+                errorMessage = "Home was not selected after the live handshake."
+                return
+            }
+            hasStoredCredential = true
+            deviceCredential = ""
+            statusMessage = "Home bridge is active for \(profile.displayName). Connect again to use it."
+            await onActivated()
+        } catch {
+            errorMessage = error.localizedDescription
+        }
+
+        isActivating = false
+    }
+}
+
+@MainActor
 struct RelayConfigurationView: View {
     let configurationStore: RelayConfigurationStore
     /// Live connection state, so the list can show which profile is actually
@@ -71,6 +316,9 @@ struct RelayConfigurationView: View {
     let deviceAdministrationClient: any DeviceAdministrationClient
     let deviceSetupDraftStore: any DeviceSetupDraftStore
     let deviceConfigurationStore: any DeviceConfigurationStore
+    let homeLiveConfigurationStore: (any HomeLiveConfigurationStore)?
+    let homeCredentialStore: (any HomeCredentialProvisioningStore)?
+    let homeClientFactory: (any HomeBridgeSessionClientFactory)?
     let onSaved: @MainActor () async -> Void
     let onSelectedProfileDeleted: @MainActor () async -> Void
 
@@ -83,6 +331,7 @@ struct RelayConfigurationView: View {
     @State private var didLoad = false
     @State private var listModel: RelayProfileListModel
     @State private var showingDeviceDiscovery = false
+    @State private var showingHomeSetup = false
     @FocusState private var focusedField: RelayConfigurationField?
     @State private var didAttemptValidation = false
     /// Which saved profile the form is editing. Nil means the form is
@@ -97,6 +346,9 @@ struct RelayConfigurationView: View {
         deviceAdministrationClient: any DeviceAdministrationClient = UnavailableDeviceAdministrationClient(),
         deviceSetupDraftStore: any DeviceSetupDraftStore = NoopDeviceSetupDraftStore(),
         deviceConfigurationStore: any DeviceConfigurationStore = NoopDeviceConfigurationStore(),
+        homeLiveConfigurationStore: (any HomeLiveConfigurationStore)? = nil,
+        homeCredentialStore: (any HomeCredentialProvisioningStore)? = nil,
+        homeClientFactory: (any HomeBridgeSessionClientFactory)? = nil,
         onSaved: @escaping @MainActor () async -> Void = {},
         onSelectedProfileDeleted: @escaping @MainActor () async -> Void = {}
     ) {
@@ -107,6 +359,9 @@ struct RelayConfigurationView: View {
         self.deviceAdministrationClient = deviceAdministrationClient
         self.deviceSetupDraftStore = deviceSetupDraftStore
         self.deviceConfigurationStore = deviceConfigurationStore
+        self.homeLiveConfigurationStore = homeLiveConfigurationStore
+        self.homeCredentialStore = homeCredentialStore
+        self.homeClientFactory = homeClientFactory
         self.onSaved = onSaved
         self.onSelectedProfileDeleted = onSelectedProfileDeleted
         _draft = State(initialValue: RelayConfigurationDraft(identity: .current()))
@@ -189,6 +444,28 @@ struct RelayConfigurationView: View {
                     Text("Household Devices")
                 }
                 #endif
+
+                if homeLiveConfigurationStore != nil,
+                   homeCredentialStore != nil,
+                   homeClientFactory != nil {
+                    Section {
+                        Button {
+                            showingHomeSetup = true
+                        } label: {
+                            Label(
+                                "Set up live Home bridge",
+                                systemImage: "house.and.flag"
+                            )
+                        }
+                        Text("Uses the approved opaque Home claim and stores the Device credential only in Keychain.")
+                            .font(.footnote)
+                            .foregroundStyle(HermesVisualTokens.secondaryInk)
+                    } header: {
+                        Text("Home bridge")
+                    } footer: {
+                        Text("Home mode is selected only after a live conversation.open handshake succeeds. Legacy relay access remains available for rollback.")
+                    }
+                }
 
                 Section {
                     TextField("Endpoint", text: $draft.endpoint)
@@ -310,6 +587,24 @@ struct RelayConfigurationView: View {
                 )
             }
             #endif
+            .sheet(isPresented: $showingHomeSetup) {
+                if let homeLiveConfigurationStore,
+                   let homeCredentialStore,
+                   let homeClientFactory {
+                    HomeLiveSetupView(
+                        configurationStore: configurationStore,
+                        credentialStore: homeCredentialStore,
+                        liveConfigurationStore: homeLiveConfigurationStore,
+                        homeClientFactory: homeClientFactory,
+                        onActivated: {
+                            await onSaved()
+                        }
+                    )
+                } else {
+                    Text("Home live setup is unavailable.")
+                        .padding()
+                }
+            }
             .overlay {
                 if isLoading {
                     ProgressView("Loading configuration…")

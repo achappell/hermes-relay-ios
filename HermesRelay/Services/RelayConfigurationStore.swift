@@ -120,11 +120,19 @@ actor RelayConfigurationStore {
         try await recordFakeReady(for: profileID)
     }
 
+    func recordLiveReady(for profileID: UUID) async throws {
+        try await updateHomeJournal(for: profileID, phase: .liveReadyVerified)
+    }
+
+    func recordLiveReady(profileID: UUID) async throws {
+        try await recordLiveReady(for: profileID)
+    }
+
     func commitHomeMigration(for profileID: UUID) async throws {
         var collection = try await loadCollection()
         guard var journal = collection.homeMigrations[profileID],
               journal.profileID == profileID,
-              journal.phase == .fakeReadyVerified,
+              journal.phase == .fakeReadyVerified || journal.phase == .liveReadyVerified,
               journal.credential != nil else {
             throw RelayConfigurationError.invalidProfile
         }

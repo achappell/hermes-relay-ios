@@ -884,6 +884,7 @@ enum HomeMigrationPhase: String, Codable, Sendable {
     case staged
     case readBackVerified
     case fakeReadyVerified
+    case liveReadyVerified
     case homeSelected
     case rollbackPending
     case legacySelected
