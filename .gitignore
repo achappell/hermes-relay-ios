@@ -25,4 +25,6 @@ Audio/
 /_bmad/config.user.toml
 .bmad-loop/runs/
 .bmad-loop/cache/
+.bmad-loop/ci-status.sh
+.bmad-loop/plugins/close-trace-mr/
 _bmad/render/
