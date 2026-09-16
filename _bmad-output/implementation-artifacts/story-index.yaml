@@ -110,7 +110,7 @@ stories:
   - id: IOS-HOME-01
     title: Add the iOS Home pairing and configuration adapter
     kind: next-wave
-    spec: _bmad-output/implementation-artifacts/spec-ios-home-pairing-adapter.md
+    spec: _bmad-output/implementation-artifacts/spec-ios-home-01-home-pairing-and-configuration-adapter.md
     github_issue: https://github.com/achappell/hermes-relay-ios/issues/68
     horizon: next
   - id: IOS-WATCH-01

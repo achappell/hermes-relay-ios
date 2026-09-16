@@ -20,11 +20,13 @@ struct ContentView: View {
     private let deviceAdministrationClient: any DeviceAdministrationClient
     private let deviceSetupDraftStore: any DeviceSetupDraftStore
     private let deviceConfigurationStore: any DeviceConfigurationStore
+    private let homeServiceClient: (any HomeServiceClient)?
     private let activityStore: AudioActivityStore
     private let lifecycleCoordinator: AppleLifecycleCoordinator
     private let homeClientFactory: any HomeBridgeSessionClientFactory
     private let homeLiveConfigurationStore: (any HomeLiveConfigurationStore)?
     private let homeCredentialStore: (any HomeCredentialProvisioningStore)?
+    private let homeAdminCredentialStore: (any HomeAdminCredentialStore)?
 
     private enum FocusField: Hashable {
         case composer
@@ -39,11 +41,13 @@ struct ContentView: View {
         deviceAdministrationClient: any DeviceAdministrationClient = UnavailableDeviceAdministrationClient(),
         deviceSetupDraftStore: any DeviceSetupDraftStore = NoopDeviceSetupDraftStore(),
         deviceConfigurationStore: any DeviceConfigurationStore = NoopDeviceConfigurationStore(),
+        homeServiceClient: (any HomeServiceClient)? = nil,
         activityStore providedActivityStore: AudioActivityStore? = nil,
         homeClientFactory: any HomeBridgeSessionClientFactory = UnavailableHomeBridgeSessionClientFactory(),
         homeClaimProvider: (any HomeConversationClaimProvider)? = nil,
         homeLiveConfigurationStore: (any HomeLiveConfigurationStore)? = nil,
         homeCredentialStore: (any HomeCredentialProvisioningStore)? = nil,
+        homeAdminCredentialStore: (any HomeAdminCredentialStore)? = nil,
         homeClock: any HomeMonotonicClock = ContinuousHomeMonotonicClock()
     ) {
         _store = State(initialValue: store)
@@ -98,9 +102,11 @@ struct ContentView: View {
         self.deviceAdministrationClient = deviceAdministrationClient
         self.deviceSetupDraftStore = deviceSetupDraftStore
         self.deviceConfigurationStore = deviceConfigurationStore
+        self.homeServiceClient = homeServiceClient
         self.homeClientFactory = homeClientFactory
         self.homeLiveConfigurationStore = homeLiveConfigurationStore
         self.homeCredentialStore = homeCredentialStore
+        self.homeAdminCredentialStore = homeAdminCredentialStore
         self.lifecycleCoordinator = AppleLifecycleCoordinator(
             store: store,
             voice: resolvedVoiceCoordinator,
@@ -196,8 +202,10 @@ struct ContentView: View {
                     deviceAdministrationClient: deviceAdministrationClient,
                     deviceSetupDraftStore: deviceSetupDraftStore,
                     deviceConfigurationStore: deviceConfigurationStore,
+                    homeServiceClient: homeServiceClient,
                     homeLiveConfigurationStore: homeLiveConfigurationStore,
                     homeCredentialStore: homeCredentialStore,
+                    homeAdminCredentialStore: homeAdminCredentialStore,
                     homeClientFactory: homeClientFactory
                 ) {
                     // The selected profile may have changed, so reconnect to

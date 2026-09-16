@@ -568,6 +568,47 @@ final class RelayConfigurationTests: XCTestCase {
     }
 
     @MainActor
+    func testDeletingProfileAlsoRemovesItsHomeAdminCredential() async throws {
+        let secureStore = FakeSecureValueStore()
+        let profileStore = RelayConfigurationStore(
+            secureStore: secureStore,
+            profileURL: makeTemporaryProfileURL()
+        )
+        let profile = try RelayProfile(
+            endpoint: URL(string: "wss://one.example/s")!,
+            clientID: "c",
+            deviceID: "d",
+            displayName: "One"
+        )
+        let route = HomeApprovedRoute(
+            endpoint: URL(string: "wss://home.example/api/v1/bridge/ws")!,
+            identity: HomeRouteIdentity(routeClass: .home, id: "home"),
+            householdBinding: "household"
+        )
+        let homeAdminStore = KeychainHomeAdminCredentialStore(secureStore: secureStore)
+        try await profileStore.saveProfile(profile)
+        try await homeAdminStore.save(
+            "home-admin-secret",
+            for: profile.id,
+            approvedRoute: route
+        )
+        let model = RelayProfileListModel(
+            configurationStore: profileStore,
+            homeAdminCredentialStore: homeAdminStore
+        )
+        await model.load()
+
+        let deleted = await model.delete(id: profile.id)
+
+        XCTAssertTrue(deleted)
+        let remainingCredential = try await homeAdminStore.load(
+            for: profile.id,
+            approvedRoute: route
+        )
+        XCTAssertNil(remainingCredential)
+    }
+
+    @MainActor
     func testDeletingAProfileRemovesItsConversationFile() async throws {
         let directory = FileManager.default.temporaryDirectory
             .appendingPathComponent("HermesRelayIOS-Delete-\(UUID().uuidString)")

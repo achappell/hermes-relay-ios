@@ -28,6 +28,7 @@ struct DeviceDiscoveryView: View {
     let administrationClient: any DeviceAdministrationClient
     let draftStore: any DeviceSetupDraftStore
     let configurationStore: any DeviceConfigurationStore
+    let homeServiceClient: (any HomeServiceClient)?
 
     @Environment(\.dismiss) private var dismiss
     @State private var model: DeviceDiscoveryModel
@@ -37,12 +38,14 @@ struct DeviceDiscoveryView: View {
         client: any DeviceDiscoveryClient,
         administrationClient: any DeviceAdministrationClient = UnavailableDeviceAdministrationClient(),
         draftStore: any DeviceSetupDraftStore = NoopDeviceSetupDraftStore(),
-        configurationStore: any DeviceConfigurationStore = NoopDeviceConfigurationStore()
+        configurationStore: any DeviceConfigurationStore = NoopDeviceConfigurationStore(),
+        homeServiceClient: (any HomeServiceClient)? = nil
     ) {
         self.client = client
         self.administrationClient = administrationClient
         self.draftStore = draftStore
         self.configurationStore = configurationStore
+        self.homeServiceClient = homeServiceClient
         _model = State(
             initialValue: DeviceDiscoveryModel(
                 client: client,
@@ -348,7 +351,8 @@ struct DeviceDiscoveryView: View {
                     device: device,
                     administrationClient: administrationClient,
                     draftStore: draftStore,
-                    configurationStore: configurationStore
+                    configurationStore: configurationStore,
+                    homeServiceClient: homeServiceClient
                 ) {
                     model.markReady(device)
                 }
@@ -358,6 +362,7 @@ struct DeviceDiscoveryView: View {
                     administrationClient: administrationClient,
                     draftStore: draftStore,
                     configurationStore: configurationStore,
+                    homeServiceClient: homeServiceClient,
                     isReenrollment: true
                 ) {
                     model.markReady(device)
@@ -366,7 +371,8 @@ struct DeviceDiscoveryView: View {
                 DeviceConfigurationView(
                     device: device,
                     administrationClient: administrationClient,
-                    configurationStore: configurationStore
+                    configurationStore: configurationStore,
+                    homeServiceClient: homeServiceClient
                 )
             }
         }
@@ -481,6 +487,7 @@ private struct DeviceSetupView: View {
     let administrationClient: any DeviceAdministrationClient
     let draftStore: any DeviceSetupDraftStore
     let configurationStore: any DeviceConfigurationStore
+    let homeServiceClient: (any HomeServiceClient)?
     let isReenrollment: Bool
     let onReady: @MainActor () -> Void
 
@@ -494,6 +501,7 @@ private struct DeviceSetupView: View {
         administrationClient: any DeviceAdministrationClient,
         draftStore: any DeviceSetupDraftStore,
         configurationStore: any DeviceConfigurationStore,
+        homeServiceClient: (any HomeServiceClient)? = nil,
         isReenrollment: Bool = false,
         onReady: @escaping @MainActor () -> Void
     ) {
@@ -501,6 +509,7 @@ private struct DeviceSetupView: View {
         self.administrationClient = administrationClient
         self.draftStore = draftStore
         self.configurationStore = configurationStore
+        self.homeServiceClient = homeServiceClient
         self.isReenrollment = isReenrollment
         self.onReady = onReady
         _model = State(
@@ -508,7 +517,8 @@ private struct DeviceSetupView: View {
                 device: device,
                 administrationClient: administrationClient,
                 draftStore: draftStore,
-                configurationStore: configurationStore
+                configurationStore: configurationStore,
+                homeServiceClient: homeServiceClient
             )
         )
     }
@@ -556,6 +566,14 @@ private struct DeviceSetupView: View {
                     Section {
                         Label(errorMessage, systemImage: "exclamationmark.triangle")
                             .foregroundStyle(HermesVisualTokens.unavailable)
+                    }
+                }
+
+                if let homeStatusMessage = model.homeStatusMessage {
+                    Section("Home configuration") {
+                        Label(homeStatusMessage, systemImage: "house")
+                            .font(.footnote)
+                            .foregroundStyle(HermesVisualTokens.secondaryInk)
                     }
                 }
             }
@@ -619,8 +637,16 @@ private struct DeviceSetupRoomStep: View {
 
     var body: some View {
         Section {
-            TextField("Room name", text: $model.room)
-                .textInputAutocapitalization(.words)
+            if model.isHomeBacked, !model.homeRooms.isEmpty {
+                Picker("Room", selection: $model.room) {
+                    ForEach(model.homeRooms, id: \.id) { room in
+                        Text(room.name).tag(room.id)
+                    }
+                }
+            } else {
+                TextField("Room name", text: $model.room)
+                    .textInputAutocapitalization(.words)
+            }
 
             Button("Continue to Wake Mappings") {
                 model.continueFromRoom()
@@ -639,7 +665,29 @@ private struct DeviceSetupWakeMappingsStep: View {
 
     var body: some View {
         Section {
-            if model.wakeMappings.isEmpty {
+            if model.isHomeBacked {
+                if model.wakeMappings.isEmpty {
+                    Text("Home has no canonical Wake Mappings for this Device.")
+                        .foregroundStyle(HermesVisualTokens.secondaryInk)
+                } else {
+                    ForEach(model.wakeMappings) { mapping in
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(mapping.wakePhrase)
+                                .font(.headline)
+                            Text("Home mapping: \(mapping.canonicalID?.rawValue ?? "unknown")")
+                                .font(.subheadline)
+                                .foregroundStyle(HermesVisualTokens.secondaryInk)
+                            Text("Profile: \(mapping.profileIdentifier)")
+                                .font(.subheadline)
+                                .foregroundStyle(HermesVisualTokens.secondaryInk)
+                        }
+                        .accessibilityElement(children: .combine)
+                    }
+                }
+                Text("Home owns these household mappings. Their names, IDs, and Profile assignment are read-only here.")
+                    .font(.footnote)
+                    .foregroundStyle(HermesVisualTokens.secondaryInk)
+            } else if model.wakeMappings.isEmpty {
                 Text("Add at least one Wake Mapping.")
                     .foregroundStyle(HermesVisualTokens.secondaryInk)
             } else {
@@ -665,10 +713,12 @@ private struct DeviceSetupWakeMappingsStep: View {
                 }
             }
 
-            Button {
-                model.addWakeMapping()
-            } label: {
-                Label("Add Wake Mapping", systemImage: "plus")
+            if !model.isHomeBacked {
+                Button {
+                    model.addWakeMapping()
+                } label: {
+                    Label("Add Wake Mapping", systemImage: "plus")
+                }
             }
 
             Button("Review setup") {
@@ -714,8 +764,10 @@ private struct DeviceSetupReadyStep: View {
                 .accessibilityElement(children: .combine)
             }
 
-            Button("Edit Wake Mappings") {
-                model.editWakeMappings()
+            if !model.isHomeBacked {
+                Button("Edit Wake Mappings") {
+                    model.editWakeMappings()
+                }
             }
         } header: {
             Text("3. Ready")
@@ -763,6 +815,7 @@ private struct DeviceConfigurationView: View {
     let device: HouseholdDevice
     let administrationClient: any DeviceAdministrationClient
     let configurationStore: any DeviceConfigurationStore
+    let homeServiceClient: (any HomeServiceClient)?
 
     @Environment(\.dismiss) private var dismiss
     @State private var model: DeviceConfigurationModel
@@ -771,16 +824,19 @@ private struct DeviceConfigurationView: View {
     init(
         device: HouseholdDevice,
         administrationClient: any DeviceAdministrationClient,
-        configurationStore: any DeviceConfigurationStore
+        configurationStore: any DeviceConfigurationStore,
+        homeServiceClient: (any HomeServiceClient)? = nil
     ) {
         self.device = device
         self.administrationClient = administrationClient
         self.configurationStore = configurationStore
+        self.homeServiceClient = homeServiceClient
         _model = State(
             initialValue: DeviceConfigurationModel(
                 device: device,
                 administrationClient: administrationClient,
-                configurationStore: configurationStore
+                configurationStore: configurationStore,
+                homeServiceClient: homeServiceClient
             )
         )
     }
@@ -830,13 +886,41 @@ private struct DeviceConfigurationView: View {
                         systemImage: accessStatusIcon
                     )
                     LabeledContent("Access", value: model.identityStatus.label)
-                    LabeledContent("Room", value: model.room)
+                    if model.isHomeBacked, !model.homeRooms.isEmpty {
+                        Picker("Room", selection: $model.room) {
+                            ForEach(model.homeRooms, id: \.id) { room in
+                                Text(room.name).tag(room.id)
+                            }
+                        }
+                    } else {
+                        LabeledContent("Room", value: model.room)
+                    }
                 } header: {
                     Text(device.displayName)
                 } footer: {
                     Text(
                         "A Wake Mapping is not applied until the Device accepts the exact Profile-specific configuration."
                     )
+                }
+
+                if homeServiceClient != nil {
+                    Section {
+                        if let revision = model.homeConfigurationRevision {
+                            LabeledContent("Revision", value: "\(revision)")
+                        }
+                        if let homeStatusMessage = model.homeStatusMessage {
+                            Label(homeStatusMessage, systemImage: "house")
+                                .font(.footnote)
+                                .foregroundStyle(HermesVisualTokens.secondaryInk)
+                        }
+                        Button("Reload Home configuration") {
+                            Task { _ = await model.reloadHomeConfiguration() }
+                        }
+                    } header: {
+                        Text("Home configuration")
+                    } footer: {
+                        Text("Home owns the household snapshot and wake arbitration. Reload before retrying a stale publish.")
+                    }
                 }
 
                 Section {
@@ -872,7 +956,31 @@ private struct DeviceConfigurationView: View {
                 }
 
                 Section {
-                    if model.wakeMappings.isEmpty {
+                    if model.isHomeBacked {
+                        if model.homeMappingCatalog.isEmpty {
+                            Text("Home has no canonical Wake Mappings for this Device.")
+                                .foregroundStyle(HermesVisualTokens.secondaryInk)
+                        } else {
+                            ForEach(model.homeMappingCatalog) { mapping in
+                                VStack(alignment: .leading, spacing: 2) {
+                                    Text(mapping.wakePhrase)
+                                        .font(.headline)
+                                    Text("Home mapping: \(mapping.id.rawValue)")
+                                        .font(.subheadline)
+                                        .foregroundStyle(HermesVisualTokens.secondaryInk)
+                                    if let profile = model.verifiedConfiguration.profileIdentifier {
+                                        Text("Profile: \(profile)")
+                                            .font(.subheadline)
+                                            .foregroundStyle(HermesVisualTokens.secondaryInk)
+                                    }
+                                }
+                                .accessibilityElement(children: .combine)
+                            }
+                        }
+                        Text("Home owns these household mappings. Their names, IDs, and Profile assignment are read-only here.")
+                            .font(.footnote)
+                            .foregroundStyle(HermesVisualTokens.secondaryInk)
+                    } else if model.wakeMappings.isEmpty {
                         Text("Add at least one Wake Mapping.")
                             .foregroundStyle(HermesVisualTokens.secondaryInk)
                     } else {
@@ -900,15 +1008,21 @@ private struct DeviceConfigurationView: View {
                         }
                     }
 
-                    Button {
-                        model.wakeMappings.append(DeviceWakeMapping())
-                    } label: {
-                        Label("Add Wake Mapping", systemImage: "plus")
+                    if !model.isHomeBacked {
+                        Button {
+                            model.wakeMappings.append(DeviceWakeMapping())
+                        } label: {
+                            Label("Add Wake Mapping", systemImage: "plus")
+                        }
                     }
                 } header: {
                     Text("Wake Mappings")
                 } footer: {
-                    Text("Each wake phrase must be unique and point to one Hermes Profile identifier.")
+                    Text(
+                        model.isHomeBacked
+                            ? "Home's global catalog is read-only on the Device editor."
+                            : "Each wake phrase must be unique and point to one Hermes Profile identifier."
+                    )
                 }
                 .disabled(!canEditConfiguration)
 

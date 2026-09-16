@@ -1,6 +1,6 @@
 schema_version: 1
 generated: 2026-09-12
-last_updated: 2026-09-15
+last_updated: 2026-09-16
 project: hermes-relay-ios
 tracking_system: file-system
 status_authority: local
@@ -33,7 +33,7 @@ development_status:
   macos-dist-f2: backlog
   next-wave: in-progress
   standard-4-apple-migrate-client: review
-  ios-home-01: backlog
+  ios-home-01: review
   ios-watch-01: backlog
   ios-perm-01: backlog
   ios-notify-01: backlog

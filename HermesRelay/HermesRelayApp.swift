@@ -12,6 +12,8 @@ struct HermesRelayIOSApp: App {
     private let appDirectory: URL
     private let homeLiveConfigurationStore: JSONHomeLiveConfigurationStore
     private let homeCredentialStore: KeychainHomeCredentialStore
+    private let homeAdminCredentialStore: KeychainHomeAdminCredentialStore
+    private let homeServiceClient: ProfileHomeServiceClient
     private let homeClientFactory: AppHomeBridgeSessionClientFactory
     private let homeClaimProvider: AppHomeConversationClaimProvider
 
@@ -31,6 +33,14 @@ struct HermesRelayIOSApp: App {
         )
         let homeCredentialStore = KeychainHomeCredentialStore(
             secureStore: KeychainSecureValueStore()
+        )
+        let homeAdminCredentialStore = KeychainHomeAdminCredentialStore(
+            secureStore: KeychainSecureValueStore()
+        )
+        let homeServiceClient = ProfileHomeServiceClient(
+            configurationStore: configuration,
+            routeProvider: homeLiveConfigurationStore,
+            adminCredentialStore: homeAdminCredentialStore
         )
         let liveHomeFactory = DefaultHomeBridgeSessionClientFactory(
             dependencies: HomeBridgeClientDependencies(
@@ -75,6 +85,8 @@ struct HermesRelayIOSApp: App {
         self.deviceConfigurationStore = DeviceConfigurationStoreFactory.make(in: appDirectory)
         self.homeLiveConfigurationStore = homeLiveConfigurationStore
         self.homeCredentialStore = homeCredentialStore
+        self.homeAdminCredentialStore = homeAdminCredentialStore
+        self.homeServiceClient = homeServiceClient
         self.homeClientFactory = homeClientFactory
         self.homeClaimProvider = homeClaimProvider
     }
@@ -89,10 +101,12 @@ struct HermesRelayIOSApp: App {
                 deviceAdministrationClient: deviceAdministrationClient,
                 deviceSetupDraftStore: deviceSetupDraftStore,
                 deviceConfigurationStore: deviceConfigurationStore,
+                homeServiceClient: homeServiceClient,
                 homeClientFactory: homeClientFactory,
                 homeClaimProvider: homeClaimProvider,
                 homeLiveConfigurationStore: homeLiveConfigurationStore,
-                homeCredentialStore: homeCredentialStore
+                homeCredentialStore: homeCredentialStore,
+                homeAdminCredentialStore: homeAdminCredentialStore
             )
         }
     }

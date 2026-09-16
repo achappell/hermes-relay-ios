@@ -1,3 +1,4 @@
+import Foundation
 import XCTest
 #if os(iOS)
 import SwiftUI
@@ -61,6 +62,57 @@ final class DeviceDiscoveryTests: XCTestCase {
         } catch {
             XCTFail("Unexpected error: \(error)")
         }
+    }
+
+    func testDeviceSetupConfigurationDecodesLegacyStateWithoutHomeMetadata() throws {
+        let data = Data(
+            #"{"deviceID":"puck-kitchen","room":"Kitchen","wakeMappings":[],"arbitrationPriority":1}"#.utf8
+        )
+
+        let configuration = try JSONDecoder().decode(
+            DeviceSetupConfiguration.self,
+            from: data
+        )
+
+        XCTAssertNil(configuration.displayName)
+        XCTAssertNil(configuration.profileIdentifier)
+        XCTAssertTrue(configuration.wakeClaimEnabled)
+        XCTAssertEqual(configuration.arbitrationPriority, 1)
+    }
+
+    func testHomeConfigurationReceiptMatchesCanonicalWakePhraseFormatting() {
+        let mappingID = CanonicalWakeMappingID("hey-hermes")
+        let requested = DeviceSetupConfiguration(
+            deviceID: "puck-kitchen",
+            room: "kitchen",
+            wakeMappings: [
+                DeviceWakeMapping(
+                    wakePhrase: " hey   hermes ",
+                    profileIdentifier: " family ",
+                    canonicalID: mappingID
+                )
+            ],
+            arbitrationPriority: 1
+        )
+        let canonical = DeviceSetupConfiguration(
+            deviceID: "puck-kitchen",
+            room: "kitchen",
+            wakeMappings: [
+                DeviceWakeMapping(
+                    wakePhrase: "Hey Hermes",
+                    profileIdentifier: "family",
+                    canonicalID: mappingID
+                )
+            ],
+            arbitrationPriority: 1
+        )
+
+        let receipt = DeviceConfigurationReceipt(
+            deviceID: canonical.deviceID,
+            configuration: canonical
+        )
+
+        XCTAssertTrue(receipt.matches(requested))
     }
 
     func testDeviceSetupDraftStoreRoundTripsDraftByDeviceID() async throws {
@@ -362,6 +414,42 @@ final class DeviceDiscoveryTests: XCTestCase {
         )
         let verificationCount = await administrationClient.verificationCount()
         XCTAssertEqual(verificationCount, 1)
+    }
+
+    func testHomeIneligibleDeviceIsNotRestoredByLaterDiscoveryVerification() async throws {
+        let fileURL = temporaryConfigurationFileURL()
+        defer { try? FileManager.default.removeItem(at: fileURL.deletingLastPathComponent()) }
+        let store = JSONDeviceConfigurationStore(fileURL: fileURL)
+        let verified = kitchenConfiguration(for: approvedSetupDevice)
+        try await store.save(
+            DeviceConfigurationState(
+                approvedDevice: approvedSetupDevice,
+                verifiedConfiguration: verified,
+                pendingConfiguration: nil,
+                homeConfigurationRevision: 7,
+                homeEligibility: .ineligible,
+                identityStatus: .verified
+            )
+        )
+        let discoveryClient = FakeDeviceDiscoveryClient(
+            snapshot: DeviceDiscoverySnapshot(
+                approvedDevices: [approvedSetupDevice],
+                unconfiguredDevices: []
+            )
+        )
+        let administrationClient = FakeDeviceAdministrationClient()
+        let model = DeviceDiscoveryModel(
+            client: discoveryClient,
+            administrationClient: administrationClient,
+            configurationStore: store
+        )
+
+        await model.discover()
+
+        XCTAssertEqual(model.setupStatus(for: approvedSetupDevice), .unavailable)
+        XCTAssertFalse(model.isActive(approvedSetupDevice))
+        let verificationCount = await administrationClient.verificationCount()
+        XCTAssertEqual(verificationCount, 0)
     }
 
     func testExactVerificationReceiptRestoresReadyState() async throws {
@@ -1699,6 +1787,18 @@ final class DeviceDiscoveryTests: XCTestCase {
             .appendingPathComponent("device-configurations.json")
     }
 
+    private func homeAdminRoute(
+        host: String = "home.example",
+        identityID: String = "home",
+        householdBinding: String = "household-a"
+    ) -> HomeApprovedRoute {
+        HomeApprovedRoute(
+            endpoint: URL(string: "wss://\(host)/api/v1/bridge/ws")!,
+            identity: HomeRouteIdentity(routeClass: .home, id: identityID),
+            householdBinding: householdBinding
+        )
+    }
+
     func testDiscoveryKeepsUnconfiguredDevicesSeparateFromApprovedDevices() async {
         let approved = HouseholdDevice(
             id: "approved-display",
@@ -2281,6 +2381,1695 @@ final class DeviceDiscoveryTests: XCTestCase {
     }
     #endif
 
+    func testHomeServiceFetchesConfigurationUsingVersionedEndpointAndAdminBearer() async throws {
+        let responseBody = Data(
+            #"""
+            {
+              "schema": 1,
+              "snapshot": {
+                "revision": 12,
+                "rooms": [{"id": "kitchen", "name": "Kitchen"}],
+                "wake_mappings": [{"id": "hey-hermes", "name": "Hey Hermes"}],
+                "devices": [{
+                  "id": "puck-kitchen",
+                  "name": "Kitchen Puck",
+                  "room_id": "kitchen",
+                  "profile_id": "family",
+                  "priority": 1,
+                  "capabilities": {"wake_claim": true}
+                }]
+              }
+            }
+            """#.utf8
+        )
+        let transport = RecordingHomeHTTPTransport(body: responseBody)
+        let client = URLSessionHomeServiceClient(
+            baseURL: URL(string: "http://home.test")!,
+            adminCredential: "home-admin-secret",
+            transport: transport
+        )
+
+        let snapshot = try await client.fetchConfiguration()
+
+        XCTAssertEqual(snapshot.revision, 12)
+        XCTAssertEqual(snapshot.rooms, [HomeRoom(id: "kitchen", name: "Kitchen")])
+        XCTAssertEqual(snapshot.wakeMappings.map(\.id.rawValue), ["hey-hermes"])
+        XCTAssertEqual(snapshot.devices.map(\.deviceID), ["puck-kitchen"])
+        XCTAssertEqual(snapshot.devices.first?.room, "kitchen")
+        XCTAssertEqual(snapshot.devices.first?.displayName, "Kitchen Puck")
+        XCTAssertEqual(
+            snapshot.devices.first?.wakeMappings.first?.profileIdentifier,
+            "family"
+        )
+
+        let request = await transport.lastRequest()
+        XCTAssertEqual(request?.httpMethod, "GET")
+        XCTAssertEqual(
+            request?.url?.absoluteString,
+            "http://home.test/api/v1/configuration"
+        )
+        XCTAssertEqual(
+            request?.value(forHTTPHeaderField: "Authorization"),
+            "Bearer home-admin-secret"
+        )
+        XCTAssertEqual(
+            request?.value(forHTTPHeaderField: "Accept"),
+            "application/json"
+        )
+    }
+
+    func testHomeServicePublishesCompleteConfigurationWithExpectedRevision() async throws {
+        let responseBody = Data(
+            #"""
+            {
+              "schema": 1,
+              "snapshot": {
+                "revision": 13,
+                "rooms": [{"id": "kitchen", "name": "Kitchen"}],
+                "wake_mappings": [{"id": "hey-hermes", "name": "Hey Hermes"}],
+                "devices": [{
+                  "id": "puck-kitchen",
+                  "name": "Kitchen Puck",
+                  "room_id": "kitchen",
+                  "profile_id": " family ",
+                  "priority": 1,
+                  "capabilities": {"wake_claim": true}
+                }]
+              }
+            }
+            """#.utf8
+        )
+        let mappingID = CanonicalWakeMappingID("hey-hermes")
+        let configuration = HomeConfigurationSnapshot(
+            revision: 12,
+            wakeMappings: [
+                CanonicalWakeMapping(id: mappingID, wakePhrase: "Hey Hermes")
+            ],
+            devices: [
+                DeviceSetupConfiguration(
+                    deviceID: "puck-kitchen",
+                    room: "kitchen",
+                    wakeMappings: [
+                        DeviceWakeMapping(
+                            wakePhrase: "Hey Hermes",
+                            profileIdentifier: " family ",
+                            canonicalID: mappingID
+                        )
+                    ],
+                    arbitrationPriority: 1,
+                    displayName: "Kitchen Puck",
+                    profileIdentifier: " family "
+                )
+            ],
+            rooms: [HomeRoom(id: "kitchen", name: "Kitchen")]
+        )
+        let transport = RecordingHomeHTTPTransport(body: responseBody)
+        let client = URLSessionHomeServiceClient(
+            baseURL: URL(string: "wss://home.test/api/v1/bridge/ws")!,
+            adminCredential: "home-admin-secret",
+            transport: transport
+        )
+
+        let published = try await client.publish(configuration, expectedRevision: 12)
+
+        XCTAssertEqual(published.revision, 13)
+        let recordedRequest = await transport.lastRequest()
+        let request = try XCTUnwrap(recordedRequest)
+        XCTAssertEqual(request.httpMethod, "PUT")
+        XCTAssertEqual(
+            request.url?.absoluteString,
+            "https://home.test/api/v1/configuration"
+        )
+        XCTAssertEqual(
+            request.value(forHTTPHeaderField: "Content-Type"),
+            "application/json"
+        )
+
+        let requestBody = try XCTUnwrap(request.httpBody)
+        let object = try XCTUnwrap(
+            JSONSerialization.jsonObject(with: requestBody) as? [String: Any]
+        )
+        XCTAssertEqual(object["schema"] as? Int, 1)
+        XCTAssertEqual(object["expected_revision"] as? Int, 12)
+        let snapshot = try XCTUnwrap(object["snapshot"] as? [String: Any])
+        XCTAssertNil(snapshot["revision"])
+        XCTAssertEqual(snapshot["rooms"] as? [[String: String]], [[
+            "id": "kitchen",
+            "name": "Kitchen"
+        ]])
+        XCTAssertEqual(snapshot["wake_mappings"] as? [[String: String]], [[
+            "id": "hey-hermes",
+            "name": "Hey Hermes"
+        ]])
+        let devices = try XCTUnwrap(snapshot["devices"] as? [[String: Any]])
+        XCTAssertEqual(devices.first?["id"] as? String, "puck-kitchen")
+        XCTAssertEqual(devices.first?["name"] as? String, "Kitchen Puck")
+        XCTAssertEqual(devices.first?["room_id"] as? String, "kitchen")
+        XCTAssertEqual(devices.first?["profile_id"] as? String, " family ")
+        XCTAssertEqual(devices.first?["priority"] as? Int, 1)
+        XCTAssertEqual(
+            devices.first?["capabilities"] as? [String: Bool],
+            ["wake_claim": true]
+        )
+        XCTAssertFalse(
+            String(decoding: requestBody, as: UTF8.self).contains("home-admin-secret")
+        )
+    }
+
+    func testHomeServiceMapsStaleRevisionToTypedConflict() async {
+        let transport = RecordingHomeHTTPTransport(
+            body: Data(
+                #"{"schema":1,"error":{"code":"revision_conflict","current_revision":13}}"#.utf8
+            ),
+            statusCode: 409
+        )
+        let client = URLSessionHomeServiceClient(
+            baseURL: URL(string: "http://home.test")!,
+            adminCredential: "home-admin-secret",
+            transport: transport
+        )
+
+        do {
+            _ = try await client.fetchConfiguration()
+            XCTFail("A stale Home revision must not be treated as a successful fetch")
+        } catch let error as HomeServiceError {
+            XCTAssertEqual(error, .revisionConflict)
+        } catch {
+            XCTFail("Unexpected error: \(error)")
+        }
+    }
+
+    func testHomePublishRejectsSnapshotRevisionThatDoesNotMatchPrecondition() async {
+        let transport = RecordingHomeHTTPTransport(body: Data())
+        let client = URLSessionHomeServiceClient(
+            baseURL: URL(string: "http://home.test")!,
+            adminCredential: "home-admin-secret",
+            transport: transport
+        )
+        let snapshot = HomeConfigurationSnapshot(
+            revision: 12,
+            wakeMappings: [],
+            devices: [],
+            rooms: []
+        )
+
+        do {
+            _ = try await client.publish(snapshot, expectedRevision: 13)
+            XCTFail("A stale snapshot must not be sent with a newer revision precondition")
+        } catch let error as HomeServiceError {
+            XCTAssertEqual(error, .revisionConflict)
+        } catch {
+            XCTFail("Unexpected error: \(error)")
+        }
+        let requestCount = await transport.requestCount()
+        XCTAssertEqual(requestCount, 0)
+    }
+
+    func testInvalidHomePublishResponseExplainsThatOutcomeIsUnknown() {
+        let message = HomeServiceError.invalidResponse.userMessage
+
+        XCTAssertTrue(message.localizedCaseInsensitiveContains("result may be unknown"))
+        XCTAssertTrue(message.localizedCaseInsensitiveContains("reload"))
+    }
+
+    func testHomeURLSessionRedirectDelegateRefusesRedirects() throws {
+        let session = URLSession(configuration: .ephemeral)
+        defer { session.invalidateAndCancel() }
+        let originalURL = URL(string: "https://home.example/configuration")!
+        let task = session.dataTask(with: originalURL)
+        let response = try XCTUnwrap(
+            HTTPURLResponse(
+                url: originalURL,
+                statusCode: 307,
+                httpVersion: "HTTP/1.1",
+                headerFields: ["Location": "https://other.example/configuration"]
+            )
+        )
+        let proposedRequest = URLRequest(
+            url: URL(string: "https://other.example/configuration")!
+        )
+        let result = RedirectRequestResult()
+
+        HomeRedirectRefusingDelegate().urlSession(
+            session,
+            task: task,
+            willPerformHTTPRedirection: response,
+            newRequest: proposedRequest,
+            completionHandler: { result.record($0) }
+        )
+
+        XCTAssertTrue(result.wasCalled)
+        XCTAssertNil(result.request)
+        task.cancel()
+    }
+
+    func testHomeServicePreservesDeviceProfileAndCapabilityWhenNoWakeMappingsExist() async throws {
+        let responseBody = Data(
+            #"""
+            {
+              "schema": 1,
+              "snapshot": {
+                "revision": 4,
+                "rooms": [{"id": "study", "name": "Study"}],
+                "wake_mappings": [],
+                "devices": [{
+                  "id": "display-study",
+                  "name": "Study Display",
+                  "room_id": "study",
+                  "profile_id": "quiet",
+                  "priority": 2,
+                  "capabilities": {"wake_claim": false}
+                }]
+              }
+            }
+            """#.utf8
+        )
+        let client = URLSessionHomeServiceClient(
+            baseURL: URL(string: "http://home.test")!,
+            adminCredential: "home-admin-secret",
+            transport: RecordingHomeHTTPTransport(body: responseBody)
+        )
+
+        let snapshot = try await client.fetchConfiguration()
+        let device = try XCTUnwrap(snapshot.devices.first)
+
+        XCTAssertEqual(device.profileIdentifier, "quiet")
+        XCTAssertFalse(device.wakeClaimEnabled)
+        XCTAssertTrue(device.wakeMappings.isEmpty)
+    }
+
+    func testHomeServiceRejectsUnknownWireFieldsAsInvalidResponse() async {
+        let transport = RecordingHomeHTTPTransport(
+            body: Data(
+                #"{"schema":1,"snapshot":{"revision":1,"rooms":[],"wake_mappings":[],"devices":[],"unexpected":true}}"#.utf8
+            )
+        )
+        let client = URLSessionHomeServiceClient(
+            baseURL: URL(string: "http://home.test")!,
+            adminCredential: "home-admin-secret",
+            transport: transport
+        )
+
+        do {
+            _ = try await client.fetchConfiguration()
+            XCTFail("Unknown Home fields must not be silently ignored")
+        } catch let error as HomeServiceError {
+            XCTAssertEqual(error, .invalidResponse)
+        } catch {
+            XCTFail("Unexpected error: \(error)")
+        }
+    }
+
+    func testHomeServiceRejectsDeviceSnapshotWithoutRooms() async {
+        let transport = RecordingHomeHTTPTransport(
+            body: Data(
+                #"{"schema":1,"snapshot":{"revision":1,"rooms":[],"wake_mappings":[{"id":"wake","name":"Hey Hermes"}],"devices":[{"id":"device","name":"Device","room_id":"kitchen","profile_id":"family","priority":1,"capabilities":{"wake_claim":true}}]}}"#.utf8
+            )
+        )
+        let client = URLSessionHomeServiceClient(
+            baseURL: URL(string: "http://home.test")!,
+            adminCredential: "home-admin-secret",
+            transport: transport
+        )
+
+        do {
+            _ = try await client.fetchConfiguration()
+            XCTFail("A Home Device cannot reference a Room omitted from the complete snapshot")
+        } catch let error as HomeServiceError {
+            XCTAssertEqual(error, .invalidResponse)
+        } catch {
+            XCTFail("Unexpected error: \(error)")
+        }
+    }
+
+    func testHomeBackedConfigurationPublishUsesHomeRevisionInsteadOfDeviceAdmin() async throws {
+        let fileURL = temporaryConfigurationFileURL()
+        defer { try? FileManager.default.removeItem(at: fileURL.deletingLastPathComponent()) }
+        let store = JSONDeviceConfigurationStore(fileURL: fileURL)
+        let mappingID = CanonicalWakeMappingID("hey-hermes")
+        let canonicalMapping = CanonicalWakeMapping(
+            id: mappingID,
+            wakePhrase: "Hey Hermes"
+        )
+        let verified = DeviceSetupConfiguration(
+            deviceID: approvedSetupDevice.id,
+            room: "kitchen",
+            wakeMappings: [
+                DeviceWakeMapping(
+                    wakePhrase: "Hey Hermes",
+                    profileIdentifier: "family",
+                    canonicalID: mappingID
+                )
+            ],
+            arbitrationPriority: 1,
+            displayName: approvedSetupDevice.displayName,
+            profileIdentifier: "family"
+        )
+        try await store.save(
+            DeviceConfigurationState(
+                approvedDevice: approvedSetupDevice,
+                verifiedConfiguration: verified,
+                pendingConfiguration: nil
+            )
+        )
+        let currentHomeSnapshot = HomeConfigurationSnapshot(
+            revision: 7,
+            wakeMappings: [canonicalMapping],
+            devices: [verified],
+            rooms: [HomeRoom(id: "kitchen", name: "Kitchen"), HomeRoom(id: "study", name: "Study")]
+        )
+        let publishedConfiguration = DeviceSetupConfiguration(
+            deviceID: verified.deviceID,
+            room: "study",
+            wakeMappings: verified.wakeMappings,
+            arbitrationPriority: 1,
+            displayName: verified.displayName,
+            profileIdentifier: verified.profileIdentifier,
+            wakeClaimEnabled: verified.wakeClaimEnabled
+        )
+        let publishedHomeSnapshot = HomeConfigurationSnapshot(
+            revision: 8,
+            wakeMappings: [canonicalMapping],
+            devices: [publishedConfiguration],
+            rooms: currentHomeSnapshot.rooms
+        )
+        let homeClient = RecordingHomeServiceClient(
+            fetchedSnapshot: currentHomeSnapshot,
+            publishedSnapshot: publishedHomeSnapshot
+        )
+        let administrationClient = FakeDeviceAdministrationClient()
+        let model = DeviceConfigurationModel(
+            device: approvedSetupDevice,
+            administrationClient: administrationClient,
+            configurationStore: store,
+            homeServiceClient: homeClient
+        )
+        await model.load()
+        model.room = "study"
+
+        let published = await model.publish()
+
+        XCTAssertTrue(published)
+        XCTAssertEqual(model.homeConfigurationRevision, 8)
+        XCTAssertEqual(model.verifiedConfiguration.room, "study")
+        let expectedRevisions = await homeClient.publishExpectedRevisions()
+        XCTAssertEqual(expectedRevisions, [7])
+        let candidates = await homeClient.publishedCandidates()
+        XCTAssertEqual(candidates.first?.rooms, currentHomeSnapshot.rooms)
+        XCTAssertEqual(candidates.first?.wakeMappings, currentHomeSnapshot.wakeMappings)
+        XCTAssertEqual(candidates.first?.devices.first?.room, "study")
+        XCTAssertEqual(candidates.first?.devices.first?.displayName, approvedSetupDevice.displayName)
+        XCTAssertEqual(candidates.first?.devices.first?.profileIdentifier, "family")
+        XCTAssertEqual(candidates.first?.devices.first?.wakeClaimEnabled, true)
+        let configurationCount = await administrationClient.configurationCount()
+        XCTAssertEqual(configurationCount, 0)
+    }
+
+    func testHomeBackedMismatchedReceiptKeepsVerifiedBasisAndPendingEdit() async throws {
+        let fileURL = temporaryConfigurationFileURL()
+        defer { try? FileManager.default.removeItem(at: fileURL.deletingLastPathComponent()) }
+        let store = JSONDeviceConfigurationStore(fileURL: fileURL)
+        let mappingID = CanonicalWakeMappingID("hey-hermes")
+        let canonicalMapping = CanonicalWakeMapping(
+            id: mappingID,
+            wakePhrase: "Hey Hermes"
+        )
+        let mapping = DeviceWakeMapping(
+            wakePhrase: "Hey Hermes",
+            profileIdentifier: "family",
+            canonicalID: mappingID
+        )
+        let original = DeviceSetupConfiguration(
+            deviceID: approvedSetupDevice.id,
+            room: "kitchen",
+            wakeMappings: [mapping],
+            arbitrationPriority: 1,
+            displayName: approvedSetupDevice.displayName,
+            profileIdentifier: "family"
+        )
+        let currentSnapshot = HomeConfigurationSnapshot(
+            revision: 7,
+            wakeMappings: [canonicalMapping],
+            devices: [original],
+            rooms: [
+                HomeRoom(id: "kitchen", name: "Kitchen"),
+                HomeRoom(id: "study", name: "Study")
+            ]
+        )
+        let mismatchedReceipt = HomeConfigurationSnapshot(
+            revision: 8,
+            wakeMappings: [canonicalMapping],
+            devices: [
+                DeviceSetupConfiguration(
+                    deviceID: approvedSetupDevice.id,
+                    room: "study",
+                    wakeMappings: [mapping],
+                    arbitrationPriority: 1,
+                    displayName: "Unexpected Rename",
+                    profileIdentifier: "family"
+                )
+            ],
+            rooms: currentSnapshot.rooms
+        )
+        try await store.save(
+            DeviceConfigurationState(
+                approvedDevice: approvedSetupDevice,
+                verifiedConfiguration: original,
+                pendingConfiguration: nil,
+                homeConfigurationRevision: 7
+            )
+        )
+        let homeClient = RecordingHomeServiceClient(
+            fetchedSnapshot: currentSnapshot,
+            publishedSnapshot: mismatchedReceipt
+        )
+        let administrationClient = FakeDeviceAdministrationClient()
+        let model = DeviceConfigurationModel(
+            device: approvedSetupDevice,
+            administrationClient: administrationClient,
+            configurationStore: store,
+            homeServiceClient: homeClient
+        )
+        await model.load()
+        model.room = "study"
+
+        let published = await model.publish()
+
+        XCTAssertFalse(published)
+        XCTAssertEqual(model.verifiedConfiguration, original)
+        XCTAssertEqual(model.pendingConfiguration?.room, "study")
+        XCTAssertEqual(model.publicationStatus, .pending)
+        XCTAssertTrue(model.isActive)
+        XCTAssertEqual(model.errorMessage, HomeServiceError.invalidResponse.userMessage)
+        let configurationCount = await administrationClient.configurationCount()
+        XCTAssertEqual(configurationCount, 0)
+    }
+
+    func testHomeReloadReconcilesHomeProjectionAndPreservesPendingEdit() async throws {
+        let fileURL = temporaryConfigurationFileURL()
+        defer { try? FileManager.default.removeItem(at: fileURL.deletingLastPathComponent()) }
+        let store = JSONDeviceConfigurationStore(fileURL: fileURL)
+        let mappingID = CanonicalWakeMappingID("hey-hermes")
+        let canonicalMapping = CanonicalWakeMapping(
+            id: mappingID,
+            wakePhrase: "Hey Hermes"
+        )
+        let mapping = DeviceWakeMapping(
+            wakePhrase: "Hey Hermes",
+            profileIdentifier: "family",
+            canonicalID: mappingID
+        )
+        let original = DeviceSetupConfiguration(
+            deviceID: approvedSetupDevice.id,
+            room: "kitchen",
+            wakeMappings: [mapping],
+            arbitrationPriority: 1,
+            displayName: approvedSetupDevice.displayName,
+            profileIdentifier: "family"
+        )
+        let changedByHome = DeviceSetupConfiguration(
+            deviceID: approvedSetupDevice.id,
+            room: "den",
+            wakeMappings: [mapping],
+            arbitrationPriority: 1,
+            displayName: "Den Puck",
+            profileIdentifier: "family"
+        )
+        let rooms = [
+            HomeRoom(id: "kitchen", name: "Kitchen"),
+            HomeRoom(id: "study", name: "Study"),
+            HomeRoom(id: "den", name: "Den")
+        ]
+        let originalSnapshot = HomeConfigurationSnapshot(
+            revision: 7,
+            wakeMappings: [canonicalMapping],
+            devices: [original],
+            rooms: rooms
+        )
+        let changedSnapshot = HomeConfigurationSnapshot(
+            revision: 8,
+            wakeMappings: [canonicalMapping],
+            devices: [changedByHome],
+            rooms: rooms
+        )
+        let omittedSnapshot = HomeConfigurationSnapshot(
+            revision: 9,
+            wakeMappings: [canonicalMapping],
+            devices: [],
+            rooms: rooms
+        )
+        try await store.save(
+            DeviceConfigurationState(
+                approvedDevice: approvedSetupDevice,
+                verifiedConfiguration: original,
+                pendingConfiguration: nil,
+                homeConfigurationRevision: 7
+            )
+        )
+        let homeClient = SequencedHomeServiceClient(
+            snapshots: [originalSnapshot, changedSnapshot, omittedSnapshot]
+        )
+        let model = DeviceConfigurationModel(
+            device: approvedSetupDevice,
+            administrationClient: FakeDeviceAdministrationClient(),
+            configurationStore: store,
+            homeServiceClient: homeClient
+        )
+
+        await model.load()
+        XCTAssertTrue(model.isActive)
+        model.room = "study"
+        let pendingSaved = await model.preservePending()
+        XCTAssertTrue(pendingSaved)
+
+        let changedReloaded = await model.reloadHomeConfiguration()
+
+        XCTAssertTrue(changedReloaded)
+        XCTAssertEqual(model.verifiedConfiguration, changedByHome)
+        XCTAssertEqual(model.pendingConfiguration?.room, "study")
+        XCTAssertEqual(model.room, "study")
+        XCTAssertEqual(model.homeConfigurationRevision, 8)
+        XCTAssertEqual(model.identityStatus, .verificationRequired)
+        XCTAssertFalse(model.isActive)
+        XCTAssertEqual(model.publicationStatus, .pending)
+
+        let omittedReloaded = await model.reloadHomeConfiguration()
+
+        XCTAssertTrue(omittedReloaded)
+        XCTAssertEqual(model.verifiedConfiguration, changedByHome)
+        XCTAssertEqual(model.pendingConfiguration?.room, "study")
+        XCTAssertEqual(model.identityStatus, .verificationRequired)
+        XCTAssertEqual(model.homeEligibility, .ineligible)
+        XCTAssertFalse(model.isActive)
+        let storedState = try await store.load(for: approvedSetupDevice.id)
+        XCTAssertEqual(storedState?.verifiedConfiguration, changedByHome)
+        XCTAssertEqual(storedState?.pendingConfiguration?.room, "study")
+        XCTAssertEqual(storedState?.identityStatus, .verificationRequired)
+        XCTAssertEqual(storedState?.homeEligibility, .ineligible)
+    }
+
+    func testHomeSetupRequiresExistingDeviceAndEnabledWakeClaim() async throws {
+        let mappingID = CanonicalWakeMappingID("hey-hermes")
+        let canonicalMapping = CanonicalWakeMapping(
+            id: mappingID,
+            wakePhrase: "Hey Hermes"
+        )
+        let mapping = DeviceWakeMapping(
+            wakePhrase: "Hey Hermes",
+            profileIdentifier: "family",
+            canonicalID: mappingID
+        )
+        let room = HomeRoom(id: "kitchen", name: "Kitchen")
+        let missingSnapshot = HomeConfigurationSnapshot(
+            revision: 2,
+            wakeMappings: [canonicalMapping],
+            devices: [],
+            rooms: [room]
+        )
+        let missingClient = RecordingHomeServiceClient(
+            fetchedSnapshot: missingSnapshot,
+            publishedSnapshot: missingSnapshot
+        )
+        let missingSetup = DeviceSetupModel(
+            device: approvedSetupDevice,
+            administrationClient: FakeDeviceAdministrationClient(),
+            homeServiceClient: missingClient
+        )
+        await missingSetup.loadDraft()
+        missingSetup.room = room.name
+        XCTAssertTrue(missingSetup.continueFromRoom())
+        missingSetup.wakeMappings = [mapping]
+        XCTAssertTrue(missingSetup.continueFromMappings())
+
+        let missingReady = await missingSetup.confirmReady()
+
+        XCTAssertFalse(missingReady)
+        XCTAssertFalse(missingSetup.isActive)
+        XCTAssertEqual(missingSetup.errorMessage, HomeServiceError.notFound.userMessage)
+        let missingPublishRevisions = await missingClient.publishExpectedRevisions()
+        XCTAssertTrue(missingPublishRevisions.isEmpty)
+
+        let disabledDevice = DeviceSetupConfiguration(
+            deviceID: approvedSetupDevice.id,
+            room: room.id,
+            wakeMappings: [mapping],
+            arbitrationPriority: 1,
+            displayName: approvedSetupDevice.displayName,
+            profileIdentifier: "family",
+            wakeClaimEnabled: false
+        )
+        let disabledSnapshot = HomeConfigurationSnapshot(
+            revision: 3,
+            wakeMappings: [canonicalMapping],
+            devices: [disabledDevice],
+            rooms: [room]
+        )
+        let disabledClient = RecordingHomeServiceClient(
+            fetchedSnapshot: disabledSnapshot,
+            publishedSnapshot: disabledSnapshot
+        )
+        let disabledSetup = DeviceSetupModel(
+            device: approvedSetupDevice,
+            administrationClient: FakeDeviceAdministrationClient(),
+            homeServiceClient: disabledClient
+        )
+        await disabledSetup.loadDraft()
+        disabledSetup.room = room.name
+        XCTAssertTrue(disabledSetup.continueFromRoom())
+        disabledSetup.wakeMappings = [mapping]
+        XCTAssertFalse(disabledSetup.continueFromMappings())
+        XCTAssertTrue(disabledSetup.errorMessage?.contains("disabled wake claims") == true)
+
+        let disabledReady = await disabledSetup.confirmReady()
+
+        XCTAssertFalse(disabledReady)
+        XCTAssertFalse(disabledSetup.isActive)
+        let disabledPublishRevisions = await disabledClient.publishExpectedRevisions()
+        XCTAssertTrue(disabledPublishRevisions.isEmpty)
+    }
+
+    func testHomeBackedStalePublishKeepsVerifiedConfigurationAndPendingEdit() async throws {
+        let fileURL = temporaryConfigurationFileURL()
+        defer { try? FileManager.default.removeItem(at: fileURL.deletingLastPathComponent()) }
+        let store = JSONDeviceConfigurationStore(fileURL: fileURL)
+        let mappingID = CanonicalWakeMappingID("hey-hermes")
+        let mapping = DeviceWakeMapping(
+            wakePhrase: "Hey Hermes",
+            profileIdentifier: "family",
+            canonicalID: mappingID
+        )
+        let verified = DeviceSetupConfiguration(
+            deviceID: approvedSetupDevice.id,
+            room: "kitchen",
+            wakeMappings: [mapping],
+            arbitrationPriority: 1,
+            displayName: approvedSetupDevice.displayName,
+            profileIdentifier: "family"
+        )
+        try await store.save(
+            DeviceConfigurationState(
+                approvedDevice: approvedSetupDevice,
+                verifiedConfiguration: verified,
+                pendingConfiguration: nil,
+                homeConfigurationRevision: 7
+            )
+        )
+        let homeSnapshot = HomeConfigurationSnapshot(
+            revision: 7,
+            wakeMappings: [CanonicalWakeMapping(id: mappingID, wakePhrase: "Hey Hermes")],
+            devices: [verified],
+            rooms: [HomeRoom(id: "kitchen", name: "Kitchen"), HomeRoom(id: "study", name: "Study")]
+        )
+        let model = DeviceConfigurationModel(
+            device: approvedSetupDevice,
+            administrationClient: FakeDeviceAdministrationClient(),
+            configurationStore: store,
+            homeServiceClient: ConflictingHomeServiceClient(snapshot: homeSnapshot)
+        )
+        await model.load()
+        model.room = "study"
+
+        let published = await model.publish()
+
+        XCTAssertFalse(published)
+        XCTAssertEqual(model.verifiedConfiguration.room, "kitchen")
+        XCTAssertEqual(model.pendingConfiguration?.room, "study")
+        XCTAssertEqual(model.publicationStatus, .pending)
+        XCTAssertNil(model.homeConfigurationRevision)
+        XCTAssertEqual(model.errorMessage, HomeServiceError.revisionConflict.userMessage)
+    }
+
+    func testHomeTransportFailureKeepsVerifiedBasisAndPersistsPendingEdit() async throws {
+        let fileURL = temporaryConfigurationFileURL()
+        defer { try? FileManager.default.removeItem(at: fileURL.deletingLastPathComponent()) }
+        let store = JSONDeviceConfigurationStore(fileURL: fileURL)
+        let mappingID = CanonicalWakeMappingID("hey-hermes")
+        let mapping = DeviceWakeMapping(
+            wakePhrase: "Hey Hermes",
+            profileIdentifier: "family",
+            canonicalID: mappingID
+        )
+        let verified = DeviceSetupConfiguration(
+            deviceID: approvedSetupDevice.id,
+            room: "kitchen",
+            wakeMappings: [mapping],
+            arbitrationPriority: 1,
+            displayName: approvedSetupDevice.displayName,
+            profileIdentifier: "family"
+        )
+        try await store.save(
+            DeviceConfigurationState(
+                approvedDevice: approvedSetupDevice,
+                verifiedConfiguration: verified,
+                pendingConfiguration: nil,
+                homeConfigurationRevision: 7,
+                homeEligibility: .eligible,
+                identityStatus: .verified
+            )
+        )
+        let snapshot = HomeConfigurationSnapshot(
+            revision: 7,
+            wakeMappings: [CanonicalWakeMapping(id: mappingID, wakePhrase: "Hey Hermes")],
+            devices: [verified],
+            rooms: [
+                HomeRoom(id: "kitchen", name: "Kitchen"),
+                HomeRoom(id: "study", name: "Study")
+            ]
+        )
+        let model = DeviceConfigurationModel(
+            device: approvedSetupDevice,
+            administrationClient: FakeDeviceAdministrationClient(),
+            configurationStore: store,
+            homeServiceClient: FailingPublishHomeServiceClient(
+                snapshot: snapshot,
+                publishError: .transportUnavailable
+            )
+        )
+        await model.load()
+        XCTAssertTrue(model.isActive)
+        model.room = "study"
+
+        let published = await model.publish()
+
+        XCTAssertFalse(published)
+        XCTAssertTrue(model.isActive)
+        XCTAssertEqual(model.verifiedConfiguration.room, "kitchen")
+        XCTAssertEqual(model.pendingConfiguration?.room, "study")
+        let persisted = try await store.load(for: approvedSetupDevice.id)
+        XCTAssertEqual(persisted?.verifiedConfiguration.room, "kitchen")
+        XCTAssertEqual(persisted?.pendingConfiguration?.room, "study")
+        XCTAssertEqual(persisted?.homeEligibility, .eligible)
+    }
+
+    func testHomeReloadRebasesPendingRoomAndMappingProjectionToLatestCatalog() async throws {
+        let fileURL = temporaryConfigurationFileURL()
+        defer { try? FileManager.default.removeItem(at: fileURL.deletingLastPathComponent()) }
+        let store = JSONDeviceConfigurationStore(fileURL: fileURL)
+        let oldMappingID = CanonicalWakeMappingID("hey-hermes")
+        let newMappingID = CanonicalWakeMappingID("hello-hermes")
+        let oldMapping = DeviceWakeMapping(
+            wakePhrase: "Hey Hermes",
+            profileIdentifier: "family",
+            canonicalID: oldMappingID
+        )
+        let newMapping = DeviceWakeMapping(
+            wakePhrase: "Hello Hermes",
+            profileIdentifier: "family",
+            canonicalID: newMappingID
+        )
+        let verified = DeviceSetupConfiguration(
+            deviceID: approvedSetupDevice.id,
+            room: "kitchen",
+            wakeMappings: [oldMapping],
+            arbitrationPriority: 1,
+            displayName: approvedSetupDevice.displayName,
+            profileIdentifier: "family"
+        )
+        let pending = DeviceSetupConfiguration(
+            deviceID: approvedSetupDevice.id,
+            room: "study",
+            wakeMappings: [oldMapping],
+            arbitrationPriority: 1,
+            displayName: approvedSetupDevice.displayName,
+            profileIdentifier: "family"
+        )
+        try await store.save(
+            DeviceConfigurationState(
+                approvedDevice: approvedSetupDevice,
+                verifiedConfiguration: verified,
+                pendingConfiguration: pending,
+                homeConfigurationRevision: 7,
+                homeEligibility: .eligible,
+                identityStatus: .verified
+            )
+        )
+        let latestDevice = DeviceSetupConfiguration(
+            deviceID: approvedSetupDevice.id,
+            room: "kitchen",
+            wakeMappings: [newMapping],
+            arbitrationPriority: 1,
+            displayName: approvedSetupDevice.displayName,
+            profileIdentifier: "family"
+        )
+        let latestSnapshot = HomeConfigurationSnapshot(
+            revision: 8,
+            wakeMappings: [CanonicalWakeMapping(id: newMappingID, wakePhrase: "Hello Hermes")],
+            devices: [latestDevice],
+            rooms: [HomeRoom(id: "kitchen", name: "Kitchen")]
+        )
+        let model = DeviceConfigurationModel(
+            device: approvedSetupDevice,
+            administrationClient: FakeDeviceAdministrationClient(),
+            configurationStore: store,
+            homeServiceClient: RecordingHomeServiceClient(
+                fetchedSnapshot: latestSnapshot,
+                publishedSnapshot: latestSnapshot
+            )
+        )
+
+        await model.load()
+
+        XCTAssertEqual(model.pendingConfiguration?.room, "kitchen")
+        XCTAssertEqual(model.pendingConfiguration?.wakeMappings, [newMapping])
+        XCTAssertEqual(model.room, "kitchen")
+        XCTAssertEqual(model.wakeMappings, [newMapping])
+        XCTAssertEqual(model.publicationStatus, .pending)
+        XCTAssertFalse(model.isActive)
+        let persisted = try await store.load(for: approvedSetupDevice.id)
+        XCTAssertEqual(persisted?.pendingConfiguration?.wakeMappings, [newMapping])
+        XCTAssertEqual(persisted?.homeConfigurationRevision, 8)
+    }
+
+    func testHomeEligibilityPersistenceFailureReturnsInactiveWithAnError() async throws {
+        let mappingID = CanonicalWakeMappingID("hey-hermes")
+        let mapping = DeviceWakeMapping(
+            wakePhrase: "Hey Hermes",
+            profileIdentifier: "family",
+            canonicalID: mappingID
+        )
+        let verified = DeviceSetupConfiguration(
+            deviceID: approvedSetupDevice.id,
+            room: "kitchen",
+            wakeMappings: [mapping],
+            arbitrationPriority: 1,
+            displayName: approvedSetupDevice.displayName,
+            profileIdentifier: "family"
+        )
+        let initialState = DeviceConfigurationState(
+            approvedDevice: approvedSetupDevice,
+            verifiedConfiguration: verified,
+            pendingConfiguration: nil,
+            homeConfigurationRevision: 7,
+            homeEligibility: .eligible,
+            identityStatus: .verified
+        )
+        let disabledDevice = DeviceSetupConfiguration(
+            deviceID: approvedSetupDevice.id,
+            room: "kitchen",
+            wakeMappings: [mapping],
+            arbitrationPriority: 1,
+            displayName: approvedSetupDevice.displayName,
+            profileIdentifier: "family",
+            wakeClaimEnabled: false
+        )
+        let disabledSnapshot = HomeConfigurationSnapshot(
+            revision: 8,
+            wakeMappings: [CanonicalWakeMapping(id: mappingID, wakePhrase: "Hey Hermes")],
+            devices: [disabledDevice],
+            rooms: [HomeRoom(id: "kitchen", name: "Kitchen")]
+        )
+        let model = DeviceConfigurationModel(
+            device: approvedSetupDevice,
+            administrationClient: FakeDeviceAdministrationClient(),
+            configurationStore: RejectingDeviceConfigurationStore(state: initialState),
+            homeServiceClient: RecordingHomeServiceClient(
+                fetchedSnapshot: disabledSnapshot,
+                publishedSnapshot: disabledSnapshot
+            )
+        )
+
+        await model.load()
+        let reloadSucceeded = await model.reloadHomeConfiguration()
+
+        XCTAssertFalse(reloadSucceeded)
+        XCTAssertEqual(model.homeEligibility, .ineligible)
+        XCTAssertFalse(model.isActive)
+        XCTAssertTrue(model.errorMessage?.localizedCaseInsensitiveContains("could not be saved") == true)
+    }
+
+    func testHomeBackedReadyConfirmationPublishesThroughHomeService() async throws {
+        let fileURL = temporaryConfigurationFileURL()
+        defer { try? FileManager.default.removeItem(at: fileURL.deletingLastPathComponent()) }
+        let store = JSONDeviceConfigurationStore(fileURL: fileURL)
+        let mappingID = CanonicalWakeMappingID("hey-hermes")
+        let mapping = DeviceWakeMapping(
+            wakePhrase: "Hey Hermes",
+            profileIdentifier: "family",
+            canonicalID: mappingID
+        )
+        let currentDeviceConfiguration = DeviceSetupConfiguration(
+            deviceID: approvedSetupDevice.id,
+            room: "kitchen",
+            wakeMappings: [mapping],
+            arbitrationPriority: 1,
+            displayName: approvedSetupDevice.displayName,
+            profileIdentifier: "family"
+        )
+        let currentHomeSnapshot = HomeConfigurationSnapshot(
+            revision: 11,
+            wakeMappings: [
+                CanonicalWakeMapping(id: mappingID, wakePhrase: "Hey Hermes")
+            ],
+            devices: [currentDeviceConfiguration],
+            rooms: [HomeRoom(id: "kitchen", name: "Kitchen")]
+        )
+        let homeClient = RecordingHomeServiceClient(
+            fetchedSnapshot: currentHomeSnapshot,
+            publishedSnapshot: currentHomeSnapshot
+        )
+        let administrationClient = FakeDeviceAdministrationClient()
+        let setup = DeviceSetupModel(
+            device: approvedSetupDevice,
+            administrationClient: administrationClient,
+            configurationStore: store,
+            homeServiceClient: homeClient
+        )
+        await setup.loadDraft()
+        setup.room = "Kitchen"
+        XCTAssertTrue(setup.continueFromRoom())
+        setup.wakeMappings = [mapping]
+        XCTAssertTrue(setup.continueFromMappings())
+
+        let completed = await setup.confirmReady()
+
+        XCTAssertTrue(completed)
+        XCTAssertEqual(setup.homeConfigurationRevision, 11)
+        let expectedRevisions = await homeClient.publishExpectedRevisions()
+        XCTAssertEqual(expectedRevisions, [11])
+        let configurationCount = await administrationClient.configurationCount()
+        XCTAssertEqual(configurationCount, 0)
+        let verificationCount = await administrationClient.verificationCount()
+        XCTAssertEqual(verificationCount, 1)
+        let persisted = try await store.load(for: approvedSetupDevice.id)
+        XCTAssertEqual(persisted?.homeEligibility, .eligible)
+    }
+
+    func testSetupFallsBackToLegacyAdministrationOnlyWhenNoHomeRouteExists() async {
+        let administrationClient = FakeDeviceAdministrationClient()
+        let setup = DeviceSetupModel(
+            device: approvedSetupDevice,
+            administrationClient: administrationClient,
+            homeServiceClient: NoApprovedHomeRouteClient()
+        )
+        await setup.loadDraft()
+
+        XCTAssertFalse(setup.isHomeBacked)
+        setup.room = "Kitchen"
+        XCTAssertTrue(setup.continueFromRoom())
+        setup.wakeMappings = [
+            DeviceWakeMapping(wakePhrase: "Hey Hermes", profileIdentifier: "family")
+        ]
+        XCTAssertTrue(setup.continueFromMappings())
+        let completed = await setup.confirmReady()
+
+        XCTAssertTrue(completed)
+        let configurationCount = await administrationClient.configurationCount()
+        XCTAssertEqual(configurationCount, 1)
+    }
+
+    func testConfigurationEditorUsesLegacyAdministrationWhenHomeRouteIsAbsent() async throws {
+        let fileURL = temporaryConfigurationFileURL()
+        defer { try? FileManager.default.removeItem(at: fileURL.deletingLastPathComponent()) }
+        let store = JSONDeviceConfigurationStore(fileURL: fileURL)
+        let verified = kitchenConfiguration(for: approvedSetupDevice)
+        try await store.save(
+            DeviceConfigurationState(
+                approvedDevice: approvedSetupDevice,
+                verifiedConfiguration: verified,
+                pendingConfiguration: nil,
+                identityStatus: .verified
+            )
+        )
+        let administrationClient = FakeDeviceAdministrationClient()
+        let model = DeviceConfigurationModel(
+            device: approvedSetupDevice,
+            administrationClient: administrationClient,
+            configurationStore: store,
+            homeServiceClient: NoApprovedHomeRouteClient()
+        )
+
+        await model.load()
+        XCTAssertFalse(model.isHomeBacked)
+        model.room = "Study"
+        let published = await model.publish()
+
+        XCTAssertTrue(published)
+        let configurationCount = await administrationClient.configurationCount()
+        XCTAssertEqual(configurationCount, 1)
+        XCTAssertEqual(model.verifiedConfiguration.room, "Study")
+    }
+
+    func testConfiguredHomeFailureNeverFallsBackToLegacyAdministration() async {
+        let administrationClient = FakeDeviceAdministrationClient()
+        let setup = DeviceSetupModel(
+            device: approvedSetupDevice,
+            administrationClient: administrationClient,
+            homeServiceClient: FailingConfiguredHomeServiceClient(
+                fetchError: .missingCredential
+            )
+        )
+
+        await setup.loadDraft()
+
+        XCTAssertTrue(setup.isHomeBacked)
+        XCTAssertEqual(setup.errorMessage, HomeServiceError.missingCredential.userMessage)
+        let configurationCount = await administrationClient.configurationCount()
+        XCTAssertEqual(configurationCount, 0)
+    }
+
+    func testHomeBackedReadyDoesNotActivateWhenDeviceIdentityVerificationFails() async throws {
+        let fileURL = temporaryConfigurationFileURL()
+        defer { try? FileManager.default.removeItem(at: fileURL.deletingLastPathComponent()) }
+        let store = JSONDeviceConfigurationStore(fileURL: fileURL)
+        let mappingID = CanonicalWakeMappingID("hey-hermes")
+        let mapping = DeviceWakeMapping(
+            wakePhrase: "Hey Hermes",
+            profileIdentifier: "family",
+            canonicalID: mappingID
+        )
+        let homeDevice = DeviceSetupConfiguration(
+            deviceID: approvedSetupDevice.id,
+            room: "kitchen",
+            wakeMappings: [mapping],
+            arbitrationPriority: 1,
+            displayName: approvedSetupDevice.displayName,
+            profileIdentifier: "family"
+        )
+        let snapshot = HomeConfigurationSnapshot(
+            revision: 11,
+            wakeMappings: [CanonicalWakeMapping(id: mappingID, wakePhrase: "Hey Hermes")],
+            devices: [homeDevice],
+            rooms: [HomeRoom(id: "kitchen", name: "Kitchen")]
+        )
+        let homeClient = RecordingHomeServiceClient(
+            fetchedSnapshot: snapshot,
+            publishedSnapshot: snapshot
+        )
+        let administrationClient = FakeDeviceAdministrationClient(
+            verificationStatus: .unavailable
+        )
+        let setup = DeviceSetupModel(
+            device: approvedSetupDevice,
+            administrationClient: administrationClient,
+            configurationStore: store,
+            homeServiceClient: homeClient
+        )
+        await setup.loadDraft()
+        setup.room = "kitchen"
+        XCTAssertTrue(setup.continueFromRoom())
+        setup.wakeMappings = [mapping]
+        XCTAssertTrue(setup.continueFromMappings())
+
+        let completed = await setup.confirmReady()
+
+        XCTAssertFalse(completed)
+        XCTAssertFalse(setup.isActive)
+        XCTAssertEqual(setup.step, .ready)
+        let unactivatedState = try await store.load(for: approvedSetupDevice.id)
+        XCTAssertNil(unactivatedState)
+        let verificationCount = await administrationClient.verificationCount()
+        XCTAssertEqual(verificationCount, 1)
+    }
+
+    func testHomeRoomIDsAndProfileIDsArePreservedVerbatim() async throws {
+        let mappingID = CanonicalWakeMappingID("hey-hermes")
+        let mapping = DeviceWakeMapping(
+            wakePhrase: "Hey Hermes",
+            profileIdentifier: " family ",
+            canonicalID: mappingID
+        )
+        let homeDevice = DeviceSetupConfiguration(
+            deviceID: approvedSetupDevice.id,
+            room: "kitchen",
+            wakeMappings: [mapping],
+            arbitrationPriority: 1,
+            displayName: approvedSetupDevice.displayName,
+            profileIdentifier: " family "
+        )
+        let selectedRoom = HomeRoom(id: " study ", name: "Study")
+        let currentSnapshot = HomeConfigurationSnapshot(
+            revision: 11,
+            wakeMappings: [CanonicalWakeMapping(id: mappingID, wakePhrase: "Hey Hermes")],
+            devices: [homeDevice],
+            rooms: [HomeRoom(id: "kitchen", name: "Kitchen"), selectedRoom]
+        )
+        let publishedDevice = DeviceSetupConfiguration(
+            deviceID: approvedSetupDevice.id,
+            room: selectedRoom.id,
+            wakeMappings: [mapping],
+            arbitrationPriority: 1,
+            displayName: approvedSetupDevice.displayName,
+            profileIdentifier: " family "
+        )
+        let publishedSnapshot = HomeConfigurationSnapshot(
+            revision: 12,
+            wakeMappings: currentSnapshot.wakeMappings,
+            devices: [publishedDevice],
+            rooms: currentSnapshot.rooms
+        )
+        let homeClient = RecordingHomeServiceClient(
+            fetchedSnapshot: currentSnapshot,
+            publishedSnapshot: publishedSnapshot
+        )
+        let setup = DeviceSetupModel(
+            device: approvedSetupDevice,
+            administrationClient: FakeDeviceAdministrationClient(),
+            homeServiceClient: homeClient
+        )
+        await setup.loadDraft()
+        setup.room = selectedRoom.id
+
+        XCTAssertTrue(setup.continueFromRoom())
+        XCTAssertEqual(setup.room, selectedRoom.id)
+        setup.wakeMappings = [mapping]
+        XCTAssertTrue(setup.continueFromMappings())
+        XCTAssertEqual(setup.wakeMappings.first?.profileIdentifier, " family ")
+        let completed = await setup.confirmReady()
+        XCTAssertTrue(completed)
+
+        let candidates = await homeClient.publishedCandidates()
+        let candidate = try XCTUnwrap(candidates.first)
+        XCTAssertEqual(candidate.devices.first?.room, selectedRoom.id)
+        XCTAssertEqual(candidate.devices.first?.profileIdentifier, " family ")
+        XCTAssertEqual(candidate.devices.first?.wakeMappings.first?.profileIdentifier, " family ")
+    }
+
+    func testEmptyHomeWakeMappingCatalogShowsHomeOwnedAction() async throws {
+        let fileURL = temporaryConfigurationFileURL()
+        defer { try? FileManager.default.removeItem(at: fileURL.deletingLastPathComponent()) }
+        let verified = DeviceSetupConfiguration(
+            deviceID: approvedSetupDevice.id,
+            room: "kitchen",
+            wakeMappings: [],
+            arbitrationPriority: 1,
+            displayName: approvedSetupDevice.displayName,
+            profileIdentifier: "family"
+        )
+        let snapshot = HomeConfigurationSnapshot(
+            revision: 1,
+            wakeMappings: [],
+            devices: [verified],
+            rooms: [HomeRoom(id: "kitchen", name: "Kitchen")]
+        )
+        let homeClient = RecordingHomeServiceClient(
+            fetchedSnapshot: snapshot,
+            publishedSnapshot: snapshot
+        )
+        let setup = DeviceSetupModel(
+            device: approvedSetupDevice,
+            administrationClient: FakeDeviceAdministrationClient(),
+            homeServiceClient: homeClient
+        )
+        await setup.loadDraft()
+        setup.room = "kitchen"
+        XCTAssertTrue(setup.continueFromRoom())
+        XCTAssertFalse(setup.continueFromMappings())
+        XCTAssertTrue(setup.errorMessage?.contains("Home has no Wake Mappings") == true)
+
+        try await JSONDeviceConfigurationStore(fileURL: fileURL).save(
+            DeviceConfigurationState(
+                approvedDevice: approvedSetupDevice,
+                verifiedConfiguration: verified,
+                pendingConfiguration: nil,
+                homeConfigurationRevision: 1,
+                homeEligibility: .eligible,
+                identityStatus: .verified
+            )
+        )
+        let edit = DeviceConfigurationModel(
+            device: approvedSetupDevice,
+            administrationClient: FakeDeviceAdministrationClient(),
+            configurationStore: JSONDeviceConfigurationStore(fileURL: fileURL),
+            homeServiceClient: homeClient
+        )
+        await edit.load()
+
+        let published = await edit.publish()
+
+        XCTAssertFalse(published)
+        XCTAssertTrue(edit.errorMessage?.contains("Home has no Wake Mappings") == true)
+    }
+
+    func testHomeServiceMapsUnauthorizedAndTransportFailuresWithoutLeakingState() async {
+        let unauthorizedTransport = RecordingHomeHTTPTransport(
+            body: Data(#"{"schema":1,"error":{"code":"unauthorized"}}"#.utf8),
+            statusCode: 401
+        )
+        let unauthorizedClient = URLSessionHomeServiceClient(
+            baseURL: URL(string: "http://home.test")!,
+            adminCredential: "home-admin-secret",
+            transport: unauthorizedTransport
+        )
+
+        do {
+            _ = try await unauthorizedClient.fetchConfiguration()
+            XCTFail("Unauthorized Home access must fail closed")
+        } catch let error as HomeServiceError {
+            XCTAssertEqual(error, .unauthorized)
+            XCTAssertFalse(error.userMessage.contains("home-admin-secret"))
+        } catch {
+            XCTFail("Unexpected error: \(error)")
+        }
+
+        let unavailableClient = URLSessionHomeServiceClient(
+            baseURL: URL(string: "http://home.test")!,
+            adminCredential: "home-admin-secret",
+            transport: ThrowingHomeHTTPTransport()
+        )
+        do {
+            _ = try await unavailableClient.fetchConfiguration()
+            XCTFail("A transport failure must keep the Home state unavailable")
+        } catch let error as HomeServiceError {
+            XCTAssertEqual(error, .transportUnavailable)
+        } catch {
+            XCTFail("Unexpected error: \(error)")
+        }
+    }
+
+    func testHomeServiceMapsStableErrorCodesAndUnknownCodesFailClosed() async {
+        let cases: [(String, Int, HomeServiceError)] = [
+            ("invalid_request", 400, .invalidRequest),
+            ("unauthorized", 401, .unauthorized),
+            ("not_found", 404, .notFound),
+            ("revision_conflict", 409, .revisionConflict),
+            ("service_unavailable", 503, .serviceUnavailable),
+            ("future_code", 500, .invalidResponse)
+        ]
+
+        for (code, statusCode, expectedError) in cases {
+            let transport = RecordingHomeHTTPTransport(
+                body: Data(
+                    #"{"schema":1,"error":{"code":"\#(code)"}}"#.utf8
+                ),
+                statusCode: statusCode
+            )
+            let client = URLSessionHomeServiceClient(
+                baseURL: URL(string: "http://home.test")!,
+                adminCredential: "home-admin-secret",
+                transport: transport
+            )
+
+            do {
+                _ = try await client.fetchConfiguration()
+                XCTFail("Home error \(code) must not be treated as a successful fetch")
+            } catch let error as HomeServiceError {
+                XCTAssertEqual(error, expectedError, "Unexpected mapping for \(code)")
+            } catch {
+                XCTFail("Unexpected error for \(code): \(error)")
+            }
+        }
+    }
+
+    func testHomeServiceMapsRequestTimeoutSeparatelyFromUnavailableTransport() async {
+        let client = URLSessionHomeServiceClient(
+            baseURL: URL(string: "http://home.test")!,
+            adminCredential: "home-admin-secret",
+            transport: TimeoutHomeHTTPTransport()
+        )
+
+        do {
+            _ = try await client.fetchConfiguration()
+            XCTFail("A timed out Home request must fail")
+        } catch let error as HomeServiceError {
+            XCTAssertEqual(error, .timeout)
+        } catch {
+            XCTFail("Unexpected error: \(error)")
+        }
+    }
+
+    func testHomeAdminCredentialBindingRejectsAnyChangedApprovedRoute() async throws {
+        let profileID = UUID(uuidString: "AAAAAAAA-BBBB-CCCC-DDDD-EEEEEEEEEEEE")!
+        let secureStore = HomeAdminCredentialSecureValueStore()
+        let store = KeychainHomeAdminCredentialStore(secureStore: secureStore)
+        let approvedRoute = homeAdminRoute()
+
+        try await store.save(
+            "home-admin-secret",
+            for: profileID,
+            approvedRoute: approvedRoute
+        )
+
+        let credentialForApprovedRoute = try await store.load(
+            for: profileID,
+            approvedRoute: approvedRoute
+        )
+        XCTAssertEqual(credentialForApprovedRoute, "home-admin-secret")
+
+        for changedRoute in [
+            homeAdminRoute(householdBinding: "household-b"),
+            homeAdminRoute(host: "other-home.example"),
+            homeAdminRoute(identityID: "another-home")
+        ] {
+            let credential = try await store.load(
+                for: profileID,
+                approvedRoute: changedRoute
+            )
+            XCTAssertNil(credential)
+            let hasCredential = await store.hasCredential(
+                for: profileID,
+                approvedRoute: changedRoute
+            )
+            XCTAssertFalse(hasCredential)
+        }
+    }
+
+    func testLegacyHomeAdminCredentialRecordRequiresReEntry() async throws {
+        let profileID = UUID(uuidString: "AAAAAAAA-BBBB-CCCC-DDDD-EEEEEEEEEEEE")!
+        let secureStore = HomeAdminCredentialSecureValueStore()
+        let store = KeychainHomeAdminCredentialStore(secureStore: secureStore)
+        let key = "\(HomeAdminCredentialKeychain.service)/\(HomeAdminCredentialKeychain.account(for: profileID))"
+        secureStore.values[key] = Data(
+            """
+            {"schemaVersion":1,"profileID":"\(profileID.uuidString)","householdBinding":"household-a","credential":"old-secret"}
+            """.utf8
+        )
+
+        let credential = try await store.load(
+            for: profileID,
+            approvedRoute: homeAdminRoute()
+        )
+        XCTAssertNil(credential)
+    }
+
+    func testHomePublishNeverFabricatesRoomsForADevice() async {
+        let mappingID = CanonicalWakeMappingID("wake")
+        let configuration = HomeConfigurationSnapshot(
+            revision: 1,
+            wakeMappings: [CanonicalWakeMapping(id: mappingID, wakePhrase: "Hey Hermes")],
+            devices: [
+                DeviceSetupConfiguration(
+                    deviceID: "device",
+                    room: "kitchen",
+                    wakeMappings: [
+                        DeviceWakeMapping(
+                            wakePhrase: "Hey Hermes",
+                            profileIdentifier: "family",
+                            canonicalID: mappingID
+                        )
+                    ],
+                    arbitrationPriority: 1,
+                    profileIdentifier: "family"
+                )
+            ]
+        )
+        let transport = RecordingHomeHTTPTransport(
+            body: Data(#"{"schema":1,"snapshot":{"revision":2,"rooms":[],"wake_mappings":[],"devices":[]}}"#.utf8)
+        )
+        let client = URLSessionHomeServiceClient(
+            baseURL: URL(string: "http://home.test")!,
+            adminCredential: "home-admin-secret",
+            transport: transport
+        )
+
+        do {
+            _ = try await client.publish(configuration, expectedRevision: 1)
+            XCTFail("A Device without a Home Room must not be serialized with a fabricated Room")
+        } catch let error as HomeServiceError {
+            XCTAssertEqual(error, .invalidConfiguration)
+        } catch {
+            XCTFail("Unexpected error: \(error)")
+        }
+        let requestCount = await transport.requestCount()
+        XCTAssertEqual(requestCount, 0)
+    }
+
+    func testHomeWireAcceptsOpaqueIdentifiersWithoutApplyingAnUndocumentedGrammar() async throws {
+        let responseBody = Data(
+            #"{"schema":1,"snapshot":{"revision":3,"rooms":[{"id":"room id","name":"Room"}],"wake_mappings":[{"id":"wake id","name":"Hey Hermes"}],"devices":[{"id":"device id","name":"Device","room_id":"room id","profile_id":"profile id","priority":1,"capabilities":{"wake_claim":true}}]}}"#.utf8
+        )
+        let client = URLSessionHomeServiceClient(
+            baseURL: URL(string: "http://home.test")!,
+            adminCredential: "home-admin-secret",
+            transport: RecordingHomeHTTPTransport(body: responseBody)
+        )
+
+        let snapshot = try await client.fetchConfiguration()
+
+        XCTAssertTrue(snapshot.isValid)
+        XCTAssertEqual(snapshot.rooms.first?.id, "room id")
+        XCTAssertEqual(snapshot.devices.first?.deviceID, "device id")
+    }
+
+    func testHomeWireRejectsWhitespaceOnlyIdentifiers() async {
+        let responses = [
+            #"{"schema":1,"snapshot":{"revision":1,"rooms":[{"id":"   ","name":"Kitchen"}],"wake_mappings":[{"id":"wake","name":"Hey Hermes"}],"devices":[{"id":"device","name":"Device","room_id":"   ","profile_id":"family","priority":1,"capabilities":{"wake_claim":true}}]}}"#,
+            #"{"schema":1,"snapshot":{"revision":1,"rooms":[{"id":"kitchen","name":"Kitchen"}],"wake_mappings":[{"id":"   ","name":"Hey Hermes"}],"devices":[{"id":"device","name":"Device","room_id":"kitchen","profile_id":"family","priority":1,"capabilities":{"wake_claim":true}}]}}"#,
+            #"{"schema":1,"snapshot":{"revision":1,"rooms":[{"id":"kitchen","name":"Kitchen"}],"wake_mappings":[{"id":"wake","name":"Hey Hermes"}],"devices":[{"id":"   ","name":"Device","room_id":"kitchen","profile_id":"family","priority":1,"capabilities":{"wake_claim":true}}]}}"#,
+            #"{"schema":1,"snapshot":{"revision":1,"rooms":[{"id":"kitchen","name":"Kitchen"}],"wake_mappings":[{"id":"wake","name":"Hey Hermes"}],"devices":[{"id":"device","name":"Device","room_id":"kitchen","profile_id":"   ","priority":1,"capabilities":{"wake_claim":true}}]}}"#
+        ]
+
+        for response in responses {
+            let client = URLSessionHomeServiceClient(
+                baseURL: URL(string: "http://home.test")!,
+                adminCredential: "home-admin-secret",
+                transport: RecordingHomeHTTPTransport(body: Data(response.utf8))
+            )
+            do {
+                _ = try await client.fetchConfiguration()
+                XCTFail("Whitespace-only identifiers must be rejected")
+            } catch let error as HomeServiceError {
+                XCTAssertEqual(error, .invalidResponse)
+            } catch {
+                XCTFail("Unexpected error: \(error)")
+            }
+        }
+    }
+
+    func testHomeConfigurationReceiptRequiresEveryReturnedDeviceFieldAndRevision() {
+        let mappingID = CanonicalWakeMappingID("wake")
+        let mapping = DeviceWakeMapping(
+            wakePhrase: "Hey Hermes",
+            profileIdentifier: "family",
+            canonicalID: mappingID
+        )
+        let requested = DeviceSetupConfiguration(
+            deviceID: "device",
+            room: "kitchen",
+            wakeMappings: [mapping],
+            arbitrationPriority: 1,
+            displayName: "Kitchen Device",
+            profileIdentifier: "family",
+            wakeClaimEnabled: true
+        )
+        let receipt = DeviceConfigurationReceipt(
+            deviceID: requested.deviceID,
+            configuration: requested,
+            homeConfigurationRevision: 8
+        )
+
+        XCTAssertTrue(receipt.matches(requested, minimumHomeRevision: 7))
+        XCTAssertFalse(receipt.matches(requested, minimumHomeRevision: 9))
+        XCTAssertFalse(
+            receipt.matches(
+                DeviceSetupConfiguration(
+                    deviceID: "device",
+                    room: "kitchen",
+                    wakeMappings: [mapping],
+                    arbitrationPriority: 1,
+                    displayName: "Renamed Device",
+                    profileIdentifier: "family",
+                    wakeClaimEnabled: true
+                )
+            )
+        )
+        XCTAssertFalse(
+            receipt.matches(
+                DeviceSetupConfiguration(
+                    deviceID: "device",
+                    room: "kitchen",
+                    wakeMappings: [mapping],
+                    arbitrationPriority: 1,
+                    displayName: "Kitchen Device",
+                    profileIdentifier: "other",
+                    wakeClaimEnabled: true
+                )
+            )
+        )
+        XCTAssertFalse(
+            receipt.matches(
+                DeviceSetupConfiguration(
+                    deviceID: "device",
+                    room: "kitchen",
+                    wakeMappings: [mapping],
+                    arbitrationPriority: 1,
+                    displayName: "Kitchen Device",
+                    profileIdentifier: "family",
+                    wakeClaimEnabled: false
+                )
+            )
+        )
+    }
+
+    func testHomeAdminCredentialStoreUsesDedicatedProfileScopedKeychainRecord() async throws {
+        let profileID = UUID(uuidString: "AAAAAAAA-BBBB-CCCC-DDDD-EEEEEEEEEEEE")!
+        let secureStore = HomeAdminCredentialSecureValueStore()
+        let store = KeychainHomeAdminCredentialStore(secureStore: secureStore)
+        let approvedRoute = homeAdminRoute()
+
+        try await store.save(
+            "home-admin-secret",
+            for: profileID,
+            approvedRoute: approvedRoute
+        )
+
+        let key = "\(HomeAdminCredentialKeychain.service)/\(HomeAdminCredentialKeychain.account(for: profileID))"
+        let recordData = try XCTUnwrap(secureStore.values[key])
+        let record = try JSONDecoder().decode(
+            HomeAdminCredentialKeychainRecord.self,
+            from: recordData
+        )
+        XCTAssertEqual(record.profileID, profileID)
+        XCTAssertEqual(record.approvedRoute, approvedRoute)
+        XCTAssertEqual(record.credential, "home-admin-secret")
+        XCTAssertNil(
+            secureStore.values[
+                "\(HomeCredentialKeychain.service)/\(HomeCredentialKeychain.account(for: profileID))"
+            ]
+        )
+        let loadedCredential = try await store.load(
+            for: profileID,
+            approvedRoute: approvedRoute
+        )
+        XCTAssertEqual(loadedCredential, "home-admin-secret")
+        let hasCredential = await store.hasCredential(
+            for: profileID,
+            approvedRoute: approvedRoute
+        )
+        XCTAssertTrue(hasCredential)
+
+        try await store.delete(for: profileID)
+
+        XCTAssertNil(secureStore.values[key])
+        let hasCredentialAfterDelete = await store.hasCredential(
+            for: profileID,
+            approvedRoute: approvedRoute
+        )
+        XCTAssertFalse(hasCredentialAfterDelete)
+    }
+
+    func testHomeAdminCredentialFormPreservesBlankSaveAndRemovesExplicitly() async throws {
+        let profileID = UUID(uuidString: "AAAAAAAA-BBBB-CCCC-DDDD-EEEEEEEEEEEE")!
+        let secureStore = HomeAdminCredentialSecureValueStore()
+        let store = KeychainHomeAdminCredentialStore(secureStore: secureStore)
+        let actions = HomeAdminCredentialFormActions(store: store)
+        let route = homeAdminRoute()
+        try await store.save("home-admin-secret", for: profileID, approvedRoute: route)
+
+        let result = try await actions.save("  ", for: profileID, approvedRoute: route)
+
+        XCTAssertEqual(result, .preserved)
+        let preservedCredential = try await store.load(
+            for: profileID,
+            approvedRoute: route
+        )
+        XCTAssertEqual(preservedCredential, "home-admin-secret")
+
+        try await actions.remove(for: profileID)
+        let removedCredential = try await store.load(
+            for: profileID,
+            approvedRoute: route
+        )
+        XCTAssertNil(removedCredential)
+
+        do {
+            _ = try await actions.save("", for: profileID, approvedRoute: route)
+            XCTFail("A blank Save without a matching stored credential must be rejected")
+        } catch let error as HomeAdminCredentialStoreError {
+            XCTAssertEqual(error, .emptyCredential)
+        }
+    }
+
+    func testProfileHomeServiceClientUsesSelectedApprovedRouteAndAdminCredential() async throws {
+        let profileURL = temporaryConfigurationFileURL()
+        defer { try? FileManager.default.removeItem(at: profileURL.deletingLastPathComponent()) }
+        let secureStore = HomeAdminCredentialSecureValueStore()
+        let configurationStore = RelayConfigurationStore(
+            secureStore: secureStore,
+            profileURL: profileURL
+        )
+        let profile = try RelayProfile(
+            endpoint: URL(string: "wss://relay.example/socket")!,
+            clientID: "client",
+            deviceID: "device",
+            displayName: "Test Profile"
+        )
+        try await configurationStore.saveProfile(profile)
+
+        let routeStore = JSONHomeLiveConfigurationStore(
+            fileURL: profileURL.deletingLastPathComponent()
+                .appendingPathComponent("home-live.json")
+        )
+        let route = HomeApprovedRoute(
+            endpoint: URL(string: "wss://home.example/api/v1/bridge/ws")!,
+            identity: HomeRouteIdentity(routeClass: .home, id: "home"),
+            householdBinding: "household"
+        )
+        try await routeStore.save(
+            try HomeLiveConfiguration(
+                profileID: profile.id,
+                conversationHandle: "handle",
+                approvedRoute: route
+            )
+        )
+        let adminStore = KeychainHomeAdminCredentialStore(secureStore: secureStore)
+        try await adminStore.save(
+            "home-admin-secret",
+            for: profile.id,
+            approvedRoute: route
+        )
+        let transport = RecordingHomeHTTPTransport(
+            body: Data(
+                #"{"schema":1,"snapshot":{"revision":4,"rooms":[{"id":"kitchen","name":"Kitchen"}],"wake_mappings":[{"id":"hey-hermes","name":"Hey Hermes"}],"devices":[{"id":"puck-kitchen","name":"Kitchen Puck","room_id":"kitchen","profile_id":"family","priority":1,"capabilities":{"wake_claim":true}}]}}"#.utf8
+            )
+        )
+        let client = ProfileHomeServiceClient(
+            configurationStore: configurationStore,
+            routeProvider: routeStore,
+            adminCredentialStore: adminStore,
+            transport: transport
+        )
+
+        let hasRoute = try await client.hasApprovedRoute()
+        XCTAssertTrue(hasRoute)
+
+        _ = try await client.fetchConfiguration()
+
+        let recordedRequest = await transport.lastRequest()
+        let request = try XCTUnwrap(recordedRequest)
+        XCTAssertEqual(request.url?.absoluteString, "https://home.example/api/v1/configuration")
+        XCTAssertEqual(request.value(forHTTPHeaderField: "Authorization"), "Bearer home-admin-secret")
+
+        let changedRoute = HomeApprovedRoute(
+            endpoint: route.endpoint,
+            identity: route.identity,
+            householdBinding: "different-household"
+        )
+        try await routeStore.save(
+            try HomeLiveConfiguration(
+                profileID: profile.id,
+                conversationHandle: "handle",
+                approvedRoute: changedRoute
+            )
+        )
+        do {
+            _ = try await client.fetchConfiguration()
+            XCTFail("A credential bound to the old household must not follow a changed route")
+        } catch let error as HomeServiceError {
+            XCTAssertEqual(error, .missingCredential)
+        }
+
+        let changedEndpoint = HomeApprovedRoute(
+            endpoint: URL(string: "wss://other-home.example/api/v1/bridge/ws")!,
+            identity: route.identity,
+            householdBinding: route.householdBinding
+        )
+        try await routeStore.save(
+            try HomeLiveConfiguration(
+                profileID: profile.id,
+                conversationHandle: "handle",
+                approvedRoute: changedEndpoint
+            )
+        )
+        do {
+            _ = try await client.fetchConfiguration()
+            XCTFail("A credential must not follow an endpoint change with the same household label")
+        } catch let error as HomeServiceError {
+            XCTAssertEqual(error, .missingCredential)
+        }
+        let requestCount = await transport.requestCount()
+        XCTAssertEqual(requestCount, 1)
+    }
+
     func testHomeConfigurationSnapshotAcceptsSharedMappingAndUniqueRoomPriorities() {
         let mappingID = CanonicalWakeMappingID("wake-missy")
         let snapshot = HomeConfigurationSnapshot(
@@ -2318,6 +4107,50 @@ final class DeviceDiscoveryTests: XCTestCase {
 
         XCTAssertTrue(snapshot.isValid)
         XCTAssertTrue(snapshot.validationErrors.isEmpty)
+    }
+
+    func testHomeConfigurationReplacementResolvesRoomNamesAndCanonicalMappings() throws {
+        let mappingID = CanonicalWakeMappingID("hey-hermes")
+        let currentDevice = DeviceSetupConfiguration(
+            deviceID: "puck-kitchen",
+            room: "kitchen",
+            wakeMappings: [
+                DeviceWakeMapping(
+                    wakePhrase: "Hey Hermes",
+                    profileIdentifier: "family",
+                    canonicalID: mappingID
+                )
+            ],
+            arbitrationPriority: 1,
+            displayName: "Kitchen Puck",
+            profileIdentifier: "family"
+        )
+        let snapshot = HomeConfigurationSnapshot(
+            revision: 3,
+            wakeMappings: [CanonicalWakeMapping(id: mappingID, wakePhrase: "Hey Hermes")],
+            devices: [currentDevice],
+            rooms: [HomeRoom(id: "kitchen", name: "Kitchen")]
+        )
+        let localEdit = DeviceSetupConfiguration(
+            deviceID: currentDevice.deviceID,
+            room: " kitchen ",
+            wakeMappings: [
+                DeviceWakeMapping(
+                    wakePhrase: " hey   hermes ",
+                    profileIdentifier: "family"
+                )
+            ]
+        )
+
+        let candidate = try XCTUnwrap(
+            snapshot.replacingDevice(localEdit, preservingHomeMetadata: true)
+        )
+        let candidateDevice = try XCTUnwrap(candidate.devices.first)
+        let candidateMapping = try XCTUnwrap(candidateDevice.wakeMappings.first)
+
+        XCTAssertEqual(candidateDevice.room, "kitchen")
+        XCTAssertEqual(candidateMapping.canonicalID, mappingID)
+        XCTAssertEqual(candidateMapping.wakePhrase, " hey   hermes ")
     }
 
     func testHomeConfigurationSnapshotRejectsDuplicatePriorityWithinRoom() {
@@ -2422,6 +4255,45 @@ final class DeviceDiscoveryTests: XCTestCase {
                 .mappingPhraseMismatch(deviceID: "device-a", mappingID: mappingID)
             )
         )
+    }
+
+    func testHomeConfigurationSnapshotRejectsMultipleProfilesAndProfileMismatch() {
+        let firstID = CanonicalWakeMappingID("wake-one")
+        let secondID = CanonicalWakeMappingID("wake-two")
+        let snapshot = HomeConfigurationSnapshot(
+            revision: 4,
+            wakeMappings: [
+                CanonicalWakeMapping(id: firstID, wakePhrase: "Hey Hermes"),
+                CanonicalWakeMapping(id: secondID, wakePhrase: "Hello Hermes")
+            ],
+            devices: [
+                DeviceSetupConfiguration(
+                    deviceID: "device-a",
+                    room: "kitchen",
+                    wakeMappings: [
+                        DeviceWakeMapping(
+                            wakePhrase: "Hey Hermes",
+                            profileIdentifier: "family",
+                            canonicalID: firstID
+                        ),
+                        DeviceWakeMapping(
+                            wakePhrase: "Hello Hermes",
+                            profileIdentifier: "personal",
+                            canonicalID: secondID
+                        )
+                    ],
+                    arbitrationPriority: 1,
+                    displayName: "Kitchen Device",
+                    profileIdentifier: "other"
+                )
+            ],
+            rooms: [HomeRoom(id: "kitchen", name: "Kitchen")]
+        )
+
+        XCTAssertFalse(snapshot.isValid)
+        XCTAssertTrue(snapshot.validationErrors.contains(.multipleProfiles(deviceID: "device-a")))
+        XCTAssertTrue(snapshot.validationErrors.contains(.profileMismatch(deviceID: "device-a", profileID: "other")))
+        XCTAssertFalse(snapshot.isCompleteHomeSnapshot)
     }
 
     func testHomeConfigurationSnapshotRoundTripsRevisionAndCanonicalIDs() throws {
@@ -2810,5 +4682,228 @@ private struct CancellationDeviceDiscoveryClient: DeviceDiscoveryClient {
 
     func identifyManually(_ identifier: String) async throws -> HouseholdDevice {
         throw CancellationError()
+    }
+}
+
+private actor RecordingHomeHTTPTransport: HomeHTTPTransport {
+    private let body: Data
+    private let response: HomeHTTPResponse
+    private var requests: [URLRequest] = []
+
+    init(body: Data, statusCode: Int = 200) {
+        self.body = body
+        response = HomeHTTPResponse(statusCode: statusCode)
+    }
+
+    func data(
+        for request: URLRequest
+    ) async throws -> (Data, HomeHTTPResponse) {
+        requests.append(request)
+        return (body, response)
+    }
+
+    func lastRequest() -> URLRequest? {
+        requests.last
+    }
+
+    func requestCount() -> Int {
+        requests.count
+    }
+}
+
+private struct ThrowingHomeHTTPTransport: HomeHTTPTransport {
+    func data(
+        for request: URLRequest
+    ) async throws -> (Data, HomeHTTPResponse) {
+        throw URLError(.cannotConnectToHost)
+    }
+}
+
+private struct TimeoutHomeHTTPTransport: HomeHTTPTransport {
+    func data(
+        for request: URLRequest
+    ) async throws -> (Data, HomeHTTPResponse) {
+        throw URLError(.timedOut)
+    }
+}
+
+private final class HomeAdminCredentialSecureValueStore: SecureValueStore, @unchecked Sendable {
+    var values: [String: Data] = [:]
+
+    func read(service: String, account: String) throws -> Data? {
+        values["\(service)/\(account)"]
+    }
+
+    func write(_ value: Data, service: String, account: String) throws {
+        values["\(service)/\(account)"] = value
+    }
+
+    func delete(service: String, account: String) throws {
+        values.removeValue(forKey: "\(service)/\(account)")
+    }
+}
+
+private actor RecordingHomeServiceClient: HomeServiceClient {
+    private let fetchedSnapshot: HomeConfigurationSnapshot
+    private let publishedSnapshot: HomeConfigurationSnapshot
+    private var expectedRevisions: [Int] = []
+    private var candidates: [HomeConfigurationSnapshot] = []
+
+    init(
+        fetchedSnapshot: HomeConfigurationSnapshot,
+        publishedSnapshot: HomeConfigurationSnapshot
+    ) {
+        self.fetchedSnapshot = fetchedSnapshot
+        self.publishedSnapshot = publishedSnapshot
+    }
+
+    func fetchConfiguration() async throws -> HomeConfigurationSnapshot {
+        fetchedSnapshot
+    }
+
+    func publish(
+        _ configuration: HomeConfigurationSnapshot,
+        expectedRevision: Int
+    ) async throws -> HomeConfigurationSnapshot {
+        expectedRevisions.append(expectedRevision)
+        candidates.append(configuration)
+        return publishedSnapshot
+    }
+
+    func publishExpectedRevisions() -> [Int] {
+        expectedRevisions
+    }
+
+    func publishedCandidates() -> [HomeConfigurationSnapshot] {
+        candidates
+    }
+}
+
+private struct NoApprovedHomeRouteClient: HomeServiceClient {
+    func hasApprovedRoute() async throws -> Bool { false }
+
+    func fetchConfiguration() async throws -> HomeConfigurationSnapshot {
+        throw HomeServiceError.notConfigured
+    }
+
+    func publish(
+        _ configuration: HomeConfigurationSnapshot,
+        expectedRevision: Int
+    ) async throws -> HomeConfigurationSnapshot {
+        throw HomeServiceError.notConfigured
+    }
+}
+
+private struct FailingConfiguredHomeServiceClient: HomeServiceClient {
+    let fetchError: HomeServiceError
+
+    func hasApprovedRoute() async throws -> Bool { true }
+
+    func fetchConfiguration() async throws -> HomeConfigurationSnapshot {
+        throw fetchError
+    }
+
+    func publish(
+        _ configuration: HomeConfigurationSnapshot,
+        expectedRevision: Int
+    ) async throws -> HomeConfigurationSnapshot {
+        throw fetchError
+    }
+}
+
+private struct FailingPublishHomeServiceClient: HomeServiceClient {
+    let snapshot: HomeConfigurationSnapshot
+    let publishError: HomeServiceError
+
+    func fetchConfiguration() async throws -> HomeConfigurationSnapshot {
+        snapshot
+    }
+
+    func publish(
+        _ configuration: HomeConfigurationSnapshot,
+        expectedRevision: Int
+    ) async throws -> HomeConfigurationSnapshot {
+        throw publishError
+    }
+}
+
+private actor RejectingDeviceConfigurationStore: DeviceConfigurationStore {
+    private let state: DeviceConfigurationState
+
+    init(state: DeviceConfigurationState) {
+        self.state = state
+    }
+
+    func loadAll() async throws -> [DeviceConfigurationState] {
+        [state]
+    }
+
+    func save(_ state: DeviceConfigurationState) async throws {
+        throw HomeServiceError.transportUnavailable
+    }
+}
+
+private final class RedirectRequestResult: @unchecked Sendable {
+    private let lock = NSLock()
+    private var storedRequest: URLRequest?
+    private var callbackWasCalled = false
+
+    var request: URLRequest? {
+        lock.lock()
+        defer { lock.unlock() }
+        return storedRequest
+    }
+
+    var wasCalled: Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return callbackWasCalled
+    }
+
+    func record(_ request: URLRequest?) {
+        lock.lock()
+        storedRequest = request
+        callbackWasCalled = true
+        lock.unlock()
+    }
+}
+
+private actor SequencedHomeServiceClient: HomeServiceClient {
+    private let snapshots: [HomeConfigurationSnapshot]
+    private var fetchIndex = 0
+
+    init(snapshots: [HomeConfigurationSnapshot]) {
+        self.snapshots = snapshots
+    }
+
+    func fetchConfiguration() async throws -> HomeConfigurationSnapshot {
+        guard !snapshots.isEmpty else {
+            throw HomeServiceError.invalidResponse
+        }
+        let index = min(fetchIndex, snapshots.count - 1)
+        fetchIndex += 1
+        return snapshots[index]
+    }
+
+    func publish(
+        _ configuration: HomeConfigurationSnapshot,
+        expectedRevision: Int
+    ) async throws -> HomeConfigurationSnapshot {
+        throw HomeServiceError.invalidResponse
+    }
+}
+
+private struct ConflictingHomeServiceClient: HomeServiceClient {
+    let snapshot: HomeConfigurationSnapshot
+
+    func fetchConfiguration() async throws -> HomeConfigurationSnapshot {
+        snapshot
+    }
+
+    func publish(
+        _ configuration: HomeConfigurationSnapshot,
+        expectedRevision: Int
+    ) async throws -> HomeConfigurationSnapshot {
+        throw HomeServiceError.revisionConflict
     }
 }

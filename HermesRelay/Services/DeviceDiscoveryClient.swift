@@ -105,6 +105,9 @@ protocol DeviceAdministrationClient: Sendable {
 /// household snapshot and rejects writes based on a stale revision; this app
 /// does not guess the production HTTP schema until the shared contract lands.
 protocol HomeServiceClient: Sendable {
+    /// Whether the selected Profile has an approved Home route. The default
+    /// keeps deterministic and already-configured test clients Home-backed.
+    func hasApprovedRoute() async throws -> Bool
     func fetchConfiguration() async throws -> HomeConfigurationSnapshot
     func publish(
         _ configuration: HomeConfigurationSnapshot,
@@ -112,17 +115,48 @@ protocol HomeServiceClient: Sendable {
     ) async throws -> HomeConfigurationSnapshot
 }
 
+extension HomeServiceClient {
+    func hasApprovedRoute() async throws -> Bool { true }
+}
+
 enum HomeServiceError: Error, Equatable, Sendable {
+    case notConfigured
+    case invalidRequest
+    case notFound
     case revisionConflict
     case invalidConfiguration
+    case invalidEndpoint
+    case invalidResponse
+    case missingCredential
+    case unauthorized
+    case serviceUnavailable
+    case timeout
     case transportUnavailable
 
     var userMessage: String {
         switch self {
+        case .notConfigured:
+            "No Home route is configured for this Profile."
+        case .invalidRequest:
+            "Home rejected the configuration request. Check the Device settings and try again."
+        case .notFound:
+            "Home no longer has that Room, Device, or Wake Mapping. Reload before trying again."
         case .revisionConflict:
             "Home configuration changed on another Device. Reload before publishing."
         case .invalidConfiguration:
             "Home configuration is invalid. Fix the highlighted Device settings and try again."
+        case .invalidEndpoint:
+            "The Home route is invalid. Use the approved Home service endpoint."
+        case .invalidResponse:
+            "Home returned an invalid response. Keep the edit pending and reload before retrying; the publish result may be unknown."
+        case .missingCredential:
+            "The Home admin credential is not configured. Add it before managing Devices."
+        case .unauthorized:
+            "Home rejected the admin credential. Re-enter it before managing Devices."
+        case .serviceUnavailable:
+            "Home could not safely answer the request. The current configuration remains active."
+        case .timeout:
+            "Home did not answer before the request timed out. The current configuration remains active."
         case .transportUnavailable:
             "The local Home service is unavailable. Try again when it is running."
         }
@@ -139,6 +173,806 @@ struct UnavailableHomeServiceClient: HomeServiceClient {
         expectedRevision: Int
     ) async throws -> HomeConfigurationSnapshot {
         throw HomeServiceError.transportUnavailable
+    }
+}
+
+/// Small transport seam for the Home HTTP adapter. Keeping URLSession behind
+/// this protocol makes status, credential, and wire-shape handling testable
+/// without starting a real Home process.
+struct HomeHTTPResponse: Sendable {
+    let statusCode: Int
+
+    init(statusCode: Int) {
+        self.statusCode = statusCode
+    }
+}
+
+protocol HomeHTTPTransport: Sendable {
+    func data(
+        for request: URLRequest
+    ) async throws -> (Data, HomeHTTPResponse)
+}
+
+final class HomeRedirectRefusingDelegate: NSObject, URLSessionTaskDelegate, @unchecked Sendable {
+    func urlSession(
+        _ session: URLSession,
+        task: URLSessionTask,
+        willPerformHTTPRedirection response: HTTPURLResponse,
+        newRequest request: URLRequest,
+        completionHandler: @escaping @Sendable (URLRequest?) -> Void
+    ) {
+        completionHandler(nil)
+    }
+}
+
+final class URLSessionHomeHTTPTransport: HomeHTTPTransport, @unchecked Sendable {
+    private let session: URLSession
+    private let redirectDelegate: HomeRedirectRefusingDelegate
+
+    init(configuration: URLSessionConfiguration = .ephemeral) {
+        let delegate = HomeRedirectRefusingDelegate()
+        self.redirectDelegate = delegate
+        self.session = URLSession(
+            configuration: configuration,
+            delegate: delegate,
+            delegateQueue: nil
+        )
+    }
+
+    func data(
+        for request: URLRequest
+    ) async throws -> (Data, HomeHTTPResponse) {
+        let (data, response) = try await session.data(for: request)
+        guard let response = response as? HTTPURLResponse else {
+            throw HomeServiceError.invalidResponse
+        }
+        return (data, HomeHTTPResponse(statusCode: response.statusCode))
+    }
+}
+
+/// URLSession-backed adapter for Home's versioned administrative
+/// configuration route. Home owns the complete snapshot and the revision;
+/// this type only translates the shared HTTP contract into the iOS domain.
+struct URLSessionHomeServiceClient: HomeServiceClient,
+    CustomStringConvertible,
+    CustomDebugStringConvertible {
+    let baseURL: URL
+    private let adminCredential: String
+    private let transport: any HomeHTTPTransport
+
+    init(
+        baseURL: URL,
+        adminCredential: String,
+        transport: any HomeHTTPTransport = URLSessionHomeHTTPTransport()
+    ) {
+        self.baseURL = baseURL
+        self.adminCredential = adminCredential
+        self.transport = transport
+    }
+
+    var description: String { "URLSessionHomeServiceClient" }
+    var debugDescription: String { description }
+
+    func fetchConfiguration() async throws -> HomeConfigurationSnapshot {
+        let request = try makeRequest(method: "GET")
+        let (data, response) = try await send(request)
+        guard response.statusCode == 200 else {
+            throw mapHTTPError(statusCode: response.statusCode, data: data)
+        }
+        return try decodeSnapshot(from: data)
+    }
+
+    func publish(
+        _ configuration: HomeConfigurationSnapshot,
+        expectedRevision: Int
+    ) async throws -> HomeConfigurationSnapshot {
+        guard expectedRevision >= 0, configuration.isValid else {
+            throw HomeServiceError.invalidConfiguration
+        }
+        guard configuration.revision == expectedRevision else {
+            throw HomeServiceError.revisionConflict
+        }
+
+        let envelope = try HomeConfigurationRequestEnvelope(
+            configuration: configuration,
+            expectedRevision: expectedRevision
+        )
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.sortedKeys]
+        let body = try encoder.encode(envelope)
+        let request = try makeRequest(method: "PUT", body: body)
+        let (data, response) = try await send(request)
+        guard response.statusCode == 200 else {
+            throw mapHTTPError(statusCode: response.statusCode, data: data)
+        }
+        return try decodeSnapshot(from: data)
+    }
+
+    private func makeRequest(
+        method: String,
+        body: Data? = nil
+    ) throws -> URLRequest {
+        guard !adminCredential.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            throw HomeServiceError.missingCredential
+        }
+
+        var request = URLRequest(url: try configurationURL())
+        request.httpMethod = method
+        request.timeoutInterval = 15
+        request.setValue("application/json", forHTTPHeaderField: "Accept")
+        request.setValue(
+            "Bearer \(adminCredential)",
+            forHTTPHeaderField: "Authorization"
+        )
+        if let body {
+            request.httpBody = body
+            request.setValue(
+                "application/json",
+                forHTTPHeaderField: "Content-Type"
+            )
+        }
+        return request
+    }
+
+    private func configurationURL() throws -> URL {
+        guard var components = URLComponents(
+            url: baseURL,
+            resolvingAgainstBaseURL: false
+        ),
+        let rawScheme = components.scheme?.lowercased(),
+        ["http", "https", "ws", "wss"].contains(rawScheme),
+        components.host != nil,
+        components.user == nil,
+        components.password == nil,
+        components.query == nil,
+        components.fragment == nil
+        else {
+            throw HomeServiceError.invalidEndpoint
+        }
+
+        components.scheme = switch rawScheme {
+        case "ws": "http"
+        case "wss": "https"
+        default: rawScheme
+        }
+
+        switch components.path {
+        case "", "/", "/api/v1", "/api/v1/":
+            components.path = "/api/v1/configuration"
+        case "/api/v1/bridge/ws":
+            components.path = "/api/v1/configuration"
+        case "/api/v1/configuration":
+            break
+        default:
+            throw HomeServiceError.invalidEndpoint
+        }
+
+        guard let url = components.url else {
+            throw HomeServiceError.invalidEndpoint
+        }
+        return url
+    }
+
+    private func send(
+        _ request: URLRequest
+    ) async throws -> (Data, HomeHTTPResponse) {
+        do {
+            return try await transport.data(for: request)
+        } catch let error as HomeServiceError {
+            throw error
+        } catch let error as URLError where error.code == .timedOut {
+            throw HomeServiceError.timeout
+        } catch {
+            throw HomeServiceError.transportUnavailable
+        }
+    }
+
+    private func decodeSnapshot(from data: Data) throws -> HomeConfigurationSnapshot {
+        do {
+            let envelope = try JSONDecoder().decode(
+                HomeConfigurationResponseEnvelope.self,
+                from: data
+            )
+            guard envelope.schema == 1 else {
+                throw HomeWireDecodingError.unsupportedSchema
+            }
+            return try envelope.snapshot.localSnapshot()
+        } catch let error as HomeServiceError {
+            throw error
+        } catch {
+            throw HomeServiceError.invalidResponse
+        }
+    }
+
+    private func mapHTTPError(statusCode: Int, data: Data) -> HomeServiceError {
+        if let code = decodeRemoteErrorCode(from: data) {
+            switch code {
+            case "invalid_request":
+                return .invalidRequest
+            case "unauthorized":
+                return .unauthorized
+            case "not_found":
+                return .notFound
+            case "revision_conflict":
+                return .revisionConflict
+            case "service_unavailable":
+                return .serviceUnavailable
+            default:
+                // Stable but unknown Home codes must not be guessed at. The
+                // caller retains its verified state and can recover after a
+                // compatible adapter is shipped.
+                return .invalidResponse
+            }
+        }
+
+        switch statusCode {
+        case 401, 403:
+            return .unauthorized
+        case 409:
+            return .revisionConflict
+        case 400, 422:
+            return .invalidRequest
+        case 404:
+            return .notFound
+        case 502, 503, 504:
+            return .serviceUnavailable
+        default:
+            return .invalidResponse
+        }
+    }
+
+    private func decodeRemoteErrorCode(from data: Data) -> String? {
+        guard !data.isEmpty else { return nil }
+        return try? JSONDecoder()
+            .decode(HomeHTTPErrorEnvelope.self, from: data)
+            .error
+            .code
+    }
+}
+
+/// Resolves the selected Profile's approved Home route and dedicated admin
+/// credential for each request. Nothing secret is persisted in the Profile
+/// JSON or retained by this value between requests.
+struct ProfileHomeServiceClient: HomeServiceClient {
+    let configurationStore: RelayConfigurationStore
+    let routeProvider: any HomeApprovedRouteProvider
+    let adminCredentialStore: any HomeAdminCredentialStore
+    private let transport: any HomeHTTPTransport
+
+    init(
+        configurationStore: RelayConfigurationStore,
+        routeProvider: any HomeApprovedRouteProvider,
+        adminCredentialStore: any HomeAdminCredentialStore,
+        transport: any HomeHTTPTransport = URLSessionHomeHTTPTransport()
+    ) {
+        self.configurationStore = configurationStore
+        self.routeProvider = routeProvider
+        self.adminCredentialStore = adminCredentialStore
+        self.transport = transport
+    }
+
+    func fetchConfiguration() async throws -> HomeConfigurationSnapshot {
+        try await makeClient().fetchConfiguration()
+    }
+
+    func hasApprovedRoute() async throws -> Bool {
+        let profile: RelayProfile?
+        do {
+            profile = try await configurationStore.loadProfile()
+        } catch {
+            throw HomeServiceError.invalidEndpoint
+        }
+        guard let profile else { return false }
+
+        let route: HomeApprovedRoute?
+        do {
+            route = try await routeProvider.approvedRoute(for: profile.id)
+        } catch {
+            throw HomeServiceError.invalidEndpoint
+        }
+        guard let route else { return false }
+        do {
+            try route.validate()
+        } catch {
+            throw HomeServiceError.invalidEndpoint
+        }
+        return true
+    }
+
+    func publish(
+        _ configuration: HomeConfigurationSnapshot,
+        expectedRevision: Int
+    ) async throws -> HomeConfigurationSnapshot {
+        try await makeClient().publish(
+            configuration,
+            expectedRevision: expectedRevision
+        )
+    }
+
+    private func makeClient() async throws -> URLSessionHomeServiceClient {
+        let profile: RelayProfile?
+        do {
+            profile = try await configurationStore.loadProfile()
+        } catch {
+            throw HomeServiceError.invalidEndpoint
+        }
+        guard let profile else {
+            throw HomeServiceError.notConfigured
+        }
+
+        let route: HomeApprovedRoute?
+        do {
+            route = try await routeProvider.approvedRoute(for: profile.id)
+        } catch {
+            throw HomeServiceError.invalidEndpoint
+        }
+        guard let route else {
+            throw HomeServiceError.notConfigured
+        }
+        do {
+            try route.validate()
+        } catch {
+            throw HomeServiceError.invalidEndpoint
+        }
+
+        let credential: String?
+        do {
+            credential = try await adminCredentialStore.load(
+                for: profile.id,
+                approvedRoute: route
+            )
+        } catch {
+            throw HomeServiceError.missingCredential
+        }
+        guard let credential else {
+            throw HomeServiceError.missingCredential
+        }
+
+        return URLSessionHomeServiceClient(
+            baseURL: route.endpoint,
+            adminCredential: credential,
+            transport: transport
+        )
+    }
+}
+
+private struct HomeConfigurationResponseEnvelope: Decodable {
+    let schema: Int
+    let snapshot: HomeWireConfigurationSnapshot
+
+    private enum CodingKeys: String, CodingKey, CaseIterable {
+        case schema, snapshot
+    }
+
+    init(from decoder: Decoder) throws {
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        try HomeConfigurationWireCoding.requireExactKeys(
+            decoder,
+            allowed: CodingKeys.allCases
+        )
+        schema = try values.decode(Int.self, forKey: .schema)
+        snapshot = try values.decode(
+            HomeWireConfigurationSnapshot.self,
+            forKey: .snapshot
+        )
+    }
+}
+
+private struct HomeHTTPErrorEnvelope: Decodable {
+    let schema: Int
+    let error: HomeHTTPErrorPayload
+
+    private enum CodingKeys: String, CodingKey, CaseIterable {
+        case schema, error
+    }
+
+    init(from decoder: Decoder) throws {
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        try HomeConfigurationWireCoding.requireExactKeys(
+            decoder,
+            allowed: CodingKeys.allCases
+        )
+        schema = try values.decode(Int.self, forKey: .schema)
+        guard schema == 1 else { throw HomeWireDecodingError.unsupportedSchema }
+        error = try values.decode(HomeHTTPErrorPayload.self, forKey: .error)
+    }
+}
+
+private struct HomeHTTPErrorPayload: Decodable {
+    let code: String
+
+    private enum CodingKeys: String, CodingKey, CaseIterable {
+        case code
+        case currentRevision = "current_revision"
+    }
+
+    init(from decoder: Decoder) throws {
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        try HomeConfigurationWireCoding.requireExactKeys(
+            decoder,
+            allowed: CodingKeys.allCases
+        )
+        code = try values.decode(String.self, forKey: .code)
+        // The current revision is useful to an operator but the Home client
+        // deliberately does not expose it as a second authority.
+        _ = try values.decodeIfPresent(Int.self, forKey: .currentRevision)
+    }
+}
+
+private struct HomeWireConfigurationSnapshot: Decodable {
+    let revision: Int
+    let rooms: [HomeWireRoom]
+    let wakeMappings: [HomeWireWakeMapping]
+    let devices: [HomeWireDevice]
+
+    private enum CodingKeys: String, CodingKey, CaseIterable {
+        case revision, rooms, devices
+        case wakeMappings = "wake_mappings"
+    }
+
+    init(from decoder: Decoder) throws {
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        try HomeConfigurationWireCoding.requireExactKeys(
+            decoder,
+            allowed: CodingKeys.allCases
+        )
+        revision = try values.decode(Int.self, forKey: .revision)
+        rooms = try values.decode([HomeWireRoom].self, forKey: .rooms)
+        wakeMappings = try values.decode(
+            [HomeWireWakeMapping].self,
+            forKey: .wakeMappings
+        )
+        devices = try values.decode([HomeWireDevice].self, forKey: .devices)
+    }
+
+    func localSnapshot() throws -> HomeConfigurationSnapshot {
+        guard revision >= 0 else {
+            throw HomeWireDecodingError.invalidShape
+        }
+        guard devices.isEmpty || !rooms.isEmpty else {
+            throw HomeWireDecodingError.invalidShape
+        }
+
+        var roomIDs = Set<String>()
+        for room in rooms {
+            guard roomIDs.insert(room.id).inserted else {
+                throw HomeWireDecodingError.invalidShape
+            }
+        }
+
+        let mappings = wakeMappings.map {
+            CanonicalWakeMapping(
+                id: CanonicalWakeMappingID($0.id),
+                wakePhrase: $0.name
+            )
+        }
+        let devices = devices.map { device in
+            DeviceSetupConfiguration(
+                deviceID: device.id,
+                room: device.roomID,
+                wakeMappings: mappings.map { mapping in
+                    DeviceWakeMapping(
+                        wakePhrase: mapping.wakePhrase,
+                        profileIdentifier: device.profileID,
+                        canonicalID: mapping.id
+                    )
+                },
+                arbitrationPriority: device.priority,
+                displayName: device.name,
+                profileIdentifier: device.profileID,
+                wakeClaimEnabled: device.capabilities.wakeClaim
+            )
+        }
+        let snapshot = HomeConfigurationSnapshot(
+            revision: revision,
+            wakeMappings: mappings,
+            devices: devices,
+            rooms: rooms.map { HomeRoom(id: $0.id, name: $0.name) }
+        )
+        guard snapshot.isCompleteHomeSnapshot else {
+            throw HomeWireDecodingError.invalidShape
+        }
+        return snapshot
+    }
+}
+
+private struct HomeWireRoom: Decodable {
+    let id: String
+    let name: String
+
+    private enum CodingKeys: String, CodingKey, CaseIterable {
+        case id, name
+    }
+
+    init(from decoder: Decoder) throws {
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        try HomeConfigurationWireCoding.requireExactKeys(
+            decoder,
+            allowed: CodingKeys.allCases
+        )
+        id = try values.decode(String.self, forKey: .id)
+        name = try values.decode(String.self, forKey: .name)
+        guard HomeConfigurationWireCoding.isValidIdentifier(id),
+              HomeConfigurationWireCoding.isValidLabel(name)
+        else {
+            throw HomeWireDecodingError.invalidShape
+        }
+    }
+}
+
+private struct HomeWireWakeMapping: Decodable {
+    let id: String
+    let name: String
+
+    private enum CodingKeys: String, CodingKey, CaseIterable {
+        case id, name
+    }
+
+    init(from decoder: Decoder) throws {
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        try HomeConfigurationWireCoding.requireExactKeys(
+            decoder,
+            allowed: CodingKeys.allCases
+        )
+        id = try values.decode(String.self, forKey: .id)
+        name = try values.decode(String.self, forKey: .name)
+        guard HomeConfigurationWireCoding.isValidIdentifier(id),
+              HomeConfigurationWireCoding.isValidLabel(name)
+        else {
+            throw HomeWireDecodingError.invalidShape
+        }
+    }
+}
+
+private struct HomeConfigurationWireCapabilities: Decodable {
+    let wakeClaim: Bool
+
+    private enum CodingKeys: String, CodingKey, CaseIterable {
+        case wakeClaim = "wake_claim"
+    }
+
+    init(from decoder: Decoder) throws {
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        try HomeConfigurationWireCoding.requireExactKeys(
+            decoder,
+            allowed: CodingKeys.allCases
+        )
+        wakeClaim = try values.decode(Bool.self, forKey: .wakeClaim)
+    }
+}
+
+private struct HomeWireDevice: Decodable {
+    let id: String
+    let name: String
+    let roomID: String
+    let profileID: String
+    let priority: Int
+    let capabilities: HomeConfigurationWireCapabilities
+
+    private enum CodingKeys: String, CodingKey, CaseIterable {
+        case id, name, priority, capabilities
+        case roomID = "room_id"
+        case profileID = "profile_id"
+    }
+
+    init(from decoder: Decoder) throws {
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        try HomeConfigurationWireCoding.requireExactKeys(
+            decoder,
+            allowed: CodingKeys.allCases
+        )
+        id = try values.decode(String.self, forKey: .id)
+        name = try values.decode(String.self, forKey: .name)
+        roomID = try values.decode(String.self, forKey: .roomID)
+        profileID = try values.decode(String.self, forKey: .profileID)
+        priority = try values.decode(Int.self, forKey: .priority)
+        capabilities = try values.decode(
+            HomeConfigurationWireCapabilities.self,
+            forKey: .capabilities
+        )
+        guard HomeConfigurationWireCoding.isValidIdentifier(id),
+              HomeConfigurationWireCoding.isValidLabel(name),
+              HomeConfigurationWireCoding.isValidIdentifier(roomID),
+              HomeConfigurationWireCoding.isValidIdentifier(profileID),
+              priority > 0
+        else {
+            throw HomeWireDecodingError.invalidShape
+        }
+    }
+}
+
+private struct HomeConfigurationRequestEnvelope: Encodable {
+    let schema = 1
+    let expectedRevision: Int
+    let snapshot: HomeConfigurationCandidate
+
+    private enum CodingKeys: String, CodingKey {
+        case schema
+        case expectedRevision = "expected_revision"
+        case snapshot
+    }
+
+    init(
+        configuration: HomeConfigurationSnapshot,
+        expectedRevision: Int
+    ) throws {
+        self.expectedRevision = expectedRevision
+        snapshot = try HomeConfigurationCandidate(configuration: configuration)
+    }
+}
+
+private struct HomeConfigurationCandidate: Encodable {
+    let rooms: [HomeWireRoomPayload]
+    let wakeMappings: [HomeWireWakeMappingPayload]
+    let devices: [HomeWireDevicePayload]
+
+    private enum CodingKeys: String, CodingKey {
+        case rooms, devices
+        case wakeMappings = "wake_mappings"
+    }
+
+    init(configuration: HomeConfigurationSnapshot) throws {
+        guard configuration.isCompleteHomeSnapshot else {
+            throw HomeServiceError.invalidConfiguration
+        }
+
+        // A Home PUT is a complete replacement. Missing Rooms are not a
+        // request to invent labels from Device IDs; only Home may define them.
+        let resolvedRooms = configuration.rooms
+        guard configuration.devices.isEmpty || !resolvedRooms.isEmpty else {
+            throw HomeServiceError.invalidConfiguration
+        }
+
+        guard resolvedRooms.allSatisfy(\HomeRoom.hasValidValues),
+              configuration.wakeMappings.allSatisfy({ mapping in
+                  HomeConfigurationWireCoding.isValidIdentifier(mapping.id.rawValue)
+                      && HomeConfigurationWireCoding.isValidLabel(mapping.wakePhrase)
+              })
+        else {
+            throw HomeServiceError.invalidConfiguration
+        }
+
+        let roomPayloads = resolvedRooms.map {
+            HomeWireRoomPayload(id: $0.id, name: $0.name)
+        }
+        let mappingPayloads = configuration.wakeMappings.map {
+            HomeWireWakeMappingPayload(id: $0.id.rawValue, name: $0.wakePhrase)
+        }
+        var devicePayloads: [HomeWireDevicePayload] = []
+        for device in configuration.devices {
+            guard let priority = device.arbitrationPriority,
+                  resolvedRooms.contains(where: { $0.id == device.room })
+            else {
+                throw HomeServiceError.invalidConfiguration
+            }
+
+            let profiles = Set(
+                device.wakeMappings.map(\DeviceWakeMapping.normalizedProfileIdentifier)
+            )
+            let profileID: String
+            if let configuredProfile = device.profileIdentifier {
+                let normalizedConfiguredProfile = configuredProfile.trimmingCharacters(
+                    in: .whitespacesAndNewlines
+                )
+                guard HomeConfigurationWireCoding.isValidIdentifier(configuredProfile),
+                      profiles.isEmpty || profiles == Set([normalizedConfiguredProfile])
+                else {
+                    throw HomeServiceError.invalidConfiguration
+                }
+                profileID = configuredProfile
+            } else {
+                guard profiles.count == 1,
+                      let inferredProfile = profiles.first,
+                      HomeConfigurationWireCoding.isValidIdentifier(inferredProfile)
+                else {
+                    throw HomeServiceError.invalidConfiguration
+                }
+                profileID = inferredProfile
+            }
+            guard HomeConfigurationWireCoding.isValidIdentifier(profileID)
+            else {
+                throw HomeServiceError.invalidConfiguration
+            }
+
+            guard let name = device.displayName else {
+                throw HomeServiceError.invalidConfiguration
+            }
+            guard HomeConfigurationWireCoding.isValidLabel(name) else {
+                throw HomeServiceError.invalidConfiguration
+            }
+            devicePayloads.append(
+                HomeWireDevicePayload(
+                    id: device.deviceID,
+                    name: name,
+                    roomID: device.room,
+                    profileID: profileID,
+                    priority: priority,
+                    capabilities: HomeWireCapabilitiesPayload(
+                        wakeClaim: device.wakeClaimEnabled
+                    )
+                )
+            )
+        }
+
+        rooms = roomPayloads
+        wakeMappings = mappingPayloads
+        devices = devicePayloads
+    }
+}
+
+private struct HomeWireRoomPayload: Encodable {
+    let id: String
+    let name: String
+}
+
+private struct HomeWireWakeMappingPayload: Encodable {
+    let id: String
+    let name: String
+}
+
+private struct HomeWireCapabilitiesPayload: Encodable {
+    let wakeClaim: Bool
+
+    private enum CodingKeys: String, CodingKey {
+        case wakeClaim = "wake_claim"
+    }
+}
+
+private struct HomeWireDevicePayload: Encodable {
+    let id: String
+    let name: String
+    let roomID: String
+    let profileID: String
+    let priority: Int
+    let capabilities: HomeWireCapabilitiesPayload
+
+    private enum CodingKeys: String, CodingKey {
+        case id, name, priority, capabilities
+        case roomID = "room_id"
+        case profileID = "profile_id"
+    }
+}
+
+private enum HomeConfigurationDynamicCodingKey: CodingKey {
+    case string(String)
+
+    init?(stringValue: String) {
+        self = .string(stringValue)
+    }
+
+    var stringValue: String {
+        if case let .string(value) = self { return value }
+        return ""
+    }
+
+    init?(intValue: Int) { nil }
+    var intValue: Int? { nil }
+}
+
+private enum HomeConfigurationWireCoding {
+    static func requireExactKeys<K: CodingKey>(
+        _ decoder: Decoder,
+        allowed: [K]
+    ) throws {
+        let container = try decoder.container(
+            keyedBy: HomeConfigurationDynamicCodingKey.self
+        )
+        let allowedNames = Set(allowed.map(\.stringValue))
+        guard container.allKeys.allSatisfy({
+            allowedNames.contains($0.stringValue)
+        }) else {
+            throw HomeWireDecodingError.unknownField
+        }
+    }
+
+    static func isValidIdentifier(_ value: String) -> Bool {
+        !value.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            && value.count <= 128
+    }
+
+    static func isValidLabel(_ value: String) -> Bool {
+        let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        return !trimmed.isEmpty && trimmed.count <= 128
     }
 }
 

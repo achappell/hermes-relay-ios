@@ -10,16 +10,19 @@ final class RelayProfileListModel {
     var errorMessage: String?
 
     private let configurationStore: RelayConfigurationStore
+    private let homeAdminCredentialStore: (any HomeAdminCredentialStore)?
     /// Where per-profile conversations live, so deleting a profile takes its
     /// messages with it rather than leaving them readable on disk.
     private let conversationDirectory: URL?
 
     init(
         configurationStore: RelayConfigurationStore,
-        conversationDirectory: URL? = nil
+        conversationDirectory: URL? = nil,
+        homeAdminCredentialStore: (any HomeAdminCredentialStore)? = nil
     ) {
         self.configurationStore = configurationStore
         self.conversationDirectory = conversationDirectory
+        self.homeAdminCredentialStore = homeAdminCredentialStore
     }
 
     func load() async {
@@ -44,6 +47,20 @@ final class RelayProfileListModel {
     func delete(id: UUID) async -> Bool {
         do {
             try await configurationStore.deleteProfile(id: id)
+            do {
+                try await homeAdminCredentialStore?.delete(for: id)
+            } catch {
+                if let conversationDirectory {
+                    try? FileManager.default.removeItem(
+                        at: ConversationPersistenceFile.url(
+                            in: conversationDirectory, for: id
+                        )
+                    )
+                }
+                await load()
+                errorMessage = "The Profile was deleted, but its Home admin credential could not be removed. Remove it from Keychain before reusing this device."
+                return true
+            }
             if let conversationDirectory {
                 try? FileManager.default.removeItem(
                     at: ConversationPersistenceFile.url(
@@ -316,8 +333,10 @@ struct RelayConfigurationView: View {
     let deviceAdministrationClient: any DeviceAdministrationClient
     let deviceSetupDraftStore: any DeviceSetupDraftStore
     let deviceConfigurationStore: any DeviceConfigurationStore
+    let homeServiceClient: (any HomeServiceClient)?
     let homeLiveConfigurationStore: (any HomeLiveConfigurationStore)?
     let homeCredentialStore: (any HomeCredentialProvisioningStore)?
+    let homeAdminCredentialStore: (any HomeAdminCredentialStore)?
     let homeClientFactory: (any HomeBridgeSessionClientFactory)?
     let onSaved: @MainActor () async -> Void
     let onSelectedProfileDeleted: @MainActor () async -> Void
@@ -332,6 +351,10 @@ struct RelayConfigurationView: View {
     @State private var listModel: RelayProfileListModel
     @State private var showingDeviceDiscovery = false
     @State private var showingHomeSetup = false
+    @State private var homeAdminCredential = ""
+    @State private var hasStoredHomeAdminCredential = false
+    @State private var homeAdminHouseholdBinding: String?
+    @State private var isSavingHomeAdminCredential = false
     @FocusState private var focusedField: RelayConfigurationField?
     @State private var didAttemptValidation = false
     /// Which saved profile the form is editing. Nil means the form is
@@ -346,8 +369,10 @@ struct RelayConfigurationView: View {
         deviceAdministrationClient: any DeviceAdministrationClient = UnavailableDeviceAdministrationClient(),
         deviceSetupDraftStore: any DeviceSetupDraftStore = NoopDeviceSetupDraftStore(),
         deviceConfigurationStore: any DeviceConfigurationStore = NoopDeviceConfigurationStore(),
+        homeServiceClient: (any HomeServiceClient)? = nil,
         homeLiveConfigurationStore: (any HomeLiveConfigurationStore)? = nil,
         homeCredentialStore: (any HomeCredentialProvisioningStore)? = nil,
+        homeAdminCredentialStore: (any HomeAdminCredentialStore)? = nil,
         homeClientFactory: (any HomeBridgeSessionClientFactory)? = nil,
         onSaved: @escaping @MainActor () async -> Void = {},
         onSelectedProfileDeleted: @escaping @MainActor () async -> Void = {}
@@ -359,8 +384,10 @@ struct RelayConfigurationView: View {
         self.deviceAdministrationClient = deviceAdministrationClient
         self.deviceSetupDraftStore = deviceSetupDraftStore
         self.deviceConfigurationStore = deviceConfigurationStore
+        self.homeServiceClient = homeServiceClient
         self.homeLiveConfigurationStore = homeLiveConfigurationStore
         self.homeCredentialStore = homeCredentialStore
+        self.homeAdminCredentialStore = homeAdminCredentialStore
         self.homeClientFactory = homeClientFactory
         self.onSaved = onSaved
         self.onSelectedProfileDeleted = onSelectedProfileDeleted
@@ -368,7 +395,8 @@ struct RelayConfigurationView: View {
         _listModel = State(
             initialValue: RelayProfileListModel(
                 configurationStore: configurationStore,
-                conversationDirectory: conversationDirectory
+                conversationDirectory: conversationDirectory,
+                homeAdminCredentialStore: homeAdminCredentialStore
             )
         )
     }
@@ -464,6 +492,64 @@ struct RelayConfigurationView: View {
                         Text("Home bridge")
                     } footer: {
                         Text("Home mode is selected only after a live conversation.open handshake succeeds. Legacy relay access remains available for rollback.")
+                    }
+                }
+
+                if homeAdminCredentialStore != nil {
+                    Section {
+                        SecureField("Home admin credential", text: $homeAdminCredential)
+                            .autocorrectionDisabled()
+                            #if os(iOS)
+                            .textInputAutocapitalization(.never)
+                            .keyboardType(.asciiCapable)
+                            #endif
+                        if hasStoredHomeAdminCredential {
+                            Label(
+                                "A Home admin credential is bound to the approved Home household. Leave this blank to keep it, or enter a replacement.",
+                                systemImage: "checkmark.shield"
+                            )
+                            .font(.footnote)
+                            .foregroundStyle(HermesVisualTokens.secondaryInk)
+                            Button("Save Home admin credential") {
+                                Task { await saveHomeAdminCredential() }
+                            }
+                            .disabled(
+                                editingProfileID == nil
+                                    || isLoading
+                                    || isSaving
+                                    || isSavingHomeAdminCredential
+                            )
+                            Button("Remove Home admin credential", role: .destructive) {
+                                Task { await removeHomeAdminCredential() }
+                            }
+                            .disabled(
+                                editingProfileID == nil
+                                    || isLoading
+                                    || isSaving
+                                    || isSavingHomeAdminCredential
+                            )
+                        } else {
+                            Text(
+                                homeAdminHouseholdBinding == nil
+                                    ? "Set up an approved Home route before saving this credential."
+                                    : "Required to manage household Devices through Home. Stored only in the dedicated Home-admin Keychain record."
+                            )
+                                .font(.footnote)
+                                .foregroundStyle(HermesVisualTokens.secondaryInk)
+                            Button("Save Home admin credential") {
+                                Task { await saveHomeAdminCredential() }
+                            }
+                            .disabled(
+                                editingProfileID == nil
+                                    || isLoading
+                                    || isSaving
+                                    || isSavingHomeAdminCredential
+                            )
+                        }
+                    } header: {
+                        Text("Home administration")
+                    } footer: {
+                        Text("This bearer is distinct from the relay token and every per-Device credential. It is sent only to the approved Home configuration route.")
                     }
                 }
 
@@ -583,7 +669,8 @@ struct RelayConfigurationView: View {
                     client: deviceDiscoveryClient,
                     administrationClient: deviceAdministrationClient,
                     draftStore: deviceSetupDraftStore,
-                    configurationStore: deviceConfigurationStore
+                    configurationStore: deviceConfigurationStore,
+                    homeServiceClient: homeServiceClient
                 )
             }
             #endif
@@ -598,6 +685,9 @@ struct RelayConfigurationView: View {
                         homeClientFactory: homeClientFactory,
                         onActivated: {
                             await onSaved()
+                            if let editingProfileID {
+                                await loadHomeAdminCredential(for: editingProfileID)
+                            }
                         }
                     )
                 } else {
@@ -632,6 +722,7 @@ struct RelayConfigurationView: View {
     private func select(_ profile: RelayProfile) async {
         await listModel.select(id: profile.id)
         editingProfileID = profile.id
+        await loadHomeAdminCredential(for: profile.id)
         let token = try? await configurationStore.loadToken(for: profile.id)
         draft = RelayConfigurationDraft(
             profile: profile,
@@ -665,6 +756,9 @@ struct RelayConfigurationView: View {
         didAttemptValidation = false
         focusedField = nil
         statusMessage = nil
+        homeAdminCredential = ""
+        hasStoredHomeAdminCredential = false
+        homeAdminHouseholdBinding = nil
         errorMessage = nil
     }
 
@@ -677,6 +771,13 @@ struct RelayConfigurationView: View {
             let profile = try await configurationStore.loadProfile()
             let token = try await configurationStore.loadToken()
             editingProfileID = profile?.id
+            if let profile {
+                await loadHomeAdminCredential(for: profile.id)
+            } else {
+                homeAdminCredential = ""
+                hasStoredHomeAdminCredential = false
+                homeAdminHouseholdBinding = nil
+            }
             draft = RelayConfigurationDraft(
                 profile: profile,
                 hasStoredToken: token != nil,
@@ -766,5 +867,102 @@ struct RelayConfigurationView: View {
         focusedField = nil
 
         isSaving = false
+    }
+
+    private func loadHomeAdminCredential(for profileID: UUID) async {
+        guard let homeAdminCredentialStore,
+              let homeLiveConfigurationStore else {
+            homeAdminCredential = ""
+            hasStoredHomeAdminCredential = false
+            homeAdminHouseholdBinding = nil
+            return
+        }
+        let route: HomeApprovedRoute?
+        do {
+            route = try await homeLiveConfigurationStore.approvedRoute(for: profileID)
+        } catch {
+            route = nil
+        }
+        homeAdminHouseholdBinding = route?.householdBinding
+        guard let route else {
+            homeAdminCredential = ""
+            hasStoredHomeAdminCredential = false
+            return
+        }
+        hasStoredHomeAdminCredential = await homeAdminCredentialStore.hasCredential(
+            for: profileID,
+            approvedRoute: route
+        )
+        homeAdminCredential = ""
+    }
+
+    private func saveHomeAdminCredential() async {
+        guard let homeAdminCredentialStore,
+              let profileID = editingProfileID else {
+            errorMessage = "Save a Hermes Profile before adding the Home admin credential."
+            return
+        }
+
+        guard let homeLiveConfigurationStore else {
+            errorMessage = "Set up an approved Home route before saving the Home admin credential."
+            return
+        }
+        let route: HomeApprovedRoute?
+        do {
+            route = try await homeLiveConfigurationStore.approvedRoute(for: profileID)
+        } catch {
+            route = nil
+        }
+        guard let route else {
+            errorMessage = "Set up an approved Home route before saving the Home admin credential."
+            return
+        }
+
+        isSavingHomeAdminCredential = true
+        errorMessage = nil
+        statusMessage = nil
+        defer { isSavingHomeAdminCredential = false }
+
+        do {
+            let result = try await HomeAdminCredentialFormActions(
+                store: homeAdminCredentialStore
+            ).save(
+                homeAdminCredential,
+                for: profileID,
+                approvedRoute: route
+            )
+            switch result {
+            case .preserved:
+                statusMessage = "The existing Home admin credential was kept."
+            case .stored:
+                homeAdminCredential = ""
+                hasStoredHomeAdminCredential = true
+                homeAdminHouseholdBinding = route.householdBinding
+                statusMessage = "The Home admin credential was stored in Keychain."
+            }
+        } catch {
+            errorMessage = error.localizedDescription
+        }
+    }
+
+    private func removeHomeAdminCredential() async {
+        guard let homeAdminCredentialStore,
+              let profileID = editingProfileID else { return }
+
+        isSavingHomeAdminCredential = true
+        errorMessage = nil
+        statusMessage = nil
+        defer { isSavingHomeAdminCredential = false }
+
+        do {
+            try await HomeAdminCredentialFormActions(
+                store: homeAdminCredentialStore
+            ).remove(for: profileID)
+            homeAdminCredential = ""
+            hasStoredHomeAdminCredential = false
+            statusMessage = "The Home admin credential was removed."
+        } catch {
+            errorMessage = error.localizedDescription
+        }
     }
 }

@@ -1,5 +1,203 @@
 import Foundation
 
+/// Home administration is a separate trust boundary from relay tokens and
+/// per-Device credentials. Keep its bearer in its own profile-scoped record.
+enum HomeAdminCredentialKeychain {
+    static let service = "com.achappell.HermesRelayIOS.home-admin"
+
+    static func account(for profileID: UUID) -> String {
+        "admin-credential.\(profileID.uuidString)"
+    }
+}
+
+enum HomeAdminCredentialStoreError: Error, LocalizedError, Equatable, Sendable {
+    case emptyCredential
+    case invalidApprovedRoute
+    case invalidEncoding
+
+    var errorDescription: String? {
+        switch self {
+        case .emptyCredential:
+            "The Home admin credential cannot be empty."
+        case .invalidApprovedRoute:
+            "The approved Home route is invalid. Re-approve the route before managing Devices."
+        case .invalidEncoding:
+            "The stored Home admin credential is invalid. Re-enter it in Configure Relay."
+        }
+    }
+}
+
+protocol HomeAdminCredentialStore: Sendable {
+    func load(
+        for profileID: UUID,
+        approvedRoute: HomeApprovedRoute
+    ) async throws -> String?
+    func hasCredential(
+        for profileID: UUID,
+        approvedRoute: HomeApprovedRoute
+    ) async -> Bool
+    func save(
+        _ credential: String,
+        for profileID: UUID,
+        approvedRoute: HomeApprovedRoute
+    ) async throws
+    func delete(for profileID: UUID) async throws
+}
+
+enum HomeAdminCredentialFormSaveResult: Equatable, Sendable {
+    case stored
+    case preserved
+}
+
+/// The form treats an empty Save differently from Remove. Keep that decision
+/// in one seam so the UI cannot accidentally clear a secret when its field is
+/// blank or a route has just changed.
+struct HomeAdminCredentialFormActions: Sendable {
+    private let store: any HomeAdminCredentialStore
+
+    init(store: any HomeAdminCredentialStore) {
+        self.store = store
+    }
+
+    func save(
+        _ credential: String,
+        for profileID: UUID,
+        approvedRoute: HomeApprovedRoute
+    ) async throws -> HomeAdminCredentialFormSaveResult {
+        let normalized = credential.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !normalized.isEmpty else {
+            guard await store.hasCredential(
+                for: profileID,
+                approvedRoute: approvedRoute
+            ) else {
+                throw HomeAdminCredentialStoreError.emptyCredential
+            }
+            return .preserved
+        }
+
+        try await store.save(
+            normalized,
+            for: profileID,
+            approvedRoute: approvedRoute
+        )
+        return .stored
+    }
+
+    func remove(for profileID: UUID) async throws {
+        try await store.delete(for: profileID)
+    }
+}
+
+/// The Home admin bearer is stored in a dedicated Keychain item together
+/// with the full non-secret approved route. Any endpoint, route identity, or
+/// household change therefore requires the operator to bind it again.
+struct HomeAdminCredentialKeychainRecord: Codable, Equatable, Sendable {
+    static let currentSchemaVersion = 2
+
+    let schemaVersion: Int
+    let profileID: UUID
+    /// Optional so old v1 records decode but cannot be used for a route that
+    /// they were never bound to. The operator must re-enter that credential.
+    let approvedRoute: HomeApprovedRoute?
+    let credential: String
+
+    init(
+        profileID: UUID,
+        approvedRoute: HomeApprovedRoute,
+        credential: String,
+        schemaVersion: Int = HomeAdminCredentialKeychainRecord.currentSchemaVersion
+    ) {
+        self.schemaVersion = schemaVersion
+        self.profileID = profileID
+        self.approvedRoute = approvedRoute
+        self.credential = credential
+    }
+}
+
+actor KeychainHomeAdminCredentialStore: HomeAdminCredentialStore {
+    private let secureStore: any SecureValueStore
+
+    init(secureStore: any SecureValueStore) {
+        self.secureStore = secureStore
+    }
+
+    func load(
+        for profileID: UUID,
+        approvedRoute: HomeApprovedRoute
+    ) async throws -> String? {
+        try validateApprovedRoute(approvedRoute)
+        guard let value = try secureStore.read(
+            service: HomeAdminCredentialKeychain.service,
+            account: HomeAdminCredentialKeychain.account(for: profileID)
+        ) else {
+            return nil
+        }
+        let record: HomeAdminCredentialKeychainRecord
+        do {
+            record = try JSONDecoder().decode(
+                HomeAdminCredentialKeychainRecord.self,
+                from: value
+            )
+        } catch {
+            throw HomeAdminCredentialStoreError.invalidEncoding
+        }
+        guard record.schemaVersion == HomeAdminCredentialKeychainRecord.currentSchemaVersion,
+              record.profileID == profileID,
+              record.approvedRoute == approvedRoute else {
+            return nil
+        }
+        let normalized = record.credential.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !normalized.isEmpty else {
+            throw HomeAdminCredentialStoreError.emptyCredential
+        }
+        return normalized
+    }
+
+    func hasCredential(
+        for profileID: UUID,
+        approvedRoute: HomeApprovedRoute
+    ) async -> Bool {
+        (try? await load(for: profileID, approvedRoute: approvedRoute)) != nil
+    }
+
+    func save(
+        _ credential: String,
+        for profileID: UUID,
+        approvedRoute: HomeApprovedRoute
+    ) async throws {
+        try validateApprovedRoute(approvedRoute)
+        let normalized = credential.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !normalized.isEmpty else {
+            throw HomeAdminCredentialStoreError.emptyCredential
+        }
+        let record = HomeAdminCredentialKeychainRecord(
+            profileID: profileID,
+            approvedRoute: approvedRoute,
+            credential: normalized
+        )
+        try secureStore.write(
+            try JSONEncoder().encode(record),
+            service: HomeAdminCredentialKeychain.service,
+            account: HomeAdminCredentialKeychain.account(for: profileID)
+        )
+    }
+
+    func delete(for profileID: UUID) async throws {
+        try secureStore.delete(
+            service: HomeAdminCredentialKeychain.service,
+            account: HomeAdminCredentialKeychain.account(for: profileID)
+        )
+    }
+
+    private func validateApprovedRoute(_ approvedRoute: HomeApprovedRoute) throws {
+        do {
+            try approvedRoute.validate()
+        } catch {
+            throw HomeAdminCredentialStoreError.invalidApprovedRoute
+        }
+    }
+}
+
 enum HomeCredentialStoreError: Error, Equatable, Sendable {
     case missingCredential
     case emptyCredential
