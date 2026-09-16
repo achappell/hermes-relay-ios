@@ -60,6 +60,29 @@ final class HomeBridgeEnvelopeTests: XCTestCase {
         )
     }
 
+    func testJSONRPCErrorUsesNumericCodeAndStableDataCode() throws {
+        let data = try JSONSerialization.data(withJSONObject: [
+            "jsonrpc": "2.0",
+            "schema": 1,
+            "id": "request-1",
+            "error": [
+                "code": -32_000,
+                "message": "ignored",
+                "data": [
+                    "schema": 1,
+                    "code": "transport_timeout",
+                    "delivery": "uncertain",
+                ],
+            ],
+        ])
+
+        let response = try JSONDecoder().decode(HomeJSONRPCResponse.self, from: data)
+
+        let code = try XCTUnwrap(response.error?.code)
+        XCTAssertEqual("\(code)", "-32000")
+        XCTAssertEqual(response.error?.data?["code"], .string("transport_timeout"))
+    }
+
     func testHomeNormalizerPreservesCumulativePreviewSemanticsAndHidesGlobalTerminal() {
         let scope = HomeEventScope(
             conversationHandle: "opaque-home-conversation",

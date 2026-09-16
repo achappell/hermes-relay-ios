@@ -109,6 +109,12 @@ private final class HomeConnectionHolder: @unchecked Sendable {
     var connection: (any WebSocketConnection)?
 }
 
+private struct HomeEventEnvelope {
+    let scope: HomeEventScope
+    let type: String
+    let payload: [String: Any]
+}
+
 actor URLSessionHomeBridgeSessionClient: HomeBridgeSessionClient {
     private static let allowedMethods: Set<String> = [
         "conversation.open",
@@ -621,6 +627,12 @@ actor URLSessionHomeBridgeSessionClient: HomeBridgeSessionClient {
                 }
             } catch is CancellationError {
                 return
+            } catch let error as HomeWireDecodingError {
+                await transportLost(
+                    generation: readerGeneration,
+                    decodingError: error
+                )
+                return
             } catch {
                 await transportLost(generation: readerGeneration)
                 return
@@ -634,7 +646,7 @@ actor URLSessionHomeBridgeSessionClient: HomeBridgeSessionClient {
             throw HomeWireDecodingError.invalidShape
         }
         guard object["jsonrpc"] as? String == "2.0",
-              (object["schema"] as? Int ?? (object["schema"] as? NSNumber)?.intValue) == 1 else {
+              intValue(object["schema"]) == 1 else {
             throw HomeWireDecodingError.unsupportedSchema
         }
         if let id = object["id"] as? String {
@@ -650,14 +662,15 @@ actor URLSessionHomeBridgeSessionClient: HomeBridgeSessionClient {
         }
         switch method {
         case "event":
-            if let prompt = try decodeStructuredPrompt(params) {
+            let envelope = try decodeEventEnvelope(params)
+            if let prompt = try decodeStructuredPrompt(envelope) {
                 pendingPrompts[prompt.correlationID] = HomePendingStructuredPrompt(
                     prompt: prompt,
                     receivedAt: Date(),
                     expiresAt: prompt.expiresAt
                 )
                 eventContinuation?.yield(.structuredPrompt(prompt))
-            } else if let event = try decodeStandardEvent(params) {
+            } else if let event = try decodeStandardEvent(envelope) {
                 eventContinuation?.yield(.standard(event))
             }
         case "audio.frame":
@@ -685,58 +698,105 @@ actor URLSessionHomeBridgeSessionClient: HomeBridgeSessionClient {
         if !joined.isEmpty { eventContinuation?.yield(.binaryPCM(scope, joined)) }
     }
 
-    private func decodeStandardEvent(_ params: [String: Any]) throws -> HomeStandardEvent? {
-        try requireKeys(params, allowed: ["conversation_handle", "turn_id", "correlation_id", "type", "payload"])
-        guard let handle = params["conversation_handle"] as? String,
-              let typeName = params["type"] as? String,
-              let type = HomeStandardEventType(rawValue: typeName),
-              let binding = currentBinding,
-              handle == binding.conversationHandle else {
-            throw HomeWireDecodingError.conversationMismatch
-        }
-        let scope = HomeEventScope(
-            conversationHandle: handle,
-            turnID: params["turn_id"] as? String,
-            correlationID: params["correlation_id"] as? String
-        )
-        guard let payload = params["payload"] as? [String: Any] else {
+    private func decodeEventEnvelope(_ params: [String: Any]) throws -> HomeEventEnvelope {
+        try requireKeys(params, allowed: [
+            "schema", "conversation_handle", "turn_id", "correlation_id", "event",
+        ])
+        guard intValue(params["schema"]) == 1,
+              let handle = params["conversation_handle"] as? String,
+              !handle.isEmpty,
+              let event = params["event"] as? [String: Any],
+              let type = event["type"] as? String,
+              !type.isEmpty,
+              let payload = event["payload"] as? [String: Any] else {
             throw HomeWireDecodingError.invalidShape
         }
+        guard let binding = currentBinding else {
+            throw HomeWireDecodingError.invalidShape
+        }
+        guard handle == binding.conversationHandle else {
+            throw HomeWireDecodingError.conversationMismatch
+        }
+        try requireKeys(event, allowed: ["type", "payload"])
+
+        let turnID: String?
+        if let value = params["turn_id"] {
+            guard let value = value as? String, !value.isEmpty else {
+                throw HomeWireDecodingError.invalidShape
+            }
+            turnID = value
+        } else {
+            turnID = nil
+        }
+
+        let correlationID: String?
+        if let value = params["correlation_id"] {
+            guard let value = value as? String, !value.isEmpty else {
+                throw HomeWireDecodingError.invalidShape
+            }
+            correlationID = value
+        } else {
+            correlationID = nil
+        }
+
+        return HomeEventEnvelope(
+            scope: HomeEventScope(
+                conversationHandle: handle,
+                turnID: turnID,
+                correlationID: correlationID
+            ),
+            type: type,
+            payload: payload
+        )
+    }
+
+    private func decodeStandardEvent(_ envelope: HomeEventEnvelope) throws -> HomeStandardEvent? {
+        guard let type = HomeStandardEventType(rawValue: envelope.type) else {
+            throw HomeWireDecodingError.invalidShape
+        }
+        guard let binding = currentBinding else {
+            throw HomeWireDecodingError.invalidShape
+        }
+        guard envelope.scope.conversationHandle == binding.conversationHandle else {
+            throw HomeWireDecodingError.conversationMismatch
+        }
+        let scope = envelope.scope
+        let payload = envelope.payload
         let localPayload: HomeStandardEventPayload
         switch type {
         case .messageStart:
             try requireKeys(payload, allowed: ["kind"])
-            localPayload = .start(kind: payload["kind"].flatMap { $0 as? String }.flatMap(HomeStandardEventKind.init(rawValue:)))
+            localPayload = .start(kind: try optionalEventKind(payload, key: "kind"))
         case .messageDelta, .textDelta:
             try requireKeys(payload, allowed: ["rendered", "text", "replace", "kind"])
             localPayload = .delta(
-                rendered: payload["rendered"] as? String,
-                text: payload["text"] as? String,
-                replace: payload["replace"] as? Bool ?? false,
-                kind: payload["kind"].flatMap { $0 as? String }.flatMap(HomeStandardEventKind.init(rawValue:))
+                rendered: try optionalString(payload, key: "rendered"),
+                text: try optionalString(payload, key: "text"),
+                replace: try optionalBool(payload, key: "replace") ?? false,
+                kind: try optionalEventKind(payload, key: "kind")
             )
         case .text, .textFinal, .messageComplete:
             try requireKeys(payload, allowed: ["rendered", "text", "status", "reasoning", "failure_reason"])
-            let failureReason = (payload["failure_reason"] as? String).flatMap(HomeFailureCode.init(rawValue:))
+            let failureReason = try optionalFailureCode(payload, key: "failure_reason")
             localPayload = .final(
-                rendered: payload["rendered"] as? String,
-                text: payload["text"] as? String,
-                status: payload["status"] as? String,
-                reasoning: payload["reasoning"] as? String,
+                rendered: try optionalString(payload, key: "rendered"),
+                text: try optionalString(payload, key: "text"),
+                status: try optionalString(payload, key: "status"),
+                reasoning: try optionalString(payload, key: "reasoning"),
                 failureReason: failureReason
             )
         case .thinking, .reasoning, .status:
             try requireKeys(payload, allowed: ["text", "status", "reasoning", "kind"])
             localPayload = .activity(
-                text: payload["text"] as? String,
-                status: payload["status"] as? String,
-                reasoning: payload["reasoning"] as? String,
-                kind: payload["kind"].flatMap { $0 as? String }.flatMap(HomeStandardEventKind.init(rawValue:))
+                text: try optionalString(payload, key: "text"),
+                status: try optionalString(payload, key: "status"),
+                reasoning: try optionalString(payload, key: "reasoning"),
+                kind: try optionalEventKind(payload, key: "kind")
             )
         case .turnComplete, .turnInterrupted, .audioAbort:
             try requireKeys(payload, allowed: ["kind"])
             guard scope.turnID != nil else { return nil }
-            localPayload = .terminal(kind: payload["kind"].flatMap { $0 as? String }.flatMap(HomeStandardEventKind.init(rawValue:)))
+            localPayload = .terminal(kind: try optionalEventKind(payload, key: "kind"))
         case .error:
             try requireKeys(payload, allowed: ["code", "phase"])
             guard let codeString = payload["code"] as? String,
@@ -750,11 +810,8 @@ actor URLSessionHomeBridgeSessionClient: HomeBridgeSessionClient {
         return HomeStandardEvent(type: type, scope: scope, payload: localPayload)
     }
 
-    private func decodeStructuredPrompt(_ params: [String: Any]) throws -> HomeStructuredPrompt? {
-        try requireKeys(params, allowed: ["conversation_handle", "turn_id", "correlation_id", "type", "payload"])
-        guard let typeName = params["type"] as? String else {
-            throw HomeWireDecodingError.invalidShape
-        }
+    private func decodeStructuredPrompt(_ envelope: HomeEventEnvelope) throws -> HomeStructuredPrompt? {
+        let typeName = envelope.type
         let kind: HomeStructuredPromptKind?
         switch typeName {
         case "approval.request": kind = .approval
@@ -764,25 +821,21 @@ actor URLSessionHomeBridgeSessionClient: HomeBridgeSessionClient {
         default: kind = nil
         }
         guard let kind else { return nil }
-        guard let handle = params["conversation_handle"] as? String,
-              let turnID = params["turn_id"] as? String,
-              let correlationID = params["correlation_id"] as? String,
-              !handle.isEmpty, !turnID.isEmpty, !correlationID.isEmpty,
+        guard let turnID = envelope.scope.turnID,
+              let correlationID = envelope.scope.correlationID,
               let binding = currentBinding,
-              binding.conversationHandle == handle else {
+              binding.conversationHandle == envelope.scope.conversationHandle else {
             throw HomeWireDecodingError.conversationMismatch
         }
-        guard let payload = params["payload"] as? [String: Any] else {
-            throw HomeWireDecodingError.invalidShape
-        }
+        let payload = envelope.payload
         try requireKeys(payload, allowed: ["options", "expires_at", "sensitive"])
-        let options = payload["options"] as? [String] ?? []
-        let expiresAt = (payload["expires_at"] as? String).flatMap(Self.parseISO8601Date)
-        let sensitive = (payload["sensitive"] as? Bool)
+        let options = try optionalStringArray(payload, key: "options") ?? []
+        let expiresAt = try optionalISO8601Date(payload, key: "expires_at")
+        let sensitive = try optionalBool(payload, key: "sensitive")
             ?? (kind == .secret || kind == .sudo)
         return HomeStructuredPrompt(
             kind: kind,
-            conversationHandle: handle,
+            conversationHandle: envelope.scope.conversationHandle,
             turnID: turnID,
             correlationID: correlationID,
             options: options,
@@ -793,28 +846,34 @@ actor URLSessionHomeBridgeSessionClient: HomeBridgeSessionClient {
 
     private func decodeAudioFrame(_ params: [String: Any]) throws -> HomeBridgeEvent? {
         try requireKeys(params, allowed: [
-            "conversation_handle", "turn_id", "correlation_id", "kind",
-            "sample_rate", "channels", "sample_width", "byte_order", "code",
+            "schema", "conversation_handle", "turn_id", "correlation_id", "frame",
         ])
-        guard let handle = params["conversation_handle"] as? String,
+        guard intValue(params["schema"]) == 1,
+              let handle = params["conversation_handle"] as? String,
+              !handle.isEmpty,
               let binding = currentBinding,
               handle == binding.conversationHandle,
-              let kind = params["kind"] as? String else {
+              let turnID = params["turn_id"] as? String,
+              !turnID.isEmpty,
+              let frame = params["frame"] as? [String: Any],
+              let kind = frame["kind"] as? String else {
             throw HomeWireDecodingError.invalidAudioFrame
         }
         let scope = HomeEventScope(
             conversationHandle: handle,
-            turnID: params["turn_id"] as? String,
-            correlationID: params["correlation_id"] as? String
+            turnID: turnID,
+            correlationID: try optionalNonEmptyString(params, key: "correlation_id")
         )
-        guard scope.turnID != nil else { throw HomeWireDecodingError.invalidAudioFrame }
         switch kind {
         case "start":
+            try requireKeys(frame, allowed: [
+                "kind", "sample_rate", "channels", "sample_width", "byte_order",
+            ])
             guard activeAudioScope == nil,
-                  let sampleRate = intValue(params["sample_rate"]),
-                  let channels = intValue(params["channels"]),
-                  let sampleWidth = intValue(params["sample_width"]),
-                  let byteOrder = params["byte_order"] as? String,
+                  let sampleRate = intValue(frame["sample_rate"]),
+                  let channels = intValue(frame["channels"]),
+                  let sampleWidth = intValue(frame["sample_width"]),
+                  let byteOrder = frame["byte_order"] as? String,
                   let order = HomeByteOrder(rawValue: byteOrder) else {
                 throw HomeWireDecodingError.invalidAudioFrame
             }
@@ -831,6 +890,7 @@ actor URLSessionHomeBridgeSessionClient: HomeBridgeSessionClient {
             audioTerminalReceived = false
             return .audioStart(scope, format)
         case "end":
+            try requireKeys(frame, allowed: ["kind"])
             guard audioScopeMatches(scope),
                   var accumulator = audioAccumulator else {
                 throw HomeWireDecodingError.invalidAudioFrame
@@ -850,6 +910,12 @@ actor URLSessionHomeBridgeSessionClient: HomeBridgeSessionClient {
                 return .audioTerminal(activeAudioScope ?? scope, .unavailable)
             }
         case "fallback", "unavailable":
+            try requireKeys(frame, allowed: kind == "unavailable" ? ["kind", "reason"] : ["kind"])
+            if kind == "unavailable" {
+                guard let reason = frame["reason"] as? String, !reason.isEmpty else {
+                    throw HomeWireDecodingError.invalidAudioFrame
+                }
+            }
             guard audioScopeMatches(scope) else { return nil }
             audioAccumulator = nil
             activeAudioScope = nil
@@ -898,8 +964,11 @@ actor URLSessionHomeBridgeSessionClient: HomeBridgeSessionClient {
         return scope.correlationID == nil || activeAudioScope.correlationID == scope.correlationID
     }
 
-    private static func parseISO8601Date(_ value: String) -> Date? {
-        ISO8601DateFormatter().date(from: value)
+    fileprivate static func parseISO8601Date(_ value: String) -> Date? {
+        let fractionalFormatter = ISO8601DateFormatter()
+        fractionalFormatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        return fractionalFormatter.date(from: value)
+            ?? ISO8601DateFormatter().date(from: value)
     }
 
     private func resolvePending(id: HomePendingRequestID, response: HomeWireResponse) {
@@ -912,16 +981,20 @@ actor URLSessionHomeBridgeSessionClient: HomeBridgeSessionClient {
         continuation.resume(throwing: error)
     }
 
-    private func transportLost(generation lostGeneration: UInt64) async {
+    private func transportLost(
+        generation lostGeneration: UInt64,
+        decodingError: HomeWireDecodingError? = nil
+    ) async {
         guard lostGeneration == generation, !closed else { return }
         socket = nil
+        let failure: Error = decodingError ?? HomeBridgeTransportError.disconnected
         let waiters = pending.values
         pending.removeAll()
         for waiter in waiters {
-            waiter.resume(throwing: HomeBridgeTransportError.disconnected)
+            waiter.resume(throwing: failure)
         }
         pendingPrompts.removeAll()
-        eventContinuation?.finish(throwing: HomeBridgeTransportError.disconnected)
+        eventContinuation?.finish(throwing: failure)
         eventContinuation = nil
         eventStream = nil
     }
@@ -946,16 +1019,23 @@ private func decodeResponse(_ object: [String: Any]) throws -> HomeWireResponse 
     }
     if hasError {
         guard let errorObject,
-              let code = errorObject["code"] as? String,
-              !code.isEmpty else {
+              jsonRPCErrorCode(errorObject["code"]) != nil else {
             throw HomeWireDecodingError.invalidShape
         }
     }
+    let stableCode = (errorObject?["data"] as? [String: Any])?["code"] as? String
     return HomeWireResponse(
         id: id,
         result: result,
-        errorCode: errorObject?["code"] as? String
+        // The numeric JSON-RPC code is transport metadata. Home's stable
+        // failure vocabulary is carried by error.data.code; an error without
+        // that safe code is still an error, but maps to protocol_error.
+        errorCode: hasError ? (stableCode ?? HomeFailureCode.protocolError.rawValue) : nil
     )
+}
+
+private func jsonRPCErrorCode(_ value: Any?) -> Int? {
+    intValue(value)
 }
 
 private func decodeReady(_ response: HomeWireResponse) throws -> HomeReadyWireResult {
@@ -1107,10 +1187,84 @@ private func requireKeys(_ object: [String: Any], allowed: [String]) throws {
     try requireKeys(object, allowed: Set(allowed))
 }
 
+private func optionalString(_ object: [String: Any], key: String) throws -> String? {
+    guard let value = object[key] else { return nil }
+    if value is NSNull { return nil }
+    guard let value = value as? String else { throw HomeWireDecodingError.invalidShape }
+    return value
+}
+
+private func optionalNonEmptyString(_ object: [String: Any], key: String) throws -> String? {
+    guard let value = try optionalString(object, key: key) else { return nil }
+    guard !value.isEmpty else { throw HomeWireDecodingError.invalidShape }
+    return value
+}
+
+private func optionalStringArray(_ object: [String: Any], key: String) throws -> [String]? {
+    guard let value = object[key] else { return nil }
+    if value is NSNull { return nil }
+    guard let values = value as? [Any] else { throw HomeWireDecodingError.invalidShape }
+    guard values.allSatisfy({ $0 is String }) else {
+        throw HomeWireDecodingError.invalidShape
+    }
+    return values.compactMap { $0 as? String }
+}
+
+private func optionalBool(_ object: [String: Any], key: String) throws -> Bool? {
+    guard let value = object[key] else { return nil }
+    if value is NSNull { return nil }
+    guard isJSONBoolean(value), let value = value as? Bool else {
+        throw HomeWireDecodingError.invalidShape
+    }
+    return value
+}
+
+private func optionalEventKind(
+    _ object: [String: Any],
+    key: String
+) throws -> HomeStandardEventKind? {
+    guard let value = try optionalString(object, key: key) else { return nil }
+    return HomeStandardEventKind(rawValue: value)
+}
+
+private func optionalFailureCode(
+    _ object: [String: Any],
+    key: String
+) throws -> HomeFailureCode? {
+    guard let value = try optionalString(object, key: key) else { return nil }
+    guard let code = HomeFailureCode(rawValue: value) else {
+        throw HomeWireDecodingError.invalidShape
+    }
+    return code
+}
+
+private func optionalISO8601Date(
+    _ object: [String: Any],
+    key: String
+) throws -> Date? {
+    guard let value = try optionalString(object, key: key) else { return nil }
+    guard let date = URLSessionHomeBridgeSessionClient.parseISO8601Date(value) else {
+        throw HomeWireDecodingError.invalidShape
+    }
+    return date
+}
+
 private func intValue(_ value: Any?) -> Int? {
+    guard let value, !isJSONBoolean(value) else { return nil }
     if let value = value as? Int { return value }
-    if let value = value as? NSNumber { return value.intValue }
-    return nil
+    guard let value = value as? NSNumber else { return nil }
+    let doubleValue = value.doubleValue
+    guard doubleValue.isFinite,
+          doubleValue.rounded() == doubleValue,
+          let integer = Int(exactly: doubleValue) else {
+        return nil
+    }
+    return integer
+}
+
+private func isJSONBoolean(_ value: Any) -> Bool {
+    guard let number = value as? NSNumber else { return value is Bool }
+    return CFGetTypeID(number) == CFBooleanGetTypeID()
 }
 
 private func responseMatchesPrompt(
