@@ -123,12 +123,15 @@ final class RecoveryTests: XCTestCase {
         await store.loadPersistedConversation()
         XCTAssertEqual(store.homeTurnDeliveryState, .uncertain(turn))
         XCTAssertEqual(store.unconfirmedTurnText, "Uncertain Home prompt")
+        await client.setNextOpenFailure(.reconnectRequired)
 
         await store.connect()
 
         XCTAssertTrue(store.connectionState.isConnected)
         XCTAssertTrue(store.homeBridgeState.isReady)
         XCTAssertEqual(store.homeTurnDeliveryState, .uncertain(turn))
+        let reconnectCount = await client.reconnectCount
+        XCTAssertEqual(reconnectCount, 1)
         let submittedTexts = await client.submittedTexts
         XCTAssertEqual(submittedTexts, [])
     }

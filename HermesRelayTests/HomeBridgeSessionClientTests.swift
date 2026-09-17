@@ -98,6 +98,70 @@ final class HomeBridgeSessionClientTests: XCTestCase {
         await client.close()
     }
 
+    func testURLSessionClientAcceptsHomeReasoningDeltaEvent() async throws {
+        let fixture = try await makeFixture()
+        let client = fixture.client
+        let stream = await client.events()
+        var events = stream.makeAsyncIterator()
+
+        guard case .ready(let binding, _) = await client.open(claim: fixture.claim) else {
+            return XCTFail("The bridge must open before it can deliver events")
+        }
+        let scope = HomeEventScope(
+            conversationHandle: binding.conversationHandle,
+            turnID: "turn-1",
+            correlationID: "standard-event-correlation"
+        )
+        let eventType = HomeStandardEventType.reasoning
+        await fixture.socket.enqueue(.text(try contractEventFrame(
+            scope: scope,
+            type: "reasoning.delta",
+            payload: ["text": "Considering the next step"]
+        )))
+
+        let event = try await events.next()
+        XCTAssertEqual(
+            event,
+            .standard(HomeStandardEvent(
+                type: eventType,
+                scope: scope,
+                payload: .activity(
+                    text: "Considering the next step",
+                    status: nil,
+                    reasoning: nil,
+                    kind: nil
+                )
+            ))
+        )
+
+        await client.close()
+    }
+
+    func testReconnectAdoptsTheSafeUnresolvedTurnObject() async throws {
+        let fixture = try await makeFixture()
+        guard case .ready(let binding, _) = await fixture.client.open(claim: fixture.claim) else {
+            return XCTFail("A valid Home bridge response must become ready")
+        }
+        await fixture.socket.setNextReconnectUnresolvedTurn(
+            turnID: "turn-resumed",
+            resumeCursor: "event-7"
+        )
+
+        let outcome = await fixture.client.reconnect(binding: binding)
+
+        XCTAssertEqual(
+            outcome,
+            .ready(
+                binding: binding,
+                unresolvedTurn: HomeUnresolvedTurn(
+                    turnID: "turn-resumed",
+                    resumeCursor: "event-7"
+                )
+            )
+        )
+        await fixture.client.close()
+    }
+
     func testURLSessionClientMapsNumericJSONRPCErrorUsingStableHomeCode() async throws {
         let fixture = try await makeFixture()
         let client = fixture.client
@@ -133,6 +197,49 @@ final class HomeBridgeSessionClientTests: XCTestCase {
             outcome,
             .unavailable(.home(code: .unauthorized, phase: .open))
         )
+        await fixture.client.close()
+    }
+
+    func testReconnectRequiredOpenRetiresSocketForExplicitReconnect() async throws {
+        let fixture = try await makeFixture()
+        await fixture.socket.setNextOpenReason(HomeWireReason.reconnectRequired.rawValue)
+
+        let openOutcome = await fixture.client.open(claim: fixture.claim)
+
+        XCTAssertEqual(openOutcome, .unavailable(.reconnectRequired))
+        let binding = HomeConversationBinding(
+            profileID: fixture.claim.profileID,
+            conversationHandle: fixture.claim.conversationHandle,
+            endpoint: fixture.claim.approvedRoute.endpoint,
+            route: fixture.claim.approvedRoute.identity,
+            householdBinding: fixture.claim.approvedRoute.householdBinding,
+            capabilities: HomeBridgeCapabilities()
+        )
+        let reconnectOutcome = await fixture.client.reconnect(binding: binding)
+        let recoveredBinding = HomeConversationBinding(
+            profileID: binding.profileID,
+            conversationHandle: binding.conversationHandle,
+            endpoint: binding.endpoint,
+            route: binding.route,
+            householdBinding: binding.householdBinding,
+            capabilities: HomeBridgeCapabilities(
+                commands: ["open"],
+                heartbeat: true,
+                interrupt: true,
+                timing: .absent
+            )
+        )
+
+        XCTAssertEqual(
+            reconnectOutcome,
+            .ready(binding: recoveredBinding, unresolvedTurn: nil)
+        )
+        let openMethods = try await fixture.socket.sentMethods()
+        let reconnectMethods = try await fixture.secondSocket.sentMethods()
+        XCTAssertEqual(openMethods, ["conversation.open"])
+        XCTAssertEqual(reconnectMethods, ["conversation.reconnect"])
+        let socketOpenCount = await fixture.factory.openCount
+        XCTAssertEqual(socketOpenCount, 2)
         await fixture.client.close()
     }
 
@@ -1267,7 +1374,9 @@ private actor TestHomeSocket: WebSocketConnection {
     private var closed = false
     private var closes = 0
     private var nextError: (method: String, jsonRPCCode: TestJSONRPCCode, homeCode: String?)?
+    private var nextOpenReason: String?
     private var nextPromptResponseStatus: String?
+    private var nextReconnectUnresolvedTurn: (turnID: String, resumeCursor: String?)?
 
     init(claim: HomeConversationClaim) {
         self.claim = claim
@@ -1310,7 +1419,32 @@ private actor TestHomeSocket: WebSocketConnection {
         let result: [String: Any]
         switch method {
         case "conversation.open":
-            result = [
+            if let nextOpenReason {
+                self.nextOpenReason = nil
+                result = [
+                    "schema": 1,
+                    "status": "unavailable",
+                    "conversation_handle": claim.conversationHandle,
+                    "reason": nextOpenReason,
+                ]
+            } else {
+                result = [
+                    "schema": 1,
+                    "status": "ready",
+                    "conversation_handle": claim.conversationHandle,
+                    "unresolved_turn": false,
+                    "route": ["class": "home", "id": "home-a"],
+                    "capabilities": [
+                        "commands": ["open"],
+                        "heartbeat": true,
+                        "timing": "absent",
+                        "interrupt": true,
+                        "audio": true,
+                    ],
+                ]
+            }
+        case "conversation.reconnect":
+            var reconnectResult: [String: Any] = [
                 "schema": 1,
                 "status": "ready",
                 "conversation_handle": claim.conversationHandle,
@@ -1320,18 +1454,26 @@ private actor TestHomeSocket: WebSocketConnection {
                     "heartbeat": true,
                     "timing": "absent",
                     "interrupt": true,
+                    "audio": true,
                 ],
             ]
-        case "conversation.reconnect":
-            result = [
-                "schema": 1,
-                "status": "ready",
-                "conversation_handle": claim.conversationHandle,
-            ]
+            if let unresolved = nextReconnectUnresolvedTurn {
+                reconnectResult["unresolved_turn"] = [
+                    "schema": 1,
+                    "conversation_handle": claim.conversationHandle,
+                    "turn_id": unresolved.turnID,
+                    "status": "submitted",
+                    "resume_cursor": unresolved.resumeCursor as Any? ?? NSNull(),
+                ]
+                nextReconnectUnresolvedTurn = nil
+            } else {
+                reconnectResult["unresolved_turn"] = false
+            }
+            result = reconnectResult
         case "prompt.submit":
             result = [
                 "schema": 1,
-                "status": "accepted",
+                "status": "submitted",
                 "conversation_handle": claim.conversationHandle,
                 "turn_id": "turn-1",
                 "correlation_id": "correlation-1",
@@ -1404,6 +1546,14 @@ private actor TestHomeSocket: WebSocketConnection {
 
     func setNextError(for method: String, jsonRPCCode: Int, homeCode: String) {
         nextError = (method, .integer(jsonRPCCode), homeCode)
+    }
+
+    func setNextOpenReason(_ reason: String?) {
+        nextOpenReason = reason
+    }
+
+    func setNextReconnectUnresolvedTurn(turnID: String, resumeCursor: String?) {
+        nextReconnectUnresolvedTurn = (turnID, resumeCursor)
     }
 
     func setNextRawError(

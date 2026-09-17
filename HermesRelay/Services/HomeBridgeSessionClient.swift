@@ -133,6 +133,7 @@ actor URLSessionHomeBridgeSessionClient: HomeBridgeSessionClient {
     private var generation: UInt64 = 0
     private var currentClaim: HomeConversationClaim?
     private var currentBinding: HomeConversationBinding?
+    private var reconnectCapabilitiesUnverified = false
     private var bridgeReady = false
     private var capabilities = HomeBridgeCapabilities()
     private var pending: [String: CheckedContinuation<HomeWireResponse, Error>] = [:]
@@ -208,6 +209,19 @@ actor URLSessionHomeBridgeSessionClient: HomeBridgeSessionClient {
                   let wireRoute = ready.route,
                   let wireCapabilities = ready.capabilities else {
                 if ready.reason == .reconnectRequired {
+                    let hasEstablishedBinding = currentBinding != nil
+                    let reconnectBinding = currentBinding ?? HomeConversationBinding(
+                        profileID: claim.profileID,
+                        conversationHandle: claim.conversationHandle,
+                        endpoint: claim.approvedRoute.endpoint,
+                        route: claim.approvedRoute.identity,
+                        householdBinding: claim.approvedRoute.householdBinding,
+                        capabilities: capabilities
+                    )
+                    currentBinding = reconnectBinding
+                    reconnectCapabilitiesUnverified = !hasEstablishedBinding
+                    capabilities = reconnectBinding.capabilities
+                    await retireSocketForReconnect()
                     return .unavailable(.reconnectRequired)
                 }
                 return .unavailable(mapOpenReason(ready.reason ?? .protocolError))
@@ -229,6 +243,7 @@ actor URLSessionHomeBridgeSessionClient: HomeBridgeSessionClient {
                 capabilities: capabilities
             )
             currentBinding = binding
+            reconnectCapabilitiesUnverified = false
             bridgeReady = true
             return .ready(binding: binding, capabilities: capabilities)
         } catch is HomeWireDecodingError {
@@ -282,14 +297,30 @@ actor URLSessionHomeBridgeSessionClient: HomeBridgeSessionClient {
                     )
                 }
             )
-            let result = try decodeReconnect(response, binding: binding)
+            let result = try decodeReconnect(
+                response,
+                binding: binding,
+                capabilitiesAreEstablished: !reconnectCapabilitiesUnverified
+            )
             switch result.status {
             case .ready:
+                let recoveredCapabilities = result.capabilities ?? binding.capabilities
+                let recoveredBinding = HomeConversationBinding(
+                    profileID: binding.profileID,
+                    conversationHandle: binding.conversationHandle,
+                    endpoint: binding.endpoint,
+                    route: binding.route,
+                    householdBinding: binding.householdBinding,
+                    capabilities: recoveredCapabilities
+                )
                 let unresolved = result.unresolvedTurnID.map {
                     HomeUnresolvedTurn(turnID: $0, resumeCursor: result.resumeCursor)
                 }
+                capabilities = recoveredCapabilities
+                currentBinding = recoveredBinding
+                reconnectCapabilitiesUnverified = false
                 bridgeReady = true
-                return .ready(binding: binding, unresolvedTurn: unresolved)
+                return .ready(binding: recoveredBinding, unresolvedTurn: unresolved)
             case .unavailable:
                 if result.reason == .reconnectRequired {
                     return .unavailable(.reconnectRequired)
@@ -340,7 +371,7 @@ actor URLSessionHomeBridgeSessionClient: HomeBridgeSessionClient {
                 }
             )
             let result = try decodeSubmission(response, binding: binding)
-            guard result.status == "accepted" else {
+            guard result.status == "accepted" || result.status == "submitted" else {
                 return .rejected(.home(code: .requestRejected, phase: .submission))
             }
             let turn = HomeTurnBinding(
@@ -578,6 +609,7 @@ actor URLSessionHomeBridgeSessionClient: HomeBridgeSessionClient {
         socket = nil
         currentClaim = nil
         currentBinding = nil
+        reconnectCapabilitiesUnverified = false
         bridgeReady = false
         audioAccumulator = nil
         activeAudioScope = nil
@@ -591,6 +623,16 @@ actor URLSessionHomeBridgeSessionClient: HomeBridgeSessionClient {
         eventContinuation?.finish()
         eventContinuation = nil
         eventStream = nil
+        await connection?.close()
+    }
+
+    private func retireSocketForReconnect() async {
+        let connection = socket
+        generation &+= 1
+        readerTask?.cancel()
+        readerTask = nil
+        socket = nil
+        bridgeReady = false
         await connection?.close()
     }
 
@@ -791,7 +833,7 @@ actor URLSessionHomeBridgeSessionClient: HomeBridgeSessionClient {
     }
 
     private func decodeStandardEvent(_ envelope: HomeEventEnvelope) throws -> HomeStandardEvent? {
-        guard let type = HomeStandardEventType(rawValue: envelope.type) else {
+        guard let type = HomeStandardEventType(wireName: envelope.type) else {
             throw HomeWireDecodingError.invalidShape
         }
         guard let binding = currentBinding else {
@@ -808,10 +850,12 @@ actor URLSessionHomeBridgeSessionClient: HomeBridgeSessionClient {
             try requireKeys(payload, allowed: ["kind"])
             localPayload = .start(kind: try optionalEventKind(payload, key: "kind"))
         case .messageDelta, .textDelta:
-            try requireKeys(payload, allowed: ["rendered", "text", "replace", "kind"])
+            try requireKeys(payload, allowed: ["rendered", "text", "delta", "replace", "kind"])
+            let text = try optionalString(payload, key: "text")
+                ?? optionalString(payload, key: "delta")
             localPayload = .delta(
                 rendered: try optionalString(payload, key: "rendered"),
-                text: try optionalString(payload, key: "text"),
+                text: text,
                 replace: try optionalBool(payload, key: "replace") ?? false,
                 kind: try optionalEventKind(payload, key: "kind")
             )
@@ -826,18 +870,28 @@ actor URLSessionHomeBridgeSessionClient: HomeBridgeSessionClient {
                 failureReason: failureReason
             )
         case .thinking, .reasoning, .status:
-            try requireKeys(payload, allowed: ["text", "status", "reasoning", "kind"])
+            try requireKeys(payload, allowed: ["text", "delta", "status", "reasoning", "kind"])
             localPayload = .activity(
-                text: try optionalString(payload, key: "text"),
+                text: try optionalString(payload, key: "text")
+                    ?? optionalString(payload, key: "delta"),
                 status: try optionalString(payload, key: "status"),
                 reasoning: try optionalString(payload, key: "reasoning"),
                 kind: try optionalEventKind(payload, key: "kind")
             )
         case .turnComplete, .turnInterrupted, .audioAbort:
-            try requireKeys(payload, allowed: ["kind"])
+            try requireKeys(payload, allowed: ["kind", "status", "reason"])
             guard scope.turnID != nil else { return nil }
             localPayload = .terminal(kind: try optionalEventKind(payload, key: "kind"))
         case .error:
+            if envelope.type == "turn.error" {
+                try requireKeys(payload, allowed: ["code", "phase", "status", "reason", "error", "message"])
+                let code = (try optionalString(payload, key: "code"))
+                    .flatMap(HomeFailureCode.init(rawValue:)) ?? .hermesUnavailable
+                let phase = (try optionalString(payload, key: "phase"))
+                    .flatMap(HomeFailurePhase.init(rawValue:)) ?? .lifecycle
+                localPayload = .error(HomeSafeError(code: code, phase: phase))
+                break
+            }
             try requireKeys(payload, allowed: ["code", "phase"])
             guard let codeString = payload["code"] as? String,
                   let code = HomeFailureCode(rawValue: codeString),
@@ -1154,15 +1208,18 @@ private struct HomeReconnectWireResult {
     let reason: HomeWireReason?
     let unresolvedTurnID: String?
     let resumeCursor: String?
+    let capabilities: HomeBridgeCapabilities?
 }
 
 private func decodeReconnect(
     _ response: HomeWireResponse,
-    binding: HomeConversationBinding
+    binding: HomeConversationBinding,
+    capabilitiesAreEstablished: Bool
 ) throws -> HomeReconnectWireResult {
     if let errorCode = response.errorCode { throw HomeBridgeWireFailure(code: errorCode) }
     try requireKeys(response.result, allowed: [
         "schema", "status", "conversation_handle", "unresolved_turn", "turn_id", "resume_cursor", "reason",
+        "route", "capabilities",
     ])
     guard (intValue(response.result["schema"]) ?? 0) == 1,
           response.result["conversation_handle"] as? String == binding.conversationHandle,
@@ -1170,14 +1227,68 @@ private func decodeReconnect(
           let status = HomeBridgeReadyStatus(rawValue: statusString) else {
         throw HomeWireDecodingError.invalidShape
     }
+    var recoveredCapabilities: HomeBridgeCapabilities?
+    if let routeValue = response.result["route"] {
+        guard let routeObject = routeValue as? [String: Any],
+              let capabilitiesObject = response.result["capabilities"] as? [String: Any] else {
+            throw HomeWireDecodingError.invalidShape
+        }
+        let routeData = try JSONSerialization.data(withJSONObject: routeObject)
+        let capabilitiesData = try JSONSerialization.data(withJSONObject: capabilitiesObject)
+        let route = try JSONDecoder().decode(HomeWireRoute.self, from: routeData)
+        let wireCapabilities = try JSONDecoder().decode(HomeWireCapabilities.self, from: capabilitiesData)
+        let decodedCapabilities = HomeBridgeCapabilities(wireCapabilities)
+        guard route.routeClass == binding.route.routeClass,
+              route.id == binding.route.id else {
+            throw HomeWireDecodingError.conversationMismatch
+        }
+        if capabilitiesAreEstablished && decodedCapabilities != binding.capabilities {
+            throw HomeWireDecodingError.conversationMismatch
+        }
+        recoveredCapabilities = decodedCapabilities
+    } else if response.result["capabilities"] != nil || !capabilitiesAreEstablished {
+        throw HomeWireDecodingError.invalidShape
+    }
+    let unresolvedTurnID = try decodeUnresolvedTurnID(response.result, binding: binding)
     return HomeReconnectWireResult(
         status: status,
         reason: (response.result["reason"] as? String).flatMap(HomeWireReason.init(rawValue:)),
-        unresolvedTurnID: response.result["turn_id"] as? String
-            ?? (response.result["unresolved_turn"] as? [String: Any])?["turn_id"] as? String,
-        resumeCursor: response.result["resume_cursor"] as? String
-            ?? (response.result["unresolved_turn"] as? [String: Any])?["resume_cursor"] as? String
+        unresolvedTurnID: unresolvedTurnID.turnID,
+        resumeCursor: unresolvedTurnID.resumeCursor,
+        capabilities: recoveredCapabilities
     )
+}
+
+private func decodeUnresolvedTurnID(
+    _ result: [String: Any],
+    binding: HomeConversationBinding
+) throws -> (turnID: String?, resumeCursor: String?) {
+    let topLevelTurnID = try optionalNonEmptyString(result, key: "turn_id")
+    let topLevelCursor = try optionalString(result, key: "resume_cursor")
+    guard let value = result["unresolved_turn"] else {
+        return (topLevelTurnID, topLevelCursor)
+    }
+    if let object = value as? [String: Any] {
+        try requireKeys(object, allowed: ["schema", "conversation_handle", "turn_id", "status", "resume_cursor"])
+        guard (intValue(object["schema"]) ?? 0) == 1,
+              object["conversation_handle"] as? String == binding.conversationHandle,
+              let turnID = object["turn_id"] as? String,
+              !turnID.isEmpty,
+              let status = object["status"] as? String,
+              !status.isEmpty,
+              topLevelTurnID == nil || topLevelTurnID == turnID else {
+            throw HomeWireDecodingError.invalidShape
+        }
+        let nestedCursor = try optionalString(object, key: "resume_cursor")
+        return (turnID, topLevelCursor ?? nestedCursor)
+    }
+    guard isJSONBoolean(value), let unresolved = value as? Bool else {
+        throw HomeWireDecodingError.invalidShape
+    }
+    guard unresolved == (topLevelTurnID != nil) else {
+        throw HomeWireDecodingError.invalidShape
+    }
+    return (topLevelTurnID, topLevelCursor)
 }
 
 private struct HomeSubmissionWireResult {

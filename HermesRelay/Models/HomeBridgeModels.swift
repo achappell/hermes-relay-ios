@@ -112,21 +112,24 @@ struct HomeWireCapabilities: Codable, Equatable, Sendable {
     let heartbeat: Bool
     let timing: HomeTimingCapability
     let interrupt: Bool?
+    let audio: Bool?
 
     private enum CodingKeys: String, CodingKey, CaseIterable {
-        case commands, heartbeat, timing, interrupt
+        case commands, heartbeat, timing, interrupt, audio
     }
 
     init(
         commands: [String],
         heartbeat: Bool,
         timing: HomeTimingCapability,
-        interrupt: Bool? = nil
+        interrupt: Bool? = nil,
+        audio: Bool? = nil
     ) {
         self.commands = commands
         self.heartbeat = heartbeat
         self.timing = timing
         self.interrupt = interrupt
+        self.audio = audio
     }
 
     init(from decoder: Decoder) throws {
@@ -136,6 +139,7 @@ struct HomeWireCapabilities: Codable, Equatable, Sendable {
         heartbeat = try container.decode(Bool.self, forKey: .heartbeat)
         timing = try container.decode(HomeTimingCapability.self, forKey: .timing)
         interrupt = try container.decodeIfPresent(Bool.self, forKey: .interrupt)
+        audio = try container.decodeIfPresent(Bool.self, forKey: .audio)
     }
 }
 
@@ -146,11 +150,13 @@ struct HomeReadyWireResult: Codable, Equatable, Sendable {
     let route: HomeWireRoute?
     let capabilities: HomeWireCapabilities?
     let reason: HomeWireReason?
+    let unresolvedTurn: Bool?
 
     private enum CodingKeys: String, CodingKey, CaseIterable {
         case schema, status
         case conversationHandle = "conversation_handle"
         case route, capabilities, reason
+        case unresolvedTurn = "unresolved_turn"
     }
 
     init(
@@ -159,7 +165,8 @@ struct HomeReadyWireResult: Codable, Equatable, Sendable {
         conversationHandle: String,
         route: HomeWireRoute?,
         capabilities: HomeWireCapabilities?,
-        reason: HomeWireReason?
+        reason: HomeWireReason?,
+        unresolvedTurn: Bool? = nil
     ) {
         self.schema = schema
         self.status = status
@@ -167,6 +174,7 @@ struct HomeReadyWireResult: Codable, Equatable, Sendable {
         self.route = route
         self.capabilities = capabilities
         self.reason = reason
+        self.unresolvedTurn = unresolvedTurn
     }
 
     init(from decoder: Decoder) throws {
@@ -178,6 +186,15 @@ struct HomeReadyWireResult: Codable, Equatable, Sendable {
         route = try container.decodeIfPresent(HomeWireRoute.self, forKey: .route)
         capabilities = try container.decodeIfPresent(HomeWireCapabilities.self, forKey: .capabilities)
         reason = try container.decodeIfPresent(HomeWireReason.self, forKey: .reason)
+        if container.contains(.unresolvedTurn) {
+            guard let isUnresolved = try? container.decode(Bool.self, forKey: .unresolvedTurn),
+                  !isUnresolved else {
+                throw HomeWireDecodingError.invalidShape
+            }
+            unresolvedTurn = isUnresolved
+        } else {
+            unresolvedTurn = nil
+        }
     }
 }
 
@@ -629,6 +646,7 @@ enum HomeStructuredPromptKind: String, Codable, Sendable {
 struct HomeEventScope: Equatable, Sendable {
     let conversationHandle: String
     let turnID: String?
+    /// Event-level correlation, which may differ from the accepted turn's ID.
     let correlationID: String?
 }
 
@@ -683,6 +701,23 @@ enum HomeStandardEventType: String, Codable, Sendable {
     case turnInterrupted = "turn_interrupted"
     case audioAbort = "audio_abort"
     case error
+
+    /// Standard aliases normalized at the Home boundary for older Hermes builds.
+    init?(wireName: String) {
+        switch wireName {
+        case "message.interim": self = .messageDelta
+        case "text.delta": self = .textDelta
+        case "thinking.delta", "reasoning.delta", "reasoning.available": self = .reasoning
+        case "status.update": self = .status
+        case "turn.complete", "turn.completed", "turn.end", "turn.ended",
+             "turn_end", "response.complete", "response.completed": self = .turnComplete
+        case "turn.interrupted", "turn.cancelled": self = .turnInterrupted
+        case "turn.error": self = .error
+        default:
+            guard let value = Self(rawValue: wireName) else { return nil }
+            self = value
+        }
+    }
 }
 
 enum HomeStandardEventKind: String, Codable, Sendable {
