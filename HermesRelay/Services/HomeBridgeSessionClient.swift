@@ -322,7 +322,11 @@ actor URLSessionHomeBridgeSessionClient: HomeBridgeSessionClient {
                 currentBinding = recoveredBinding
                 reconnectCapabilitiesUnverified = false
                 bridgeReady = true
-                return .ready(binding: recoveredBinding, unresolvedTurn: unresolved)
+                return .ready(
+                    binding: recoveredBinding,
+                    unresolvedTurn: unresolved,
+                    confirmsNoUnresolvedTurn: result.confirmsNoUnresolvedTurn
+                )
             case .unavailable:
                 if result.reason == .reconnectRequired
                     || result.reason == .turnActive
@@ -847,14 +851,15 @@ actor URLSessionHomeBridgeSessionClient: HomeBridgeSessionClient {
             throw HomeWireDecodingError.conversationMismatch
         }
         let scope = envelope.scope
+        // Home forwards Standard event payloads with their safe extra fields
+        // intact. Standard payloads are extensible, so validate only the
+        // fields this client consumes and ignore future additions.
         let payload = envelope.payload
         let localPayload: HomeStandardEventPayload
         switch type {
         case .messageStart:
-            try requireKeys(payload, allowed: ["kind"])
             localPayload = .start(kind: try optionalEventKind(payload, key: "kind"))
         case .messageDelta, .textDelta:
-            try requireKeys(payload, allowed: ["rendered", "text", "delta", "replace", "kind"])
             let text = try optionalString(payload, key: "text")
                 ?? optionalString(payload, key: "delta")
             localPayload = .delta(
@@ -864,7 +869,6 @@ actor URLSessionHomeBridgeSessionClient: HomeBridgeSessionClient {
                 kind: try optionalEventKind(payload, key: "kind")
             )
         case .text, .textFinal, .messageComplete:
-            try requireKeys(payload, allowed: ["rendered", "text", "status", "reasoning", "failure_reason"])
             let failureReason = try optionalFailureCode(payload, key: "failure_reason")
             localPayload = .final(
                 rendered: try optionalString(payload, key: "rendered"),
@@ -874,7 +878,6 @@ actor URLSessionHomeBridgeSessionClient: HomeBridgeSessionClient {
                 failureReason: failureReason
             )
         case .thinking, .reasoning, .status:
-            try requireKeys(payload, allowed: ["text", "delta", "status", "reasoning", "kind"])
             localPayload = .activity(
                 text: try optionalString(payload, key: "text")
                     ?? optionalString(payload, key: "delta"),
@@ -883,12 +886,10 @@ actor URLSessionHomeBridgeSessionClient: HomeBridgeSessionClient {
                 kind: try optionalEventKind(payload, key: "kind")
             )
         case .turnComplete, .turnInterrupted, .audioAbort:
-            try requireKeys(payload, allowed: ["kind", "status", "reason"])
             guard scope.turnID != nil else { return nil }
             localPayload = .terminal(kind: try optionalEventKind(payload, key: "kind"))
         case .error:
             if envelope.type == "turn.error" {
-                try requireKeys(payload, allowed: ["code", "phase", "status", "reason", "error", "message"])
                 let code = (try optionalString(payload, key: "code"))
                     .flatMap(HomeFailureCode.init(rawValue:)) ?? .hermesUnavailable
                 let phase = (try optionalString(payload, key: "phase"))
@@ -896,7 +897,6 @@ actor URLSessionHomeBridgeSessionClient: HomeBridgeSessionClient {
                 localPayload = .error(HomeSafeError(code: code, phase: phase))
                 break
             }
-            try requireKeys(payload, allowed: ["code", "phase"])
             guard let codeString = payload["code"] as? String,
                   let code = HomeFailureCode(rawValue: codeString),
                   let phaseString = payload["phase"] as? String,
@@ -926,7 +926,7 @@ actor URLSessionHomeBridgeSessionClient: HomeBridgeSessionClient {
             throw HomeWireDecodingError.conversationMismatch
         }
         let payload = envelope.payload
-        try requireKeys(payload, allowed: ["options", "expires_at", "sensitive"])
+        // Structured Standard events use the same extensible payload contract.
         let options = try optionalStringArray(payload, key: "options") ?? []
         let expiresAt = try optionalISO8601Date(payload, key: "expires_at")
         let sensitive = try optionalBool(payload, key: "sensitive")
@@ -1213,6 +1213,7 @@ private struct HomeReconnectWireResult {
     let unresolvedTurnID: String?
     let resumeCursor: String?
     let capabilities: HomeBridgeCapabilities?
+    let confirmsNoUnresolvedTurn: Bool
 }
 
 private func decodeReconnect(
@@ -1254,12 +1255,21 @@ private func decodeReconnect(
         throw HomeWireDecodingError.invalidShape
     }
     let unresolvedTurnID = try decodeUnresolvedTurnID(response.result, binding: binding)
+    let confirmsNoUnresolvedTurn: Bool
+    if let value = response.result["unresolved_turn"],
+       isJSONBoolean(value),
+       let unresolved = value as? Bool {
+        confirmsNoUnresolvedTurn = !unresolved
+    } else {
+        confirmsNoUnresolvedTurn = false
+    }
     return HomeReconnectWireResult(
         status: status,
         reason: (response.result["reason"] as? String).flatMap(HomeWireReason.init(rawValue:)),
         unresolvedTurnID: unresolvedTurnID.turnID,
         resumeCursor: unresolvedTurnID.resumeCursor,
-        capabilities: recoveredCapabilities
+        capabilities: recoveredCapabilities,
+        confirmsNoUnresolvedTurn: confirmsNoUnresolvedTurn
     )
 }
 

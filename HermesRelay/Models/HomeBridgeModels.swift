@@ -655,7 +655,11 @@ enum HomeOpenOutcome: Equatable, Sendable {
 }
 
 enum HomeReconnectOutcome: Equatable, Sendable {
-    case ready(binding: HomeConversationBinding, unresolvedTurn: HomeUnresolvedTurn?)
+    case ready(
+        binding: HomeConversationBinding,
+        unresolvedTurn: HomeUnresolvedTurn?,
+        confirmsNoUnresolvedTurn: Bool
+    )
     case unavailable(HomeBridgeFailure)
     case disconnected(HomeBridgeFailure)
 }

@@ -111,6 +111,7 @@ actor FakeHomeBridgeSessionClient: HomeBridgeSessionClient {
     var nextCommandOutcome: HomeCommandOutcome?
     var nextPingOutcome: HomePingOutcome?
     var unresolvedTurn: HomeUnresolvedTurn?
+    var reconnectConfirmsNoUnresolvedTurn = true
 
     init(
         claim: HomeConversationClaim,
@@ -190,7 +191,11 @@ actor FakeHomeBridgeSessionClient: HomeBridgeSessionClient {
             return .unavailable(nextReconnectFailure)
         }
         self.binding = requestedBinding
-        return .ready(binding: requestedBinding, unresolvedTurn: unresolvedTurn)
+        return .ready(
+            binding: requestedBinding,
+            unresolvedTurn: unresolvedTurn,
+            confirmsNoUnresolvedTurn: unresolvedTurn == nil && reconnectConfirmsNoUnresolvedTurn
+        )
     }
 
     func submitPrompt(
@@ -335,6 +340,10 @@ actor FakeHomeBridgeSessionClient: HomeBridgeSessionClient {
 
     func setNextSubmissionOutcome(_ outcome: HomePromptSubmissionOutcome?) {
         nextSubmissionOutcome = outcome
+    }
+
+    func setReconnectConfirmsNoUnresolvedTurn(_ confirms: Bool) {
+        reconnectConfirmsNoUnresolvedTurn = confirms
     }
 
     func setNextResponseOutcome(_ outcome: HomeStructuredResponseOutcome?) {

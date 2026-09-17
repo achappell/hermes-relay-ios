@@ -33,6 +33,7 @@ final class ConversationStore {
     private var homeControlTerminal = false
     private var homeAudioTerminal = true
     private var homeAudioTerminalProcessing = false
+    private var homeReconnectConfirmsNoUnresolvedTurn = false
     private var homeAudioRequested = false
     private var homeControlTimeoutTask: Task<Void, Never>?
     private var homeAudioStartTimeoutTask: Task<Void, Never>?
@@ -59,12 +60,26 @@ final class ConversationStore {
         failure: nil
     )
     private(set) var homeTurnDeliveryState: HomeTurnDeliveryState = .idle
+    private(set) var canContinueWithoutResendingHomeTurn = false
     private(set) var homeAudioState: HomeAudioState = .notRequested
     private(set) var pendingHomePrompt: HomePendingStructuredPrompt?
     private(set) var homeCommandEvents: [HomeCommandEvent] = []
     private(set) var isLifecycleActive = true
 
     var isHomeMode: Bool { transportMode == .home }
+
+    private var homeAudioHasSettled: Bool {
+        homeAudioTerminal && !homeAudioTerminalProcessing
+    }
+
+    private func refreshHomeContinueWithoutResendingEligibility() {
+        canContinueWithoutResendingHomeTurn = homeReconnectConfirmsNoUnresolvedTurn
+            && homeRecovery != nil
+            && homeAudioHasSettled
+            && connectionState.isConnected
+            && !homeOperationsSuppressed
+            && !isSending
+    }
 
     private var transportMode: AppleTransportMode = .legacy
 
@@ -348,6 +363,8 @@ final class ConversationStore {
 
     private func connectHome() async {
         guard !homeOperationsSuppressed else { return }
+        canContinueWithoutResendingHomeTurn = false
+        homeReconnectConfirmsNoUnresolvedTurn = false
         guard let claim = homeClaim, let homeClient else {
             let failure = HomeBridgeFailure.home(
                 code: .authorizationUnavailable,
@@ -426,8 +443,14 @@ final class ConversationStore {
         restoredTurn: HomeTurnBinding?,
         client: any HomeBridgeSessionClient
     ) async {
+        canContinueWithoutResendingHomeTurn = false
+        homeReconnectConfirmsNoUnresolvedTurn = false
         switch await client.reconnect(binding: binding) {
-        case .ready(let readyBinding, let unresolvedTurn):
+        case .ready(
+            let readyBinding,
+            let unresolvedTurn,
+            let confirmsNoUnresolvedTurn
+        ):
             guard readyBinding == binding else {
                 applyHomeConnectionFailure(
                     .home(code: .conversationMismatch, phase: .reconnect),
@@ -466,6 +489,9 @@ final class ConversationStore {
                 capabilities: readyBinding.capabilities,
                 client: client
             )
+            homeReconnectConfirmsNoUnresolvedTurn = unresolvedTurn == nil
+                && confirmsNoUnresolvedTurn
+            refreshHomeContinueWithoutResendingEligibility()
             await persistConversation()
         case .unavailable(let failure):
             applyHomeConnectionFailure(failure, unavailable: true)
@@ -563,6 +589,8 @@ final class ConversationStore {
             )
         }
         connectionState = unavailable ? .failed(failure.safeReason) : .disconnected
+        homeReconnectConfirmsNoUnresolvedTurn = false
+        canContinueWithoutResendingHomeTurn = false
         sessionMetadata = nil
         sessionStartedAt = nil
         activityText = nil
@@ -653,6 +681,7 @@ final class ConversationStore {
             homeAudioTerminalProcessing = false
             homeAudioTerminal = true
             resumeHomeAudioTerminalWaiter()
+            refreshHomeContinueWithoutResendingEligibility()
         case .structuredPrompt(let prompt):
             guard prompt.conversationHandle == binding.conversationHandle,
                   isCurrentHomeEvent(HomeEventScope(
@@ -801,6 +830,7 @@ final class ConversationStore {
         homeAudioTerminalProcessing = false
         homeAudioTerminal = true
         resumeHomeAudioTerminalWaiter()
+        refreshHomeContinueWithoutResendingEligibility()
     }
 
     @discardableResult
@@ -971,6 +1001,8 @@ final class ConversationStore {
         }
 
         isSending = true
+        canContinueWithoutResendingHomeTurn = false
+        homeReconnectConfirmsNoUnresolvedTurn = false
         activeTurnText = text
         activeAssistantID = nil
         activityText = nil
@@ -1156,6 +1188,8 @@ final class ConversationStore {
         attemptID: UUID,
         turn: HomeTurnBinding? = nil
     ) async {
+        canContinueWithoutResendingHomeTurn = false
+        homeReconnectConfirmsNoUnresolvedTurn = false
         homeRecovery = makeHomeRecovery(
             conversation: conversation,
             turn: turn,
@@ -1201,6 +1235,8 @@ final class ConversationStore {
     func completeHomeTurnAfterAudio() async {
         guard isHomeMode, homeTurnBinding != nil else { return }
         guard homeControlTerminal, homeAudioTerminal else { return }
+        canContinueWithoutResendingHomeTurn = false
+        homeReconnectConfirmsNoUnresolvedTurn = false
         homeRecovery = nil
         homeControlTimeoutTask?.cancel()
         homeControlTimeoutTask = nil
@@ -1223,6 +1259,59 @@ final class ConversationStore {
         isSending = false
         homeEventHandler = nil
         await persistConversation()
+    }
+
+    /// Release stale local recovery only after Home explicitly reports that
+    /// this conversation has no active turn. The original prompt stays in the
+    /// transcript, and the user chooses whether to continue without resending.
+    @discardableResult
+    func continueWithoutResendingHomeTurn() async -> Bool {
+        guard isHomeMode,
+              canContinueWithoutResendingHomeTurn,
+              homeRecovery != nil,
+              homeAudioHasSettled,
+              connectionState.isConnected,
+              !homeOperationsSuppressed,
+              !isSending else {
+            return false
+        }
+
+        let promptToKeep = unconfirmedTurnText
+        canContinueWithoutResendingHomeTurn = false
+        homeReconnectConfirmsNoUnresolvedTurn = false
+        homeRecovery = nil
+        homeTurnBinding = nil
+        homeTurnDeliveryState = .idle
+        homeTurnResult = nil
+        unconfirmedTurnText = nil
+        homeControlTimeoutTask?.cancel()
+        homeControlTimeoutTask = nil
+        homeAudioTimeoutTask?.cancel()
+        homeAudioTimeoutTask = nil
+        homeAudioStartTimeoutTask?.cancel()
+        homeAudioStartTimeoutTask = nil
+        homeJoinTimeout = nil
+        homeEventHandler = nil
+        activeTurnGeneration = nil
+        activeTurnText = nil
+        interruptedTurnGeneration = nil
+        interruptionConfirmedTurnGeneration = nil
+        turnCompleted = false
+        isSending = false
+        activeAssistantID = nil
+        activityText = nil
+        transientError = nil
+
+        let priorPrompt = messages.last(where: { $0.role == .user })?.text
+        if let promptToKeep, priorPrompt != promptToKeep {
+            messages.append(TranscriptMessage(role: .user, text: promptToKeep))
+        }
+        messages.append(TranscriptMessage(
+            role: .error,
+            text: "Home reports no active turn for the earlier prompt. Its reply may not have reached this app. It was not resent; you can continue."
+        ))
+        await persistConversation()
+        return true
     }
 
     func respondToHomePrompt(
@@ -1259,6 +1348,8 @@ final class ConversationStore {
     }
 
     func takeHomeClientForLifecycle() -> (any HomeBridgeSessionClient)? {
+        canContinueWithoutResendingHomeTurn = false
+        homeReconnectConfirmsNoUnresolvedTurn = false
         homeEventTask?.cancel()
         homeEventTask = nil
         homeControlTimeoutTask?.cancel()
@@ -1463,6 +1554,8 @@ final class ConversationStore {
         interruptedTurnGeneration = nil
         interruptionConfirmedTurnGeneration = nil
         turnCompleted = false
+        canContinueWithoutResendingHomeTurn = false
+        homeReconnectConfirmsNoUnresolvedTurn = false
         homeRecovery = nil
         homeControlTimeoutTask?.cancel()
         homeControlTimeoutTask = nil
@@ -1522,6 +1615,8 @@ final class ConversationStore {
 
     private func handleUnexpectedHomeTransportLoss() {
         guard isLifecycleActive, !homeOperationsSuppressed else { return }
+        canContinueWithoutResendingHomeTurn = false
+        homeReconnectConfirmsNoUnresolvedTurn = false
         if let recovery = homeRecovery,
            recovery.deliveryState != .uncertain {
             homeRecovery = PersistedHomeRecovery(
@@ -1578,7 +1673,11 @@ final class ConversationStore {
             if Task.isCancelled || !isLifecycleActive { return }
 
             switch await homeClient.reconnect(binding: binding) {
-            case .ready(let readyBinding, let unresolvedTurn):
+            case .ready(
+                let readyBinding,
+                let unresolvedTurn,
+                let confirmsNoUnresolvedTurn
+            ):
                 guard readyBinding == binding else {
                     applyHomeConnectionFailure(
                         .home(code: .conversationMismatch, phase: .reconnect),
@@ -1610,6 +1709,8 @@ final class ConversationStore {
                     }
                 }
                 homeConversationBinding = readyBinding
+                homeReconnectConfirmsNoUnresolvedTurn = unresolvedTurn == nil
+                    && confirmsNoUnresolvedTurn
                 homeBridgeState = .ready(readyBinding)
                 homeRouteState = HomeRouteState(
                     status: .reachable,
@@ -1622,6 +1723,7 @@ final class ConversationStore {
                 )
                 connectionState = .connected
                 transientError = nil
+                refreshHomeContinueWithoutResendingEligibility()
                 startHomeEventPump(client: homeClient)
                 await persistConversation()
                 return

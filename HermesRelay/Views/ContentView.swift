@@ -249,6 +249,10 @@ struct ContentView: View {
             onResendUnconfirmedTurn: {
                 Task { await voiceCoordinator.resendUnconfirmedTurn() }
             },
+            canContinueWithoutResendingHomeTurn: store.canContinueWithoutResendingHomeTurn,
+            onContinueWithoutResendingHomeTurn: {
+                Task { await store.continueWithoutResendingHomeTurn() }
+            },
             onConfigure: {
                 showingConfiguration = true
             },

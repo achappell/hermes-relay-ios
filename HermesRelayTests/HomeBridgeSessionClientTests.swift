@@ -137,6 +137,52 @@ final class HomeBridgeSessionClientTests: XCTestCase {
         await client.close()
     }
 
+    func testURLSessionClientIgnoresFutureFieldsOnHomeTerminalMessage() async throws {
+        let fixture = try await makeFixture()
+        let client = fixture.client
+        let stream = await client.events()
+        var events = stream.makeAsyncIterator()
+
+        guard case .ready(let binding, _) = await client.open(claim: fixture.claim) else {
+            return XCTFail("The bridge must open before it can deliver a terminal event")
+        }
+        guard case .accepted(let turn) = await client.submitPrompt("synthetic prompt", binding: binding) else {
+            return XCTFail("The prompt must establish the terminal event scope")
+        }
+        let scope = HomeEventScope(
+            conversationHandle: binding.conversationHandle,
+            turnID: turn.turnID,
+            correlationID: turn.correlationID
+        )
+        await fixture.socket.enqueue(.text(try contractEventFrame(
+            scope: scope,
+            type: "message.complete",
+            payload: [
+                "text": "the completed reply",
+                "status": "completed",
+                "response_id": "standard-extension",
+                "metadata": ["segment_count": 1],
+            ]
+        )))
+
+        let event = try await events.next()
+        XCTAssertEqual(
+            event,
+            .standard(HomeStandardEvent(
+                type: .messageComplete,
+                scope: scope,
+                payload: .final(
+                    rendered: nil,
+                    text: "the completed reply",
+                    status: "completed",
+                    reasoning: nil,
+                    failureReason: nil
+                )
+            ))
+        )
+        await client.close()
+    }
+
     func testReconnectAdoptsTheSafeUnresolvedTurnObject() async throws {
         let fixture = try await makeFixture()
         guard case .ready(let binding, _) = await fixture.client.open(claim: fixture.claim) else {
@@ -156,7 +202,47 @@ final class HomeBridgeSessionClientTests: XCTestCase {
                 unresolvedTurn: HomeUnresolvedTurn(
                     turnID: "turn-resumed",
                     resumeCursor: "event-7"
-                )
+                ),
+                confirmsNoUnresolvedTurn: false
+            )
+        )
+        await fixture.client.close()
+    }
+
+    func testReconnectConfirmsAnExplicitNoUnresolvedTurn() async throws {
+        let fixture = try await makeFixture()
+        guard case .ready(let binding, _) = await fixture.client.open(claim: fixture.claim) else {
+            return XCTFail("A valid Home bridge response must become ready")
+        }
+
+        let outcome = await fixture.client.reconnect(binding: binding)
+
+        XCTAssertEqual(
+            outcome,
+            .ready(
+                binding: binding,
+                unresolvedTurn: nil,
+                confirmsNoUnresolvedTurn: true
+            )
+        )
+        await fixture.client.close()
+    }
+
+    func testMissingUnresolvedTurnStateDoesNotConfirmThereIsNoActiveTurn() async throws {
+        let fixture = try await makeFixture()
+        guard case .ready(let binding, _) = await fixture.client.open(claim: fixture.claim) else {
+            return XCTFail("A valid Home bridge response must become ready")
+        }
+        await fixture.socket.setNextReconnectWithoutTurnState()
+
+        let outcome = await fixture.client.reconnect(binding: binding)
+
+        XCTAssertEqual(
+            outcome,
+            .ready(
+                binding: binding,
+                unresolvedTurn: nil,
+                confirmsNoUnresolvedTurn: false
             )
         )
         await fixture.client.close()
@@ -242,7 +328,8 @@ final class HomeBridgeSessionClientTests: XCTestCase {
             reconnectOutcome,
             .ready(
                 binding: recoveredBinding,
-                unresolvedTurn: HomeUnresolvedTurn(turnID: "turn-1", resumeCursor: "cursor-1")
+                unresolvedTurn: HomeUnresolvedTurn(turnID: "turn-1", resumeCursor: "cursor-1"),
+                confirmsNoUnresolvedTurn: false
             )
         )
         let openMethods = try await fixture.socket.sentMethods()
@@ -441,6 +528,8 @@ final class HomeBridgeSessionClientTests: XCTestCase {
                 "options": ["yes", "no"],
                 "expires_at": expiryText,
                 "sensitive": false,
+                "prompt": "Allow the requested action?",
+                "request_id": "standard-extension",
             ]
         )))
 
@@ -1389,6 +1478,7 @@ private actor TestHomeSocket: WebSocketConnection {
     private var nextOpenUnresolvedTurn: (turnID: String, resumeCursor: String?)?
     private var nextPromptResponseStatus: String?
     private var nextReconnectUnresolvedTurn: (turnID: String, resumeCursor: String?)?
+    private var omitNextReconnectTurnState = false
 
     init(claim: HomeConversationClaim) {
         self.claim = claim
@@ -1488,6 +1578,8 @@ private actor TestHomeSocket: WebSocketConnection {
                     "resume_cursor": unresolved.resumeCursor as Any? ?? NSNull(),
                 ]
                 nextReconnectUnresolvedTurn = nil
+            } else if omitNextReconnectTurnState {
+                omitNextReconnectTurnState = false
             } else {
                 reconnectResult["unresolved_turn"] = false
             }
@@ -1580,6 +1672,10 @@ private actor TestHomeSocket: WebSocketConnection {
 
     func setNextReconnectUnresolvedTurn(turnID: String, resumeCursor: String?) {
         nextReconnectUnresolvedTurn = (turnID, resumeCursor)
+    }
+
+    func setNextReconnectWithoutTurnState() {
+        omitNextReconnectTurnState = true
     }
 
     func setNextRawError(
