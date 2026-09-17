@@ -178,6 +178,81 @@ final class ConversationStoreReconnectTests: XCTestCase {
         XCTAssertEqual(secondSubmittedTexts, [])
         XCTAssertEqual(fixture.store.connectionState, .connected)
         XCTAssertEqual(fixture.store.homeTurnDeliveryState, .uncertain(nil))
+        XCTAssertTrue(fixture.store.canContinueWithoutResendingHomeTurn)
+    }
+
+    @MainActor
+    func testAutomaticHomeReconnectCanReleaseConfirmedInactiveRecovery() async throws {
+        let fixture = try await makeHomeReconnectReviewFixture()
+        defer { try? FileManager.default.removeItem(at: fixture.profileURL.deletingLastPathComponent()) }
+        await fixture.store.loadConfiguredClient()
+        await fixture.store.connect()
+        await fixture.firstClient.setNextSubmissionOutcome(
+            .uncertain(.home(code: .transportTimeout, phase: .submission))
+        )
+        _ = await fixture.store.sendTurn(text: "maybe sent")
+
+        fixture.store.handleUnexpectedTransportLoss()
+        await fixture.store.waitForReconnectToFinish()
+
+        XCTAssertEqual(fixture.store.connectionState, .connected)
+        XCTAssertTrue(fixture.store.canContinueWithoutResendingHomeTurn)
+    }
+
+    @MainActor
+    func testAnOmittedNoTurnStateCannotReleaseUnconfirmedHomeRecovery() async throws {
+        let fixture = try await makeHomeReconnectReviewFixture()
+        defer { try? FileManager.default.removeItem(at: fixture.profileURL.deletingLastPathComponent()) }
+        await fixture.store.loadConfiguredClient()
+        await fixture.store.connect()
+        await fixture.firstClient.setNextSubmissionOutcome(
+            .uncertain(.home(code: .transportTimeout, phase: .submission))
+        )
+        _ = await fixture.store.sendTurn(text: "maybe sent")
+        await fixture.secondClient.setReconnectConfirmsNoUnresolvedTurn(false)
+
+        await fixture.store.connect()
+
+        XCTAssertFalse(fixture.store.canContinueWithoutResendingHomeTurn)
+        let continued = await fixture.store.continueWithoutResendingHomeTurn()
+        XCTAssertFalse(continued)
+        XCTAssertEqual(fixture.store.unconfirmedTurnText, "maybe sent")
+    }
+
+    @MainActor
+    func testHomeConfirmedInactiveRecoveryCanBeClearedWithoutResending() async throws {
+        let fixture = try await makeHomeReconnectReviewFixture()
+        defer { try? FileManager.default.removeItem(at: fixture.profileURL.deletingLastPathComponent()) }
+        await fixture.store.loadConfiguredClient()
+        await fixture.store.connect()
+        await fixture.firstClient.setNextSubmissionOutcome(
+            .uncertain(.home(code: .transportTimeout, phase: .submission))
+        )
+        _ = await fixture.store.sendTurn(text: "maybe sent")
+        fixture.store.draft = "fresh Home turn"
+
+        await fixture.store.connect()
+
+        XCTAssertTrue(fixture.store.canContinueWithoutResendingHomeTurn)
+        let blockedSend = await fixture.store.sendTurn(text: "fresh Home turn")
+        XCTAssertFalse(blockedSend)
+        let beforeContinue = await fixture.secondClient.submittedTexts
+        XCTAssertEqual(beforeContinue, [])
+        let continued = await fixture.store.continueWithoutResendingHomeTurn()
+        XCTAssertTrue(continued)
+        XCTAssertNil(fixture.store.unconfirmedTurnText)
+        XCTAssertEqual(fixture.store.homeTurnDeliveryState, .idle)
+        XCTAssertEqual(fixture.store.draft, "fresh Home turn")
+        XCTAssertEqual(fixture.store.messages.first?.text, "maybe sent")
+        XCTAssertTrue(fixture.store.messages.last?.text.contains("It was not resent") == true)
+
+        await fixture.secondClient.setNextSubmissionOutcome(
+            .rejected(.home(code: .requestRejected, phase: .submission))
+        )
+        let newSend = await fixture.store.sendTurn(text: "fresh Home turn")
+        XCTAssertFalse(newSend)
+        let afterContinue = await fixture.secondClient.submittedTexts
+        XCTAssertEqual(afterContinue, ["fresh Home turn"])
     }
 
 

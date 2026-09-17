@@ -144,6 +144,37 @@ struct HomeWireCapabilities: Codable, Equatable, Sendable {
     }
 }
 
+private struct HomeWireUnresolvedTurnResult: Decodable, Equatable, Sendable {
+    let schema: Int?
+    let conversationHandle: String?
+    let turnID: String?
+    let status: String?
+    let resumeCursor: String?
+
+    private enum CodingKeys: String, CodingKey, CaseIterable {
+        case schema, status
+        case conversationHandle = "conversation_handle"
+        case turnID = "turn_id"
+        case resumeCursor = "resume_cursor"
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        try HomeCoding.requireExactKeys(decoder, allowed: CodingKeys.allCases)
+        schema = try container.decodeIfPresent(Int.self, forKey: .schema)
+        conversationHandle = try container.decodeIfPresent(String.self, forKey: .conversationHandle)
+        turnID = try container.decodeIfPresent(String.self, forKey: .turnID)
+        status = try container.decodeIfPresent(String.self, forKey: .status)
+        resumeCursor = try container.decodeIfPresent(String.self, forKey: .resumeCursor)
+        guard (schema == nil || schema == 1),
+              conversationHandle?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty != true,
+              turnID?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty != true,
+              status?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty != true else {
+            throw HomeWireDecodingError.invalidShape
+        }
+    }
+}
+
 struct HomeReadyWireResult: Codable, Equatable, Sendable {
     let schema: Int
     let status: HomeBridgeReadyStatus
@@ -151,8 +182,7 @@ struct HomeReadyWireResult: Codable, Equatable, Sendable {
     let route: HomeWireRoute?
     let capabilities: HomeWireCapabilities?
     let reason: HomeWireReason?
-    /// True when Home reports an unresolved turn on open; the caller must reconnect instead.
-    let unresolvedTurn: Bool
+    let unresolvedTurn: Bool?
 
     private enum CodingKeys: String, CodingKey, CaseIterable {
         case schema, status
@@ -168,7 +198,7 @@ struct HomeReadyWireResult: Codable, Equatable, Sendable {
         route: HomeWireRoute?,
         capabilities: HomeWireCapabilities?,
         reason: HomeWireReason?,
-        unresolvedTurn: Bool = false
+        unresolvedTurn: Bool? = nil
     ) {
         self.schema = schema
         self.status = status
@@ -188,15 +218,23 @@ struct HomeReadyWireResult: Codable, Equatable, Sendable {
         route = try container.decodeIfPresent(HomeWireRoute.self, forKey: .route)
         capabilities = try container.decodeIfPresent(HomeWireCapabilities.self, forKey: .capabilities)
         reason = try container.decodeIfPresent(HomeWireReason.self, forKey: .reason)
-        // The live Home adapter sends `unresolved_turn: false` on every ready open;
-        // a true value or a turn object means an older turn is still unresolved.
-        switch try container.decodeIfPresent(HomeJSONValue.self, forKey: .unresolvedTurn) {
-        case nil, .null?, .bool(false)?:
-            unresolvedTurn = false
-        case .bool(true)?, .object?:
-            unresolvedTurn = true
-        default:
-            throw HomeWireDecodingError.invalidShape
+        if container.contains(.unresolvedTurn) {
+            if let isUnresolved = try? container.decode(Bool.self, forKey: .unresolvedTurn) {
+                unresolvedTurn = isUnresolved
+            } else {
+                let activeTurn = try container.decode(
+                    HomeWireUnresolvedTurnResult.self,
+                    forKey: .unresolvedTurn
+                )
+                guard activeTurn.schema == nil || activeTurn.schema == 1,
+                      activeTurn.conversationHandle == nil
+                          || activeTurn.conversationHandle == conversationHandle else {
+                    throw HomeWireDecodingError.invalidShape
+                }
+                unresolvedTurn = true
+            }
+        } else {
+            unresolvedTurn = nil
         }
     }
 }
@@ -217,6 +255,7 @@ enum HomeFailureCode: String, Codable, Sendable {
 
 enum HomeWireReason: String, Codable, Sendable {
     case reconnectRequired = "reconnect_required"
+    case turnActive = "turn_active"
     case invalidRequest = "invalid_request"
     case authorizationUnavailable = "authorization_unavailable"
     case unauthorized
@@ -620,7 +659,11 @@ enum HomeOpenOutcome: Equatable, Sendable {
 }
 
 enum HomeReconnectOutcome: Equatable, Sendable {
-    case ready(binding: HomeConversationBinding, unresolvedTurn: HomeUnresolvedTurn?)
+    case ready(
+        binding: HomeConversationBinding,
+        unresolvedTurn: HomeUnresolvedTurn?,
+        confirmsNoUnresolvedTurn: Bool
+    )
     case unavailable(HomeBridgeFailure)
     case disconnected(HomeBridgeFailure)
 }
@@ -650,6 +693,7 @@ enum HomeStructuredPromptKind: String, Codable, Sendable {
 struct HomeEventScope: Equatable, Sendable {
     let conversationHandle: String
     let turnID: String?
+    /// Event-level correlation, which may differ from the accepted turn's ID.
     let correlationID: String?
 }
 
@@ -712,19 +756,26 @@ enum HomeStandardEventType: String, Codable, Sendable {
     case audioAbort = "audio_abort"
     case error
 
-    /// Resolves a Standard gateway event name, including Standard's dotted
-    /// activity names, to the event this client renders; nil means not rendered.
+    /// Resolves Standard gateway names and Home's legacy aliases to client events.
     init?(standardName: String) {
-        if let type = HomeStandardEventType(rawValue: standardName) {
-            self = type
-            return
-        }
         switch standardName {
-        case "status.update": self = .status
+        case "message.interim": self = .messageDelta
+        case "text.delta": self = .textDelta
         case "thinking.delta": self = .thinking
-        case "reasoning.delta": self = .reasoning
-        default: return nil
+        case "reasoning.delta", "reasoning.available": self = .reasoning
+        case "status.update": self = .status
+        case "turn.complete", "turn.completed", "turn.end", "turn.ended",
+             "turn_end", "response.complete", "response.completed": self = .turnComplete
+        case "turn.interrupted", "turn.cancelled": self = .turnInterrupted
+        case "turn.error": self = .error
+        default:
+            guard let value = Self(rawValue: standardName) else { return nil }
+            self = value
         }
+    }
+
+    init?(wireName: String) {
+        self.init(standardName: wireName)
     }
 }
 

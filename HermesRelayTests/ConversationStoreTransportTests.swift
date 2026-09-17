@@ -71,7 +71,7 @@ final class ConversationStoreTransportTests: XCTestCase {
     }
 
     @MainActor
-    func testStatusDoesNotBecomeTranscript() async {
+    func testStatusDoesNotBecomeTranscriptAndClearsAtTurnCompletion() async {
         let client = FakeHermesSessionClient()
         client.connectResult = .success(SessionMetadata(sessionID: "session-1", model: nil))
         client.eventsByText["status"] = [
@@ -85,9 +85,28 @@ final class ConversationStoreTransportTests: XCTestCase {
 
         await store.sendTurn(text: "status")
 
-        XCTAssertEqual(store.activityText, "Working")
+        XCTAssertNil(store.activityText)
         XCTAssertEqual(store.messages.count, 2)
         XCTAssertFalse(store.messages.contains { $0.text == "Working" })
+    }
+
+    @MainActor
+    func testStatusClearsWhenTheEventStreamEndsWithoutATerminalEvent() async {
+        let client = FakeHermesSessionClient()
+        client.connectResult = .success(SessionMetadata(sessionID: "session-1", model: nil))
+        client.eventsByText["truncated"] = [
+            .status(text: "Still working", kind: "tool"),
+            .messageStart,
+            .textDelta("Partial answer"),
+        ]
+        let store = ConversationStore(client: client)
+        await store.connect()
+
+        let completed = await store.sendTurn(text: "truncated")
+
+        XCTAssertFalse(completed)
+        XCTAssertNil(store.activityText)
+        XCTAssertEqual(store.unconfirmedTurnText, "truncated")
     }
 
     @MainActor
@@ -545,6 +564,53 @@ final class ConversationStoreTransportTests: XCTestCase {
         XCTAssertTrue(sendCompleted)
         XCTAssertEqual(fixture.store.messages.last?.text, "text survives audio failure")
         XCTAssertEqual(fixture.store.homeAudioState, .invalid(generation: 1))
+    }
+
+    @MainActor
+    func testHomeTurnEventsUseTurnIDWhenEventCorrelationDiffers() async throws {
+        let fixture = try await makeHomeReviewFixture()
+        defer { try? FileManager.default.removeItem(at: fixture.profileURL.deletingLastPathComponent()) }
+        await fixture.store.loadConfiguredClient()
+        await fixture.store.connect()
+
+        let sendTask = Task { @MainActor in
+            await fixture.store.sendTurn(
+                text: "correlation scope check",
+                eventHandler: { _ in }
+            )
+        }
+        await waitForHomeSubmissionCount(fixture.client, atLeast: 1)
+        let audioScope = HomeEventScope(
+            conversationHandle: fixture.claim.conversationHandle,
+            turnID: "turn-1",
+            correlationID: "correlation-1"
+        )
+        let standardEventScope = HomeEventScope(
+            conversationHandle: fixture.claim.conversationHandle,
+            turnID: "turn-1",
+            correlationID: "standard-event-correlation"
+        )
+        await fixture.client.emit(.audioTerminal(audioScope, .end))
+        await fixture.client.emit(.standard(HomeStandardEvent(
+            type: .messageComplete,
+            scope: standardEventScope,
+            payload: .final(
+                rendered: "The turn correlation is independent.",
+                text: nil,
+                status: "completed",
+                reasoning: nil,
+                failureReason: nil
+            )
+        )))
+        await fixture.client.emit(.standard(HomeStandardEvent(
+            type: .turnComplete,
+            scope: standardEventScope,
+            payload: .terminal(kind: .terminal)
+        )))
+
+        let sendCompleted = await sendTask.value
+        XCTAssertTrue(sendCompleted)
+        XCTAssertEqual(fixture.store.messages.last?.text, "The turn correlation is independent.")
     }
 
     @MainActor

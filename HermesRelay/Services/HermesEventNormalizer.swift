@@ -167,21 +167,6 @@ struct HermesEventNormalizer: Sendable {
     /// Home has already passed its strict schema and redaction boundary. This
     /// method is the only bridge from that typed event into the existing
     /// normalized seam; Home never gets a second Standard parser.
-    /// Standard has no separate turn-complete event: a turn-owned
-    /// `message.complete` with a terminal (or absent) status ends the turn, the
-    /// same rule Home applies before releasing the turn.
-    private static func homeTurnTerminal(status: String?, turnID: String?) -> [HermesEvent] {
-        guard let turnID else { return [] }
-        switch status?.lowercased() {
-        case nil, "completed", "complete", "failed", "error", "timeout", "timed_out", "timed-out":
-            return [.turnComplete(turnID: turnID)]
-        case "cancelled", "canceled", "interrupted", "aborted", "stopped":
-            return [.turnInterrupted(turnID: turnID, reason: "turn interrupted")]
-        default:
-            return []
-        }
-    }
-
     mutating func normalizeHome(_ event: HomeStandardEvent) -> [HermesEvent] {
         switch event.type {
         case .messageStart:
@@ -196,13 +181,16 @@ struct HermesEventNormalizer: Sendable {
             guard case .final(let rendered, let text, let status, let reasoning, let failureReason) = event.payload else { return [] }
             let finalText = text ?? rendered ?? ""
             let update = normalizeFinalText(finalText)
-            return update + [
-                .messageComplete(
-                    text: finalText,
-                    reasoning: reasoning ?? "",
-                    failureReason: failureReason?.rawValue ?? ""
-                )
-            ] + Self.homeTurnTerminal(status: status, turnID: event.scope.turnID)
+            let completion = HermesEvent.messageComplete(
+                text: finalText,
+                reasoning: reasoning ?? "",
+                failureReason: failureReason?.rawValue ?? ""
+            )
+            return update + [completion] + homeTerminalEvents(
+                status: status,
+                failureReason: failureReason,
+                turnID: event.scope.turnID
+            )
         case .thinking, .reasoning:
             guard case .activity(let text, _, let reasoning, _) = event.payload else { return [] }
             let activity = text ?? reasoning ?? ""
@@ -222,7 +210,12 @@ struct HermesEventNormalizer: Sendable {
             return [.audioAbort(turnID: event.scope.turnID!, reason: "audio aborted")]
         case .error:
             guard case .error(let safeError) = event.payload else { return [] }
-            return [.error(safeError.code.rawValue)]
+            let error = HermesEvent.error(safeError.code.rawValue)
+            guard let turnID = event.scope.turnID else { return [error] }
+            return [
+                error,
+                .turnInterrupted(turnID: turnID, reason: safeError.code.rawValue),
+            ]
         }
     }
 
@@ -249,6 +242,31 @@ struct HermesEventNormalizer: Sendable {
             case .fallback, .unavailable, .invalid:
                 return [.audioAbort(turnID: "home", reason: terminal.rawValue)]
             }
+        default:
+            return []
+        }
+    }
+
+    private func homeTerminalEvents(
+        status: String?,
+        failureReason: HomeFailureCode?,
+        turnID: String?
+    ) -> [HermesEvent] {
+        guard let turnID else { return [] }
+        guard let status else { return [.turnComplete(turnID: turnID)] }
+        let terminalStatus = status.lowercased()
+        switch terminalStatus {
+        case "complete", "completed":
+            return [.turnComplete(turnID: turnID)]
+        case "cancelled", "canceled", "interrupted", "aborted", "stopped":
+            return [.turnInterrupted(turnID: turnID, reason: terminalStatus)]
+        case "failed", "error", "timeout", "timed_out", "timed-out":
+            var events: [HermesEvent] = []
+            if failureReason == nil {
+                events.append(.error(terminalStatus))
+            }
+            events.append(.turnInterrupted(turnID: turnID, reason: terminalStatus))
+            return events
         default:
             return []
         }

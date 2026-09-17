@@ -149,6 +149,57 @@ final class HomeBridgeEnvelopeTests: XCTestCase {
         )
     }
 
+    func testHomeMessageCompleteEndsOnlyATerminalTurn() {
+        let scope = HomeEventScope(
+            conversationHandle: "opaque-home-conversation",
+            turnID: "turn-1",
+            correlationID: "correlation-1"
+        )
+        var completedNormalizer = HermesEventNormalizer()
+
+        XCTAssertEqual(
+            completedNormalizer.normalizeHome(
+                HomeStandardEvent(
+                    type: .messageComplete,
+                    scope: scope,
+                    payload: .final(
+                        rendered: "Done.",
+                        text: nil,
+                        status: "completed",
+                        reasoning: nil,
+                        failureReason: nil
+                    )
+                )
+            ),
+            [
+                .textDelta("Done."),
+                .messageComplete(text: "Done.", reasoning: "", failureReason: ""),
+                .turnComplete(turnID: "turn-1"),
+            ]
+        )
+
+        var streamingNormalizer = HermesEventNormalizer()
+        let streamingEvents = streamingNormalizer.normalizeHome(
+            HomeStandardEvent(
+                type: .messageComplete,
+                scope: scope,
+                payload: .final(
+                    rendered: "Still working",
+                    text: nil,
+                    status: "streaming",
+                    reasoning: nil,
+                    failureReason: nil
+                )
+            )
+        )
+
+        XCTAssertFalse(streamingEvents.contains { event in
+            if case .turnComplete = event { return true }
+            if case .turnInterrupted = event { return true }
+            return false
+        })
+    }
+
     func testHomeNormalizerEndsTheTurnOnATerminalStandardMessageComplete() {
         let turn = HomeEventScope(
             conversationHandle: "opaque-home-conversation",
@@ -166,10 +217,16 @@ final class HomeBridgeEnvelopeTests: XCTestCase {
 
         XCTAssertEqual(complete(status: "complete").last, .turnComplete(turnID: "home-turn-1"))
         XCTAssertEqual(complete(status: nil).last, .turnComplete(turnID: "home-turn-1"))
-        XCTAssertEqual(complete(status: "error").last, .turnComplete(turnID: "home-turn-1"))
+        XCTAssertEqual(
+            Array(complete(status: "error").suffix(2)),
+            [
+                .error("error"),
+                .turnInterrupted(turnID: "home-turn-1", reason: "error"),
+            ]
+        )
         XCTAssertEqual(
             complete(status: "interrupted").last,
-            .turnInterrupted(turnID: "home-turn-1", reason: "turn interrupted")
+            .turnInterrupted(turnID: "home-turn-1", reason: "interrupted")
         )
         XCTAssertFalse(complete(status: "streaming").contains(.turnComplete(turnID: "home-turn-1")))
         let global = HomeEventScope(conversationHandle: turn.conversationHandle, turnID: nil, correlationID: nil)

@@ -321,7 +321,9 @@ struct AmbientHUDView: View {
     let hasTranscript: Bool
     let canConfigure: Bool
     let unconfirmedTurnText: String?
+    let canContinueWithoutResendingHomeTurn: Bool
     let onResendUnconfirmedTurn: () -> Void
+    let onContinueWithoutResendingHomeTurn: () -> Void
     let onConfigure: () -> Void
     let onConnect: () -> Void
     let onShowHistory: () -> Void
@@ -352,6 +354,8 @@ struct AmbientHUDView: View {
         canConfigure: Bool,
         unconfirmedTurnText: String?,
         onResendUnconfirmedTurn: @escaping () -> Void,
+        canContinueWithoutResendingHomeTurn: Bool = false,
+        onContinueWithoutResendingHomeTurn: @escaping () -> Void = {},
         onConfigure: @escaping () -> Void,
         onConnect: @escaping () -> Void,
         onShowHistory: @escaping () -> Void,
@@ -380,7 +384,9 @@ struct AmbientHUDView: View {
         self.hasTranscript = hasTranscript
         self.canConfigure = canConfigure
         self.unconfirmedTurnText = unconfirmedTurnText
+        self.canContinueWithoutResendingHomeTurn = canContinueWithoutResendingHomeTurn
         self.onResendUnconfirmedTurn = onResendUnconfirmedTurn
+        self.onContinueWithoutResendingHomeTurn = onContinueWithoutResendingHomeTurn
         self.onConfigure = onConfigure
         self.onConnect = onConnect
         self.onShowHistory = onShowHistory
@@ -460,7 +466,10 @@ struct AmbientHUDView: View {
             }
 
             if let unconfirmedTurnText {
-                unconfirmedTurnNotice(text: unconfirmedTurnText)
+                unconfirmedTurnNotice(
+                    text: unconfirmedTurnText,
+                    canContinueWithoutResending: canContinueWithoutResendingHomeTurn
+                )
             }
 
             if let homeBridgeState {
@@ -608,7 +617,10 @@ struct AmbientHUDView: View {
     /// A turn that was in flight when the transport died is never replayed
     /// automatically: Hermes may already have received it. Show what it was
     /// and let the sending be a deliberate act.
-    private func unconfirmedTurnNotice(text: String) -> some View {
+    private func unconfirmedTurnNotice(
+        text: String,
+        canContinueWithoutResending: Bool
+    ) -> some View {
         HStack(alignment: .firstTextBaseline, spacing: 10) {
             Image(systemName: "exclamationmark.arrow.circlepath")
                 .foregroundStyle(HermesVisualTokens.attention)
@@ -617,17 +629,28 @@ struct AmbientHUDView: View {
                 Text(text)
                     .font(.footnote)
                     .lineLimit(2)
-                Text("Not confirmed by Hermes. It was not sent again automatically.")
+                Text(
+                    canContinueWithoutResending
+                        ? "Home has no active turn. Its reply may not have reached this app; it was not resent."
+                        : "Not confirmed by Hermes. It was not sent again automatically."
+                )
                     .font(.caption)
                     .foregroundStyle(HermesVisualTokens.secondaryInk)
             }
 
             Spacer(minLength: 8)
 
-            Button("Resend", action: onResendUnconfirmedTurn)
-                .disabled(!connectionState.isConnected)
-                .font(.footnote.weight(.semibold))
-                .relayGlassProminentButtonStyle()
+            VStack(alignment: .trailing, spacing: 6) {
+                Button("Resend", action: onResendUnconfirmedTurn)
+                    .disabled(!connectionState.isConnected)
+                    .font(.footnote.weight(.semibold))
+                    .relayGlassProminentButtonStyle()
+                if canContinueWithoutResending {
+                    Button("Continue without resending", action: onContinueWithoutResendingHomeTurn)
+                        .font(.footnote.weight(.semibold))
+                        .accessibilityIdentifier("continue-without-resending-unconfirmed-turn")
+                }
+            }
         }
         .padding(.horizontal, 14)
         .padding(.vertical, 10)

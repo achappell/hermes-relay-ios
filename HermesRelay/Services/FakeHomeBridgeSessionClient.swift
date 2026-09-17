@@ -111,6 +111,7 @@ actor FakeHomeBridgeSessionClient: HomeBridgeSessionClient {
     var nextCommandOutcome: HomeCommandOutcome?
     var nextPingOutcome: HomePingOutcome?
     var unresolvedTurn: HomeUnresolvedTurn?
+    var reconnectConfirmsNoUnresolvedTurn = true
 
     init(
         claim: HomeConversationClaim,
@@ -169,17 +170,32 @@ actor FakeHomeBridgeSessionClient: HomeBridgeSessionClient {
         guard !closed else {
             return .disconnected(.home(code: .transportUnavailable, phase: .lifecycle))
         }
-        guard binding == requestedBinding else {
+        guard requestedBinding.profileID == claim.profileID,
+              requestedBinding.conversationHandle == claim.conversationHandle,
+              requestedBinding.endpoint == claim.approvedRoute.endpoint,
+              requestedBinding.route == claim.approvedRoute.identity,
+              requestedBinding.householdBinding == claim.approvedRoute.householdBinding else {
             return .unavailable(.home(code: .conversationMismatch, phase: .reconnect))
         }
-        guard let binding, binding == requestedBinding else {
-            return .unavailable(.home(code: .staleConversation, phase: .reconnect))
+        if let binding {
+            guard binding.profileID == requestedBinding.profileID,
+                  binding.conversationHandle == requestedBinding.conversationHandle,
+                  binding.endpoint == requestedBinding.endpoint,
+                  binding.route == requestedBinding.route,
+                  binding.householdBinding == requestedBinding.householdBinding else {
+                return .unavailable(.home(code: .conversationMismatch, phase: .reconnect))
+            }
         }
         if let nextReconnectFailure {
             self.nextReconnectFailure = nil
             return .unavailable(nextReconnectFailure)
         }
-        return .ready(binding: binding, unresolvedTurn: unresolvedTurn)
+        self.binding = requestedBinding
+        return .ready(
+            binding: requestedBinding,
+            unresolvedTurn: unresolvedTurn,
+            confirmsNoUnresolvedTurn: unresolvedTurn == nil && reconnectConfirmsNoUnresolvedTurn
+        )
     }
 
     func submitPrompt(
@@ -324,6 +340,10 @@ actor FakeHomeBridgeSessionClient: HomeBridgeSessionClient {
 
     func setNextSubmissionOutcome(_ outcome: HomePromptSubmissionOutcome?) {
         nextSubmissionOutcome = outcome
+    }
+
+    func setReconnectConfirmsNoUnresolvedTurn(_ confirms: Bool) {
+        reconnectConfirmsNoUnresolvedTurn = confirms
     }
 
     func setNextResponseOutcome(_ outcome: HomeStructuredResponseOutcome?) {
