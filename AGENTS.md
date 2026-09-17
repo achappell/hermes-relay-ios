@@ -5,11 +5,14 @@ intentional iOS and macOS targets. It is a separate product repository from
 `hermes-relay-tui`; keep the two repositories independently buildable and do
 not copy terminal-specific UI assumptions into the Apple client.
 
-## Task management — local BMad mode
+## Task management — local BMad with active issue tracking
 
-The maintainer has paused external board reconciliation while the local BMad
-surface work is completed. Until the board is explicitly reopened, do not
-inspect, query, create, edit, move, delete, or reconcile external board items.
+External GitHub issue tracking is active for iOS-owned story work. The
+repository and branch conventions are configured in
+`_bmad/custom/issue-tracking.yaml`. GitHub Project #3 is an active mechanical
+mirror maintained through the coordinator procedure. Local iOS story
+specifications, validation records, and `sprint-status.yaml` remain the source of
+truth for scope, evidence, and delivery status.
 
 The shared surface coverage index (kept at the historical
 [`../hermes-relay-tui/_bmad-output/implementation-artifacts/surface-coverage-matrix.md`](../hermes-relay-tui/_bmad-output/implementation-artifacts/surface-coverage-matrix.md)
@@ -20,7 +23,7 @@ authority; this repository's local story artifacts own iOS delivery scope and
 closure, and the canonical product hub outside this repository owns durable
 product intent.
 
-While the board is paused:
+For iOS story work:
 
 - Keep one active slice per iOS workstream and use this repository's local
   BMad artifacts to record its scope, acceptance criteria, validation, and
@@ -45,10 +48,11 @@ While the board is paused:
 - Do not create a backlog in `docs/plans/`; record iOS prioritization in the
   local story index and tracker.
 
-When the maintainer explicitly reopens board work, restore the external-board
-procedure before choosing a board-scoped task: verify the credential with `gh
-auth status`, inspect the board, and reconcile it with the matrix and local
-artifacts. Never print token values.
+When an issue-tracker update is part of iOS story work, verify access with
+`gh auth status` and act only on iOS-owned issues in the configured repository.
+Never print token values. For Project #3 reconciliation, follow the coordinator
+procedure and update only accepted iOS-owned rows from this repository's local
+artifacts.
 
 ## Product planning authority
 
@@ -57,12 +61,12 @@ canonical in the product hub maintained outside this repository. Read the hub
 and its relevant source notes from the local working environment before using
 BMAD for a new slice. Do not copy private hub paths or personal notes into this
 public repository.
-While GitHub Project work is paused, use the surface coverage index for
-cross-repository applicability, evidence, and dependencies, and use this
-repository's local BMAD runtime and artifacts for iOS story scope, status, and
-validation. The TUI epic map is an imported compatibility snapshot, not the
-iOS story or status authority. Do not copy `_bmad/` or tool configuration from
-`hermes-relay-tui`, and do not create a second cross-repository matrix or
+Use the surface coverage index for cross-repository applicability,
+evidence, and dependencies, and this repository's local BMAD runtime and
+artifacts for iOS story scope, status, and validation. GitHub Project #3 is a
+mechanical mirror, not the iOS status authority. The TUI epic map is an
+imported compatibility snapshot. Do not copy `_bmad/` or tool configuration
+from `hermes-relay-tui`, and do not create a second cross-repository matrix or
 product PRD. Existing local architecture and workflow notes remain
 implementation context. See
 [`docs/bmad-upstream.md`](docs/bmad-upstream.md).
