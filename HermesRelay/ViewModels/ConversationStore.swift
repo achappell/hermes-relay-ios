@@ -163,14 +163,16 @@ final class ConversationStore {
                 let recoveryBinding = HomeTurnBinding(
                     conversationHandle: recovery.conversationHandle,
                     turnID: recovery.turnID ?? "unconfirmed",
-                    correlationID: recovery.correlationID ?? "unconfirmed"
+                    correlationID: recovery.turnID == nil
+                        ? recovery.correlationID ?? "unconfirmed"
+                        : recovery.correlationID
                 )
-                let persistedTurn: HomeTurnBinding? = if let turnID = recovery.turnID,
-                                                        let correlationID = recovery.correlationID {
+                // Home may accept a turn without a correlation ID; the turn ID is enough to restore it.
+                let persistedTurn: HomeTurnBinding? = if let turnID = recovery.turnID {
                     HomeTurnBinding(
                         conversationHandle: recovery.conversationHandle,
                         turnID: turnID,
-                        correlationID: correlationID
+                        correlationID: recovery.correlationID
                     )
                 } else {
                     nil
@@ -408,7 +410,7 @@ final class ConversationStore {
                         homeTurnBinding = HomeTurnBinding(
                             conversationHandle: binding.conversationHandle,
                             turnID: unresolvedTurn.turnID,
-                            correlationID: restoredTurn?.correlationID ?? "unresolved"
+                            correlationID: restoredTurn.map(\.correlationID) ?? "unresolved"
                         )
                         homeTurnDeliveryState = .uncertain(homeTurnBinding)
                         if let recovery = homeRecovery {
@@ -578,7 +580,7 @@ final class ConversationStore {
         guard scope.conversationHandle == homeConversationBinding?.conversationHandle else { return false }
         guard let active = homeTurnBinding else { return scope.turnID == nil }
         guard let turnID = scope.turnID, turnID == active.turnID else { return false }
-        return scope.correlationID == nil || scope.correlationID == active.correlationID
+        return homeCorrelationMatches(expected: active.correlationID, received: scope.correlationID)
     }
 
     private func finishHomeControlTurn(success: Bool) {
@@ -1483,7 +1485,9 @@ final class ConversationStore {
                     homeTurnBinding = HomeTurnBinding(
                         conversationHandle: binding.conversationHandle,
                         turnID: unresolvedTurn.turnID,
-                        correlationID: homeRecovery?.correlationID ?? "unresolved"
+                        correlationID: homeRecovery?.turnID == nil
+                            ? homeRecovery?.correlationID ?? "unresolved"
+                            : homeRecovery?.correlationID
                     )
                     homeTurnDeliveryState = .uncertain(homeTurnBinding)
                     if let homeRecovery {

@@ -219,6 +219,10 @@ actor URLSessionHomeBridgeSessionClient: HomeBridgeSessionClient {
             guard ready.reason == nil else {
                 return .unavailable(mapOpenReason(ready.reason!))
             }
+            // Only after the route identity is proven: an unresolved turn is never replayed here.
+            guard !ready.unresolvedTurn else {
+                return .unavailable(.reconnectRequired)
+            }
             capabilities = HomeBridgeCapabilities(wireCapabilities)
             let binding = HomeConversationBinding(
                 profileID: claim.profileID,
@@ -283,6 +287,9 @@ actor URLSessionHomeBridgeSessionClient: HomeBridgeSessionClient {
                 }
             )
             let result = try decodeReconnect(response, binding: binding)
+            guard result.routeMatches else {
+                return .unavailable(.route(.identityMismatch))
+            }
             switch result.status {
             case .ready:
                 let unresolved = result.unresolvedTurnID.map {
@@ -340,7 +347,8 @@ actor URLSessionHomeBridgeSessionClient: HomeBridgeSessionClient {
                 }
             )
             let result = try decodeSubmission(response, binding: binding)
-            guard result.status == "accepted" else {
+            // Home passes Standard's acceptance through as either label.
+            guard result.status == "accepted" || result.status == "submitted" else {
                 return .rejected(.home(code: .requestRejected, phase: .submission))
             }
             let turn = HomeTurnBinding(
@@ -791,8 +799,11 @@ actor URLSessionHomeBridgeSessionClient: HomeBridgeSessionClient {
     }
 
     private func decodeStandardEvent(_ envelope: HomeEventEnvelope) throws -> HomeStandardEvent? {
-        guard let type = HomeStandardEventType(rawValue: envelope.type) else {
-            throw HomeWireDecodingError.invalidShape
+        // Home forwards Standard's full event vocabulary (session.info, tool.*,
+        // session.usage, ...). The envelope above stays strict; an event type
+        // this client does not render is ignored rather than ending the session.
+        guard let type = HomeStandardEventType(standardName: envelope.type) else {
+            return nil
         }
         guard let binding = currentBinding else {
             throw HomeWireDecodingError.invalidShape
@@ -802,13 +813,14 @@ actor URLSessionHomeBridgeSessionClient: HomeBridgeSessionClient {
         }
         let scope = envelope.scope
         let payload = envelope.payload
+        // Standard payloads carry more than this client renders (usage, warning,
+        // billing, verbose, ...). Read only the fields used here, type-checked,
+        // and ignore the rest.
         let localPayload: HomeStandardEventPayload
         switch type {
         case .messageStart:
-            try requireKeys(payload, allowed: ["kind"])
             localPayload = .start(kind: try optionalEventKind(payload, key: "kind"))
         case .messageDelta, .textDelta:
-            try requireKeys(payload, allowed: ["rendered", "text", "replace", "kind"])
             localPayload = .delta(
                 rendered: try optionalString(payload, key: "rendered"),
                 text: try optionalString(payload, key: "text"),
@@ -816,17 +828,15 @@ actor URLSessionHomeBridgeSessionClient: HomeBridgeSessionClient {
                 kind: try optionalEventKind(payload, key: "kind")
             )
         case .text, .textFinal, .messageComplete:
-            try requireKeys(payload, allowed: ["rendered", "text", "status", "reasoning", "failure_reason"])
-            let failureReason = try optionalFailureCode(payload, key: "failure_reason")
             localPayload = .final(
                 rendered: try optionalString(payload, key: "rendered"),
                 text: try optionalString(payload, key: "text"),
                 status: try optionalString(payload, key: "status"),
                 reasoning: try optionalString(payload, key: "reasoning"),
-                failureReason: failureReason
+                failureReason: try optionalString(payload, key: "failure_reason")
+                    .flatMap(HomeFailureCode.init(rawValue:))
             )
         case .thinking, .reasoning, .status:
-            try requireKeys(payload, allowed: ["text", "status", "reasoning", "kind"])
             localPayload = .activity(
                 text: try optionalString(payload, key: "text"),
                 status: try optionalString(payload, key: "status"),
@@ -834,18 +844,20 @@ actor URLSessionHomeBridgeSessionClient: HomeBridgeSessionClient {
                 kind: try optionalEventKind(payload, key: "kind")
             )
         case .turnComplete, .turnInterrupted, .audioAbort:
-            try requireKeys(payload, allowed: ["kind"])
             guard scope.turnID != nil else { return nil }
             localPayload = .terminal(kind: try optionalEventKind(payload, key: "kind"))
         case .error:
-            try requireKeys(payload, allowed: ["code", "phase"])
-            guard let codeString = payload["code"] as? String,
-                  let code = HomeFailureCode(rawValue: codeString),
-                  let phaseString = payload["phase"] as? String,
-                  let phase = HomeFailurePhase(rawValue: phaseString) else {
-                throw HomeWireDecodingError.invalidShape
+            if let code = try optionalString(payload, key: "code").flatMap(HomeFailureCode.init(rawValue:)),
+               let phase = try optionalString(payload, key: "phase").flatMap(HomeFailurePhase.init(rawValue:)) {
+                localPayload = .error(HomeSafeError(code: code, phase: phase))
+            } else {
+                // Standard reports `{message}` text; never surface server text,
+                // only a stable Home code.
+                localPayload = .error(HomeSafeError(
+                    code: .hermesUnavailable,
+                    phase: scope.turnID == nil ? .lifecycle : .submission
+                ))
             }
-            localPayload = .error(HomeSafeError(code: code, phase: phase))
         }
         return HomeStandardEvent(type: type, scope: scope, payload: localPayload)
     }
@@ -867,8 +879,8 @@ actor URLSessionHomeBridgeSessionClient: HomeBridgeSessionClient {
               binding.conversationHandle == envelope.scope.conversationHandle else {
             throw HomeWireDecodingError.conversationMismatch
         }
+        // Standard prompt payloads carry display fields this client does not use.
         let payload = envelope.payload
-        try requireKeys(payload, allowed: ["options", "expires_at", "sensitive"])
         let options = try optionalStringArray(payload, key: "options") ?? []
         let expiresAt = try optionalISO8601Date(payload, key: "expires_at")
         let sensitive = try optionalBool(payload, key: "sensitive")
@@ -1014,14 +1026,14 @@ actor URLSessionHomeBridgeSessionClient: HomeBridgeSessionClient {
         guard let activeAudioScope,
               activeAudioScope.conversationHandle == scope.conversationHandle,
               activeAudioScope.turnID == scope.turnID else { return false }
-        return scope.correlationID == nil || activeAudioScope.correlationID == scope.correlationID
+        return homeCorrelationMatches(expected: activeAudioScope.correlationID, received: scope.correlationID)
     }
 
     private func pendingAudioScopeMatches(_ scope: HomeEventScope) -> Bool {
         guard let pendingAudioScope,
               pendingAudioScope.conversationHandle == scope.conversationHandle,
               pendingAudioScope.turnID == scope.turnID else { return false }
-        return scope.correlationID == nil || pendingAudioScope.correlationID == scope.correlationID
+        return homeCorrelationMatches(expected: pendingAudioScope.correlationID, received: scope.correlationID)
     }
 
     private func audioFailureScope(from params: [String: Any]) -> HomeEventScope? {
@@ -1154,6 +1166,8 @@ private struct HomeReconnectWireResult {
     let reason: HomeWireReason?
     let unresolvedTurnID: String?
     let resumeCursor: String?
+    /// False when the live adapter's ready reply names a different route than the binding.
+    let routeMatches: Bool
 }
 
 private func decodeReconnect(
@@ -1161,8 +1175,11 @@ private func decodeReconnect(
     binding: HomeConversationBinding
 ) throws -> HomeReconnectWireResult {
     if let errorCode = response.errorCode { throw HomeBridgeWireFailure(code: errorCode) }
+    // The live Home adapter answers reconnect with the same ready shape as open,
+    // including `route` and `capabilities`.
     try requireKeys(response.result, allowed: [
         "schema", "status", "conversation_handle", "unresolved_turn", "turn_id", "resume_cursor", "reason",
+        "route", "capabilities",
     ])
     guard (intValue(response.result["schema"]) ?? 0) == 1,
           response.result["conversation_handle"] as? String == binding.conversationHandle,
@@ -1170,20 +1187,35 @@ private func decodeReconnect(
           let status = HomeBridgeReadyStatus(rawValue: statusString) else {
         throw HomeWireDecodingError.invalidShape
     }
+    var routeMatches = true
+    if let rawRoute = response.result["route"] {
+        let route = try JSONDecoder().decode(
+            HomeWireRoute.self,
+            from: JSONSerialization.data(withJSONObject: rawRoute)
+        )
+        routeMatches = route.routeClass == binding.route.routeClass && route.id == binding.route.id
+    }
+    if let rawCapabilities = response.result["capabilities"] {
+        _ = try JSONDecoder().decode(
+            HomeWireCapabilities.self,
+            from: JSONSerialization.data(withJSONObject: rawCapabilities)
+        )
+    }
     return HomeReconnectWireResult(
         status: status,
         reason: (response.result["reason"] as? String).flatMap(HomeWireReason.init(rawValue:)),
         unresolvedTurnID: response.result["turn_id"] as? String
             ?? (response.result["unresolved_turn"] as? [String: Any])?["turn_id"] as? String,
         resumeCursor: response.result["resume_cursor"] as? String
-            ?? (response.result["unresolved_turn"] as? [String: Any])?["resume_cursor"] as? String
+            ?? (response.result["unresolved_turn"] as? [String: Any])?["resume_cursor"] as? String,
+        routeMatches: routeMatches
     )
 }
 
 private struct HomeSubmissionWireResult {
     let status: String
     let turnID: String
-    let correlationID: String
+    let correlationID: String?
 }
 
 private func decodeSubmission(
@@ -1196,10 +1228,19 @@ private func decodeSubmission(
           response.result["conversation_handle"] as? String == binding.conversationHandle,
           let status = response.result["status"] as? String,
           let turnID = response.result["turn_id"] as? String,
-          let correlationID = response.result["correlation_id"] as? String,
-          !turnID.isEmpty,
-          !correlationID.isEmpty else {
+          !turnID.isEmpty else {
         throw HomeWireDecodingError.invalidShape
+    }
+    // The pinned contract's submission reply has no correlation ID; when one is
+    // present it must still be a non-empty string.
+    let correlationID: String?
+    if let value = response.result["correlation_id"] {
+        guard let string = value as? String, !string.isEmpty else {
+            throw HomeWireDecodingError.invalidShape
+        }
+        correlationID = string
+    } else {
+        correlationID = nil
     }
     return HomeSubmissionWireResult(status: status, turnID: turnID, correlationID: correlationID)
 }
@@ -1339,17 +1380,6 @@ private func optionalEventKind(
 ) throws -> HomeStandardEventKind? {
     guard let value = try optionalString(object, key: key) else { return nil }
     return HomeStandardEventKind(rawValue: value)
-}
-
-private func optionalFailureCode(
-    _ object: [String: Any],
-    key: String
-) throws -> HomeFailureCode? {
-    guard let value = try optionalString(object, key: key) else { return nil }
-    guard let code = HomeFailureCode(rawValue: value) else {
-        throw HomeWireDecodingError.invalidShape
-    }
-    return code
 }
 
 private func optionalISO8601Date(

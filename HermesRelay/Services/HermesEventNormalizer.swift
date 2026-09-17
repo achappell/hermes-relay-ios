@@ -167,6 +167,21 @@ struct HermesEventNormalizer: Sendable {
     /// Home has already passed its strict schema and redaction boundary. This
     /// method is the only bridge from that typed event into the existing
     /// normalized seam; Home never gets a second Standard parser.
+    /// Standard has no separate turn-complete event: a turn-owned
+    /// `message.complete` with a terminal (or absent) status ends the turn, the
+    /// same rule Home applies before releasing the turn.
+    private static func homeTurnTerminal(status: String?, turnID: String?) -> [HermesEvent] {
+        guard let turnID else { return [] }
+        switch status?.lowercased() {
+        case nil, "completed", "complete", "failed", "error", "timeout", "timed_out", "timed-out":
+            return [.turnComplete(turnID: turnID)]
+        case "cancelled", "canceled", "interrupted", "aborted", "stopped":
+            return [.turnInterrupted(turnID: turnID, reason: "turn interrupted")]
+        default:
+            return []
+        }
+    }
+
     mutating func normalizeHome(_ event: HomeStandardEvent) -> [HermesEvent] {
         switch event.type {
         case .messageStart:
@@ -178,7 +193,7 @@ struct HermesEventNormalizer: Sendable {
             guard case .final(let rendered, let text, _, _, _) = event.payload else { return [] }
             return normalizeFinalText(text ?? rendered ?? "")
         case .messageComplete:
-            guard case .final(let rendered, let text, _, let reasoning, let failureReason) = event.payload else { return [] }
+            guard case .final(let rendered, let text, let status, let reasoning, let failureReason) = event.payload else { return [] }
             let finalText = text ?? rendered ?? ""
             let update = normalizeFinalText(finalText)
             return update + [
@@ -187,7 +202,7 @@ struct HermesEventNormalizer: Sendable {
                     reasoning: reasoning ?? "",
                     failureReason: failureReason?.rawValue ?? ""
                 )
-            ]
+            ] + Self.homeTurnTerminal(status: status, turnID: event.scope.turnID)
         case .thinking, .reasoning:
             guard case .activity(let text, _, let reasoning, _) = event.payload else { return [] }
             let activity = text ?? reasoning ?? ""
