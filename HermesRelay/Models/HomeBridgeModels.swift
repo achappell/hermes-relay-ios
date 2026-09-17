@@ -136,7 +136,8 @@ struct HomeWireCapabilities: Codable, Equatable, Sendable {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         try HomeCoding.requireExactKeys(decoder, allowed: CodingKeys.allCases)
         commands = try container.decode([String].self, forKey: .commands)
-        heartbeat = try container.decode(Bool.self, forKey: .heartbeat)
+        // The live Home adapter forwards `heartbeat` only when Standard supplies it.
+        heartbeat = try container.decodeIfPresent(Bool.self, forKey: .heartbeat) ?? false
         timing = try container.decode(HomeTimingCapability.self, forKey: .timing)
         interrupt = try container.decodeIfPresent(Bool.self, forKey: .interrupt)
         audio = try container.decodeIfPresent(Bool.self, forKey: .audio)
@@ -144,10 +145,10 @@ struct HomeWireCapabilities: Codable, Equatable, Sendable {
 }
 
 private struct HomeWireUnresolvedTurnResult: Decodable, Equatable, Sendable {
-    let schema: Int
-    let conversationHandle: String
-    let turnID: String
-    let status: String
+    let schema: Int?
+    let conversationHandle: String?
+    let turnID: String?
+    let status: String?
     let resumeCursor: String?
 
     private enum CodingKeys: String, CodingKey, CaseIterable {
@@ -160,15 +161,15 @@ private struct HomeWireUnresolvedTurnResult: Decodable, Equatable, Sendable {
     init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         try HomeCoding.requireExactKeys(decoder, allowed: CodingKeys.allCases)
-        schema = try container.decode(Int.self, forKey: .schema)
-        conversationHandle = try container.decode(String.self, forKey: .conversationHandle)
-        turnID = try container.decode(String.self, forKey: .turnID)
-        status = try container.decode(String.self, forKey: .status)
+        schema = try container.decodeIfPresent(Int.self, forKey: .schema)
+        conversationHandle = try container.decodeIfPresent(String.self, forKey: .conversationHandle)
+        turnID = try container.decodeIfPresent(String.self, forKey: .turnID)
+        status = try container.decodeIfPresent(String.self, forKey: .status)
         resumeCursor = try container.decodeIfPresent(String.self, forKey: .resumeCursor)
-        guard schema == 1,
-              !conversationHandle.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
-              !turnID.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
-              !status.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+        guard (schema == nil || schema == 1),
+              conversationHandle?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty != true,
+              turnID?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty != true,
+              status?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty != true else {
             throw HomeWireDecodingError.invalidShape
         }
     }
@@ -225,7 +226,9 @@ struct HomeReadyWireResult: Codable, Equatable, Sendable {
                     HomeWireUnresolvedTurnResult.self,
                     forKey: .unresolvedTurn
                 )
-                guard activeTurn.conversationHandle == conversationHandle else {
+                guard activeTurn.schema == nil || activeTurn.schema == 1,
+                      activeTurn.conversationHandle == nil
+                          || activeTurn.conversationHandle == conversationHandle else {
                     throw HomeWireDecodingError.invalidShape
                 }
                 unresolvedTurn = true
@@ -355,7 +358,8 @@ struct HomeConversationClaim: Equatable, Sendable {
 struct HomeTurnBinding: Equatable, Sendable {
     let conversationHandle: String
     let turnID: String
-    let correlationID: String
+    /// Absent when Home's submission reply carries none; the turn ID then scopes the turn.
+    let correlationID: String?
 }
 
 struct HomeBridgeCapabilities: Equatable, Sendable {
@@ -693,6 +697,13 @@ struct HomeEventScope: Equatable, Sendable {
     let correlationID: String?
 }
 
+/// Correlation IDs only disambiguate when both sides carry one. A turn Home
+/// accepted without a correlation ID is scoped by its turn ID alone.
+func homeCorrelationMatches(expected: String?, received: String?) -> Bool {
+    guard let expected, let received else { return true }
+    return expected == received
+}
+
 struct HomeStructuredPrompt: Equatable, Sendable {
     let kind: HomeStructuredPromptKind
     let conversationHandle: String
@@ -745,21 +756,26 @@ enum HomeStandardEventType: String, Codable, Sendable {
     case audioAbort = "audio_abort"
     case error
 
-    /// Standard aliases normalized at the Home boundary for older Hermes builds.
-    init?(wireName: String) {
-        switch wireName {
+    /// Resolves Standard gateway names and Home's legacy aliases to client events.
+    init?(standardName: String) {
+        switch standardName {
         case "message.interim": self = .messageDelta
         case "text.delta": self = .textDelta
-        case "thinking.delta", "reasoning.delta", "reasoning.available": self = .reasoning
+        case "thinking.delta": self = .thinking
+        case "reasoning.delta", "reasoning.available": self = .reasoning
         case "status.update": self = .status
         case "turn.complete", "turn.completed", "turn.end", "turn.ended",
              "turn_end", "response.complete", "response.completed": self = .turnComplete
         case "turn.interrupted", "turn.cancelled": self = .turnInterrupted
         case "turn.error": self = .error
         default:
-            guard let value = Self(rawValue: wireName) else { return nil }
+            guard let value = Self(rawValue: standardName) else { return nil }
             self = value
         }
+    }
+
+    init?(wireName: String) {
+        self.init(standardName: wireName)
     }
 }
 

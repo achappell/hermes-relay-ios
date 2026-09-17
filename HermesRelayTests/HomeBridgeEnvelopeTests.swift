@@ -200,6 +200,42 @@ final class HomeBridgeEnvelopeTests: XCTestCase {
         })
     }
 
+    func testHomeNormalizerEndsTheTurnOnATerminalStandardMessageComplete() {
+        let turn = HomeEventScope(
+            conversationHandle: "opaque-home-conversation",
+            turnID: "home-turn-1",
+            correlationID: nil
+        )
+        func complete(status: String?, scope: HomeEventScope = turn) -> [HermesEvent] {
+            var normalizer = HermesEventNormalizer()
+            return normalizer.normalizeHome(HomeStandardEvent(
+                type: .messageComplete,
+                scope: scope,
+                payload: .final(rendered: nil, text: "OK", status: status, reasoning: nil, failureReason: nil)
+            ))
+        }
+
+        XCTAssertEqual(complete(status: "complete").last, .turnComplete(turnID: "home-turn-1"))
+        XCTAssertEqual(complete(status: nil).last, .turnComplete(turnID: "home-turn-1"))
+        XCTAssertEqual(
+            Array(complete(status: "error").suffix(2)),
+            [
+                .error("error"),
+                .turnInterrupted(turnID: "home-turn-1", reason: "error"),
+            ]
+        )
+        XCTAssertEqual(
+            complete(status: "interrupted").last,
+            .turnInterrupted(turnID: "home-turn-1", reason: "interrupted")
+        )
+        XCTAssertFalse(complete(status: "streaming").contains(.turnComplete(turnID: "home-turn-1")))
+        let global = HomeEventScope(conversationHandle: turn.conversationHandle, turnID: nil, correlationID: nil)
+        XCTAssertFalse(complete(status: "complete", scope: global).contains { event in
+            if case .turnComplete = event { return true }
+            return false
+        })
+    }
+
     func testPersistedRecoveryContainsOpaqueBindingOnly() throws {
         let profileID = UUID(uuidString: "AAAAAAAA-BBBB-CCCC-DDDD-EEEEEEEEEEEE")!
         let recovery = PersistedHomeRecovery(

@@ -178,14 +178,16 @@ final class ConversationStore {
                 let recoveryBinding = HomeTurnBinding(
                     conversationHandle: recovery.conversationHandle,
                     turnID: recovery.turnID ?? "unconfirmed",
-                    correlationID: recovery.correlationID ?? "unconfirmed"
+                    correlationID: recovery.turnID == nil
+                        ? recovery.correlationID ?? "unconfirmed"
+                        : recovery.correlationID
                 )
-                let persistedTurn: HomeTurnBinding? = if let turnID = recovery.turnID,
-                                                        let correlationID = recovery.correlationID {
+                // Home may accept a turn without a correlation ID; the turn ID is enough to restore it.
+                let persistedTurn: HomeTurnBinding? = if let turnID = recovery.turnID {
                     HomeTurnBinding(
                         conversationHandle: recovery.conversationHandle,
                         turnID: turnID,
-                        correlationID: correlationID
+                        correlationID: recovery.correlationID
                     )
                 } else {
                     nil
@@ -1689,7 +1691,9 @@ final class ConversationStore {
                     homeTurnBinding = HomeTurnBinding(
                         conversationHandle: binding.conversationHandle,
                         turnID: unresolvedTurn.turnID,
-                        correlationID: homeRecovery?.correlationID ?? "unresolved"
+                        correlationID: homeRecovery?.turnID == nil
+                            ? homeRecovery?.correlationID ?? "unresolved"
+                            : homeRecovery?.correlationID
                     )
                     homeTurnDeliveryState = .uncertain(homeTurnBinding)
                     if let homeRecovery {
