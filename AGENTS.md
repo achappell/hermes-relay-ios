@@ -54,6 +54,11 @@ Never print token values. For Project #3 reconciliation, follow the coordinator
 procedure and update only accepted iOS-owned rows from this repository's local
 artifacts.
 
+After refreshing BMAD, restore this repository's issue workflow overrides with
+`scripts/apply_repo_issue_tracking_overrides.sh`. The tracked source copies live
+under `_bmad/custom/repo-issue-tracking/workflows/common/`; use `--check` to
+verify the runtime copies. See [`docs/issue-tracking.md`](docs/issue-tracking.md).
+
 ## Product planning authority
 
 Durable Hermes Home product intent and cross-repository reconciliation are
