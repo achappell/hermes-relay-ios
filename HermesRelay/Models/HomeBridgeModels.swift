@@ -143,6 +143,37 @@ struct HomeWireCapabilities: Codable, Equatable, Sendable {
     }
 }
 
+private struct HomeWireUnresolvedTurnResult: Decodable, Equatable, Sendable {
+    let schema: Int
+    let conversationHandle: String
+    let turnID: String
+    let status: String
+    let resumeCursor: String?
+
+    private enum CodingKeys: String, CodingKey, CaseIterable {
+        case schema, status
+        case conversationHandle = "conversation_handle"
+        case turnID = "turn_id"
+        case resumeCursor = "resume_cursor"
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        try HomeCoding.requireExactKeys(decoder, allowed: CodingKeys.allCases)
+        schema = try container.decode(Int.self, forKey: .schema)
+        conversationHandle = try container.decode(String.self, forKey: .conversationHandle)
+        turnID = try container.decode(String.self, forKey: .turnID)
+        status = try container.decode(String.self, forKey: .status)
+        resumeCursor = try container.decodeIfPresent(String.self, forKey: .resumeCursor)
+        guard schema == 1,
+              !conversationHandle.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+              !turnID.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+              !status.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            throw HomeWireDecodingError.invalidShape
+        }
+    }
+}
+
 struct HomeReadyWireResult: Codable, Equatable, Sendable {
     let schema: Int
     let status: HomeBridgeReadyStatus
@@ -187,11 +218,18 @@ struct HomeReadyWireResult: Codable, Equatable, Sendable {
         capabilities = try container.decodeIfPresent(HomeWireCapabilities.self, forKey: .capabilities)
         reason = try container.decodeIfPresent(HomeWireReason.self, forKey: .reason)
         if container.contains(.unresolvedTurn) {
-            guard let isUnresolved = try? container.decode(Bool.self, forKey: .unresolvedTurn),
-                  !isUnresolved else {
-                throw HomeWireDecodingError.invalidShape
+            if let isUnresolved = try? container.decode(Bool.self, forKey: .unresolvedTurn) {
+                unresolvedTurn = isUnresolved
+            } else {
+                let activeTurn = try container.decode(
+                    HomeWireUnresolvedTurnResult.self,
+                    forKey: .unresolvedTurn
+                )
+                guard activeTurn.conversationHandle == conversationHandle else {
+                    throw HomeWireDecodingError.invalidShape
+                }
+                unresolvedTurn = true
             }
-            unresolvedTurn = isUnresolved
         } else {
             unresolvedTurn = nil
         }
@@ -214,6 +252,7 @@ enum HomeFailureCode: String, Codable, Sendable {
 
 enum HomeWireReason: String, Codable, Sendable {
     case reconnectRequired = "reconnect_required"
+    case turnActive = "turn_active"
     case invalidRequest = "invalid_request"
     case authorizationUnavailable = "authorization_unavailable"
     case unauthorized

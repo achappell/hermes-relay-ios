@@ -205,25 +205,27 @@ actor URLSessionHomeBridgeSessionClient: HomeBridgeSessionClient {
                   ready.conversationHandle == claim.conversationHandle else {
                 throw HomeWireDecodingError.invalidShape
             }
+            if ready.reason == .reconnectRequired
+                || ready.reason == .turnActive
+                || ready.unresolvedTurn == true {
+                let hasEstablishedBinding = currentBinding != nil
+                let reconnectBinding = currentBinding ?? HomeConversationBinding(
+                    profileID: claim.profileID,
+                    conversationHandle: claim.conversationHandle,
+                    endpoint: claim.approvedRoute.endpoint,
+                    route: claim.approvedRoute.identity,
+                    householdBinding: claim.approvedRoute.householdBinding,
+                    capabilities: capabilities
+                )
+                currentBinding = reconnectBinding
+                reconnectCapabilitiesUnverified = !hasEstablishedBinding
+                capabilities = reconnectBinding.capabilities
+                await retireSocketForReconnect()
+                return .unavailable(.reconnectRequired)
+            }
             guard ready.status == .ready,
                   let wireRoute = ready.route,
                   let wireCapabilities = ready.capabilities else {
-                if ready.reason == .reconnectRequired {
-                    let hasEstablishedBinding = currentBinding != nil
-                    let reconnectBinding = currentBinding ?? HomeConversationBinding(
-                        profileID: claim.profileID,
-                        conversationHandle: claim.conversationHandle,
-                        endpoint: claim.approvedRoute.endpoint,
-                        route: claim.approvedRoute.identity,
-                        householdBinding: claim.approvedRoute.householdBinding,
-                        capabilities: capabilities
-                    )
-                    currentBinding = reconnectBinding
-                    reconnectCapabilitiesUnverified = !hasEstablishedBinding
-                    capabilities = reconnectBinding.capabilities
-                    await retireSocketForReconnect()
-                    return .unavailable(.reconnectRequired)
-                }
                 return .unavailable(mapOpenReason(ready.reason ?? .protocolError))
             }
             guard wireRoute.routeClass == claim.approvedRoute.identity.routeClass,
@@ -322,7 +324,9 @@ actor URLSessionHomeBridgeSessionClient: HomeBridgeSessionClient {
                 bridgeReady = true
                 return .ready(binding: recoveredBinding, unresolvedTurn: unresolved)
             case .unavailable:
-                if result.reason == .reconnectRequired {
+                if result.reason == .reconnectRequired
+                    || result.reason == .turnActive
+                    || result.unresolvedTurnID != nil {
                     return .unavailable(.reconnectRequired)
                 }
                 return .unavailable(mapOpenReason(result.reason ?? .protocolError))
@@ -1378,6 +1382,7 @@ private func responseString(_ response: HomeWireResponse, key: String) -> String
 private func mapOpenReason(_ reason: HomeWireReason) -> HomeBridgeFailure {
     switch reason {
     case .reconnectRequired: return .reconnectRequired
+    case .turnActive: return .reconnectRequired
     case .routeUnavailable: return .route(.unavailable)
     case .routeUnauthorized: return .route(.unauthorized)
     case .routeIdentityMismatch: return .route(.identityMismatch)

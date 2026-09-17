@@ -203,6 +203,14 @@ final class HomeBridgeSessionClientTests: XCTestCase {
     func testReconnectRequiredOpenRetiresSocketForExplicitReconnect() async throws {
         let fixture = try await makeFixture()
         await fixture.socket.setNextOpenReason(HomeWireReason.reconnectRequired.rawValue)
+        await fixture.socket.setNextOpenUnresolvedTurn(
+            turnID: "turn-1",
+            resumeCursor: "cursor-1"
+        )
+        await fixture.secondSocket.setNextReconnectUnresolvedTurn(
+            turnID: "turn-1",
+            resumeCursor: "cursor-1"
+        )
 
         let openOutcome = await fixture.client.open(claim: fixture.claim)
 
@@ -232,7 +240,10 @@ final class HomeBridgeSessionClientTests: XCTestCase {
 
         XCTAssertEqual(
             reconnectOutcome,
-            .ready(binding: recoveredBinding, unresolvedTurn: nil)
+            .ready(
+                binding: recoveredBinding,
+                unresolvedTurn: HomeUnresolvedTurn(turnID: "turn-1", resumeCursor: "cursor-1")
+            )
         )
         let openMethods = try await fixture.socket.sentMethods()
         let reconnectMethods = try await fixture.secondSocket.sentMethods()
@@ -1375,6 +1386,7 @@ private actor TestHomeSocket: WebSocketConnection {
     private var closes = 0
     private var nextError: (method: String, jsonRPCCode: TestJSONRPCCode, homeCode: String?)?
     private var nextOpenReason: String?
+    private var nextOpenUnresolvedTurn: (turnID: String, resumeCursor: String?)?
     private var nextPromptResponseStatus: String?
     private var nextReconnectUnresolvedTurn: (turnID: String, resumeCursor: String?)?
 
@@ -1416,7 +1428,7 @@ private actor TestHomeSocket: WebSocketConnection {
             enqueue(.text(String(decoding: try JSONSerialization.data(withJSONObject: response), as: UTF8.self)))
             return
         }
-        let result: [String: Any]
+        var result: [String: Any]
         switch method {
         case "conversation.open":
             if let nextOpenReason {
@@ -1427,6 +1439,16 @@ private actor TestHomeSocket: WebSocketConnection {
                     "conversation_handle": claim.conversationHandle,
                     "reason": nextOpenReason,
                 ]
+                if let unresolved = nextOpenUnresolvedTurn {
+                    result["unresolved_turn"] = [
+                        "schema": 1,
+                        "conversation_handle": claim.conversationHandle,
+                        "turn_id": unresolved.turnID,
+                        "status": "uncertain",
+                        "resume_cursor": unresolved.resumeCursor as Any? ?? NSNull(),
+                    ]
+                    nextOpenUnresolvedTurn = nil
+                }
             } else {
                 result = [
                     "schema": 1,
@@ -1550,6 +1572,10 @@ private actor TestHomeSocket: WebSocketConnection {
 
     func setNextOpenReason(_ reason: String?) {
         nextOpenReason = reason
+    }
+
+    func setNextOpenUnresolvedTurn(turnID: String, resumeCursor: String?) {
+        nextOpenUnresolvedTurn = (turnID, resumeCursor)
     }
 
     func setNextReconnectUnresolvedTurn(turnID: String, resumeCursor: String?) {
