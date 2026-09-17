@@ -19,6 +19,28 @@ env:
   SCHEME: HermesRelay
 
 jobs:
+  issue-tracking:
+    name: Validate BMAD issue tracking
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
+        with:
+          python-version: "3.14"
+
+      - name: Test issue-tracking helpers and workflow wiring
+        run: python -m unittest discover -s tests -p 'test_bmad_issue_tracking*.py'
+
+      - name: Check override sources and shell syntax
+        run: |
+          bash -n scripts/apply_repo_issue_tracking_overrides.sh
+          scripts/apply_repo_issue_tracking_overrides.sh --check
+
   validate:
     name: Build and test
     runs-on: macos-26
