@@ -178,16 +178,19 @@ struct HermesEventNormalizer: Sendable {
             guard case .final(let rendered, let text, _, _, _) = event.payload else { return [] }
             return normalizeFinalText(text ?? rendered ?? "")
         case .messageComplete:
-            guard case .final(let rendered, let text, _, let reasoning, let failureReason) = event.payload else { return [] }
+            guard case .final(let rendered, let text, let status, let reasoning, let failureReason) = event.payload else { return [] }
             let finalText = text ?? rendered ?? ""
             let update = normalizeFinalText(finalText)
-            return update + [
-                .messageComplete(
-                    text: finalText,
-                    reasoning: reasoning ?? "",
-                    failureReason: failureReason?.rawValue ?? ""
-                )
-            ]
+            let completion = HermesEvent.messageComplete(
+                text: finalText,
+                reasoning: reasoning ?? "",
+                failureReason: failureReason?.rawValue ?? ""
+            )
+            return update + [completion] + homeTerminalEvents(
+                status: status,
+                failureReason: failureReason,
+                turnID: event.scope.turnID
+            )
         case .thinking, .reasoning:
             guard case .activity(let text, _, let reasoning, _) = event.payload else { return [] }
             let activity = text ?? reasoning ?? ""
@@ -207,7 +210,12 @@ struct HermesEventNormalizer: Sendable {
             return [.audioAbort(turnID: event.scope.turnID!, reason: "audio aborted")]
         case .error:
             guard case .error(let safeError) = event.payload else { return [] }
-            return [.error(safeError.code.rawValue)]
+            let error = HermesEvent.error(safeError.code.rawValue)
+            guard let turnID = event.scope.turnID else { return [error] }
+            return [
+                error,
+                .turnInterrupted(turnID: turnID, reason: safeError.code.rawValue),
+            ]
         }
     }
 
@@ -234,6 +242,31 @@ struct HermesEventNormalizer: Sendable {
             case .fallback, .unavailable, .invalid:
                 return [.audioAbort(turnID: "home", reason: terminal.rawValue)]
             }
+        default:
+            return []
+        }
+    }
+
+    private func homeTerminalEvents(
+        status: String?,
+        failureReason: HomeFailureCode?,
+        turnID: String?
+    ) -> [HermesEvent] {
+        guard let turnID else { return [] }
+        guard let status else { return [.turnComplete(turnID: turnID)] }
+        let terminalStatus = status.lowercased()
+        switch terminalStatus {
+        case "complete", "completed":
+            return [.turnComplete(turnID: turnID)]
+        case "cancelled", "canceled", "interrupted", "aborted", "stopped":
+            return [.turnInterrupted(turnID: turnID, reason: terminalStatus)]
+        case "failed", "error", "timeout", "timed_out", "timed-out":
+            var events: [HermesEvent] = []
+            if failureReason == nil {
+                events.append(.error(terminalStatus))
+            }
+            events.append(.turnInterrupted(turnID: turnID, reason: terminalStatus))
+            return events
         default:
             return []
         }

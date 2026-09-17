@@ -149,6 +149,57 @@ final class HomeBridgeEnvelopeTests: XCTestCase {
         )
     }
 
+    func testHomeMessageCompleteEndsOnlyATerminalTurn() {
+        let scope = HomeEventScope(
+            conversationHandle: "opaque-home-conversation",
+            turnID: "turn-1",
+            correlationID: "correlation-1"
+        )
+        var completedNormalizer = HermesEventNormalizer()
+
+        XCTAssertEqual(
+            completedNormalizer.normalizeHome(
+                HomeStandardEvent(
+                    type: .messageComplete,
+                    scope: scope,
+                    payload: .final(
+                        rendered: "Done.",
+                        text: nil,
+                        status: "completed",
+                        reasoning: nil,
+                        failureReason: nil
+                    )
+                )
+            ),
+            [
+                .textDelta("Done."),
+                .messageComplete(text: "Done.", reasoning: "", failureReason: ""),
+                .turnComplete(turnID: "turn-1"),
+            ]
+        )
+
+        var streamingNormalizer = HermesEventNormalizer()
+        let streamingEvents = streamingNormalizer.normalizeHome(
+            HomeStandardEvent(
+                type: .messageComplete,
+                scope: scope,
+                payload: .final(
+                    rendered: "Still working",
+                    text: nil,
+                    status: "streaming",
+                    reasoning: nil,
+                    failureReason: nil
+                )
+            )
+        )
+
+        XCTAssertFalse(streamingEvents.contains { event in
+            if case .turnComplete = event { return true }
+            if case .turnInterrupted = event { return true }
+            return false
+        })
+    }
+
     func testPersistedRecoveryContainsOpaqueBindingOnly() throws {
         let profileID = UUID(uuidString: "AAAAAAAA-BBBB-CCCC-DDDD-EEEEEEEEEEEE")!
         let recovery = PersistedHomeRecovery(
