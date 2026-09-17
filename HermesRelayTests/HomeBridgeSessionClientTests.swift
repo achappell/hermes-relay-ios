@@ -160,8 +160,11 @@ final class HomeBridgeSessionClientTests: XCTestCase {
             payload: [
                 "text": "the completed reply",
                 "status": "completed",
+                "reasoning": "synthetic reasoning",
+                "usage": ["input_tokens": 1, "output_tokens": 1],
+                "warning": "synthetic extension",
+                "billing": ["units": 1],
                 "response_id": "standard-extension",
-                "metadata": ["segment_count": 1],
             ]
         )))
 
@@ -175,7 +178,7 @@ final class HomeBridgeSessionClientTests: XCTestCase {
                     rendered: nil,
                     text: "the completed reply",
                     status: "completed",
-                    reasoning: nil,
+                    reasoning: "synthetic reasoning",
                     failureReason: nil
                 )
             ))
