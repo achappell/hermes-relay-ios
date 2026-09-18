@@ -567,7 +567,7 @@ final class ConversationStoreTransportTests: XCTestCase {
     }
 
     @MainActor
-    func testHomeTurnEventsUseTurnIDWhenEventCorrelationDiffers() async throws {
+    func testHomeTurnEventsUseTurnIDFallbackWhenCorrelationIsMissing() async throws {
         let fixture = try await makeHomeReviewFixture()
         defer { try? FileManager.default.removeItem(at: fixture.profileURL.deletingLastPathComponent()) }
         await fixture.store.loadConfiguredClient()
@@ -585,17 +585,17 @@ final class ConversationStoreTransportTests: XCTestCase {
             turnID: "turn-1",
             correlationID: "correlation-1"
         )
-        let standardEventScope = HomeEventScope(
+        let turnIDOnlyEventScope = HomeEventScope(
             conversationHandle: fixture.claim.conversationHandle,
             turnID: "turn-1",
-            correlationID: "standard-event-correlation"
+            correlationID: nil
         )
         await fixture.client.emit(.audioTerminal(audioScope, .end))
         await fixture.client.emit(.standard(HomeStandardEvent(
             type: .messageComplete,
-            scope: standardEventScope,
+            scope: turnIDOnlyEventScope,
             payload: .final(
-                rendered: "The turn correlation is independent.",
+                rendered: "Turn ID fallback applies without event correlation.",
                 text: nil,
                 status: "completed",
                 reasoning: nil,
@@ -604,13 +604,21 @@ final class ConversationStoreTransportTests: XCTestCase {
         )))
         await fixture.client.emit(.standard(HomeStandardEvent(
             type: .turnComplete,
-            scope: standardEventScope,
+            scope: turnIDOnlyEventScope,
             payload: .terminal(kind: .terminal)
         )))
 
         let sendCompleted = await sendTask.value
         XCTAssertTrue(sendCompleted)
-        XCTAssertEqual(fixture.store.messages.last?.text, "The turn correlation is independent.")
+        XCTAssertEqual(fixture.store.messages.last?.text, "Turn ID fallback applies without event correlation.")
+        XCTAssertEqual(
+            fixture.store.homeTurnDeliveryState,
+            .completed(HomeTurnBinding(
+                conversationHandle: fixture.claim.conversationHandle,
+                turnID: "turn-1",
+                correlationID: "correlation-1"
+            ))
+        )
     }
 
     @MainActor
