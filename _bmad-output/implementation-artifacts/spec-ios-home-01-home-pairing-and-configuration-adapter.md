@@ -181,30 +181,58 @@ macOS depend on iOS-only Device administration UI.
 - 2026-09-16 -- Implemented the approved slice, patched all 18 triaged review
   groups, and recorded focused/full simulator and macOS build evidence. The
   Edge Case Hunter limitation remains explicit below.
+- 2026-09-17 -- Completed the Device Management simulator smoke, aligned the
+  turn-ID fallback regression test with the current correlation contract, and
+  reran the full iOS suite and macOS build successfully. The local tracker is
+  now `done`.
 
 ## Verification
 
-**Automated validation:**
+**Implementation validation (recorded 2026-09-16):**
 
 - Focused `DeviceDiscoveryTests` and `RelayConfigurationTests` on iPhone 17 Pro
   / iOS 26.5 simulator: **144 tests passed, 0 failures**.
 - Full iOS simulator XCTest target on iPhone 17 Pro / iOS 26.5:
   **425 tests passed, 0 failures**.
 - macOS arm64 target build with signing disabled: **passed**.
-- `git diff --check` against the recorded baseline: **passed**. The changed-file
-  credential-pattern scan found no matches; the worktree contains only the
-  expected Swift source/tests and local BMad YAML/Markdown artifacts. No audio,
-  signing, generated build products, or unrelated files were changed.
+- `git diff --check` against the recorded baseline: **passed**. The original
+  implementation diff's credential-pattern scan found no matches; it
+  contained only expected Swift source/tests and local BMad artifacts, with no
+  audio, signing, generated build products, or unrelated edits.
+
+**Review validation (2026-09-17):**
+
+- Focused `DeviceDiscoveryTests` and `RelayConfigurationTests` on the iPhone 17
+  Pro / iOS 26.5 simulator: **144 tests passed, 0 failures**.
+- Full iOS simulator XCTest target on iPhone 17 Pro / iOS 26.5: **426 tests
+  passed, 0 failures**. The separate STD-4 fallback regression test now uses
+  an absent event correlation ID and verifies turn-ID fallback plus the
+  completed turn binding; mismatched non-empty correlation IDs remain rejected.
+- The focused fallback test passed: **1 test passed, 0 failures**.
+- Debug simulator build/run succeeded; the macOS arm64 target build with
+  signing disabled also succeeded.
+- `git diff --check`: **passed**.
+
+**PR branch validation (2026-09-17; based on `origin/main` at `5cb989d`):**
+
+- Debug simulator build/run on iPhone 17 Pro: **passed**.
+- Full iOS simulator XCTest suite: **446 tests passed, 0 failures**.
+- Focused Home suites plus the fallback regression: **145 tests passed, 0 failures**.
+- macOS arm64 build with signing disabled: **passed**.
+- `git diff --check`: **passed**.
 
 **Manual smoke:**
 
 - Installed and launched the Debug discovery fixture on the iPhone 17 Pro
-  simulator. The visible unconfigured screen showed “No Profile selected” and
-  “Not configured”; the composer and send button were disabled.
-- Attempted to open Device Management, but simulator-mirror taps did not
-  navigate. That screen was **not** manually verified. Valid, stale, malformed,
-  unauthorized, and unavailable Home behavior is covered by deterministic
-  XCTest fakes; no live Home endpoint or physical Device enrollment was used.
+  simulator. The unconfigured screen showed “No Profile selected” and “Not
+  configured”; the composer and send button were disabled.
+- Opened Configure Relay → Household Devices → Manage household Devices. The
+  Devices screen showed the approved Kitchen Display separately from the
+  unconfigured Hallway Puck and Study Display, both labeled “Unconfigured and
+  inert.” No Device was identified, approved, or configured.
+- Valid, stale, malformed, unauthorized, and unavailable Home behavior is
+  covered by deterministic XCTest fakes; no live Home endpoint or physical
+  Device enrollment was used.
 
 ## Review Triage Log
 
@@ -230,7 +258,7 @@ review limitation, not evidence of a clean pass.
 | B8 | Blind Hunter | The invalid-response message says no changes were applied. | `medium` — patched; `testInvalidHomePublishResponseExplainsThatOutcomeIsUnknown` checks uncertainty and reload guidance. |
 | B9 | Blind Hunter | Home reconciliation suppresses local persistence errors and still reports success. | `medium` — patched; `testHomeEligibilityPersistenceFailureReturnsInactiveWithAnError` proves write failure is surfaced and leaves the Device inactive. |
 | B10 | Blind Hunter | Deleting a Profile removes its relay token but leaves the new Home-admin Keychain item. | `medium` — patched; `testDeletingProfileAlsoRemovesItsHomeAdminCredential` checks cleanup with Profile deletion and error handling. |
-| B11 | Blind Hunter | Completing live Home setup does not refresh the Home-admin credential state in the parent form. | `medium` — patched in `RelayConfigurationView`: Home activation reloads the credential state for the selected Profile; the Device Management UI path was not traversed in manual smoke. |
+| B11 | Blind Hunter | Completing live Home setup does not refresh the Home-admin credential state in the parent form. | `medium` — patched in `RelayConfigurationView`: Home activation reloads the credential state for the selected Profile; the Device Management screen is now verified, but no live Home activation was attempted. |
 | B12 | Blind Hunter | An empty Home mapping catalog leaves an enabled Device stuck behind “Add a Wake Mapping” while the Add control is hidden. | `low` — patched; `testEmptyHomeWakeMappingCatalogShowsHomeOwnedAction` verifies actionable Home-owned guidance. |
 | B13 | Blind Hunter | Identifier validation accepts whitespace-only Room, Device, and mapping IDs. | `medium` — patched; `testHomeWireRejectsWhitespaceOnlyIdentifiers` rejects blank-only IDs while `testHomeWireAcceptsOpaqueIdentifiersWithoutApplyingAnUndocumentedGrammar` preserves meaningful opaque values. |
 
@@ -251,6 +279,6 @@ review limitation, not evidence of a clean pass.
 | G13 | B8 | `patch` | Describe an invalid PUT response as an unknown outcome and direct the user to reload. | Patched; `testInvalidHomePublishResponseExplainsThatOutcomeIsUnknown`. |
 | G14 | B9 | `patch` | Surface a failed reconciliation write instead of reporting success. | Patched; `testHomeEligibilityPersistenceFailureReturnsInactiveWithAnError`. |
 | G15 | B10 | `patch` | Delete the Home-admin Keychain item with its Profile. | Patched; `testDeletingProfileAlsoRemovesItsHomeAdminCredential`. |
-| G16 | B11 | `patch` | Reload credential state after live Home route activation. | Patched in the Home activation callback; manual Device Management traversal remains unverified. |
+| G16 | B11 | `patch` | Reload credential state after live Home route activation. | Patched in the Home activation callback; manual Device Management traversal is verified, while live Home activation remains unverified. |
 | G17 | B12 | `patch` | Give actionable guidance when Home's read-only catalog is empty. | Patched; `testEmptyHomeWakeMappingCatalogShowsHomeOwnedAction`. |
 | G18 | B13 | `patch` | Reject blank-only identifiers without imposing a grammar on meaningful opaque IDs. | Patched; whitespace-only rejection and opaque-ID acceptance tests cover the boundary. |
