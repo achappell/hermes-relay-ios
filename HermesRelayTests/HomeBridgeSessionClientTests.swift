@@ -64,6 +64,79 @@ final class HomeBridgeSessionClientTests: XCTestCase {
         XCTAssertEqual(closeCount, 1)
     }
 
+    func testURLSessionClientRecordsContentSafeSubmissionAndEventBoundaries() async throws {
+        let fixture = try await makeFixture()
+        let client = fixture.client
+        let stream = await client.events()
+        var events = stream.makeAsyncIterator()
+
+        guard case .ready(let binding, _) = await client.open(claim: fixture.claim) else {
+            return XCTFail("A valid Home bridge response must become ready")
+        }
+        guard case .accepted(let turn) = await client.submitPrompt(
+            "private prompt",
+            binding: binding
+        ) else {
+            return XCTFail("The prompt must be accepted")
+        }
+
+        await fixture.socket.enqueue(.text(try eventFrame(
+            conversationHandle: binding.conversationHandle,
+            turnID: turn.turnID,
+            correlationID: turn.correlationID,
+            type: "message.complete",
+            payload: ["status": "completed", "text": "private reply"]
+        )))
+        _ = try await events.next()
+
+        let recorded = await fixture.diagnostics.events()
+        XCTAssertEqual(recorded.first, .requestStarted(method: .promptSubmit))
+        XCTAssertTrue(recorded.contains { event in
+            guard case .requestCompleted(
+                .promptSubmit,
+                let durationMilliseconds,
+                true
+            ) = event else { return false }
+            return durationMilliseconds >= 0
+        })
+        XCTAssertTrue(recorded.contains(.eventReceived(kind: .standardEvent)))
+        XCTAssertFalse(String(describing: recorded).contains("private prompt"))
+        XCTAssertFalse(String(describing: recorded).contains("private reply"))
+
+        await client.close()
+    }
+
+    func testURLSessionClientRecordsKnownSubmissionRejectionWithoutContent() async throws {
+        let fixture = try await makeFixture()
+        guard case .ready(let binding, _) = await fixture.client.open(claim: fixture.claim) else {
+            return XCTFail("A valid Home bridge response must become ready")
+        }
+        await fixture.socket.setNextError(
+            for: "prompt.submit",
+            jsonRPCCode: -32_000,
+            homeCode: "request_rejected"
+        )
+
+        let outcome = await fixture.client.submitPrompt("private prompt", binding: binding)
+
+        XCTAssertEqual(
+            outcome,
+            .rejected(.home(code: .requestRejected, phase: .submission))
+        )
+        let recorded = await fixture.diagnostics.events()
+        XCTAssertTrue(recorded.contains { event in
+            guard case .requestFailed(
+                .promptSubmit,
+                .requestRejected,
+                false,
+                let durationMilliseconds
+            ) = event else { return false }
+            return durationMilliseconds >= 0
+        })
+        XCTAssertFalse(String(describing: recorded).contains("private prompt"))
+        await fixture.client.close()
+    }
+
     func testURLSessionClientAcceptsContractNestedEventNotification() async throws {
         let fixture = try await makeFixture()
         let client = fixture.client
@@ -1546,6 +1619,7 @@ final class HomeBridgeSessionClientTests: XCTestCase {
         let socket = TestHomeSocket(claim: claim)
         let secondSocket = TestHomeSocket(claim: claim)
         let requests = TestHomeRequestRecorder()
+        let diagnostics = RecordingHomeBridgeDiagnostics()
         let socketFactory = TestHomeSocketFactory(
             sockets: [socket, secondSocket],
             recorder: requests
@@ -1554,6 +1628,7 @@ final class HomeBridgeSessionClientTests: XCTestCase {
             routeProvider: StaticRouteProvider(route: route),
             credentialStore: credentialStore,
             socketFactory: socketFactory,
+            diagnostics: diagnostics,
             publicAdapterEnabled: true
         )
         return Fixture(
@@ -1562,7 +1637,8 @@ final class HomeBridgeSessionClientTests: XCTestCase {
             socket: socket,
             secondSocket: secondSocket,
             factory: socketFactory,
-            requests: requests
+            requests: requests,
+            diagnostics: diagnostics
         )
     }
 
@@ -1664,6 +1740,7 @@ private struct Fixture: Sendable {
     let secondSocket: TestHomeSocket
     let factory: TestHomeSocketFactory
     let requests: TestHomeRequestRecorder
+    let diagnostics: RecordingHomeBridgeDiagnostics
 }
 
 private struct StaticRouteProvider: HomeApprovedRouteProvider, Sendable {
@@ -1688,6 +1765,18 @@ private actor TestHomeRequestRecorder {
     func record(_ request: URLRequest) { values.append(request) }
     func first() -> URLRequest? { values.first }
     func count() -> Int { values.count }
+}
+
+private actor RecordingHomeBridgeDiagnostics: HomeBridgeDiagnostics {
+    private var recordedEvents: [HomeBridgeDiagnostic] = []
+
+    func record(_ event: HomeBridgeDiagnostic) async {
+        recordedEvents.append(event)
+    }
+
+    func events() -> [HomeBridgeDiagnostic] {
+        recordedEvents
+    }
 }
 
 private actor TestHomeSocketFactory: WebSocketConnectionFactory {

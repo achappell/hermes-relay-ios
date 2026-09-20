@@ -285,6 +285,42 @@ enum HomeFailurePhase: String, Codable, Sendable {
     case structuredResponse, command, ping, audio, lifecycle
 }
 
+enum HomeBridgeDiagnosticMethod: String, Equatable, Sendable {
+    case promptSubmit = "prompt.submit"
+}
+
+enum HomeBridgeDiagnosticEventKind: String, Equatable, Sendable {
+    case standardEvent
+    case structuredPrompt
+    case audioFrame
+    case binaryPCM
+}
+
+enum HomeBridgeDiagnostic: Equatable, Sendable {
+    case requestStarted(method: HomeBridgeDiagnosticMethod)
+    case requestCompleted(
+        method: HomeBridgeDiagnosticMethod,
+        durationMilliseconds: Int,
+        correlationPresent: Bool
+    )
+    case requestFailed(
+        method: HomeBridgeDiagnosticMethod,
+        code: HomeFailureCode,
+        uncertain: Bool,
+        durationMilliseconds: Int
+    )
+    case eventReceived(kind: HomeBridgeDiagnosticEventKind)
+    case transportLost
+}
+
+protocol HomeBridgeDiagnostics: Sendable {
+    func record(_ event: HomeBridgeDiagnostic) async
+}
+
+struct NoopHomeBridgeDiagnostics: HomeBridgeDiagnostics {
+    func record(_ event: HomeBridgeDiagnostic) async {}
+}
+
 enum HomeFailureClassification: String, Codable, Sendable {
     case known
     case uncertain
@@ -1211,6 +1247,7 @@ struct HomeBridgeClientDependencies: Sendable {
     let credentialStore: any HomeCredentialStore
     let clock: any HomeMonotonicClock
     let socketFactory: any WebSocketConnectionFactory
+    let diagnostics: any HomeBridgeDiagnostics
     let publicAdapterEnabled: Bool
     let routePinRecorder: (any HomeRoutePinRecorder)?
 
@@ -1219,6 +1256,7 @@ struct HomeBridgeClientDependencies: Sendable {
         credentialStore: any HomeCredentialStore,
         clock: any HomeMonotonicClock = ContinuousHomeMonotonicClock(),
         socketFactory: any WebSocketConnectionFactory = URLSessionWebSocketConnectionFactory(),
+        diagnostics: any HomeBridgeDiagnostics = NoopHomeBridgeDiagnostics(),
         publicAdapterEnabled: Bool = false,
         routePinRecorder: (any HomeRoutePinRecorder)? = nil
     ) {
@@ -1226,6 +1264,7 @@ struct HomeBridgeClientDependencies: Sendable {
         self.credentialStore = credentialStore
         self.clock = clock
         self.socketFactory = socketFactory
+        self.diagnostics = diagnostics
         self.publicAdapterEnabled = publicAdapterEnabled
         self.routePinRecorder = routePinRecorder
     }
