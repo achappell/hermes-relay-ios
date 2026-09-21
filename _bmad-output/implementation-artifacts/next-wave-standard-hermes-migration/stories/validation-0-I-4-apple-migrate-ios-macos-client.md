@@ -110,3 +110,11 @@ requires a UI surface that can attach to the simulator.
 
 This record contains no prompts, response text, credentials, raw protocol
 frames, PCM bytes, microphone captures, or screenshots.
+
+## 2026-09-21 closeout verification
+
+The current merged implementation was re-run on the runtime-resolved iPhone 17 Pro simulator. Focused Home/relay/voice coverage executed 133 tests with 0 failures. The complete iOS Simulator suite executed 446 tests with 0 failures. The arm64 macOS build completed successfully, and the repository diff check passed.
+
+The Home route was rechecked after the tailnet repair. Tailscale reached the approved Home host, but the WSS route returned HTTP 502 and the Hermes Relay client remained `Home bridge Unavailable`. No Device credential, prompt, turn, audio, or private content was sent. The route is therefore not live evidence for STD-4, and the story remains `review` rather than `done`.
+
+This closes the iOS implementation and deterministic validation lane. The remaining gate belongs to Home deployment and operator-provided Device authorization: restore the bridge backend behind the approved route, then run the recorded live matrix for confirmed interruption, timing absence, audio failure, and reconnect without replay.
