@@ -115,6 +115,10 @@ frames, PCM bytes, microphone captures, or screenshots.
 
 The current merged implementation was re-run on the runtime-resolved iPhone 17 Pro simulator. Focused Home/relay/voice coverage executed 133 tests with 0 failures. The complete iOS Simulator suite executed 446 tests with 0 failures. The arm64 macOS build completed successfully, and the repository diff check passed.
 
-The Home route was rechecked after the tailnet repair. Tailscale reached the approved Home host, but the WSS route returned HTTP 502 and the Hermes Relay client remained `Home bridge Unavailable`. No Device credential, prompt, turn, audio, or private content was sent. The route is therefore not live evidence for STD-4, and the story remains `review` rather than `done`.
+The Home route was rechecked after the tailnet repair. At this checkpoint, Tailscale reached the approved Home host, but the WSS route returned HTTP 502 and the Hermes Relay client remained `Home bridge Unavailable`. No Device credential, prompt, turn, audio, or private content was sent. The route was therefore not live evidence for STD-4 at that checkpoint, and the story remained `review` rather than `done`.
 
-This closes the iOS implementation and deterministic validation lane. The remaining gate belongs to Home deployment and operator-provided Device authorization: restore the bridge backend behind the approved route, then run the recorded live matrix for confirmed interruption, timing absence, audio failure, and reconnect without replay.
+This closes the iOS implementation and deterministic validation lane. The subsequent live Home follow-up below records the deployment and operator-authorization verification; the full manual matrix remains the review boundary for marking the story `done`.
+
+## 2026-09-21 live Home follow-up
+
+After the managed Home bridge task was restarted, the approved route returned HTTP 401 to an unauthenticated probe, confirming the authentication boundary. The Relay then completed a live `conversation.open` handshake using secure in-app Device-credential provisioning for the Kitchen/Hey Missy claim and reported `Home bridge Ready` and `Approved route reachable`. Amanda confirmed that voice control also works. This follow-up contains no credential, prompt, response text, raw protocol frame, PCM data, microphone capture, or private content.
