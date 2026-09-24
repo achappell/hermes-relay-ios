@@ -2,7 +2,7 @@
 title: 'IOS-HOME-02 (slice 1) — Pair iOS and macOS with a Home and connect through a client claim'
 type: 'feature'
 created: '2026-09-24'
-status: 'in-progress'
+status: 'in-review'
 baseline_commit: 'b23d1f87fa4b35af0a83f9afd259a052157da665'
 route: 'dispatch'
 review_loop_iteration: 0
