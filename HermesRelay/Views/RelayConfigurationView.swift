@@ -473,6 +473,11 @@ struct RelayConfigurationView: View {
                                     Task { await delete(profile) }
                                 }
                             }
+                            .contextMenu {
+                                Button("Delete", role: .destructive) {
+                                    Task { await delete(profile) }
+                                }
+                            }
                         }
 
                         Button("Add profile") {

@@ -1281,6 +1281,71 @@ final class VoiceSessionCoordinatorTests: XCTestCase {
     }
 
     @MainActor
+    func testHomePlaybackDrainFailureReleasesTurnForNextRequest() async throws {
+        let fixture = try await makeHomeVoiceReviewFixture()
+        defer { try? FileManager.default.removeItem(at: fixture.profileURL.deletingLastPathComponent()) }
+        let configured = await fixture.store.loadConfiguredClient()
+        XCTAssertTrue(configured)
+        await fixture.store.connect()
+
+        let coordinator = VoiceSessionCoordinator(
+            store: fixture.store,
+            input: CoordinatorSpeechInput(),
+            output: CoordinatorAudioOutput(finishError: .outputFailed)
+        )
+        fixture.store.draft = "Home voice request"
+        let responseTask = Task { @MainActor in
+            await coordinator.sendDraft()
+        }
+        await waitForHomeVoiceSubmission(fixture.client, atLeast: 1)
+
+        let scope = HomeEventScope(
+            conversationHandle: fixture.claim.conversationHandle,
+            turnID: "turn-1",
+            correlationID: "correlation-1"
+        )
+        await fixture.client.emit(.audioStart(
+            scope,
+            HomeAudioFormat(sampleRate: 24_000, channels: 1, sampleWidth: 2)
+        ))
+        await fixture.client.emit(.binaryPCM(scope, Data([0, 1, 2, 3])))
+        await fixture.client.emit(.audioTerminal(scope, .end))
+        await fixture.client.emit(.standard(HomeStandardEvent(
+            type: .messageComplete,
+            scope: scope,
+            payload: .final(
+                rendered: nil,
+                text: "Answer",
+                status: "complete",
+                reasoning: nil,
+                failureReason: nil
+            )
+        )))
+        await fixture.client.emit(.standard(HomeStandardEvent(
+            type: .turnComplete,
+            scope: scope,
+            payload: .terminal(kind: .terminal)
+        )))
+        await responseTask.value
+
+        XCTAssertEqual(
+            coordinator.state,
+            .failed("Audio playback failed. The response text is still available.")
+        )
+
+        // Home delivered the turn; failed local playback must not leave it
+        // in flight, or the next turn is refused as already in progress.
+        fixture.store.draft = "Second Home request"
+        let secondTask = Task { @MainActor in
+            await coordinator.sendDraft()
+        }
+        await waitForHomeVoiceSubmission(fixture.client, atLeast: 2)
+        secondTask.cancel()
+        let allSubmitted = await fixture.client.submittedTexts
+        XCTAssertEqual(allSubmitted, ["Home voice request", "Second Home request"])
+    }
+
+    @MainActor
     func testFileAudioKeepsResponseActiveUntilFileDeliveryFinishes() async throws {
         let writer = WAVFallbackWriter()
         let format = AudioFormat(sampleRate: 24_000, channels: 1, sampleWidth: 2)

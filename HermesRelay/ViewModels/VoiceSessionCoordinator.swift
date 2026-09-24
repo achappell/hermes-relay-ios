@@ -1194,6 +1194,16 @@ final class VoiceSessionCoordinator {
     /// already scheduled before going quiet — `finish()` returns once the
     /// buffers have actually played out.
     private func finishPlaybackAndEndResponse(generation: UInt64) async {
+        await playRemainingAudioAndEndResponse(generation: generation)
+        // Home control delivery is already known here. Every exit, including
+        // a playback failure, must release the accepted binding or the next
+        // turn is refused locally.
+        if store.isHomeMode, generation == responseGeneration {
+            await store.completeHomeTurnAfterAudio()
+        }
+    }
+
+    private func playRemainingAudioAndEndResponse(generation: UInt64) async {
         if audioStreamActive {
             audioStreamActive = false
             do {
@@ -1215,9 +1225,6 @@ final class VoiceSessionCoordinator {
             return
         }
         endResponse()
-        if store.isHomeMode {
-            await store.completeHomeTurnAfterAudio()
-        }
     }
 
     private func handlePlaybackFailure(generation: UInt64) async {
