@@ -122,6 +122,46 @@ context:
 
 ## Review Triage Log
 
+Review pass 1 (2026-09-24). Reviewers: Blind Hunter (B), Edge Case Hunter (E), Verification Gap (V).
+
+| # | Finding | Verdict | Evidence | Route |
+|---|---------|---------|----------|-------|
+| B1 | An opened link auto-submits to any https host | low | The user chose to open the link; the attacker must also run a Home and approve; the resulting profile name shows the host. The frozen matrix requires submission from a link. The waiting screen omitting the host is real. | patch (show Home host while waiting) |
+| B2/E5 | A deleted paired profile is recreated by Refresh | medium | `ensureProfiles` makes a profile for every active grant with no mapping; `removeProfile` drops the mapping. | patch |
+| B3/E1 | Whole-record `save` from stale copies can erase the pin, generation or profiles | medium | The coordinator saves copies read before an `await`; both actors are re-entrant. | patch |
+| B4 | Two concurrent renewals for one pairing | low | Only one `ConversationStore` connects at a time; the fix needs single-flight machinery. | reject |
+| B5/E2 | `conflict` could discard a credential Home already issued | false | Home returns the existing replacement for the same `request_id` (`credentials.py` `_find_replacement`); the retry reuses the saved ID. Home always issues `generation + 1`. | reject |
+| B6 | A lost consume response shows "expired before it was approved" | low | Home returns `expired_or_consumed` for a consumed request (`consume_request`). A message-only correction. | patch |
+| B7 | A single 401 disables the pairing | false | The frozen matrix requires `401` to mean "Pair again"; Home's device 401 means revoked, expired or superseded. | reject |
+| B8a | Removal error tells iOS users to edit Keychain | low | The text is not actionable; a direct correction. | patch |
+| B8b | Record deleted before Keychain; metadata delete skipped on a value-delete failure | low | Needs a Keychain failure mid-removal; the fix adds ordering machinery. | reject |
+| B9/E8/E9 | Dismissing the sheet leaves polling running; a pairing completed after cancel is not shown | medium | `cancel()` only runs from buttons; `run` returns early when cancelled after `complete`. | patch |
+| B10/E13 | Disconnect while reconnecting skips `conversation.close` | low | Guarded by `connectionState.isConnected`; a direct correction. | patch |
+| B11 | The proof claim creates an extra session; re-pairing resets the pin | false | Spec-mandated (Home selected only after a live `ready`); re-pairing re-proves by design. | reject |
+| B12 | Re-pair label matching can attach a different Profile's history | low | Labels are Profile names within one Home; deleting the fallback would lose transcripts on re-pair. | reject |
+| B13 | Handle redaction flag is reset before an `await` | medium | `loadConfiguredClient` sets `homeClaimsPerConnect = false` before awaiting `claimsPerConnect`; a persist in that window would write a live handle. | patch |
+| B14a | Redirects could carry the Device credential | false | `URLSessionHomeHTTPTransport` uses `HomeRedirectRefusingDelegate` (`DeviceDiscoveryClient.swift`). | reject |
+| B14b/E15 | 201/202 treated as failure | false | Every Home client route answers `HTTPResponse(200, …)`. | reject |
+| B14c | Strict keys and 60 s timeout | low | Strict decoding follows the STD-4 precedent; polling stops at `expires_at`. | reject |
+| B15 | Fakes compiled into the app target | low | Matches the existing `FakeHomeBridgeSessionClient` convention; never used in Release wiring. | reject |
+| B16 | Tracker not updated | low | `sprint-status.yaml` still says `backlog`; a direct correction. | patch |
+| E3/E18 | A corrupt pairing file breaks legacy profiles | medium | Route, credential and claim lookups `try` the pairing store before the legacy fall-through. | patch |
+| E4 | An unavailable first grant blocks activation | medium | `activate` proves with the first active grant, ignoring `available`. | patch |
+| E6 | A re-pair dropping a grant orphans its profile | low | The user sees a profile that reports pairing unavailable and can delete it. | reject |
+| E7 | A re-pair read-back failure overwrites the credential | low | Needs a Keychain read failure right after a successful write. | reject |
+| E10 | A link opened while another sheet is up is dropped | low | Rare, and the fix needs presentation routing. | reject |
+| E11 | The camera can keep running after the scanner is dismissed | medium | Start and stop run on the concurrent global queue; the permission callback can configure after dismissal. | patch |
+| E12 | `makePairedHomeClaim` early return leaves `.connecting` | medium | `connect()` refuses while `.connecting`. | patch |
+| E14 | Re-claiming after any held-claim failure | low | Bounded to one extra claim, released by the 90 s first-open expiry. | reject |
+| E16 | `https://host` and `https://host:443` are different Homes | low | A one-line normalization. | patch |
+| E17 | Map O/I/L typed codes | low | Home's `normalize_enrollment_code` does not map them; keep parity. | reject |
+| V1 | Foreground restore of a redacted recovery is untested | pre-verified | Filed by V. | patch (test) |
+| V2 | Renewal retry ID and `conflict` branches are untested | pre-verified | Filed by V. | patch (tests) |
+| V3 | Model-level delete credential cleanup is untested | pre-verified | Filed by V. | patch (test) |
+| V4 | `HomePairingModel.onPaired` and the link inbox are untested | pre-verified | Filed by V. | patch (tests) |
+| V5 | Loosened `validate(for:)` has no rejection test | pre-verified | Filed by V. | patch (test) |
+| V6 | The SwiftUI and AVFoundation code and the Release plist merge are uncompiled | pre-verified | Disclosed in the validation record; needs Xcode CI. | defer to the merge gate |
+
 ## Verification
 
 **Commands:**
