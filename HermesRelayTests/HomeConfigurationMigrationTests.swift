@@ -52,6 +52,34 @@ final class HomeConfigurationMigrationTests: XCTestCase {
         XCTAssertFalse(saved.contains(Data("device-secret".utf8)))
     }
 
+    func testCredentialReferenceAcceptsOnlyItsOwnersAccountInBothFormats() throws {
+        let owner = UUID()
+        let other = UUID()
+        let expiresAt = Date(timeIntervalSince1970: 1_000 + 90 * 24 * 60 * 60)
+        func reference(service: String = HomeCredentialKeychain.service, account: String) -> HomeCredentialReference {
+            HomeCredentialReference(
+                service: service,
+                account: account,
+                issuedAt: Date(timeIntervalSince1970: 1_000),
+                expiresAt: expiresAt,
+                renewAfter: expiresAt.addingTimeInterval(-14 * 24 * 60 * 60),
+                overlapUntil: nil
+            )
+        }
+
+        XCTAssertNoThrow(try reference(account: HomeCredentialKeychain.account(for: owner)).validate(for: owner))
+        XCTAssertNoThrow(try reference(account: HomeCredentialKeychain.account(forPairing: owner)).validate(for: owner))
+        for rejected in [
+            reference(account: HomeCredentialKeychain.account(for: other)),
+            reference(account: HomeCredentialKeychain.account(forPairing: other)),
+            reference(service: "com.example.other", account: HomeCredentialKeychain.account(for: owner)),
+        ] {
+            XCTAssertThrowsError(try rejected.validate(for: owner)) {
+                XCTAssertEqual($0 as? HomeCredentialReferenceError, .wrongServiceOrAccount)
+            }
+        }
+    }
+
     func testCredentialProvisioningStoresTheSecretSeparatelyFromReferenceMetadata() async throws {
         let profileID = UUID(uuidString: "AAAAAAAA-BBBB-CCCC-DDDD-EEEEEEEEEEEE")!
         let issuedAt = Date(timeIntervalSince1970: 1_000)

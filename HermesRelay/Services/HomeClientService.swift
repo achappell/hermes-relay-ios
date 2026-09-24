@@ -206,6 +206,8 @@ actor FakeHomeClientService: HomeClientService {
     var renewResult: Result<HomeCredentialMaterial, HomeClientServiceError>?
     var configurationResults: [Result<HomeClientDeviceConfiguration, HomeClientServiceError>] = []
     var claimResults: [Result<String, HomeClientServiceError>] = []
+    /// Denials answered for one grant regardless of `claimResults`.
+    var deniedGrants: [String: HomeClientDenial] = [:]
     private var claimCounter = 0
 
     init() {}
@@ -228,6 +230,10 @@ actor FakeHomeClientService: HomeClientService {
 
     func setClaimResults(_ results: [Result<String, HomeClientServiceError>]) {
         claimResults = results
+    }
+
+    func setDeniedGrants(_ denials: [String: HomeClientDenial]) {
+        deniedGrants = denials
     }
 
     func setSubmitError(_ error: HomeClientServiceError?) {
@@ -297,6 +303,9 @@ actor FakeHomeClientService: HomeClientService {
         calls.append(.claim(grantID: request.grantID, revision: request.configurationRevision))
         credentialsSeen.append(credential)
         claimCounter += 1
+        if let denial = deniedGrants[request.grantID] {
+            throw HomeClientServiceError.denied(denial)
+        }
         if !claimResults.isEmpty {
             let result = claimResults.count > 1 ? claimResults.removeFirst() : claimResults[0]
             let handle = try result.get()

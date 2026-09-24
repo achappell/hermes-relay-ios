@@ -31,9 +31,10 @@ language mode) in a scratch SwiftPM package. Security, Network, SwiftUI and
 AVFoundation files were excluded or stubbed; `HomePairingView.swift` was
 compiled up to its SwiftUI view.
 
-- New `HomeClientPairingTests`: 32 tests, 0 failures.
-- Existing `HomeConfigurationMigrationTests` (14) and
-  `ConversationStoreReconnectTests` (10): 0 failures with the change applied.
+- New `HomeClientPairingTests`: 44 tests, 0 failures (after the review follow-ups).
+- `HomeConfigurationMigrationTests` (11, including the new credential-reference
+  account test) and `ConversationStoreReconnectTests` (14): 0 failures with the
+  change applied.
 - Existing `HomeBridgeSessionClientTests`: 10 failures on Linux both at the
   baseline commit and with the change applied. They come from the Linux stub
   for `CFGetTypeID`/`CFBooleanGetTypeID` (JSON boolean detection), not from

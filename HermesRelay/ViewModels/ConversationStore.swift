@@ -267,7 +267,12 @@ final class ConversationStore {
             }
 
             transportMode = try await configurationStore.transportMode(for: profile.id)
-            homeClaimsPerConnect = false
+            // Computed before assigning: clearing the flag across this await
+            // would let a concurrent save write a live paired handle.
+            let claimsPerConnect = transportMode == .home
+                ? await homeClaimProvider?.claimsPerConnect(for: profile.id) == true
+                : false
+            homeClaimsPerConnect = claimsPerConnect
             if transportMode == .home {
                 homeOperationsSuppressed = false
                 homeConversationBinding = nil
@@ -275,7 +280,7 @@ final class ConversationStore {
                     homeTurnBinding = nil
                     homeTurnDeliveryState = .idle
                 }
-                if await homeClaimProvider?.claimsPerConnect(for: profile.id) == true {
+                if claimsPerConnect {
                     // A client claim is single-use and expires shortly after
                     // issue, so it is made in connect, not here. A claim kept
                     // in memory from this profile may still be within Home's
@@ -690,7 +695,10 @@ final class ConversationStore {
                                         failure: .home(code: .authorizationUnavailable, phase: .authorization))
                 return false
             }
-            guard !homeOperationsSuppressed, activeProfileID == profileID else { return false }
+            guard !homeOperationsSuppressed, activeProfileID == profileID else {
+                abandonPairedClaimAttempt()
+                return false
+            }
             homeClaim = claim
             pendingNewHomeConversationDivider = true
             canStartNewHomeConversation = false
@@ -705,7 +713,10 @@ final class ConversationStore {
             )
             return true
         } catch {
-            guard !homeOperationsSuppressed else { return false }
+            guard !homeOperationsSuppressed else {
+                abandonPairedClaimAttempt()
+                return false
+            }
             let connectError = error as? HomeClientConnectError
             applyPairedClaimFailure(
                 message: connectError?.errorDescription
@@ -715,6 +726,14 @@ final class ConversationStore {
             )
             return false
         }
+    }
+
+    /// The attempt was superseded (lifecycle or profile change) while the
+    /// claim was in flight; do not leave `connect()` locked out.
+    private func abandonPairedClaimAttempt() {
+        guard connectionState == .connecting else { return }
+        connectionState = .disconnected
+        homeBridgeState = .disconnected(.home(code: .transportUnavailable, phase: .lifecycle))
     }
 
     private func applyPairedClaimFailure(message: String, failure: HomeBridgeFailure) {
@@ -796,8 +815,9 @@ final class ConversationStore {
 
     private func closePairedHomeConversation() async {
         guard homeClaimsPerConnect else { return }
-        if connectionState.isConnected,
-           let binding = homeConversationBinding,
+        // Also while connecting or reconnecting: otherwise the claim stays
+        // open on Home through its reconnect grace.
+        if let binding = homeConversationBinding,
            let homeClient {
             _ = await homeClient.close(binding: binding)
         }

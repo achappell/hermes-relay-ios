@@ -30,7 +30,7 @@ final class HomePairingModel {
     enum Phase: Equatable {
         case entry
         case submitting
-        case waiting(confirmationCode: String)
+        case waiting(confirmationCode: String, home: String)
         case finished(HomeClientPairingSummary)
         case failed(String)
     }
@@ -108,14 +108,18 @@ final class HomePairingModel {
         defer { isRefreshing = false }
         do {
             let summary = try await coordinator.refresh(pairingID: pairingID)
-            phase = .finished(summary)
-            await loadPairings()
-            if summary.activationFailure == nil,
-               summary.grants.contains(where: { $0.profileName != nil }) {
-                await onPaired()
-            }
+            await finish(summary)
         } catch {
             phase = .failed(error.localizedDescription)
+        }
+    }
+
+    private func finish(_ summary: HomeClientPairingSummary) async {
+        phase = .finished(summary)
+        await loadPairings()
+        if summary.activationFailure == nil,
+           summary.grants.contains(where: { $0.profileName != nil }) {
+            await onPaired()
         }
     }
 
@@ -133,15 +137,14 @@ final class HomePairingModel {
         phase = .submitting
         do {
             let request = try await coordinator.submit(invitation)
-            phase = .waiting(confirmationCode: request.displayConfirmationCode)
+            phase = .waiting(
+                confirmationCode: request.displayConfirmationCode,
+                home: invitation.home.displayName
+            )
             let summary = try await coordinator.finishPairing(invitation, request: request)
-            guard !Task.isCancelled else { return }
-            phase = .finished(summary)
-            await loadPairings()
-            if summary.activationFailure == nil,
-               summary.grants.contains(where: { $0.profileName != nil }) {
-                await onPaired()
-            }
+            // A pairing that completed is shown and announced even if the
+            // sheet was cancelled meanwhile; the credential is already stored.
+            await finish(summary)
         } catch is CancellationError {
             phase = .entry
         } catch {
@@ -177,8 +180,8 @@ struct HomePairingView: View {
                     Section {
                         ProgressView("Sending the pairing request…")
                     }
-                case .waiting(let confirmationCode):
-                    waitingSection(confirmationCode: confirmationCode)
+                case .waiting(let confirmationCode, let home):
+                    waitingSection(confirmationCode: confirmationCode, home: home)
                 case .finished(let summary):
                     summarySections(summary)
                 case .failed(let message):
@@ -217,6 +220,10 @@ struct HomePairingView: View {
                 .ignoresSafeArea()
             }
             #endif
+            .onDisappear {
+                // Swiping the sheet away must not leave polling running.
+                model.cancel()
+            }
             .task {
                 await model.loadPairings()
                 if let initialLink, model.phase == .entry {
@@ -312,8 +319,11 @@ struct HomePairingView: View {
         }
     }
 
-    private func waitingSection(confirmationCode: String) -> some View {
+    private func waitingSection(confirmationCode: String, home: String) -> some View {
         Section {
+            Text("Pairing with \(home)")
+                .font(.headline)
+                .accessibilityIdentifier("home-pairing-home")
             VStack(alignment: .leading, spacing: 8) {
                 Text("Confirmation code")
                     .font(.caption)

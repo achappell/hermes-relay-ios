@@ -72,6 +72,28 @@ actor JSONHomeClientPairingStore: HomeRoutePinRecorder, HomeApprovedRouteProvide
         try write(file)
     }
 
+    /// Applies `mutate` to the record as it is on disk now, so a copy read
+    /// before an `await` never overwrites fields written in between (the
+    /// route pin, a newer generation, profile mappings).
+    @discardableResult
+    func update(
+        pairingID: UUID,
+        _ mutate: (inout HomeClientPairing) throws -> Void
+    ) throws -> HomeClientPairing {
+        var file = try readFile()
+        guard let index = file.pairings.firstIndex(where: { $0.id == pairingID }) else {
+            throw HomeClientPairingStoreError.unknownPairing
+        }
+        let pinned = file.pairings[index].pinnedRouteID
+        var pairing = file.pairings[index]
+        try mutate(&pairing)
+        // Only a fresh re-pair (`save`) may clear the pin.
+        if pairing.pinnedRouteID == nil { pairing.pinnedRouteID = pinned }
+        file.pairings[index] = pairing
+        try write(file)
+        return pairing
+    }
+
     func remove(pairingID: UUID) throws {
         var file = try readFile()
         file.pairings.removeAll { $0.id == pairingID }
@@ -96,6 +118,12 @@ actor JSONHomeClientPairingStore: HomeRoutePinRecorder, HomeApprovedRouteProvide
             return nil
         }
         var pairing = file.pairings[index]
+        // The grant stays active on Home; remember that the user removed its
+        // profile so a refresh does not recreate it.
+        for removed in pairing.profiles where removed.profileID == profileID
+            && !pairing.unboundGrantIDs.contains(removed.grantID) {
+            pairing.unboundGrantIDs.append(removed.grantID)
+        }
         pairing.profiles.removeAll { $0.profileID == profileID }
         if pairing.profiles.isEmpty {
             file.pairings.remove(at: index)
@@ -164,7 +192,9 @@ struct AppHomeApprovedRouteProvider: HomeApprovedRouteProvider {
     let legacy: (any HomeApprovedRouteProvider)?
 
     func approvedRoute(for profileID: UUID) async throws -> HomeApprovedRoute? {
-        if let pairing = try await pairings.pairing(forProfile: profileID) {
+        // An unreadable pairing file is "not paired": operator-provisioned
+        // profiles keep working, and a paired profile fails closed.
+        if let pairing = try? await pairings.pairing(forProfile: profileID) {
             return pairing.approvedRoute
         }
         return try await legacy?.approvedRoute(for: profileID)
@@ -178,7 +208,8 @@ struct PairingAwareHomeCredentialStore: HomeCredentialStore {
     let credentials: any HomeCredentialProvisioningStore
 
     private func owner(for profileID: UUID) async throws -> UUID {
-        try await pairings.pairing(forProfile: profileID)?.id ?? profileID
+        // An unreadable pairing file is "not paired" (see the route provider).
+        (try? await pairings.pairing(forProfile: profileID))?.id ?? profileID
     }
 
     func stage(preIssued: HomeCredentialReference, for profileID: UUID) async throws {
@@ -297,7 +328,9 @@ actor HomeClientClaimCoordinator {
     /// Nil when the profile is not paired, so callers fall through to the
     /// operator-provisioned claim.
     func claim(for profileID: UUID) async throws -> HomeConversationClaim? {
-        guard let paired = try await pairings.pairing(forProfile: profileID),
+        // An unreadable pairing file is "not paired", so operator-provisioned
+        // profiles fall through unchanged.
+        guard let paired = try? await pairings.pairing(forProfile: profileID),
               let grantID = paired.grantID(for: profileID) else {
             return nil
         }
@@ -363,11 +396,13 @@ actor HomeClientClaimCoordinator {
             // idempotent request.
             if let record = try? await credentials.verifiedReadBack(for: pairing.id),
                record.reference.expiresAt > pairing.credentialExpiresAt {
-                pairing.generation += 1
-                pairing.credentialExpiresAt = record.reference.expiresAt
-                pairing.pendingRenewalRequestID = nil
-                try await pairings.save(pairing)
-                return pairing
+                let expected = pairing.generation
+                return try await pairings.update(pairingID: pairing.id) { current in
+                    guard current.pendingRenewalRequestID == pendingRequestID else { return }
+                    current.generation = max(current.generation, expected + 1)
+                    current.credentialExpiresAt = max(current.credentialExpiresAt, record.reference.expiresAt)
+                    current.pendingRenewalRequestID = nil
+                }
             }
             return try await performRenewal(pairing, requestID: pendingRequestID)
         }
@@ -377,8 +412,9 @@ actor HomeClientClaimCoordinator {
         }
         guard pairing.credentialReference.isRenewalEligible(at: date) else { return pairing }
         let requestID = "renew-\(makeID())"
-        pairing.pendingRenewalRequestID = requestID
-        try await pairings.save(pairing)
+        pairing = try await pairings.update(pairingID: pairing.id) {
+            $0.pendingRenewalRequestID = requestID
+        }
         return try await performRenewal(pairing, requestID: requestID)
     }
 
@@ -386,7 +422,6 @@ actor HomeClientClaimCoordinator {
         _ pairing: HomeClientPairing,
         requestID: String
     ) async throws -> HomeClientPairing {
-        var pairing = pairing
         let material: HomeCredentialMaterial
         do {
             let home = pairing.home
@@ -404,9 +439,9 @@ actor HomeClientClaimCoordinator {
         } catch HomeClientServiceError.denied(.conflict) {
             // Home's clock says renewal is not due, or the request was already
             // settled. The current credential stays in use.
-            pairing.pendingRenewalRequestID = nil
-            try await pairings.save(pairing)
-            return pairing
+            return try await pairings.update(pairingID: pairing.id) {
+                if $0.pendingRenewalRequestID == requestID { $0.pendingRenewalRequestID = nil }
+            }
         } catch HomeClientServiceError.denied(.expiredOrConsumed) {
             throw HomeClientConnectError.pairAgain(home: pairing.home.displayName)
         }
@@ -419,11 +454,11 @@ actor HomeClientClaimCoordinator {
             reference: HomeClientPairing.credentialReference(pairingID: pairing.id, expiresAt: expiresAt),
             for: pairing.id
         )
-        pairing.generation = material.generation
-        pairing.credentialExpiresAt = expiresAt
-        pairing.pendingRenewalRequestID = nil
-        try await pairings.save(pairing)
-        return pairing
+        return try await pairings.update(pairingID: pairing.id) {
+            $0.generation = material.generation
+            $0.credentialExpiresAt = expiresAt
+            $0.pendingRenewalRequestID = nil
+        }
     }
 
     private func readConfiguration(
@@ -434,10 +469,8 @@ actor HomeClientClaimCoordinator {
         let configuration = try await withCredential(pairing) { [service] credential in
             try await service.deviceConfiguration(home: home, deviceID: deviceID, credential: credential)
         }
-        if configuration.clientGrants != pairing.grants {
-            pairing.grants = configuration.clientGrants
-            try await pairings.save(pairing)
-        }
+        let grants = configuration.clientGrants
+        pairing = try await pairings.update(pairingID: pairing.id) { $0.grants = grants }
         return configuration
     }
 
@@ -497,6 +530,7 @@ enum HomePairingFlowError: Error, LocalizedError, Equatable, Sendable {
     case codeNotAccepted
     case rejected
     case expired
+    case expiredOrConsumed
     case homeUnreachable
     case notAPersonalClientCredential
     case keychainFailure
@@ -510,6 +544,8 @@ enum HomePairingFlowError: Error, LocalizedError, Equatable, Sendable {
             return "The pairing request was rejected on the Home page. Start again to pair."
         case .expired:
             return "The pairing request expired before it was approved. Start again to pair."
+        case .expiredOrConsumed:
+            return "The pairing request expired or was already used. If this device now appears on the Home page, remove it there, then pair again."
         case .homeUnreachable:
             return "Home is unreachable. Check the address and your connection, then start again."
         case .notAPersonalClientCredential:
@@ -717,9 +753,10 @@ actor HomeClientPairingCoordinator {
     }
 
     private func ensureProfiles(_ pairing: HomeClientPairing) async throws -> HomeClientPairing {
-        var pairing = pairing
+        var pairing = try await pairings.pairing(id: pairing.id) ?? pairing
         let collection = try await configurationStore.loadCollection()
-        for grant in pairing.grants where grant.isActive {
+        for grant in pairing.grants where grant.isActive
+            && !pairing.unboundGrantIDs.contains(grant.grantID) {
             let profileID: UUID
             if let mapped = pairing.profileID(for: grant.grantID) {
                 guard !collection.profiles.contains(where: { $0.id == mapped }) else { continue }
@@ -727,9 +764,14 @@ actor HomeClientPairingCoordinator {
             } else {
                 // Record the mapping first; a crash before the profile is
                 // written is repaired by the next refresh.
-                profileID = UUID()
-                pairing.profiles.append(HomeClientPairedProfile(profileID: profileID, grantID: grant.grantID))
-                try await pairings.save(pairing)
+                let minted = UUID()
+                pairing = try await pairings.update(pairingID: pairing.id) { current in
+                    if !current.profiles.contains(where: { $0.grantID == grant.grantID }) {
+                        current.profiles.append(HomeClientPairedProfile(profileID: minted, grantID: grant.grantID))
+                    }
+                }
+                guard let recorded = pairing.profileID(for: grant.grantID) else { continue }
+                profileID = recorded
             }
             let profile = try RelayProfile(
                 id: profileID,
@@ -749,16 +791,28 @@ actor HomeClientPairingCoordinator {
         _ pairing: HomeClientPairing,
         selectActivatedProfile: Bool
     ) async throws -> HomeClientPairingSummary {
-        let activeProfiles = pairing.grants
-            .filter(\.isActive)
+        // Available grants first, so an unavailable Profile never blocks a
+        // usable one from proving the pairing.
+        let activeGrants = pairing.grants.filter(\.isActive)
+        let activeProfiles = (activeGrants.filter(\.available) + activeGrants.filter { !$0.available })
             .compactMap { pairing.profileID(for: $0.grantID) }
-        guard let firstProfile = activeProfiles.first else {
+        guard var selectedProfile = activeProfiles.first else {
             return try await makeSummary(pairing, activationFailure: nil)
         }
         var current = pairing
         if current.pinnedRouteID == nil {
-            if let failure = await proveLiveReady(profileID: firstProfile) {
-                return try await makeSummary(current, activationFailure: failure)
+            var lastFailure: String?
+            var proven: UUID?
+            for profileID in activeProfiles {
+                if let failure = await proveLiveReady(profileID: profileID) {
+                    lastFailure = failure
+                    continue
+                }
+                proven = profileID
+                break
+            }
+            guard let proven else {
+                return try await makeSummary(current, activationFailure: lastFailure)
             }
             guard let refreshed = try await pairings.pairing(id: pairing.id),
                   refreshed.pinnedRouteID != nil else {
@@ -767,13 +821,14 @@ actor HomeClientPairingCoordinator {
                     activationFailure: HomeClientPairingStoreError.routeIdentityMismatch.localizedDescription
                 )
             }
+            selectedProfile = proven
             current = refreshed
         }
         for profileID in activeProfiles {
             try await configurationStore.selectPairedHome(for: profileID)
         }
         if selectActivatedProfile {
-            try await configurationStore.selectProfile(id: firstProfile)
+            try await configurationStore.selectProfile(id: selectedProfile)
         }
         return try await makeSummary(current, activationFailure: nil)
     }
@@ -842,7 +897,9 @@ actor HomeClientPairingCoordinator {
         case HomeClientServiceError.denied(.rejected):
             return HomePairingFlowError.rejected
         case HomeClientServiceError.denied(.expiredOrConsumed):
-            return HomePairingFlowError.expired
+            // Home also answers this for a request already consumed, for
+            // example when the consume response was lost.
+            return HomePairingFlowError.expiredOrConsumed
         case HomeClientServiceError.denied(.unauthorized),
              HomeClientServiceError.denied(.notFound),
              HomeClientServiceError.denied(.invalidRequest):

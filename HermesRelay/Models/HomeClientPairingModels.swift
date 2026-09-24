@@ -76,7 +76,8 @@ struct HomeClientBaseURL: Codable, Hashable, Sendable {
         var normalized = URLComponents()
         normalized.scheme = "https"
         normalized.host = host
-        normalized.port = components.port
+        // `https://host` and `https://host:443` are the same Home.
+        normalized.port = components.port == 443 ? nil : components.port
         guard let url = normalized.url else {
             throw HomeClientPairingError.homeAddressRequired
         }
@@ -650,6 +651,32 @@ struct HomeClientPairing: Codable, Equatable, Sendable, Identifiable {
     /// Set while a renewal is in flight so a crash can retry the same
     /// idempotent request instead of burning the generation.
     var pendingRenewalRequestID: String?
+    /// Grants whose profile the user removed while the grant stayed active
+    /// on Home. A refresh does not recreate them; a fresh re-pair clears them.
+    var unboundGrantIDs: [String]
+
+    private enum CodingKeys: String, CodingKey {
+        case schemaVersion, id, home, endpointID, deviceID, generation
+        case credentialExpiresAt, credentialUsable, grants, profiles
+        case pinnedRouteID, pendingRenewalRequestID, unboundGrantIDs
+    }
+
+    init(from decoder: Decoder) throws {
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        schemaVersion = try values.decode(Int.self, forKey: .schemaVersion)
+        id = try values.decode(UUID.self, forKey: .id)
+        home = try values.decode(HomeClientBaseURL.self, forKey: .home)
+        endpointID = try values.decode(UUID.self, forKey: .endpointID)
+        deviceID = try values.decode(String.self, forKey: .deviceID)
+        generation = try values.decode(Int.self, forKey: .generation)
+        credentialExpiresAt = try values.decode(Date.self, forKey: .credentialExpiresAt)
+        credentialUsable = try values.decode(Bool.self, forKey: .credentialUsable)
+        grants = try values.decode([HomeClientGrant].self, forKey: .grants)
+        profiles = try values.decode([HomeClientPairedProfile].self, forKey: .profiles)
+        pinnedRouteID = try values.decodeIfPresent(String.self, forKey: .pinnedRouteID)
+        pendingRenewalRequestID = try values.decodeIfPresent(String.self, forKey: .pendingRenewalRequestID)
+        unboundGrantIDs = try values.decodeIfPresent([String].self, forKey: .unboundGrantIDs) ?? []
+    }
 
     init(
         id: UUID = UUID(),
@@ -663,6 +690,7 @@ struct HomeClientPairing: Codable, Equatable, Sendable, Identifiable {
         profiles: [HomeClientPairedProfile] = [],
         pinnedRouteID: String? = nil,
         pendingRenewalRequestID: String? = nil,
+        unboundGrantIDs: [String] = [],
         schemaVersion: Int = HomeClientPairing.currentSchemaVersion
     ) {
         self.schemaVersion = schemaVersion
@@ -677,6 +705,7 @@ struct HomeClientPairing: Codable, Equatable, Sendable, Identifiable {
         self.profiles = profiles
         self.pinnedRouteID = pinnedRouteID
         self.pendingRenewalRequestID = pendingRenewalRequestID
+        self.unboundGrantIDs = unboundGrantIDs
     }
 
     func grantID(for profileID: UUID) -> String? {

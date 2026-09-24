@@ -89,7 +89,7 @@ final class RelayProfileListModel {
             }
             await load()
             if pairingCleanupFailed {
-                errorMessage = "The Profile was deleted, but its Home pairing credential could not be removed. Remove it from Keychain before reusing this device."
+                errorMessage = "The Profile was deleted, but its Home pairing could not be cleaned up. Pairing this Home again replaces the stored credential."
             }
             return true
         } catch {

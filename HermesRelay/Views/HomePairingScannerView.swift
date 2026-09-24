@@ -30,8 +30,13 @@ final class HomePairingScannerViewController: UIViewController,
     var onUnavailable: (@MainActor (String) -> Void)?
 
     private let session = AVCaptureSession()
+    /// One serial queue owns start and stop so they cannot reorder.
+    private let sessionQueue = DispatchQueue(label: "com.achappell.HermesRelay.pairing-scanner")
     private var previewLayer: AVCaptureVideoPreviewLayer?
     private var didFinish = false
+    /// Set once the scanner leaves the screen; a late permission answer must
+    /// not turn the camera on afterwards.
+    private var didDisappear = false
 
     static let deniedMessage = "Camera access is off for Hermes. Enter the pairing code instead."
     static let missingMessage = "The camera is unavailable. Enter the pairing code instead."
@@ -65,10 +70,12 @@ final class HomePairingScannerViewController: UIViewController,
 
     override func viewWillDisappear(_ animated: Bool) {
         super.viewWillDisappear(animated)
+        didDisappear = true
         stopSession()
     }
 
     private func configureSession() {
+        guard !didDisappear else { return }
         guard let device = AVCaptureDevice.default(for: .video),
               let input = try? AVCaptureDeviceInput(device: device),
               session.canAddInput(input) else {
@@ -91,15 +98,16 @@ final class HomePairingScannerViewController: UIViewController,
         view.layer.addSublayer(layer)
         previewLayer = layer
 
+        guard !didDisappear else { return }
         nonisolated(unsafe) let captureSession = session
-        DispatchQueue.global(qos: .userInitiated).async {
+        sessionQueue.async {
             captureSession.startRunning()
         }
     }
 
     private func stopSession() {
         nonisolated(unsafe) let captureSession = session
-        DispatchQueue.global(qos: .userInitiated).async {
+        sessionQueue.async {
             if captureSession.isRunning { captureSession.stopRunning() }
         }
     }

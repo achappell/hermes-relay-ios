@@ -253,7 +253,7 @@ final class HomeClientPairingTests: XCTestCase {
     func testRejectedAndExpiredAreTerminalAndStoreNothing() async throws {
         for (denial, expected) in [
             (HomeClientDenial.rejected, HomePairingFlowError.rejected),
-            (.expiredOrConsumed, .expired),
+            (.expiredOrConsumed, .expiredOrConsumed),
         ] {
             let fixture = try await Self.makeFixture()
             let invitation = try HomePairingInvitation(code: Self.pairingCode, homeAddress: Self.home)
@@ -846,11 +846,271 @@ final class HomeClientPairingTests: XCTestCase {
         XCTAssertEqual(submissions.first?.endpointID, submissions.last?.endpointID)
     }
 
+    // MARK: Review follow-ups
+
+    @MainActor
+    func testForegroundCycleRestoresTheHeldHandleForAnUncertainPairedTurn() async throws {
+        let fixture = try await Self.makeFixture()
+        _ = try await Self.pair(fixture)
+        let store = fixture.makeStore()
+        await store.loadConfiguredClient()
+        await store.connect()
+        let firstClient = try XCTUnwrap(fixture.echo.clients.last)
+        let openedHandle = await firstClient.lastOpenedHandle()
+        let handle = try XCTUnwrap(openedHandle)
+        await firstClient.setNextSubmission(.uncertain(.home(code: .transportTimeout, phase: .submission)))
+        _ = await store.sendTurn(text: "maybe sent")
+        await fixture.service.resetCalls()
+
+        _ = store.takeHomeClientForLifecycle()
+        await store.loadConfiguredClient()
+        await store.loadPersistedConversation()
+        await store.connect()
+
+        XCTAssertEqual(store.connectionState, .connected)
+        XCTAssertFalse(store.canStartNewHomeConversation)
+        XCTAssertEqual(fixture.echo.clients.last?.openedHandlesSnapshot, [handle])
+        let calls = await fixture.service.calls
+        XCTAssertEqual(calls, [], "The held claim is reopened, not replaced")
+        let submitted = await fixture.echo.allSubmittedTexts()
+        XCTAssertEqual(submitted, ["maybe sent"])
+    }
+
+    func testInterruptedRenewalWithoutANewerCredentialRetriesTheSavedRequest() async throws {
+        let fixture = try await Self.makeFixture()
+        _ = try await Self.pair(fixture)
+        let saved = try await Self.firstPairing(fixture)
+        let pairing = try await fixture.pairings.update(pairingID: saved.id) {
+            $0.pendingRenewalRequestID = "renew-saved"
+        }
+        await fixture.service.setRenewResult(.success(Self.material(
+            generation: 2,
+            credential: Self.renewedCredential,
+            expiresAt: fixture.clock.now.addingTimeInterval(90 * 24 * 60 * 60)
+        )))
+
+        let renewed = try await fixture.claims.renewIfDue(pairing)
+
+        let ids = await fixture.service.renewRequestIDs
+        XCTAssertEqual(ids, ["renew-saved"])
+        XCTAssertEqual(renewed.generation, 2)
+        XCTAssertNil(renewed.pendingRenewalRequestID)
+    }
+
+    func testRenewalAnsweredWithConflictStillClaims() async throws {
+        let fixture = try await Self.makeFixture()
+        _ = try await Self.pair(fixture)
+        let profileID = try await Self.profileID(fixture, grant: "grant-a")
+        fixture.clock.advance(by: 80 * 24 * 60 * 60)
+        await fixture.service.setRenewResult(.failure(.denied(.conflict)))
+        await fixture.service.resetCalls()
+
+        let claim = try await fixture.claims.claim(for: profileID)
+
+        XCTAssertNotNil(claim)
+        let calls = await fixture.service.calls
+        XCTAssertEqual(calls, [.renew(generation: 1), .configuration, .claim(grantID: "grant-a", revision: 13)])
+        let pairing = try await Self.firstPairing(fixture)
+        XCTAssertEqual(pairing.generation, 1)
+        XCTAssertNil(pairing.pendingRenewalRequestID)
+    }
+
+    @MainActor
+    func testProfileListDeletionRemovesThePairingCredentialAndRecord() async throws {
+        let fixture = try await Self.makeFixture()
+        _ = try await Self.pair(fixture)
+        let pairing = try await Self.firstPairing(fixture)
+        let account = HomeCredentialKeychain.account(forPairing: pairing.id)
+        let model = RelayProfileListModel(
+            configurationStore: fixture.configuration,
+            conversationDirectory: fixture.directory,
+            homePairingCoordinator: fixture.coordinator
+        )
+        await model.load()
+        XCTAssertEqual(model.pairedProfileIDs.count, 2)
+
+        for profile in pairing.profiles {
+            let deleted = await model.delete(id: profile.profileID)
+            XCTAssertTrue(deleted)
+        }
+
+        XCTAssertNil(model.errorMessage)
+        XCTAssertNil(fixture.secure.value(account: account))
+        let remaining = try await fixture.pairings.pairings()
+        XCTAssertTrue(remaining.isEmpty)
+        XCTAssertTrue(model.pairedProfileIDs.isEmpty)
+    }
+
+    @MainActor
+    func testPairingModelAnnouncesOnlyAnActivatedPairingOnce() async throws {
+        for openSucceeds in [true, false] {
+            let fixture = try await Self.makeFixture(openSucceeds: openSucceeds)
+            await fixture.service.setConsumeResults([.success(Self.material(generation: 1))])
+            let counter = PairingTestCounter()
+            let model = HomePairingModel(coordinator: fixture.coordinator, onPaired: { counter.count += 1 })
+
+            model.begin(link: URL(string: "hermes-home://pair?home=https%3A%2F%2Fhome.example.ts.net&code=K7Q4MX2PNV")!)
+            for _ in 0..<300 {
+                if case .finished = model.phase { break }
+                try await Task.sleep(for: .milliseconds(10))
+            }
+
+            guard case .finished(let summary) = model.phase else {
+                return XCTFail("Pairing must finish (openSucceeds: \(openSucceeds))")
+            }
+            XCTAssertEqual(summary.activationFailure == nil, openSucceeds)
+            XCTAssertEqual(counter.count, openSucceeds ? 1 : 0)
+        }
+
+        let inbox = HomePairingLinkInbox()
+        XCTAssertFalse(inbox.receive(URL(string: "https://home.example.ts.net/pair?code=K7Q4MX2PNV")!))
+        XCTAssertNil(inbox.pendingLink)
+        XCTAssertTrue(inbox.receive(URL(string: "hermes-home://pair?home=https%3A%2F%2Fa.example&code=K7Q4MX2PNV")!))
+        XCTAssertNotNil(inbox.pendingLink)
+    }
+
+    func testADeletedPairedProfileIsNotRecreatedByRefresh() async throws {
+        let fixture = try await Self.makeFixture()
+        let summary = try await Self.pair(fixture)
+        let removed = try await Self.profileID(fixture, grant: "grant-a")
+        try await fixture.configuration.deleteProfile(id: removed)
+        try await fixture.coordinator.profileRemoved(removed)
+
+        _ = try await fixture.coordinator.refresh(pairingID: summary.pairingID)
+
+        let collection = try await fixture.configuration.loadCollection()
+        XCTAssertEqual(collection.profiles.map(\.displayName), ["Kitchen · home.example.ts.net"])
+        let pairing = try await Self.firstPairing(fixture)
+        XCTAssertEqual(pairing.unboundGrantIDs, ["grant-a"])
+        XCTAssertNil(pairing.profileID(for: "grant-a"))
+    }
+
+    func testAStaleCopyNeverClearsThePinOrProfiles() async throws {
+        let fixture = try await Self.makeFixture()
+        _ = try await Self.pair(fixture)
+        var stale = try await Self.firstPairing(fixture)
+        // A copy read before the first ready pinned the route.
+        stale.pinnedRouteID = nil
+        stale.profiles = []
+        fixture.clock.advance(by: 80 * 24 * 60 * 60)
+        await fixture.service.setRenewResult(.success(Self.material(
+            generation: 2,
+            credential: Self.renewedCredential,
+            expiresAt: fixture.clock.now.addingTimeInterval(90 * 24 * 60 * 60)
+        )))
+
+        _ = try await fixture.claims.renewIfDue(stale)
+
+        let pairing = try await Self.firstPairing(fixture)
+        XCTAssertEqual(pairing.pinnedRouteID, "home-local")
+        XCTAssertEqual(pairing.profiles.count, 2)
+        XCTAssertEqual(pairing.generation, 2)
+    }
+
+    func testACorruptPairingFileLeavesOperatorProfilesWorking() async throws {
+        let fixture = try await Self.makeFixture()
+        try Data("not json".utf8).write(to: fixture.directory.appendingPathComponent("home-client-pairings.json"))
+        let profileID = UUID()
+        let liveStore = JSONHomeLiveConfigurationStore(
+            fileURL: fixture.directory.appendingPathComponent("home-live-configurations.json")
+        )
+        let route = HomeApprovedRoute(
+            endpoint: URL(string: "wss://home.example/api/v1/bridge/ws")!,
+            identity: HomeRouteIdentity(routeClass: .home, id: "local"),
+            householdBinding: "household"
+        )
+        try await liveStore.save(try HomeLiveConfiguration(
+            profileID: profileID,
+            conversationHandle: "operator-handle",
+            approvedRoute: route
+        ))
+        let provider = AppHomeConversationClaimProvider(liveStore: liveStore, pairedClaims: fixture.claims)
+
+        let claim = try await provider.conversationClaim(for: profileID)
+        let claimsPerConnect = await provider.claimsPerConnect(for: profileID)
+        let approved = try await AppHomeApprovedRouteProvider(pairings: fixture.pairings, legacy: liveStore)
+            .approvedRoute(for: profileID)
+
+        XCTAssertEqual(claim?.conversationHandle, "operator-handle")
+        XCTAssertFalse(claimsPerConnect)
+        XCTAssertEqual(approved, route)
+    }
+
+    func testAnUnavailableFirstGrantDoesNotBlockActivation() async throws {
+        let fixture = try await Self.makeFixture()
+        let grants = [
+            HomeClientGrant(grantID: "grant-a", label: "Amanda", status: .active, available: false),
+            HomeClientGrant(grantID: "grant-b", label: "Kitchen", status: .active, available: true),
+        ]
+        await fixture.service.setConfigurationResults([.success(HomeClientDeviceConfiguration(
+            revision: 13, clientGrants: grants
+        ))])
+        await fixture.service.setDeniedGrants(["grant-a": .profileUnavailable])
+
+        let summary = try await Self.pair(fixture, grants: grants)
+
+        XCTAssertNil(summary.activationFailure)
+        XCTAssertTrue(summary.routePinned)
+        let calls = await fixture.service.calls
+        XCTAssertFalse(calls.contains(.claim(grantID: "grant-a", revision: 13)), "Available grants are tried first")
+        let collection = try await fixture.configuration.loadCollection()
+        let pairing = try await Self.firstPairing(fixture)
+        XCTAssertEqual(collection.selectedID, pairing.profileID(for: "grant-b"))
+    }
+
+    func testActivationTriesEachActiveGrantUntilOneProves() async throws {
+        let fixture = try await Self.makeFixture()
+        await fixture.service.setDeniedGrants(["grant-a": .profileUnavailable])
+
+        let summary = try await Self.pair(fixture)
+
+        XCTAssertNil(summary.activationFailure)
+        let calls = await fixture.service.calls
+        XCTAssertTrue(calls.contains(.claim(grantID: "grant-a", revision: 13)))
+        XCTAssertTrue(calls.contains(.claim(grantID: "grant-b", revision: 13)))
+        let pairing = try await Self.firstPairing(fixture)
+        let collection = try await fixture.configuration.loadCollection()
+        XCTAssertEqual(collection.selectedID, pairing.profileID(for: "grant-b"))
+        for profile in collection.profiles {
+            XCTAssertEqual(collection.transportMode(for: profile.id), .home)
+        }
+    }
+
+    func testDefaultHTTPSPortIsTheSameHome() throws {
+        XCTAssertEqual(
+            try HomeClientBaseURL("https://home.example.ts.net:443"),
+            try HomeClientBaseURL("https://home.example.ts.net")
+        )
+        XCTAssertEqual(try HomeClientBaseURL("home.example.ts.net:8443").url.port, 8443)
+    }
+
+    func testPairingRecordsWithoutUnboundGrantsStillLoad() throws {
+        let pairing = HomeClientPairing(
+            home: try HomeClientBaseURL(Self.home),
+            endpointID: UUID(),
+            deviceID: "id-7",
+            generation: 1,
+            credentialExpiresAt: PairingTestClock.start
+        )
+        var object = try XCTUnwrap(
+            JSONSerialization.jsonObject(with: JSONEncoder().encode(pairing)) as? [String: Any]
+        )
+        object.removeValue(forKey: "unboundGrantIDs")
+        let decoded = try JSONDecoder().decode(
+            HomeClientPairing.self,
+            from: JSONSerialization.data(withJSONObject: object)
+        )
+        XCTAssertEqual(decoded, pairing)
+    }
+
     // MARK: - Fixture
 
-    private static func pair(_ fixture: PairingFixture) async throws -> HomeClientPairingSummary {
+    private static func pair(
+        _ fixture: PairingFixture,
+        grants: [HomeClientGrant] = HomeClientPairingTests.grants()
+    ) async throws -> HomeClientPairingSummary {
         let invitation = try HomePairingInvitation(code: Self.pairingCode, homeAddress: Self.home)
-        await fixture.service.setConsumeResults([.success(Self.material(generation: 1))])
+        await fixture.service.setConsumeResults([.success(Self.material(generation: 1, grants: grants))])
         let request = try await fixture.coordinator.submit(invitation)
         return try await fixture.coordinator.finishPairing(invitation, request: request)
     }
@@ -876,14 +1136,15 @@ final class HomeClientPairingTests: XCTestCase {
     private static func material(
         generation: Int,
         credential: String = HomeClientPairingTests.credential,
-        expiresAt: Date? = nil
+        expiresAt: Date? = nil,
+        grants: [HomeClientGrant] = HomeClientPairingTests.grants()
     ) -> HomeCredentialMaterial {
         HomeCredentialMaterial(
             deviceID: "id-7",
             credential: Data(credential.utf8),
             generation: generation,
             expiresAt: expiresAt ?? PairingTestClock.start.addingTimeInterval(90 * 24 * 60 * 60 + 0.5),
-            clientGrants: Self.grants()
+            clientGrants: grants
         )
     }
 
@@ -1020,6 +1281,11 @@ private final class PairingTestDirectories: @unchecked Sendable {
         lock.unlock()
         for directory in pending { try? FileManager.default.removeItem(at: directory) }
     }
+}
+
+@MainActor
+private final class PairingTestCounter {
+    var count = 0
 }
 
 private final class PairingTestClock: @unchecked Sendable {
