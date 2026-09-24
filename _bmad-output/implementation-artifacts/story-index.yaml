@@ -8,126 +8,329 @@ stories:
     kind: surface
     spec: docs/plans/2026-08-30-ios-01-foundation-plan.md
     validation: docs/plans/2026-09-09-epic-1-ios-device-validation-plan.md
+    tracker_key: 1-i-1
+    historical_product_epic: 1
+    owner: hermes-relay-ios
+    release_scope: migration
+    depends_on: []
+    acceptance_overlay: _bmad-output/implementation-artifacts/course-correction-2026-09-23.md
   - id: 1-I-2
     product_epic: 1
     title: Render honest iOS turn phases and response delivery
     kind: surface
     spec: _bmad-output/implementation-artifacts/spec-1-2-render-honest-ios-turn-phases.md
+    tracker_key: 1-i-2
+    historical_product_epic: 1
+    owner: hermes-relay-ios
+    release_scope: migration
+    depends_on: []
+    acceptance_overlay: _bmad-output/implementation-artifacts/course-correction-2026-09-23.md
   - id: 1-I-3
     product_epic: 1
     title: Recover without replaying an uncertain iOS turn
     kind: surface
     spec: _bmad-output/implementation-artifacts/spec-1-4-recover-without-replaying-an-uncertain-ios-turn.md
+    tracker_key: 1-i-3
+    historical_product_epic: 1
+    owner: hermes-relay-ios
+    release_scope: migration
+    depends_on: []
+    acceptance_overlay: _bmad-output/implementation-artifacts/course-correction-2026-09-23.md
   - id: 2-I-1
-    product_epic: 2
+    product_epic: 1
     title: Show iOS capture acknowledgement and live transcription
     kind: surface
     spec: _bmad-output/implementation-artifacts/spec-2-1-ios-capture-acknowledgement-and-live-transcription.md
+    tracker_key: 2-i-1
+    historical_product_epic: 2
+    owner: hermes-relay-ios
+    release_scope: migration
+    depends_on: []
+    acceptance_overlay: _bmad-output/implementation-artifacts/course-correction-2026-09-23.md
   - id: 2-I-2
-    product_epic: 2
+    product_epic: 1
     title: Show honest iOS disconnected or unavailable state
     kind: surface
     spec: _bmad-output/implementation-artifacts/spec-2-2-ios-disconnected-state.md
+    tracker_key: 2-i-2
+    historical_product_epic: 2
+    owner: hermes-relay-ios
+    release_scope: migration
+    depends_on: []
+    acceptance_overlay: _bmad-output/implementation-artifacts/course-correction-2026-09-23.md
+  - id: 5-I-1
+    product_epic: 1
+    title: Use iOS as an independent conversation doorway
+    kind: surface
+    spec: _bmad-output/implementation-artifacts/spec-5-1-ios-independent-conversation-doorway.md
+    tracker_key: 5-i-1
+    historical_product_epic: 5
+    owner: hermes-relay-ios
+    release_scope: migration
+    depends_on: []
+    acceptance_overlay: _bmad-output/implementation-artifacts/course-correction-2026-09-23.md
+  - id: 0-I-4
+    title: Migrate the iOS/macOS client to the Standard Hermes boundary
+    kind: migration
+    spec: _bmad-output/implementation-artifacts/next-wave-standard-hermes-migration/stories/0-I-4-apple-migrate-ios-macos-client.md
+    validation: _bmad-output/implementation-artifacts/next-wave-standard-hermes-migration/stories/validation-0-I-4-apple-migrate-ios-macos-client.md
+    tracker_key: 0-i-4
+    product_epic: 1
+    owner: hermes-relay-ios
+    release_scope: migration
+    depends_on: []
+    alias_of: STD-4
+    acceptance_overlay: _bmad-output/implementation-artifacts/course-correction-2026-09-23.md
+  - id: IOS-UX-F1
+    title: Make unavailable and unconfigured states lead with the usable action
+    kind: local
+    spec: _bmad-output/implementation-artifacts/deferred-work.md
+    tracker_key: ios-ux-f1
+    product_epic: 1
+    owner: hermes-relay-ios
+    release_scope: migration
+    depends_on: []
+    acceptance_overlay: _bmad-output/implementation-artifacts/course-correction-2026-09-23.md
+  - id: IOS-UX-F2
+    title: Reconcile the live session after deleting the selected profile
+    kind: local
+    spec: _bmad-output/implementation-artifacts/deferred-work.md
+    tracker_key: ios-ux-f2
+    product_epic: 1
+    owner: hermes-relay-ios
+    release_scope: migration
+    depends_on: []
+    acceptance_overlay: _bmad-output/implementation-artifacts/course-correction-2026-09-23.md
+  - id: IOS-UX-F3
+    title: Replace configuration save-banner validation with field-level guidance
+    kind: local
+    spec: _bmad-output/implementation-artifacts/deferred-work.md
+    tracker_key: ios-ux-f3
+    product_epic: 1
+    owner: hermes-relay-ios
+    release_scope: migration
+    depends_on: []
+    acceptance_overlay: _bmad-output/implementation-artifacts/course-correction-2026-09-23.md
+  - id: IOS-DESIGN-F1
+    title: Run a deliberate visual design pass across the iOS doorway
+    kind: local
+    spec: _bmad-output/implementation-artifacts/deferred-work.md
+    tracker_key: ios-design-f1
+    product_epic: 1
+    owner: hermes-relay-ios
+    release_scope: migration
+    depends_on: []
+    acceptance_overlay: _bmad-output/implementation-artifacts/course-correction-2026-09-23.md
+  - id: IOS-BRAND-F1
+    title: Create and wire the Hermes Relay app icon set
+    kind: local
+    spec: _bmad-output/implementation-artifacts/deferred-work.md
+    tracker_key: ios-brand-f1
+    product_epic: 1
+    owner: hermes-relay-ios
+    release_scope: migration
+    depends_on: []
+    acceptance_overlay: _bmad-output/implementation-artifacts/course-correction-2026-09-23.md
+  - id: STD-4
+    title: Migrate the Apple client to the Standard Home boundary
+    kind: next-wave
+    spec: _bmad-output/implementation-artifacts/spec-standard-4-apple-migration.md
+    github_issue: https://github.com/achappell/hermes-relay-ios/issues/67
+    tracker_key: standard-4-apple-migrate-client
+    product_epic: 1
+    owner: hermes-relay-ios
+    release_scope: migration
+    depends_on: []
+    acceptance_overlay: _bmad-output/implementation-artifacts/course-correction-2026-09-23.md
+    historical_horizon: next
+  - id: IOS-HOME-02
+    title: Pair iOS and macOS personal clients with Home and manage sessions
+    kind: course-correction
+    product_epic: 1
+    owner: hermes-relay-ios
+    tracker_key: ios-home-02
+    release_scope: migration
+    spec: _bmad-output/implementation-artifacts/spec-ios-home-02.md
+    depends_on:
+      - home:HOME-NW-17
+    github_issue: https://github.com/achappell/hermes-relay-ios/issues/91
+  - id: IOS-STD-01
+    title: Offer explicit Standard-only setup on iOS and macOS
+    kind: course-correction
+    product_epic: 2
+    owner: hermes-relay-ios
+    tracker_key: ios-std-01
+    release_scope: migration
+    spec: _bmad-output/implementation-artifacts/spec-ios-std-01.md
+    depends_on:
+      - ios:IOS-HOME-02
+    github_issue: https://github.com/achappell/hermes-relay-ios/issues/92
   - id: 3-I-1
     product_epic: 3
     title: Discover and connect an unconfigured Device
     kind: surface
     spec: _bmad-output/implementation-artifacts/spec-3-1-discover-unconfigured-devices.md
+    tracker_key: 3-i-1
+    historical_product_epic: 3
+    owner: hermes-relay-ios
+    release_scope: migration
+    depends_on: []
+    acceptance_overlay: _bmad-output/implementation-artifacts/course-correction-2026-09-23.md
   - id: 3-I-2
     product_epic: 3
     title: Approve and configure a Device
     kind: surface
     spec: _bmad-output/implementation-artifacts/spec-3-2-approve-and-configure-device.md
+    tracker_key: 3-i-2
+    historical_product_epic: 3
+    owner: hermes-relay-ios
+    release_scope: migration
+    depends_on: []
+    acceptance_overlay: _bmad-output/implementation-artifacts/course-correction-2026-09-23.md
   - id: 3-I-3
     product_epic: 3
     title: Validate unique Wake Mappings and Profile-specific publish state
     kind: surface
     spec: _bmad-output/implementation-artifacts/spec-3-3-validate-unique-wake-mappings-and-profile-specific-publish-state.md
+    tracker_key: 3-i-3
+    historical_product_epic: 3
+    owner: hermes-relay-ios
+    release_scope: migration
+    depends_on: []
+    acceptance_overlay: _bmad-output/implementation-artifacts/course-correction-2026-09-23.md
   - id: 3-I-4
     product_epic: 3
     title: Configure and expose deterministic single-Device wake arbitration
     kind: surface
     spec: null
     notes: Shared Home contract and a local story specification remain open.
+    tracker_key: 3-i-4
+    historical_product_epic: 3
+    owner: hermes-relay-ios
+    release_scope: migration
+    depends_on: []
+    acceptance_overlay: _bmad-output/implementation-artifacts/course-correction-2026-09-23.md
   - id: 3-I-5
     product_epic: 3
     title: Fail closed for unavailable or revoked Device identities
     kind: surface
     spec: _bmad-output/implementation-artifacts/spec-3-5-fail-closed-for-unavailable-or-revoked-identities.md
+    tracker_key: 3-i-5
+    historical_product_epic: 3
+    owner: hermes-relay-ios
+    release_scope: migration
+    depends_on: []
+    acceptance_overlay: _bmad-output/implementation-artifacts/course-correction-2026-09-23.md
   - id: 3-I-6
     product_epic: 3
     title: Revoke access and require verified re-enrollment
     kind: surface
     spec: _bmad-output/implementation-artifacts/spec-3-6-revoke-access-and-require-verified-reenrollment.md
-  - id: 5-I-1
-    product_epic: 5
-    title: Use iOS as an independent conversation doorway
-    kind: surface
-    spec: _bmad-output/implementation-artifacts/spec-5-1-ios-independent-conversation-doorway.md
-  - id: 0-I-4
-    title: Migrate the iOS/macOS client to the Standard Hermes boundary
-    kind: migration
-    spec: _bmad-output/implementation-artifacts/next-wave-standard-hermes-migration/stories/0-I-4-apple-migrate-ios-macos-client.md
-    validation: _bmad-output/implementation-artifacts/next-wave-standard-hermes-migration/stories/validation-0-I-4-apple-migrate-ios-macos-client.md
-  - id: IOS-UX-F1
-    title: Make unavailable and unconfigured states lead with the usable action
-    kind: local
-    spec: _bmad-output/implementation-artifacts/deferred-work.md
-  - id: IOS-UX-F2
-    title: Reconcile the live session after deleting the selected profile
-    kind: local
-    spec: _bmad-output/implementation-artifacts/deferred-work.md
-  - id: IOS-UX-F3
-    title: Replace configuration save-banner validation with field-level guidance
-    kind: local
-    spec: _bmad-output/implementation-artifacts/deferred-work.md
+    tracker_key: 3-i-6
+    historical_product_epic: 3
+    owner: hermes-relay-ios
+    release_scope: migration
+    depends_on: []
+    acceptance_overlay: _bmad-output/implementation-artifacts/course-correction-2026-09-23.md
   - id: IOS-UX-F4
     title: Clarify household Device discovery recovery and empty states
     kind: local
     spec: _bmad-output/implementation-artifacts/deferred-work.md
-  - id: IOS-DESIGN-F1
-    title: Run a deliberate visual design pass across the iOS doorway
-    kind: local
-    spec: _bmad-output/implementation-artifacts/deferred-work.md
-  - id: IOS-BRAND-F1
-    title: Create and wire the Hermes Relay app icon set
-    kind: local
-    spec: _bmad-output/implementation-artifacts/deferred-work.md
-  - id: MACOS-DIST-F1
-    title: Produce a signed, notarized, and Gatekeeper-valid macOS DMG
-    kind: local
-    spec: _bmad-output/implementation-artifacts/deferred-work.md
-  - id: MACOS-DIST-F2
-    title: Add a secure macOS Check for Updates flow
-    kind: local
-    spec: _bmad-output/implementation-artifacts/deferred-work.md
-  - id: STD-4
-    title: Migrate the Apple client to the Standard Home boundary
-    kind: next-wave
-    spec: _bmad-output/implementation-artifacts/spec-standard-4-apple-migration.md
-    github_issue: https://github.com/achappell/hermes-relay-ios/issues/67
-    horizon: next
+    tracker_key: ios-ux-f4
+    product_epic: 3
+    owner: hermes-relay-ios
+    release_scope: migration
+    depends_on: []
+    acceptance_overlay: _bmad-output/implementation-artifacts/course-correction-2026-09-23.md
   - id: IOS-HOME-01
     title: Add the iOS Home pairing and configuration adapter
     kind: next-wave
     spec: _bmad-output/implementation-artifacts/spec-ios-home-01-home-pairing-and-configuration-adapter.md
     github_issue: https://github.com/achappell/hermes-relay-ios/issues/68
-    horizon: next
+    tracker_key: ios-home-01
+    product_epic: 3
+    owner: hermes-relay-ios
+    release_scope: migration
+    depends_on: []
+    acceptance_overlay: _bmad-output/implementation-artifacts/course-correction-2026-09-23.md
+    historical_horizon: next
+  - id: MACOS-DIST-F1
+    title: Produce a signed, notarized, and Gatekeeper-valid macOS DMG
+    kind: local
+    spec: _bmad-output/implementation-artifacts/deferred-work.md
+    tracker_key: macos-dist-f1
+    product_epic: 4
+    owner: hermes-relay-ios
+    release_scope: migration
+    depends_on: []
+    acceptance_overlay: _bmad-output/implementation-artifacts/course-correction-2026-09-23.md
+  - id: IOS-RETIRE-01
+    title: Remove legacy Apple pairing and fork integration
+    kind: course-correction
+    product_epic: 4
+    owner: hermes-relay-ios
+    tracker_key: ios-retire-01
+    release_scope: migration
+    spec: _bmad-output/implementation-artifacts/spec-ios-retire-01.md
+    depends_on:
+      - ios:IOS-HOME-02
+      - ios:IOS-STD-01
+    github_issue: https://github.com/achappell/hermes-relay-ios/issues/93
+  - id: MACOS-DIST-F2
+    title: Add a secure macOS Check for Updates flow
+    kind: local
+    spec: _bmad-output/implementation-artifacts/deferred-work.md
+    tracker_key: macos-dist-f2
+    product_epic: 4
+    owner: hermes-relay-ios
+    release_scope: later
+    scope_note: Broader distribution/updater scope; actual-household deployment is HOME-MIG-09.
+    depends_on: []
+    acceptance_overlay: _bmad-output/implementation-artifacts/course-correction-2026-09-23.md
   - id: IOS-WATCH-01
     title: Add the read-only Watch Safe Preview
     kind: next-wave
     spec: _bmad-output/implementation-artifacts/spec-ios-watch-safe-preview.md
     github_issue: https://github.com/achappell/hermes-relay-ios/issues/69
-    horizon: later
+    tracker_key: ios-watch-01
+    product_epic: 6
+    owner: hermes-relay-ios
+    release_scope: later
+    depends_on: []
+    acceptance_overlay: _bmad-output/implementation-artifacts/course-correction-2026-09-23.md
+    historical_horizon: later
   - id: IOS-PERM-01
     title: Enforce iOS endpoint permissions and masked Sensitive Entry
     kind: next-wave
     spec: _bmad-output/implementation-artifacts/spec-ios-permissions-sensitive-entry.md
     github_issue: https://github.com/achappell/hermes-relay-ios/issues/70
-    horizon: later
+    tracker_key: ios-perm-01
+    product_epic: 7
+    owner: hermes-relay-ios
+    release_scope: later
+    depends_on: []
+    acceptance_overlay: _bmad-output/implementation-artifacts/course-correction-2026-09-23.md
+    historical_horizon: later
   - id: IOS-NOTIFY-01
     title: Add opt-in iOS notifications and quiet hours
     kind: next-wave
     spec: _bmad-output/implementation-artifacts/spec-ios-notifications.md
     github_issue: https://github.com/achappell/hermes-relay-ios/issues/71
-    horizon: later
+    tracker_key: ios-notify-01
+    product_epic: 8
+    owner: hermes-relay-ios
+    release_scope: later
+    depends_on: []
+    acceptance_overlay: _bmad-output/implementation-artifacts/course-correction-2026-09-23.md
+    historical_horizon: later
+epic_scheme: hermes-home-2026-09-23
+epics:
+  1: Connect personal clients through HomeBridge
+  2: Use personal clients with Standard Hermes alone
+  3: Set up and use room voice devices
+  4: Retire the legacy setup and deploy the replacement
+  5: See room activity and departure reminders
+  6: Observe and diagnose the household system
+  7: Make choices and provide protected input
+  8: Receive useful notifications
+  9: Work with shared artifacts and attachments

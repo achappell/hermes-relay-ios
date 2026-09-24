@@ -2,15 +2,38 @@ schema_version: 1
 repository: hermes-relay-ios
 planning: bmad
 surfaces:
-  - id: I
-    name: iOS Client
+- id: I
+  name: iOS Client
 status_tracker: _bmad-output/implementation-artifacts/sprint-status.yaml
 story_index: _bmad-output/implementation-artifacts/story-index.yaml
 coordination_authority: product-hub
 story_aliases:
-  0-i-4: STD-4
+  0-i-4: 0-I-4
   standard-4-apple-migrate-client: STD-4
   ios-home-01: IOS-HOME-01
   ios-watch-01: IOS-WATCH-01
   ios-perm-01: IOS-PERM-01
   ios-notify-01: IOS-NOTIFY-01
+  1-i-1: 1-I-1
+  1-i-2: 1-I-2
+  1-i-3: 1-I-3
+  2-i-1: 2-I-1
+  2-i-2: 2-I-2
+  3-i-1: 3-I-1
+  3-i-2: 3-I-2
+  3-i-3: 3-I-3
+  3-i-4: 3-I-4
+  3-i-5: 3-I-5
+  3-i-6: 3-I-6
+  5-i-1: 5-I-1
+  ios-ux-f1: IOS-UX-F1
+  ios-ux-f2: IOS-UX-F2
+  ios-ux-f3: IOS-UX-F3
+  ios-ux-f4: IOS-UX-F4
+  ios-design-f1: IOS-DESIGN-F1
+  ios-brand-f1: IOS-BRAND-F1
+  macos-dist-f1: MACOS-DIST-F1
+  macos-dist-f2: MACOS-DIST-F2
+  ios-home-02: IOS-HOME-02
+  ios-std-01: IOS-STD-01
+  ios-retire-01: IOS-RETIRE-01
