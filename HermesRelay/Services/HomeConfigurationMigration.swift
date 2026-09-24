@@ -2,6 +2,13 @@ import Foundation
 
 protocol HomeConversationClaimProvider: Sendable {
     func conversationClaim(for profileID: UUID) async throws -> HomeConversationClaim?
+    /// True for a paired personal client: its claims are single-use, so a
+    /// fresh one is made on every connect rather than when a profile loads.
+    func claimsPerConnect(for profileID: UUID) async -> Bool
+}
+
+extension HomeConversationClaimProvider {
+    func claimsPerConnect(for profileID: UUID) async -> Bool { false }
 }
 
 struct StaticHomeConversationClaimProvider: HomeConversationClaimProvider {

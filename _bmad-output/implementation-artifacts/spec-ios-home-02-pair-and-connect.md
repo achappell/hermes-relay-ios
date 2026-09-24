@@ -98,17 +98,17 @@ context:
 ## Tasks & Acceptance
 
 **Execution:**
-- [ ] `HermesRelay/Models/HomeClientPairingModels.swift` (new) -- link and code parsing, the Home base-URL rules, the wire models for enrollment, consume, renew, device configuration and client claim (strict keys, as in STD-4), the typed denial codes, and a `HomeClientPairing` record (Home URL, endpoint ID, device ID, generation, selected grant, pinned route ID) -- this is the contract surface.
-- [ ] `HermesRelay/Services/HomeClientService.swift` (new) -- a URLSession HTTP client for enrollment, consume, renew, configuration and claims behind a protocol, plus a fake -- this keeps transport deterministic in tests.
-- [ ] `HermesRelay/Services/HomeClientPairingStore.swift` (new) -- a JSON store of the non-secret pairing records, plus a pairing coordinator: submit → poll → Keychain provision → save pairing → live `ready` activation with route pin → journal `homeSelected` -- this is the crash-safe pairing flow.
-- [ ] `HermesRelay/Services/FakeHomeBridgeSessionClient.swift` -- a claim provider that renews if due, reads the revision, claims and returns a `HomeConversationClaim`; it falls through to the legacy store -- this replaces pasted handles.
-- [ ] `HermesRelay/Services/HomeBridgeSessionClient.swift` -- route pin on first `ready` and `conversation.close` -- this closes the lifecycle.
-- [ ] `HermesRelay/ViewModels/ConversationStore.swift` -- claim per connect for paired profiles, denial states, and close on disconnect/switch -- this is the connect path.
-- [ ] `HermesRelay/Views/HomePairingView.swift` (new), `RelayConfigurationView.swift`, `HermesRelayApp.swift` -- the pairing sheet (link/code entry, confirmation code, waiting, terminal states, a per-grant profile summary with `pending_owner` waiting, and a refresh action) and the URL handler -- this is the UI.
-- [ ] `HermesRelay/Views/HomePairingScannerView.swift` (new, iOS only) -- an AVFoundation QR scanner that accepts only `hermes-home://pair` payloads; it falls back to typed entry when the camera is denied -- the user chose this.
-- [ ] `HermesRelay/ViewModels/ConversationStore.swift` divider -- a local-only "New conversation" marker when a fresh Home session starts on a profile that has history -- the user chose this.
-- [ ] `HermesRelayTests/HomeClientPairingTests.swift` (new) -- every row of the I/O matrix, plus renewal-before-claim ordering and the absence of secrets from persisted JSON -- this is the deterministic evidence.
-- [ ] `_bmad-output/implementation-artifacts/validation-ios-home-02.md` (new) -- a record that keeps the local, merge, iOS live and macOS live gates separate -- this is required by the story.
+- [x] `HermesRelay/Models/HomeClientPairingModels.swift` (new) -- link and code parsing, the Home base-URL rules, the wire models for enrollment, consume, renew, device configuration and client claim (strict keys, as in STD-4), the typed denial codes, and a `HomeClientPairing` record (Home URL, endpoint ID, device ID, generation, selected grant, pinned route ID) -- this is the contract surface.
+- [x] `HermesRelay/Services/HomeClientService.swift` (new) -- a URLSession HTTP client for enrollment, consume, renew, configuration and claims behind a protocol, plus a fake -- this keeps transport deterministic in tests.
+- [x] `HermesRelay/Services/HomeClientPairingStore.swift` (new) -- a JSON store of the non-secret pairing records, plus a pairing coordinator: submit → poll → Keychain provision → save pairing → live `ready` activation with route pin → journal `homeSelected` -- this is the crash-safe pairing flow.
+- [x] `HermesRelay/Services/FakeHomeBridgeSessionClient.swift` -- a claim provider that renews if due, reads the revision, claims and returns a `HomeConversationClaim`; it falls through to the legacy store -- this replaces pasted handles.
+- [x] `HermesRelay/Services/HomeBridgeSessionClient.swift` -- route pin on first `ready` and `conversation.close` -- this closes the lifecycle.
+- [x] `HermesRelay/ViewModels/ConversationStore.swift` -- claim per connect for paired profiles, denial states, and close on disconnect/switch -- this is the connect path.
+- [x] `HermesRelay/Views/HomePairingView.swift` (new), `RelayConfigurationView.swift`, `HermesRelayApp.swift` -- the pairing sheet (link/code entry, confirmation code, waiting, terminal states, a per-grant profile summary with `pending_owner` waiting, and a refresh action) and the URL handler -- this is the UI.
+- [x] `HermesRelay/Views/HomePairingScannerView.swift` (new, iOS only) -- an AVFoundation QR scanner that accepts only `hermes-home://pair` payloads; it falls back to typed entry when the camera is denied -- the user chose this.
+- [x] `HermesRelay/ViewModels/ConversationStore.swift` divider -- a local-only "New conversation" marker when a fresh Home session starts on a profile that has history -- the user chose this.
+- [x] `HermesRelayTests/HomeClientPairingTests.swift` (new) -- every row of the I/O matrix, plus renewal-before-claim ordering and the absence of secrets from persisted JSON -- this is the deterministic evidence.
+- [x] `_bmad-output/implementation-artifacts/validation-ios-home-02.md` (new) -- a record that keeps the local, merge, iOS live and macOS live gates separate -- this is required by the story.
 
 **Acceptance Criteria:**
 - Given a pairing link, when the page approves, then the app connects and completes a typed turn without any pasted credential or handle.

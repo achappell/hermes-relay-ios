@@ -16,6 +16,8 @@ struct HermesRelayIOSApp: App {
     private let homeServiceClient: ProfileHomeServiceClient
     private let homeClientFactory: AppHomeBridgeSessionClientFactory
     private let homeClaimProvider: AppHomeConversationClaimProvider
+    private let homePairingCoordinator: HomeClientPairingCoordinator
+    @State private var pairingInbox = HomePairingLinkInbox()
 
     init() {
         let applicationSupport = FileManager.default.urls(
@@ -42,21 +44,49 @@ struct HermesRelayIOSApp: App {
             routeProvider: homeLiveConfigurationStore,
             adminCredentialStore: homeAdminCredentialStore
         )
+        // Paired personal clients (HOME-NW-17): non-secret pairing records
+        // beside the operator-provisioned store, which keeps working as is.
+        let homePairingStore = JSONHomeClientPairingStore(
+            fileURL: appDirectory.appendingPathComponent("home-client-pairings.json")
+        )
+        let homeClientService = URLSessionHomeClientService()
+        let homeClaimCoordinator = HomeClientClaimCoordinator(
+            service: homeClientService,
+            pairings: homePairingStore,
+            credentials: homeCredentialStore
+        )
         let liveHomeFactory = DefaultHomeBridgeSessionClientFactory(
             dependencies: HomeBridgeClientDependencies(
-                routeProvider: homeLiveConfigurationStore,
-                credentialStore: homeCredentialStore,
-                publicAdapterEnabled: true
+                routeProvider: AppHomeApprovedRouteProvider(
+                    pairings: homePairingStore,
+                    legacy: homeLiveConfigurationStore
+                ),
+                credentialStore: PairingAwareHomeCredentialStore(
+                    pairings: homePairingStore,
+                    credentials: homeCredentialStore
+                ),
+                publicAdapterEnabled: true,
+                routePinRecorder: homePairingStore
             )
         )
         let homeClaimProvider = AppHomeConversationClaimProvider(
             fakeEnabled: homeFakeEnabled,
-            liveStore: homeLiveConfigurationStore
+            liveStore: homeLiveConfigurationStore,
+            pairedClaims: homeClaimCoordinator
         )
         let homeClientFactory = AppHomeBridgeSessionClientFactory(
             enabled: homeFakeEnabled,
             claimProvider: homeClaimProvider,
             liveFactory: liveHomeFactory
+        )
+        let homePairingCoordinator = HomeClientPairingCoordinator(
+            service: homeClientService,
+            pairings: homePairingStore,
+            credentials: homeCredentialStore,
+            configurationStore: configuration,
+            claimCoordinator: homeClaimCoordinator,
+            homeClientFactory: homeClientFactory,
+            identity: RelayDeviceIdentity.current()
         )
         // One conversation per relay profile. The store swaps to the selected
         // profile's file when the client is configured.
@@ -89,6 +119,7 @@ struct HermesRelayIOSApp: App {
         self.homeServiceClient = homeServiceClient
         self.homeClientFactory = homeClientFactory
         self.homeClaimProvider = homeClaimProvider
+        self.homePairingCoordinator = homePairingCoordinator
     }
 
     var body: some Scene {
@@ -106,8 +137,15 @@ struct HermesRelayIOSApp: App {
                 homeClaimProvider: homeClaimProvider,
                 homeLiveConfigurationStore: homeLiveConfigurationStore,
                 homeCredentialStore: homeCredentialStore,
-                homeAdminCredentialStore: homeAdminCredentialStore
+                homeAdminCredentialStore: homeAdminCredentialStore,
+                homePairingCoordinator: homePairingCoordinator,
+                pairingInbox: pairingInbox
             )
+            .onOpenURL { url in
+                // Only `hermes-home://pair` links are handled; nothing is
+                // submitted until the pairing sheet validates the link.
+                pairingInbox.receive(url)
+            }
         }
     }
 }

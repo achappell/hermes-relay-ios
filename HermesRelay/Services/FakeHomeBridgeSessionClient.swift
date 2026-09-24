@@ -3,13 +3,18 @@ import Foundation
 struct AppHomeConversationClaimProvider: HomeConversationClaimProvider {
     let fakeEnabled: Bool
     let liveStore: (any HomeLiveConfigurationStore)?
+    /// Paired personal clients: renew if due, read the configuration
+    /// revision, and make a fresh `session: new` client claim.
+    let pairedClaims: HomeClientClaimCoordinator?
 
     init(
         fakeEnabled: Bool = false,
-        liveStore: (any HomeLiveConfigurationStore)? = nil
+        liveStore: (any HomeLiveConfigurationStore)? = nil,
+        pairedClaims: HomeClientClaimCoordinator? = nil
     ) {
         self.fakeEnabled = fakeEnabled
         self.liveStore = liveStore
+        self.pairedClaims = pairedClaims
     }
 
     func conversationClaim(for profileID: UUID) async throws -> HomeConversationClaim? {
@@ -18,7 +23,19 @@ struct AppHomeConversationClaimProvider: HomeConversationClaimProvider {
             return HomeDemoFixtures.claim(for: profileID)
         }
         #endif
+        if let pairedClaims, let claim = try await pairedClaims.claim(for: profileID) {
+            return claim
+        }
+        // Operator-provisioned handles keep working unchanged.
         return try await liveStore?.conversationClaim(for: profileID)
+    }
+
+    func claimsPerConnect(for profileID: UUID) async -> Bool {
+        #if DEBUG
+        if fakeEnabled { return false }
+        #endif
+        guard let pairedClaims else { return false }
+        return await pairedClaims.isPaired(profileID: profileID)
     }
 }
 
@@ -102,6 +119,7 @@ actor FakeHomeBridgeSessionClient: HomeBridgeSessionClient {
     private(set) var responseCount = 0
     private(set) var cancelPendingIDs: [HomePendingRequestID] = []
     private(set) var closeCount = 0
+    private(set) var closedConversationCount = 0
 
     var nextOpenFailure: HomeBridgeFailure?
     var nextReconnectFailure: HomeBridgeFailure?
@@ -323,6 +341,14 @@ actor FakeHomeBridgeSessionClient: HomeBridgeSessionClient {
 
     func finishEvents() {
         continuation.finish()
+    }
+
+    func close(binding requestedBinding: HomeConversationBinding) async -> HomeConversationCloseOutcome {
+        guard !closed, let binding, binding == requestedBinding else {
+            return .unavailable(.home(code: .conversationMismatch, phase: .lifecycle))
+        }
+        closedConversationCount += 1
+        return .closed
     }
 
     func close() async {
