@@ -214,6 +214,10 @@ protocol HomeCredentialProvisioningStore: HomeCredentialStore {
         reference: HomeCredentialReference,
         for profileID: UUID
     ) async throws
+
+    /// Deletes the secret and its reference. Used when a Home pairing's last
+    /// profile is removed.
+    func removeCredential(for ownerID: UUID) async throws
 }
 
 /// The reference metadata and the pre-issued value live in separate secure
@@ -292,6 +296,17 @@ actor KeychainHomeCredentialStore: HomeCredentialProvisioningStore {
         guard let record = try? await verifiedReadBack(for: profileID) else { return }
         _ = record
         states[profileID] = .active
+    }
+
+    func removeCredential(for ownerID: UUID) async throws {
+        let valueAccount = (try? reference(for: ownerID))?.account
+            ?? HomeCredentialKeychain.account(forPairing: ownerID)
+        try secureStore.delete(service: HomeCredentialKeychain.service, account: valueAccount)
+        try secureStore.delete(
+            service: HomeCredentialKeychain.service,
+            account: Self.metadataAccount(for: ownerID)
+        )
+        states.removeValue(forKey: ownerID)
     }
 
     func setState(_ state: HomeCredentialState, for profileID: UUID) {
@@ -416,6 +431,17 @@ actor InMemoryHomeCredentialStore: HomeCredentialProvisioningStore {
     }
 
     func state(for profileID: UUID) -> HomeCredentialState? { states[profileID] }
+
+    func removeCredential(for ownerID: UUID) async throws {
+        if let reference = references.removeValue(forKey: ownerID) {
+            values.removeValue(forKey: Self.key(reference))
+        }
+        states.removeValue(forKey: ownerID)
+    }
+
+    func containsAnyCredential(_ credential: Data) -> Bool {
+        values.values.contains(credential)
+    }
 
     func containsCredential(
         _ credential: Data,

@@ -41,6 +41,15 @@ final class ConversationStore {
     private(set) var homeJoinTimeout: HomeTurnJoinTimeout?
     private var homeOperationsSuppressed = false
     private var activeTurnText: String?
+    /// A paired personal client makes a fresh single-use claim on each
+    /// connect. Its handle is kept in memory only.
+    private var homeClaimsPerConnect = false
+    private var pendingNewHomeConversationDivider = false
+    /// Set when Home can no longer resume the conversation that holds an
+    /// uncertain turn; the user must choose to start a new one.
+    private(set) var canStartNewHomeConversation = false
+
+    static let newHomeConversationDividerText = "New conversation"
 
     var connectionState: ConnectionState = .disconnected
     var sessionMetadata: SessionMetadata?
@@ -167,11 +176,12 @@ final class ConversationStore {
 
         do {
             let conversation = try await persistence.load()
+            let restoredRecovery = restoredHomeRecovery(conversation.homeRecovery)
             messages = conversation.messages
             draft = conversation.draft
             unconfirmedTurnText = conversation.unconfirmedTurnText
-            homeRecovery = conversation.homeRecovery
-            if let recovery = conversation.homeRecovery {
+            homeRecovery = restoredRecovery
+            if let recovery = restoredRecovery {
                 let recoveryText = conversation.unconfirmedTurnText
                     ?? messages.last(where: { $0.role == .user })?.text
                     ?? ""
@@ -216,7 +226,7 @@ final class ConversationStore {
                             messages: messages,
                             draft: draft,
                             unconfirmedTurnText: unconfirmedTurnText,
-                            homeRecovery: homeRecovery
+                            homeRecovery: persistableHomeRecovery(homeRecovery)
                         )
                     )
                 } else if recovery.deliveryState == .accepted {
@@ -257,12 +267,41 @@ final class ConversationStore {
             }
 
             transportMode = try await configurationStore.transportMode(for: profile.id)
+            // Computed before assigning: clearing the flag across this await
+            // would let a concurrent save write a live paired handle.
+            let claimsPerConnect = transportMode == .home
+                ? await homeClaimProvider?.claimsPerConnect(for: profile.id) == true
+                : false
+            homeClaimsPerConnect = claimsPerConnect
             if transportMode == .home {
                 homeOperationsSuppressed = false
                 homeConversationBinding = nil
                 if homeRecovery == nil {
                     homeTurnBinding = nil
                     homeTurnDeliveryState = .idle
+                }
+                if claimsPerConnect {
+                    // A client claim is single-use and expires shortly after
+                    // issue, so it is made in connect, not here. A claim kept
+                    // in memory from this profile may still be within Home's
+                    // reconnect grace.
+                    homeClaimsPerConnect = true
+                    if homeClaim?.profileID != profile.id { homeClaim = nil }
+                    homeRouteState = HomeRouteState(
+                        status: .unattempted,
+                        identity: homeClaim?.approvedRoute.identity,
+                        failure: nil
+                    )
+                    homeClient = (homeClientFactory ?? UnavailableHomeBridgeSessionClientFactory())
+                        .make(profileID: profile.id, mode: .home)
+                    homeBridgeState = .disconnected(
+                        .home(code: .transportUnavailable, phase: .lifecycle)
+                    )
+                    sessionMetadata = nil
+                    sessionStartedAt = nil
+                    transientError = nil
+                    didAttemptAutomaticConnection = false
+                    return true
                 }
                 guard let homeClaimProvider,
                       let claim = try await homeClaimProvider.conversationClaim(for: profile.id) else {
@@ -367,6 +406,13 @@ final class ConversationStore {
         guard !homeOperationsSuppressed else { return }
         canContinueWithoutResendingHomeTurn = false
         homeReconnectConfirmsNoUnresolvedTurn = false
+        // A paired claim still held in memory (the app only left the
+        // foreground) is reopened first, which keeps the conversation when
+        // Home's reconnect grace has not expired.
+        let reopeningPairedClaim = homeClaimsPerConnect && homeClaim != nil
+        if homeClaimsPerConnect, homeClaim == nil {
+            guard await makePairedHomeClaim() else { return }
+        }
         guard let claim = homeClaim, let homeClient else {
             let failure = HomeBridgeFailure.home(
                 code: .authorizationUnavailable,
@@ -403,6 +449,11 @@ final class ConversationStore {
                 applyHomeConnectionFailure(failure, unavailable: true)
                 return
             }
+            if claim.routePinPending {
+                // The bridge recorded the route Home named; later opens of
+                // this claim require exactly that route.
+                homeClaim = claim.pinned(to: binding.route)
+            }
             homeConversationBinding = binding
             if homeRecovery != nil {
                 connectionState = .reconnecting(attempt: 1, of: reconnectPolicy.maxAttempts)
@@ -418,6 +469,10 @@ final class ConversationStore {
                 capabilities: capabilities,
                 client: homeClient
             )
+            if pendingNewHomeConversationDivider {
+                pendingNewHomeConversationDivider = false
+                await insertNewHomeConversationDividerIfNeeded()
+            }
         case .unavailable(.reconnectRequired):
             guard let binding = reconnectBinding(for: claim) else {
                 applyHomeConnectionFailure(
@@ -435,6 +490,12 @@ final class ConversationStore {
             )
         case .unavailable(let failure):
             applyHomeConnectionFailure(failure, unavailable: true)
+            if reopeningPairedClaim, homeClaim == nil, homeRecovery == nil,
+               !homeOperationsSuppressed {
+                // The held claim ended with no turn in flight; this connect
+                // makes its one fresh claim instead.
+                await connectHome()
+            }
         case .disconnected(let failure):
             applyHomeConnectionFailure(failure, unavailable: false)
         }
@@ -562,7 +623,7 @@ final class ConversationStore {
         recovery.profileID == claim.profileID
             && recovery.conversationHandle == claim.conversationHandle
             && recovery.endpoint == claim.approvedRoute.endpoint
-            && recovery.route == claim.approvedRoute.identity
+            && claim.accepts(route: recovery.route)
             && recovery.householdBinding == claim.approvedRoute.householdBinding
     }
 
@@ -574,7 +635,7 @@ final class ConversationStore {
             && binding.profileID == claim.profileID
             && binding.conversationHandle == claim.conversationHandle
             && binding.endpoint == claim.approvedRoute.endpoint
-            && binding.route == claim.approvedRoute.identity
+            && claim.accepts(route: binding.route)
             && binding.householdBinding == claim.approvedRoute.householdBinding
     }
 
@@ -597,6 +658,210 @@ final class ConversationStore {
         sessionStartedAt = nil
         activityText = nil
         transientError = failure.safeReason
+        if homeClaimsPerConnect, unavailable, failure != .reconnectRequired {
+            // Home refused this claim; it cannot be reopened. The next
+            // connect makes a fresh one, and an uncertain turn is never
+            // replayed into it.
+            homeClaim = nil
+            pendingNewHomeConversationDivider = false
+            if homeRecovery != nil {
+                presentHomeContinuityLost()
+            }
+        }
+    }
+
+    // MARK: - Paired personal clients
+
+    /// One fresh `session: new` claim per connect. Returns false after
+    /// presenting a specific disconnected state; there is no retry loop.
+    private func makePairedHomeClaim() async -> Bool {
+        guard homeRecovery == nil else {
+            // The uncertain turn's claim is gone (its handle is never
+            // persisted). A new claim would be a different conversation.
+            presentHomeContinuityLost()
+            return false
+        }
+        guard let profileID = activeProfileID, let homeClaimProvider else {
+            applyPairedClaimFailure(message: "Home pairing is unavailable for this Hermes Profile.",
+                                    failure: .home(code: .authorizationUnavailable, phase: .authorization))
+            return false
+        }
+        homeBridgeState = .connecting
+        connectionState = .connecting
+        transientError = nil
+        do {
+            guard let claim = try await homeClaimProvider.conversationClaim(for: profileID) else {
+                applyPairedClaimFailure(message: "Home pairing is unavailable for this Hermes Profile.",
+                                        failure: .home(code: .authorizationUnavailable, phase: .authorization))
+                return false
+            }
+            guard !homeOperationsSuppressed, activeProfileID == profileID else {
+                abandonPairedClaimAttempt()
+                return false
+            }
+            homeClaim = claim
+            pendingNewHomeConversationDivider = true
+            canStartNewHomeConversation = false
+            if homeClient == nil {
+                homeClient = (homeClientFactory ?? UnavailableHomeBridgeSessionClientFactory())
+                    .make(profileID: profileID, mode: .home)
+            }
+            homeRouteState = HomeRouteState(
+                status: .unattempted,
+                identity: claim.approvedRoute.identity,
+                failure: nil
+            )
+            return true
+        } catch {
+            guard !homeOperationsSuppressed else {
+                abandonPairedClaimAttempt()
+                return false
+            }
+            let connectError = error as? HomeClientConnectError
+            applyPairedClaimFailure(
+                message: connectError?.errorDescription
+                    ?? "Home did not grant a conversation. Connect again.",
+                failure: connectError?.failure
+                    ?? .home(code: .authorizationUnavailable, phase: .authorization)
+            )
+            return false
+        }
+    }
+
+    /// The attempt was superseded (lifecycle or profile change) while the
+    /// claim was in flight; do not leave `connect()` locked out.
+    private func abandonPairedClaimAttempt() {
+        guard connectionState == .connecting else { return }
+        connectionState = .disconnected
+        homeBridgeState = .disconnected(.home(code: .transportUnavailable, phase: .lifecycle))
+    }
+
+    private func applyPairedClaimFailure(message: String, failure: HomeBridgeFailure) {
+        homeBridgeState = .disconnected(failure)
+        connectionState = .disconnected
+        sessionMetadata = nil
+        sessionStartedAt = nil
+        activityText = nil
+        transientError = message
+    }
+
+    private func presentHomeContinuityLost() {
+        homeBridgeState = .disconnected(.home(code: .staleConversation, phase: .reconnect))
+        connectionState = .disconnected
+        sessionMetadata = nil
+        sessionStartedAt = nil
+        canContinueWithoutResendingHomeTurn = false
+        canStartNewHomeConversation = true
+        transientError = "Home can no longer resume the earlier conversation. Its last prompt was not resent. Start a new conversation to continue."
+    }
+
+    /// The user's deliberate choice after continuity was lost. Earlier local
+    /// messages stay; nothing is resent to Hermes.
+    @discardableResult
+    func startNewHomeConversation() async -> Bool {
+        guard isHomeMode, homeClaimsPerConnect, canStartNewHomeConversation, !isSending else {
+            return false
+        }
+        let promptToKeep = unconfirmedTurnText
+        canStartNewHomeConversation = false
+        homeRecovery = nil
+        homeTurnBinding = nil
+        homeTurnDeliveryState = .idle
+        unconfirmedTurnText = nil
+        homeClaim = nil
+        homeConversationBinding = nil
+        homeJoinTimeout = nil
+        activeTurnGeneration = nil
+        activeTurnText = nil
+        transientError = nil
+        if let promptToKeep {
+            if messages.last(where: { $0.role == .user })?.text != promptToKeep {
+                messages.append(TranscriptMessage(role: .user, text: promptToKeep))
+            }
+            messages.append(TranscriptMessage(
+                role: .error,
+                text: "The earlier prompt may not have reached Hermes. It was not resent."
+            ))
+        }
+        await persistConversation()
+        await connect()
+        return connectionState.isConnected
+    }
+
+    /// Explicit Disconnect. A paired claim is closed on Home with
+    /// `conversation.close`; the next Connect starts a new conversation.
+    func disconnect() async {
+        guard !isSending else {
+            transientError = "Stop the current turn before disconnecting."
+            return
+        }
+        reconnectTask?.cancel()
+        reconnectTask = nil
+        if transportMode == .home {
+            await closePairedHomeConversation()
+            await closeHomeClient()
+            homeBridgeState = .disconnected(.home(code: .transportUnavailable, phase: .lifecycle))
+        } else {
+            isExpectedDisconnect = true
+            await client.disconnect()
+            isExpectedDisconnect = false
+        }
+        connectionState = .disconnected
+        sessionMetadata = nil
+        sessionStartedAt = nil
+        activityText = nil
+        didAttemptAutomaticConnection = true
+    }
+
+    private func closePairedHomeConversation() async {
+        guard homeClaimsPerConnect else { return }
+        // Also while connecting or reconnecting: otherwise the claim stays
+        // open on Home through its reconnect grace.
+        if let binding = homeConversationBinding,
+           let homeClient {
+            _ = await homeClient.close(binding: binding)
+        }
+        homeClaim = nil
+        pendingNewHomeConversationDivider = false
+    }
+
+    private func insertNewHomeConversationDividerIfNeeded() async {
+        guard !messages.isEmpty else { return }
+        if let last = messages.last,
+           last.role == .system,
+           last.text == Self.newHomeConversationDividerText {
+            return
+        }
+        messages.append(TranscriptMessage(role: .system, text: Self.newHomeConversationDividerText))
+        await persistConversation()
+    }
+
+    /// A paired claim's handle never reaches disk; recovery records carry a
+    /// placeholder instead.
+    private func persistableHomeRecovery(
+        _ recovery: PersistedHomeRecovery?
+    ) -> PersistedHomeRecovery? {
+        guard homeClaimsPerConnect, let recovery else { return recovery }
+        return recovery.replacingHandle(PersistedHomeRecovery.redactedHandle)
+    }
+
+    /// Restores the in-memory handle when the app only left the foreground
+    /// and the same claim is still held. After a relaunch it stays redacted,
+    /// which reports lost continuity rather than replaying the turn.
+    private func restoredHomeRecovery(
+        _ recovery: PersistedHomeRecovery?
+    ) -> PersistedHomeRecovery? {
+        guard let recovery,
+              recovery.conversationHandle == PersistedHomeRecovery.redactedHandle else {
+            return recovery
+        }
+        guard let claim = homeClaim,
+              claim.profileID == recovery.profileID,
+              claim.approvedRoute.endpoint == recovery.endpoint,
+              claim.accepts(route: recovery.route) else {
+            return recovery
+        }
+        return recovery.replacingHandle(claim.conversationHandle)
     }
 
     private func startHomeEventPump(client: any HomeBridgeSessionClient) {
@@ -1532,7 +1797,13 @@ final class ConversationStore {
         isExpectedDisconnect = true
         await client.disconnect()
         isExpectedDisconnect = false
+        // A profile switch or removal ends a paired claim on Home rather
+        // than leaving it open for the reconnect grace.
+        await closePairedHomeConversation()
         await closeHomeClient()
+        homeClaim = nil
+        homeClaimsPerConnect = false
+        canStartNewHomeConversation = false
 
         connectionState = .disconnected
         sessionMetadata = nil
@@ -1856,7 +2127,7 @@ final class ConversationStore {
                     messages: messages,
                     draft: draft,
                     unconfirmedTurnText: unconfirmedTurnText,
-                    homeRecovery: homeRecovery
+                    homeRecovery: persistableHomeRecovery(homeRecovery)
                 )
             )
             return true
@@ -1866,5 +2137,28 @@ final class ConversationStore {
             }
             return false
         }
+    }
+}
+
+extension PersistedHomeRecovery {
+    /// Written in place of a paired client's conversation handle, which must
+    /// stay out of every non-Keychain file.
+    static let redactedHandle = "paired-client-claim-not-persisted"
+
+    func replacingHandle(_ handle: String) -> PersistedHomeRecovery {
+        PersistedHomeRecovery(
+            schemaVersion: schemaVersion,
+            profileID: profileID,
+            endpoint: endpoint,
+            route: route,
+            householdBinding: householdBinding,
+            conversationHandle: handle,
+            turnID: turnID,
+            correlationID: correlationID,
+            submissionAttemptID: submissionAttemptID,
+            resumeCursor: resumeCursor,
+            deliveryState: deliveryState,
+            updatedAt: updatedAt
+        )
     }
 }

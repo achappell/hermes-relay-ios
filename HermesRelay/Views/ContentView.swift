@@ -12,6 +12,7 @@ struct ContentView: View {
     @State private var showingHistory = false
     @State private var promptHistory = PromptHistory()
     @State private var hudModel: AmbientHUDModel
+    @State private var pairingLinkRequest: HomePairingLinkRequest?
     @Environment(\.scenePhase) private var scenePhase
     @FocusState private var focusedField: FocusField?
     private let configurationStore: RelayConfigurationStore?
@@ -27,6 +28,8 @@ struct ContentView: View {
     private let homeLiveConfigurationStore: (any HomeLiveConfigurationStore)?
     private let homeCredentialStore: (any HomeCredentialProvisioningStore)?
     private let homeAdminCredentialStore: (any HomeAdminCredentialStore)?
+    private let homePairingCoordinator: HomeClientPairingCoordinator?
+    private let pairingInbox: HomePairingLinkInbox?
 
     private enum FocusField: Hashable {
         case composer
@@ -48,6 +51,8 @@ struct ContentView: View {
         homeLiveConfigurationStore: (any HomeLiveConfigurationStore)? = nil,
         homeCredentialStore: (any HomeCredentialProvisioningStore)? = nil,
         homeAdminCredentialStore: (any HomeAdminCredentialStore)? = nil,
+        homePairingCoordinator: HomeClientPairingCoordinator? = nil,
+        pairingInbox: HomePairingLinkInbox? = nil,
         homeClock: any HomeMonotonicClock = ContinuousHomeMonotonicClock()
     ) {
         _store = State(initialValue: store)
@@ -107,6 +112,8 @@ struct ContentView: View {
         self.homeLiveConfigurationStore = homeLiveConfigurationStore
         self.homeCredentialStore = homeCredentialStore
         self.homeAdminCredentialStore = homeAdminCredentialStore
+        self.homePairingCoordinator = homePairingCoordinator
+        self.pairingInbox = pairingInbox
         self.lifecycleCoordinator = AppleLifecycleCoordinator(
             store: store,
             voice: resolvedVoiceCoordinator,
@@ -166,6 +173,17 @@ struct ContentView: View {
             #if os(iOS)
             .navigationBarTitleDisplayMode(.inline)
             #endif
+            .toolbar {
+                if store.isHomeMode, store.connectionState.isConnected {
+                    ToolbarItem(placement: .primaryAction) {
+                        Button("Disconnect") {
+                            Task { await store.disconnect() }
+                        }
+                        .disabled(store.isSending)
+                        .accessibilityIdentifier("home-disconnect")
+                    }
+                }
+            }
             .task {
                 hudModel.start(observing: activityStore)
                 if let conversationDirectory,
@@ -206,7 +224,8 @@ struct ContentView: View {
                     homeLiveConfigurationStore: homeLiveConfigurationStore,
                     homeCredentialStore: homeCredentialStore,
                     homeAdminCredentialStore: homeAdminCredentialStore,
-                    homeClientFactory: homeClientFactory
+                    homeClientFactory: homeClientFactory,
+                    homePairingCoordinator: homePairingCoordinator
                 ) {
                     // The selected profile may have changed, so reconnect to
                     // whichever relay is now active rather than only reloading
@@ -219,6 +238,25 @@ struct ContentView: View {
         }
         .sheet(isPresented: $showingHistory) {
             TranscriptHistoryView(messages: store.messages)
+        }
+        .onChange(of: pairingInbox?.pendingLink, initial: true) { _, link in
+            guard let link else { return }
+            pairingInbox?.pendingLink = nil
+            pairingLinkRequest = HomePairingLinkRequest(url: link)
+        }
+        .sheet(item: $pairingLinkRequest) { request in
+            if let homePairingCoordinator {
+                HomePairingView(
+                    coordinator: homePairingCoordinator,
+                    initialLink: request.url,
+                    onPaired: {
+                        await store.switchToSelectedProfile()
+                    }
+                )
+            } else {
+                Text("Home pairing is unavailable.")
+                    .padding()
+            }
         }
     }
 
@@ -295,6 +333,16 @@ struct ContentView: View {
                     Spacer()
                 }
                 .foregroundStyle(HermesVisualTokens.secondaryInk)
+            }
+
+            if store.canStartNewHomeConversation {
+                Button {
+                    Task { await store.startNewHomeConversation() }
+                } label: {
+                    Label("Start new conversation", systemImage: "plus.bubble")
+                }
+                .relayGlassButtonStyle()
+                .accessibilityIdentifier("home-start-new-conversation")
             }
 
             if let transientError = store.transientError {

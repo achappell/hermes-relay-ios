@@ -60,6 +60,12 @@
 		A100000000000000000000E4 /* FakeHomeBridgeSessionClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = A100000000000000000000E5 /* FakeHomeBridgeSessionClient.swift */; };
 		A100000000000000000000E6 /* HomeCredentialStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = A100000000000000000000E7 /* HomeCredentialStore.swift */; };
 		A100000000000000000000E8 /* HomeConfigurationMigration.swift in Sources */ = {isa = PBXBuildFile; fileRef = A100000000000000000000E9 /* HomeConfigurationMigration.swift */; };
+		A10000000000000000000100 /* HomeClientPairingModels.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000000000000000000101 /* HomeClientPairingModels.swift */; };
+		A10000000000000000000102 /* HomeClientService.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000000000000000000103 /* HomeClientService.swift */; };
+		A10000000000000000000104 /* HomeClientPairingStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000000000000000000105 /* HomeClientPairingStore.swift */; };
+		A10000000000000000000106 /* HomePairingView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000000000000000000107 /* HomePairingView.swift */; };
+		A10000000000000000000108 /* HomePairingScannerView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000000000000000000109 /* HomePairingScannerView.swift */; };
+		A1000000000000000000010A /* HomeClientPairingTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1000000000000000000010B /* HomeClientPairingTests.swift */; };
 		A100000000000000000000F0 /* AppleLifecycleCoordinator.swift in Sources */ = {isa = PBXBuildFile; fileRef = A100000000000000000000F1 /* AppleLifecycleCoordinator.swift */; };
 		A100000000000000000000F2 /* URLSessionHomeBridgeSessionClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = A100000000000000000000F3 /* URLSessionHomeBridgeSessionClient.swift */; };
 		A100000000000000000000F4 /* HomeBridgeEnvelopeTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A100000000000000000000F5 /* HomeBridgeEnvelopeTests.swift */; };
@@ -137,6 +143,13 @@
 		A100000000000000000000E5 /* FakeHomeBridgeSessionClient.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FakeHomeBridgeSessionClient.swift; sourceTree = "<group>"; };
 		A100000000000000000000E7 /* HomeCredentialStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HomeCredentialStore.swift; sourceTree = "<group>"; };
 		A100000000000000000000E9 /* HomeConfigurationMigration.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HomeConfigurationMigration.swift; sourceTree = "<group>"; };
+		A10000000000000000000101 /* HomeClientPairingModels.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HomeClientPairingModels.swift; sourceTree = "<group>"; };
+		A10000000000000000000103 /* HomeClientService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HomeClientService.swift; sourceTree = "<group>"; };
+		A10000000000000000000105 /* HomeClientPairingStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HomeClientPairingStore.swift; sourceTree = "<group>"; };
+		A10000000000000000000107 /* HomePairingView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HomePairingView.swift; sourceTree = "<group>"; };
+		A10000000000000000000109 /* HomePairingScannerView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HomePairingScannerView.swift; sourceTree = "<group>"; };
+		A1000000000000000000010B /* HomeClientPairingTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HomeClientPairingTests.swift; sourceTree = "<group>"; };
+		A1000000000000000000010C /* Release-Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = "Release-Info.plist"; sourceTree = "<group>"; };
 		A100000000000000000000F1 /* AppleLifecycleCoordinator.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppleLifecycleCoordinator.swift; sourceTree = "<group>"; };
 		A100000000000000000000F3 /* URLSessionHomeBridgeSessionClient.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = URLSessionHomeBridgeSessionClient.swift; sourceTree = "<group>"; };
 		A100000000000000000000F5 /* HomeBridgeEnvelopeTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HomeBridgeEnvelopeTests.swift; sourceTree = "<group>"; };
@@ -178,6 +191,7 @@
 			children = (
 				A10000000000000000000021 /* HermesRelayApp.swift */,
 				A1000000000000000000009D /* Development-Info.plist */,
+				A1000000000000000000010C /* Release-Info.plist */,
 				A10000000000000000000036 /* HermesRelay.entitlements */,
 				A100000000000000000000D0 /* Assets.xcassets */,
 				A10000000000000000000064 /* Models */,
@@ -197,6 +211,7 @@
 				A100000000000000000000F7 /* HomeBridgeSessionClientTests.swift */,
 				A100000000000000000000F9 /* HomeBridgeAudioTests.swift */,
 				A100000000000000000000FB /* HomeConfigurationMigrationTests.swift */,
+				A1000000000000000000010B /* HomeClientPairingTests.swift */,
 				A100000000000000000000FD /* AppleLifecycleTests.swift */,
 				A10000000000000000000037 /* HermesEventNormalizerTests.swift */,
 				A10000000000000000000039 /* URLSessionHermesSessionClientTests.swift */,
@@ -227,6 +242,7 @@
 			children = (
 				A10000000000000000000022 /* SessionModels.swift */,
 				A100000000000000000000E0 /* HomeBridgeModels.swift */,
+				A10000000000000000000101 /* HomeClientPairingModels.swift */,
 				A100000000000000000000B1 /* RelayProfileCollection.swift */,
 				A10000000000000000000033 /* RelayProfile.swift */,
 				A100000000000000000000C3 /* DeviceModels.swift */,
@@ -243,6 +259,8 @@
 				A100000000000000000000E5 /* FakeHomeBridgeSessionClient.swift */,
 				A100000000000000000000E7 /* HomeCredentialStore.swift */,
 				A100000000000000000000E9 /* HomeConfigurationMigration.swift */,
+				A10000000000000000000103 /* HomeClientService.swift */,
+				A10000000000000000000105 /* HomeClientPairingStore.swift */,
 				A100000000000000000000F1 /* AppleLifecycleCoordinator.swift */,
 				A10000000000000000000038 /* HermesEventNormalizer.swift */,
 				A100000000000000000000A7 /* ReconnectPolicy.swift */,
@@ -279,6 +297,8 @@
 			children = (
 				A100000000000000000000C9 /* DeviceDiscoveryView.swift */,
 				A100000000000000000000B3 /* RelayConfigurationView.swift */,
+				A10000000000000000000107 /* HomePairingView.swift */,
+				A10000000000000000000109 /* HomePairingScannerView.swift */,
 				A10000000000000000000025 /* ContentView.swift */,
 				A10000000000000000000026 /* MessageBubble.swift */,
 				A10000000000000000000095 /* VoiceStatusView.swift */,
@@ -428,6 +448,11 @@
 				A100000000000000000000E4 /* FakeHomeBridgeSessionClient.swift in Sources */,
 				A100000000000000000000E6 /* HomeCredentialStore.swift in Sources */,
 				A100000000000000000000E8 /* HomeConfigurationMigration.swift in Sources */,
+				A10000000000000000000100 /* HomeClientPairingModels.swift in Sources */,
+				A10000000000000000000102 /* HomeClientService.swift in Sources */,
+				A10000000000000000000104 /* HomeClientPairingStore.swift in Sources */,
+				A10000000000000000000106 /* HomePairingView.swift in Sources */,
+				A10000000000000000000108 /* HomePairingScannerView.swift in Sources */,
 				A100000000000000000000F0 /* AppleLifecycleCoordinator.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
@@ -453,6 +478,7 @@
 				A100000000000000000000F6 /* HomeBridgeSessionClientTests.swift in Sources */,
 				A100000000000000000000F8 /* HomeBridgeAudioTests.swift in Sources */,
 				A100000000000000000000FA /* HomeConfigurationMigrationTests.swift in Sources */,
+				A1000000000000000000010A /* HomeClientPairingTests.swift in Sources */,
 				A100000000000000000000FC /* AppleLifecycleTests.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
@@ -576,6 +602,7 @@
 				INFOPLIST_FILE = "HermesRelay/Development-Info.plist";
 				INFOPLIST_KEY_CFBundleDisplayName = "Hermes Streaming Relay";
 				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.productivity";
+				INFOPLIST_KEY_NSCameraUsageDescription = "Hermes uses the camera only to scan the Home pairing QR code.";
 				INFOPLIST_KEY_NSLocalNetworkUsageDescription = "Hermes uses your private network to discover household Devices and connect to configured relays.";
 				INFOPLIST_KEY_NSMicrophoneUsageDescription = "Hermes uses the microphone for push-to-talk voice turns.";
 				INFOPLIST_KEY_NSSpeechRecognitionUsageDescription = "Hermes uses speech recognition to turn a voice turn into text.";
@@ -617,8 +644,10 @@
 				ENABLE_HARDENED_RUNTIME = YES;
 				ENABLE_OUTGOING_NETWORK_CONNECTIONS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = "HermesRelay/Release-Info.plist";
 				INFOPLIST_KEY_CFBundleDisplayName = "Hermes Streaming Relay";
 				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.productivity";
+				INFOPLIST_KEY_NSCameraUsageDescription = "Hermes uses the camera only to scan the Home pairing QR code.";
 				INFOPLIST_KEY_NSLocalNetworkUsageDescription = "Hermes uses your private network to discover household Devices and connect to configured relays.";
 				INFOPLIST_KEY_NSMicrophoneUsageDescription = "Hermes uses the microphone for push-to-talk voice turns.";
 				INFOPLIST_KEY_NSSpeechRecognitionUsageDescription = "Hermes uses speech recognition to turn a voice turn into text.";

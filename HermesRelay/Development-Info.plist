@@ -12,6 +12,19 @@
 	<string>6.0</string>
 	<key>CFBundleName</key>
 	<string>$(PRODUCT_NAME)</string>
+	<key>CFBundleURLTypes</key>
+	<array>
+		<dict>
+			<key>CFBundleTypeRole</key>
+			<string>Viewer</string>
+			<key>CFBundleURLName</key>
+			<string>com.achappell.HermesRelay.home-pairing</string>
+			<key>CFBundleURLSchemes</key>
+			<array>
+				<string>hermes-home</string>
+			</array>
+		</dict>
+	</array>
 	<key>CFBundlePackageType</key>
 	<string>APPL</string>
 	<key>CFBundleShortVersionString</key>
@@ -33,6 +46,8 @@
 			</dict>
 		</dict>
 	</dict>
+	<key>NSCameraUsageDescription</key>
+	<string>Hermes uses the camera only to scan the Home pairing QR code.</string>
 	<key>NSLocalNetworkUsageDescription</key>
 	<string>Hermes uses your private network to discover household Devices and connect to configured relays.</string>
 	<key>NSMicrophoneUsageDescription</key>

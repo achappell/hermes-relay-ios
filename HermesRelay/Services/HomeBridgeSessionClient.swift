@@ -119,6 +119,7 @@ actor URLSessionHomeBridgeSessionClient: HomeBridgeSessionClient {
     private static let allowedMethods: Set<String> = [
         "conversation.open",
         "conversation.reconnect",
+        "conversation.close",
         "prompt.submit",
         "session.interrupt",
         "prompt.respond",
@@ -166,11 +167,16 @@ actor URLSessionHomeBridgeSessionClient: HomeBridgeSessionClient {
             guard approved == claim.approvedRoute else {
                 return .unavailable(.route(.identityMismatch))
             }
+            if claim.routePinPending, dependencies.routePinRecorder == nil {
+                // An unpinned paired claim is only safe when its first
+                // `ready` route can be recorded; otherwise fail closed.
+                return .unavailable(.route(.identityMismatch))
+            }
             if let currentBinding {
                 guard currentBinding.profileID == claim.profileID,
                       currentBinding.conversationHandle == claim.conversationHandle,
                       currentBinding.endpoint == claim.approvedRoute.endpoint,
-                      currentBinding.route == claim.approvedRoute.identity,
+                      claim.accepts(route: currentBinding.route),
                       currentBinding.householdBinding == claim.approvedRoute.householdBinding else {
                     return .unavailable(.home(code: .conversationMismatch, phase: .open))
                 }
@@ -211,6 +217,11 @@ actor URLSessionHomeBridgeSessionClient: HomeBridgeSessionClient {
                     || ready.unresolvedTurn == true else {
                     return .unavailable(mapOpenReason(ready.reason ?? .protocolError))
                 }
+                if claim.routePinPending, currentBinding == nil {
+                    // A reconnect binding needs a named route; a first
+                    // paired open has none yet.
+                    return .unavailable(mapOpenReason(ready.reason ?? .protocolError))
+                }
                 let hasEstablishedBinding = currentBinding != nil
                 let reconnectBinding = currentBinding ?? HomeConversationBinding(
                     profileID: claim.profileID,
@@ -230,16 +241,29 @@ actor URLSessionHomeBridgeSessionClient: HomeBridgeSessionClient {
                   let wireCapabilities = ready.capabilities else {
                 return .unavailable(mapOpenReason(ready.reason ?? .protocolError))
             }
-            guard wireRoute.routeClass == claim.approvedRoute.identity.routeClass,
-                  wireRoute.id == claim.approvedRoute.identity.id else {
+            let readyRoute = HomeRouteIdentity(routeClass: wireRoute.routeClass, id: wireRoute.id)
+            guard claim.accepts(route: readyRoute) else {
                 return .unavailable(.route(.identityMismatch))
+            }
+            if claim.routePinPending {
+                // The first live `ready` after pairing names the route. Pin it
+                // before any turn can use this binding.
+                guard let recorder = dependencies.routePinRecorder else {
+                    return .unavailable(.route(.identityMismatch))
+                }
+                do {
+                    try await recorder.recordFirstReadyRoute(readyRoute, for: claim.profileID)
+                } catch {
+                    await retireSocketForReconnect()
+                    return .unavailable(.route(.identityMismatch))
+                }
             }
             let recoveredCapabilities = HomeBridgeCapabilities(wireCapabilities)
             let binding = HomeConversationBinding(
                 profileID: claim.profileID,
                 conversationHandle: claim.conversationHandle,
                 endpoint: claim.approvedRoute.endpoint,
-                route: claim.approvedRoute.identity,
+                route: readyRoute,
                 householdBinding: claim.approvedRoute.householdBinding,
                 capabilities: recoveredCapabilities
             )
@@ -608,6 +632,42 @@ actor URLSessionHomeBridgeSessionClient: HomeBridgeSessionClient {
             return .unavailable(.home(code: .transportTimeout, phase: .ping))
         } catch {
             return .unavailable(failure(for: error, phase: .ping))
+        }
+    }
+
+    func close(binding: HomeConversationBinding) async -> HomeConversationCloseOutcome {
+        guard validateCurrentBinding(binding) == nil else {
+            return .unavailable(.home(code: .conversationMismatch, phase: .lifecycle))
+        }
+        let requestID = HomePendingRequestID()
+        do {
+            let response = try await withHomeDeadline(
+                requestID: requestID,
+                timeout: deadlines.command,
+                clock: dependencies.clock,
+                cancelPending: { [weak self] id in await self?.cancelPending(requestID: id) },
+                operation: { [weak self] in
+                    guard let self else { throw HomeBridgeTransportError.disconnected }
+                    return try await self.request(
+                        id: requestID,
+                        method: "conversation.close",
+                        params: ["conversation_handle": .string(binding.conversationHandle)]
+                    )
+                }
+            )
+            try decodeClose(response, binding: binding)
+            // Home marks the conversation stale once closed; no further
+            // operation may use this binding.
+            bridgeReady = false
+            return .closed
+        } catch is HomeDeadlineError {
+            return .unavailable(.home(code: .transportTimeout, phase: .lifecycle))
+        } catch is CancellationError {
+            return .unavailable(.home(code: .transportTimeout, phase: .lifecycle))
+        } catch is HomeWireDecodingError {
+            return .unavailable(.home(code: .protocolError, phase: .lifecycle))
+        } catch {
+            return .unavailable(failure(for: error, phase: .lifecycle))
         }
     }
 
@@ -1373,6 +1433,19 @@ private func decodeSubmission(
         correlationID = nil
     }
     return HomeSubmissionWireResult(status: status, turnID: turnID, correlationID: correlationID)
+}
+
+private func decodeClose(
+    _ response: HomeWireResponse,
+    binding: HomeConversationBinding
+) throws {
+    if let errorCode = response.errorCode { throw HomeBridgeWireFailure(code: errorCode) }
+    try requireKeys(response.result, allowed: ["schema", "status", "conversation_handle"])
+    guard (intValue(response.result["schema"]) ?? 0) == 1,
+          response.result["conversation_handle"] as? String == binding.conversationHandle,
+          response.result["status"] as? String == "closed" else {
+        throw HomeWireDecodingError.invalidShape
+    }
 }
 
 private struct HomeCorrelatedResult {

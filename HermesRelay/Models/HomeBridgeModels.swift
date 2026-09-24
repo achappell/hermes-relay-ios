@@ -353,6 +353,63 @@ struct HomeConversationClaim: Equatable, Sendable {
     let profileID: UUID
     let conversationHandle: String
     let approvedRoute: HomeApprovedRoute
+    /// True only for a paired client's first `ready`. Home names its route
+    /// identity then; the client pins it and later claims require that route.
+    let routePinPending: Bool
+
+    init(
+        profileID: UUID,
+        conversationHandle: String,
+        approvedRoute: HomeApprovedRoute,
+        routePinPending: Bool = false
+    ) {
+        self.profileID = profileID
+        self.conversationHandle = conversationHandle
+        self.approvedRoute = approvedRoute
+        self.routePinPending = routePinPending
+    }
+
+    /// Whether a `ready` naming `route` satisfies this claim. An unpinned
+    /// claim accepts any valid route of its class; a pinned one requires
+    /// the exact identity.
+    func accepts(route: HomeRouteIdentity) -> Bool {
+        guard routePinPending else { return route == approvedRoute.identity }
+        return route.isValid && route.routeClass == approvedRoute.identity.routeClass
+    }
+
+    /// The same claim bound to the route identity Home named on first `ready`.
+    func pinned(to route: HomeRouteIdentity) -> HomeConversationClaim {
+        HomeConversationClaim(
+            profileID: profileID,
+            conversationHandle: conversationHandle,
+            approvedRoute: HomeApprovedRoute(
+                endpoint: approvedRoute.endpoint,
+                identity: route,
+                householdBinding: approvedRoute.householdBinding
+            ),
+            routePinPending: false
+        )
+    }
+}
+
+extension HomeRouteIdentity {
+    /// Local placeholder for a paired Home whose route has not yet been
+    /// named by a live `ready`. It is never sent to Home.
+    static let pendingPinID = "pending-first-ready"
+}
+
+/// Records the route identity Home names on a paired client's first
+/// `ready`. A later mismatch is an identity failure, never a re-pin.
+protocol HomeRoutePinRecorder: Sendable {
+    func recordFirstReadyRoute(
+        _ identity: HomeRouteIdentity,
+        for profileID: UUID
+    ) async throws
+}
+
+enum HomeConversationCloseOutcome: Equatable, Sendable {
+    case closed
+    case unavailable(HomeBridgeFailure)
 }
 
 struct HomeTurnBinding: Equatable, Sendable {
@@ -649,7 +706,16 @@ protocol HomeBridgeSessionClient: Sendable {
     func ping(binding: HomeConversationBinding) async -> HomePingOutcome
     func cancelPending(requestID: HomePendingRequestID) async
     func events() async -> AsyncThrowingStream<HomeBridgeEvent, Error>
+    /// Ends the Home conversation claim itself (`conversation.close`). The
+    /// transport stays owned by `close()`.
+    func close(binding: HomeConversationBinding) async -> HomeConversationCloseOutcome
     func close() async
+}
+
+extension HomeBridgeSessionClient {
+    func close(binding: HomeConversationBinding) async -> HomeConversationCloseOutcome {
+        .unavailable(.home(code: .capabilityUnavailable, phase: .lifecycle))
+    }
 }
 
 enum HomeOpenOutcome: Equatable, Sendable {
@@ -903,6 +969,12 @@ enum HomeCredentialKeychain {
     static func account(for profileID: UUID) -> String {
         "device-credential.\(profileID.uuidString)"
     }
+
+    /// A paired personal client holds one credential per Home pairing, shared
+    /// by every app profile granted through that pairing.
+    static func account(forPairing pairingID: UUID) -> String {
+        "device-credential.pairing.\(pairingID.uuidString)"
+    }
 }
 
 enum HomeCredentialReferenceError: Error, Equatable, Sendable {
@@ -918,9 +990,12 @@ struct HomeCredentialReference: Codable, Equatable, Sendable {
     let renewAfter: Date
     let overlapUntil: Date?
 
-    func validate(for profileID: UUID) throws {
+    /// `ownerID` is an app profile ID for a legacy per-profile credential, or
+    /// a pairing ID for a paired client's per-Home credential.
+    func validate(for ownerID: UUID) throws {
         guard service == HomeCredentialKeychain.service,
-              account == HomeCredentialKeychain.account(for: profileID) else {
+              account == HomeCredentialKeychain.account(for: ownerID)
+                || account == HomeCredentialKeychain.account(forPairing: ownerID) else {
             throw HomeCredentialReferenceError.wrongServiceOrAccount
         }
 
@@ -1137,19 +1212,22 @@ struct HomeBridgeClientDependencies: Sendable {
     let clock: any HomeMonotonicClock
     let socketFactory: any WebSocketConnectionFactory
     let publicAdapterEnabled: Bool
+    let routePinRecorder: (any HomeRoutePinRecorder)?
 
     init(
         routeProvider: any HomeApprovedRouteProvider,
         credentialStore: any HomeCredentialStore,
         clock: any HomeMonotonicClock = ContinuousHomeMonotonicClock(),
         socketFactory: any WebSocketConnectionFactory = URLSessionWebSocketConnectionFactory(),
-        publicAdapterEnabled: Bool = false
+        publicAdapterEnabled: Bool = false,
+        routePinRecorder: (any HomeRoutePinRecorder)? = nil
     ) {
         self.routeProvider = routeProvider
         self.credentialStore = credentialStore
         self.clock = clock
         self.socketFactory = socketFactory
         self.publicAdapterEnabled = publicAdapterEnabled
+        self.routePinRecorder = routePinRecorder
     }
 }
 

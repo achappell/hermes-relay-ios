@@ -7,10 +7,13 @@ import Observation
 @Observable
 final class RelayProfileListModel {
     private(set) var collection = RelayProfileCollection()
+    /// App profiles bound to a Home pairing grant.
+    private(set) var pairedProfileIDs: Set<UUID> = []
     var errorMessage: String?
 
     private let configurationStore: RelayConfigurationStore
     private let homeAdminCredentialStore: (any HomeAdminCredentialStore)?
+    private let homePairingCoordinator: HomeClientPairingCoordinator?
     /// Where per-profile conversations live, so deleting a profile takes its
     /// messages with it rather than leaving them readable on disk.
     private let conversationDirectory: URL?
@@ -18,11 +21,13 @@ final class RelayProfileListModel {
     init(
         configurationStore: RelayConfigurationStore,
         conversationDirectory: URL? = nil,
-        homeAdminCredentialStore: (any HomeAdminCredentialStore)? = nil
+        homeAdminCredentialStore: (any HomeAdminCredentialStore)? = nil,
+        homePairingCoordinator: HomeClientPairingCoordinator? = nil
     ) {
         self.configurationStore = configurationStore
         self.conversationDirectory = conversationDirectory
         self.homeAdminCredentialStore = homeAdminCredentialStore
+        self.homePairingCoordinator = homePairingCoordinator
     }
 
     func load() async {
@@ -31,6 +36,12 @@ final class RelayProfileListModel {
             errorMessage = nil
         } catch {
             errorMessage = error.localizedDescription
+        }
+        if let homePairingCoordinator,
+           let pairings = try? await homePairingCoordinator.allPairings() {
+            pairedProfileIDs = Set(pairings.flatMap { $0.profiles.map(\.profileID) })
+        } else {
+            pairedProfileIDs = []
         }
     }
 
@@ -47,6 +58,14 @@ final class RelayProfileListModel {
     func delete(id: UUID) async -> Bool {
         do {
             try await configurationStore.deleteProfile(id: id)
+            var pairingCleanupFailed = false
+            do {
+                // A Home's last paired profile takes its Keychain credential
+                // with it.
+                try await homePairingCoordinator?.profileRemoved(id)
+            } catch {
+                pairingCleanupFailed = true
+            }
             do {
                 try await homeAdminCredentialStore?.delete(for: id)
             } catch {
@@ -69,6 +88,9 @@ final class RelayProfileListModel {
                 )
             }
             await load()
+            if pairingCleanupFailed {
+                errorMessage = "The Profile was deleted, but its Home pairing could not be cleaned up. Pairing this Home again replaces the stored credential."
+            }
             return true
         } catch {
             errorMessage = error.localizedDescription
@@ -338,6 +360,7 @@ struct RelayConfigurationView: View {
     let homeCredentialStore: (any HomeCredentialProvisioningStore)?
     let homeAdminCredentialStore: (any HomeAdminCredentialStore)?
     let homeClientFactory: (any HomeBridgeSessionClientFactory)?
+    let homePairingCoordinator: HomeClientPairingCoordinator?
     let onSaved: @MainActor () async -> Void
     let onSelectedProfileDeleted: @MainActor () async -> Void
 
@@ -351,6 +374,7 @@ struct RelayConfigurationView: View {
     @State private var listModel: RelayProfileListModel
     @State private var showingDeviceDiscovery = false
     @State private var showingHomeSetup = false
+    @State private var showingHomePairing = false
     @State private var homeAdminCredential = ""
     @State private var hasStoredHomeAdminCredential = false
     @State private var homeAdminHouseholdBinding: String?
@@ -374,6 +398,7 @@ struct RelayConfigurationView: View {
         homeCredentialStore: (any HomeCredentialProvisioningStore)? = nil,
         homeAdminCredentialStore: (any HomeAdminCredentialStore)? = nil,
         homeClientFactory: (any HomeBridgeSessionClientFactory)? = nil,
+        homePairingCoordinator: HomeClientPairingCoordinator? = nil,
         onSaved: @escaping @MainActor () async -> Void = {},
         onSelectedProfileDeleted: @escaping @MainActor () async -> Void = {}
     ) {
@@ -389,6 +414,7 @@ struct RelayConfigurationView: View {
         self.homeCredentialStore = homeCredentialStore
         self.homeAdminCredentialStore = homeAdminCredentialStore
         self.homeClientFactory = homeClientFactory
+        self.homePairingCoordinator = homePairingCoordinator
         self.onSaved = onSaved
         self.onSelectedProfileDeleted = onSelectedProfileDeleted
         _draft = State(initialValue: RelayConfigurationDraft(identity: .current()))
@@ -396,7 +422,8 @@ struct RelayConfigurationView: View {
             initialValue: RelayProfileListModel(
                 configurationStore: configurationStore,
                 conversationDirectory: conversationDirectory,
-                homeAdminCredentialStore: homeAdminCredentialStore
+                homeAdminCredentialStore: homeAdminCredentialStore,
+                homePairingCoordinator: homePairingCoordinator
             )
         )
     }
@@ -413,7 +440,11 @@ struct RelayConfigurationView: View {
                                 HStack {
                                     VStack(alignment: .leading, spacing: 2) {
                                         Text(profile.displayName)
-                                        Text(profile.endpoint.absoluteString)
+                                        Text(
+                                            listModel.pairedProfileIDs.contains(profile.id)
+                                                ? "Paired with Home"
+                                                : profile.endpoint.absoluteString
+                                        )
                                             .font(.caption)
                                             .foregroundStyle(HermesVisualTokens.secondaryInk)
                                     }
@@ -472,6 +503,24 @@ struct RelayConfigurationView: View {
                     Text("Household Devices")
                 }
                 #endif
+
+                if homePairingCoordinator != nil {
+                    Section {
+                        Button {
+                            showingHomePairing = true
+                        } label: {
+                            Label("Pair with Home", systemImage: "house.and.flag.fill")
+                        }
+                        .accessibilityIdentifier("pair-with-home")
+                        Text("Use the link, QR code, or short code from the Home pairing page. Each Profile Home grants appears here as its own saved profile.")
+                            .font(.footnote)
+                            .foregroundStyle(HermesVisualTokens.secondaryInk)
+                    } header: {
+                        Text("Home pairing")
+                    } footer: {
+                        Text("The Home credential is stored only in Keychain and renewed automatically.")
+                    }
+                }
 
                 if homeLiveConfigurationStore != nil,
                    homeCredentialStore != nil,
@@ -693,6 +742,17 @@ struct RelayConfigurationView: View {
                 } else {
                     Text("Home live setup is unavailable.")
                         .padding()
+                }
+            }
+            .sheet(isPresented: $showingHomePairing) {
+                if let homePairingCoordinator {
+                    HomePairingView(
+                        coordinator: homePairingCoordinator,
+                        onPaired: {
+                            await listModel.load()
+                            await onSaved()
+                        }
+                    )
                 }
             }
             .overlay {

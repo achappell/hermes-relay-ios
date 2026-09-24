@@ -144,6 +144,28 @@ actor RelayConfigurationStore {
         try await saveCollection(collection)
     }
 
+    /// The paired-client sibling of `commitHomeMigration`. A paired profile
+    /// has no legacy relay token to migrate from; Home is selected for it
+    /// only after the pairing proved one live `ready`. The credential
+    /// reference stays with the pairing record, which owns its renewal.
+    func selectPairedHome(for profileID: UUID) async throws {
+        var collection = try await loadCollection()
+        guard collection.profiles.contains(where: { $0.id == profileID }) else {
+            throw RelayConfigurationError.invalidProfile
+        }
+        if collection.homeMigrations[profileID]?.phase == .homeSelected { return }
+        collection.homeMigrations[profileID] = HomeMigrationJournal(
+            schemaVersion: 1,
+            profileID: profileID,
+            phase: .homeSelected,
+            selectedMode: .home,
+            credential: nil,
+            legacyCredentialRetained: false,
+            updatedAt: now()
+        )
+        try await saveCollection(collection)
+    }
+
     func rollbackHomeMigrationAtIdle(for profileID: UUID) async throws {
         var collection = try await loadCollection()
         guard var journal = collection.homeMigrations[profileID] else { return }
