@@ -115,12 +115,14 @@ final class HomePairingModel {
     }
 
     private func finish(_ summary: HomeClientPairingSummary) async {
-        phase = .finished(summary)
         await loadPairings()
         if summary.activationFailure == nil,
            summary.grants.contains(where: { $0.profileName != nil }) {
             await onPaired()
         }
+        // Published last, so anything observing `.finished` sees the pairing
+        // list and the activation announcement already settled.
+        phase = .finished(summary)
     }
 
     private func begin(_ invitation: HomePairingInvitation) {
