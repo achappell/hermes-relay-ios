@@ -1,4 +1,5 @@
 import Foundation
+import OSLog
 
 enum HomeBridgeClientFactoryError: Error, Equatable, Sendable {
     case unsupportedMode
@@ -97,6 +98,42 @@ struct DefaultHomeBridgeSessionClientFactory: HomeBridgeSessionClientFactory {
     }
 }
 
+struct OSLogHomeBridgeDiagnostics: HomeBridgeDiagnostics, Sendable {
+    private let logger = Logger(
+        subsystem: "com.achappell.HermesRelayIOS",
+        category: "home-bridge"
+    )
+
+    func record(_ event: HomeBridgeDiagnostic) async {
+        switch event {
+        case .requestStarted(let method):
+            logger.info("home bridge request started method=\(method.rawValue, privacy: .public)")
+        case .requestCompleted(let method, let durationMilliseconds, let correlationPresent):
+            logger.info(
+                "home bridge request completed method=\(method.rawValue, privacy: .public) duration_ms=\(durationMilliseconds, privacy: .public) correlation_present=\(correlationPresent, privacy: .public)"
+            )
+        case .requestFailed(let method, let code, let uncertain, let durationMilliseconds):
+            logger.error(
+                "home bridge request failed method=\(method.rawValue, privacy: .public) code=\(code.rawValue, privacy: .public) uncertain=\(uncertain, privacy: .public) duration_ms=\(durationMilliseconds, privacy: .public)"
+            )
+        case .eventReceived(let kind):
+            logger.info("home bridge event received kind=\(kind.rawValue, privacy: .public)")
+        case .transportLost:
+            logger.error("home bridge transport lost")
+        }
+    }
+}
+
+enum HomeBridgeDiagnosticsFactory {
+    static func make() -> any HomeBridgeDiagnostics {
+        #if DEBUG
+        return OSLogHomeBridgeDiagnostics()
+        #else
+        return NoopHomeBridgeDiagnostics()
+        #endif
+    }
+}
+
 typealias HomeBridgeClientFactory = DefaultHomeBridgeSessionClientFactory
 
 private enum HomeBridgeTransportError: Error, Equatable, Sendable {
@@ -129,6 +166,7 @@ actor URLSessionHomeBridgeSessionClient: HomeBridgeSessionClient {
 
     private let dependencies: HomeBridgeClientDependencies
     private let deadlines: HomeOperationDeadlines
+    private let diagnostics: any HomeBridgeDiagnostics
     private var socket: (any WebSocketConnection)?
     private var readerTask: Task<Void, Never>?
     private var generation: UInt64 = 0
@@ -154,6 +192,7 @@ actor URLSessionHomeBridgeSessionClient: HomeBridgeSessionClient {
     ) {
         self.dependencies = dependencies
         self.deadlines = deadlines
+        self.diagnostics = dependencies.diagnostics
     }
 
     func open(claim: HomeConversationClaim) async -> HomeOpenOutcome {
@@ -400,6 +439,8 @@ actor URLSessionHomeBridgeSessionClient: HomeBridgeSessionClient {
             return .rejected(.home(code: .conversationMismatch, phase: .submission))
         }
         let requestID = HomePendingRequestID()
+        let startedAt = dependencies.clock.now()
+        await diagnostics.record(.requestStarted(method: .promptSubmit))
         do {
             let response = try await withHomeDeadline(
                 requestID: requestID,
@@ -421,6 +462,10 @@ actor URLSessionHomeBridgeSessionClient: HomeBridgeSessionClient {
             let result = try decodeSubmission(response, binding: binding)
             // Home passes Standard's acceptance through as either label.
             guard result.status == "accepted" || result.status == "submitted" else {
+                await recordSubmissionFailure(
+                    .home(code: .requestRejected, phase: .submission),
+                    startedAt: startedAt
+                )
                 return .rejected(.home(code: .requestRejected, phase: .submission))
             }
             let turn = HomeTurnBinding(
@@ -434,20 +479,57 @@ actor URLSessionHomeBridgeSessionClient: HomeBridgeSessionClient {
                 turnID: turn.turnID,
                 correlationID: turn.correlationID
             )
+            await diagnostics.record(.requestCompleted(
+                method: .promptSubmit,
+                durationMilliseconds: elapsedMilliseconds(since: startedAt),
+                correlationPresent: turn.correlationID != nil
+            ))
             return .accepted(turn)
         } catch is HomeDeadlineError {
+            await recordSubmissionFailure(
+                .home(code: .transportTimeout, phase: .submission),
+                startedAt: startedAt
+            )
             return .uncertain(.home(code: .transportTimeout, phase: .submission))
         } catch is CancellationError {
+            await recordSubmissionFailure(
+                .home(code: .transportTimeout, phase: .submission),
+                startedAt: startedAt
+            )
             return .uncertain(.home(code: .transportTimeout, phase: .submission))
         } catch is HomeWireDecodingError {
+            await recordSubmissionFailure(
+                .home(code: .protocolError, phase: .submission),
+                startedAt: startedAt
+            )
             return .rejected(.home(code: .protocolError, phase: .submission))
         } catch {
             let failure = failure(for: error, phase: .submission)
+            await recordSubmissionFailure(failure, startedAt: startedAt)
             if failure.classification == .uncertain {
                 return .uncertain(failure)
             }
             return .rejected(failure)
         }
+    }
+
+    private func recordSubmissionFailure(
+        _ failure: HomeBridgeFailure,
+        startedAt: ContinuousClock.Instant
+    ) async {
+        await diagnostics.record(.requestFailed(
+            method: .promptSubmit,
+            code: failure.safeCode ?? .transportUnavailable,
+            uncertain: failure.classification == .uncertain,
+            durationMilliseconds: elapsedMilliseconds(since: startedAt)
+        ))
+    }
+
+    private func elapsedMilliseconds(since startedAt: ContinuousClock.Instant) -> Int {
+        let components = startedAt.duration(to: dependencies.clock.now()).components
+        let seconds = max(0, components.seconds)
+        let attoseconds = max(0, components.attoseconds)
+        return Int(seconds * 1_000 + attoseconds / 1_000_000_000_000_000)
     }
 
     func interrupt(
@@ -783,12 +865,14 @@ actor URLSessionHomeBridgeSessionClient: HomeBridgeSessionClient {
             } catch is CancellationError {
                 return
             } catch let error as HomeWireDecodingError {
+                await diagnostics.record(.transportLost)
                 await transportLost(
                     generation: readerGeneration,
                     decodingError: error
                 )
                 return
             } catch {
+                await diagnostics.record(.transportLost)
                 await transportLost(generation: readerGeneration)
                 return
             }
@@ -819,6 +903,7 @@ actor URLSessionHomeBridgeSessionClient: HomeBridgeSessionClient {
         case "event":
             let envelope = try decodeEventEnvelope(params)
             if let prompt = try decodeStructuredPrompt(envelope) {
+                await diagnostics.record(.eventReceived(kind: .structuredPrompt))
                 pendingPrompts[prompt.correlationID] = HomePendingStructuredPrompt(
                     prompt: prompt,
                     receivedAt: Date(),
@@ -826,11 +911,13 @@ actor URLSessionHomeBridgeSessionClient: HomeBridgeSessionClient {
                 )
                 eventContinuation?.yield(.structuredPrompt(prompt))
             } else if let event = try decodeStandardEvent(envelope) {
+                await diagnostics.record(.eventReceived(kind: .standardEvent))
                 eventContinuation?.yield(.standard(event))
             }
         case "audio.frame":
             do {
                 if let event = try decodeAudioFrame(params) {
+                    await diagnostics.record(.eventReceived(kind: .audioFrame))
                     eventContinuation?.yield(event)
                 }
             } catch let error as HomeWireDecodingError {
@@ -862,7 +949,10 @@ actor URLSessionHomeBridgeSessionClient: HomeBridgeSessionClient {
         }
         let joined = try accumulator.append(transportChunk: data)
         audioAccumulator = accumulator
-        if !joined.isEmpty { eventContinuation?.yield(.binaryPCM(scope, joined)) }
+        if !joined.isEmpty {
+            await diagnostics.record(.eventReceived(kind: .binaryPCM))
+            eventContinuation?.yield(.binaryPCM(scope, joined))
+        }
     }
 
     private func decodeEventEnvelope(_ params: [String: Any]) throws -> HomeEventEnvelope {

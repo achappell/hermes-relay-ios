@@ -65,6 +65,7 @@ struct HermesRelayIOSApp: App {
                     pairings: homePairingStore,
                     credentials: homeCredentialStore
                 ),
+                diagnostics: HomeBridgeDiagnosticsFactory.make(),
                 publicAdapterEnabled: true,
                 routePinRecorder: homePairingStore
             )
