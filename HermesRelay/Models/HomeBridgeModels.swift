@@ -760,6 +760,22 @@ enum HomeOpenOutcome: Equatable, Sendable {
     case disconnected(HomeBridgeFailure)
 }
 
+extension HomeBridgeFailure {
+    /// Content-free summary for diagnostics: codes and phases only.
+    var diagnosticSummary: String {
+        switch self {
+        case .home(let code, let phase):
+            return "home code=\(code.rawValue) phase=\(phase.rawValue)"
+        case .route(let failure):
+            return "route failure=\(failure.rawValue)"
+        case .reconnectRequired:
+            return "reconnect_required"
+        case .publicAdapterUnavailable:
+            return "public_adapter_unavailable"
+        }
+    }
+}
+
 enum HomeReconnectOutcome: Equatable, Sendable {
     case ready(
         binding: HomeConversationBinding,

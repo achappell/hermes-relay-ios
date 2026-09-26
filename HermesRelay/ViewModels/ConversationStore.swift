@@ -425,6 +425,7 @@ final class ConversationStore {
         }
 
         if let recovery = homeRecovery, !recoveryMatches(recovery, claim: claim) {
+            HomeConnectionTrace.localMismatch(site: "recovery_vs_claim_before_open")
             applyHomeConnectionFailure(
                 .home(code: .conversationMismatch, phase: .reconnect),
                 unavailable: true
@@ -440,11 +441,15 @@ final class ConversationStore {
         )
         connectionState = .connecting
         let outcome = await homeClient.open(claim: claim)
+        HomeConnectionTrace.open(outcome)
         guard !homeOperationsSuppressed else { return }
 
         switch outcome {
         case .ready(let binding, let capabilities):
             guard homeBinding(binding, matches: claim) else {
+                HomeConnectionTrace.localMismatch(
+                    site: "open_ready_vs_claim fields=\(homeBindingMismatchFields(binding, claim: claim))"
+                )
                 let failure = HomeBridgeFailure.home(code: .conversationMismatch, phase: .open)
                 applyHomeConnectionFailure(failure, unavailable: true)
                 return
@@ -475,6 +480,7 @@ final class ConversationStore {
             }
         case .unavailable(.reconnectRequired):
             guard let binding = reconnectBinding(for: claim) else {
+                HomeConnectionTrace.localMismatch(site: "reconnect_required_without_binding")
                 applyHomeConnectionFailure(
                     .home(code: .conversationMismatch, phase: .reconnect),
                     unavailable: true
@@ -508,13 +514,18 @@ final class ConversationStore {
     ) async {
         canContinueWithoutResendingHomeTurn = false
         homeReconnectConfirmsNoUnresolvedTurn = false
-        switch await client.reconnect(binding: binding) {
+        let reconnectOutcome = await client.reconnect(binding: binding)
+        HomeConnectionTrace.reconnect(reconnectOutcome)
+        switch reconnectOutcome {
         case .ready(
             let readyBinding,
             let unresolvedTurn,
             let confirmsNoUnresolvedTurn
         ):
-            guard readyBinding == binding else {
+            guard Self.isSameConversation(readyBinding, binding) else {
+                HomeConnectionTrace.localMismatch(
+                    site: "reconnect_ready_vs_binding fields=\(Self.bindingDifferences(readyBinding, binding))"
+                )
                 applyHomeConnectionFailure(
                     .home(code: .conversationMismatch, phase: .reconnect),
                     unavailable: true
@@ -637,6 +648,53 @@ final class ConversationStore {
             && binding.endpoint == claim.approvedRoute.endpoint
             && claim.accepts(route: binding.route)
             && binding.householdBinding == claim.approvedRoute.householdBinding
+    }
+
+    /// Names of the checks `homeBinding(_:matches:)` fails, for diagnostics.
+    private func homeBindingMismatchFields(
+        _ binding: HomeConversationBinding,
+        claim: HomeConversationClaim
+    ) -> String {
+        var fields: [String] = []
+        if binding.profileID != activeProfileID { fields.append("active_profile") }
+        if binding.profileID != claim.profileID { fields.append("claim_profile") }
+        if binding.conversationHandle != claim.conversationHandle { fields.append("handle") }
+        if binding.endpoint != claim.approvedRoute.endpoint { fields.append("endpoint") }
+        if !claim.accepts(route: binding.route) { fields.append("route") }
+        if binding.householdBinding != claim.approvedRoute.householdBinding {
+            fields.append("household")
+        }
+        return fields.joined(separator: ",")
+    }
+
+    /// Whether Home's reconnect names the same conversation. Capabilities are
+    /// excluded: Home reports its current ones, and a binding rebuilt from a
+    /// held claim after backgrounding carries none, so comparing them turned
+    /// every quick return to the app into `conversation_mismatch`.
+    nonisolated static func isSameConversation(
+        _ lhs: HomeConversationBinding,
+        _ rhs: HomeConversationBinding
+    ) -> Bool {
+        lhs.profileID == rhs.profileID
+            && lhs.conversationHandle == rhs.conversationHandle
+            && lhs.endpoint == rhs.endpoint
+            && lhs.route == rhs.route
+            && lhs.householdBinding == rhs.householdBinding
+    }
+
+    /// Names of the fields that differ between two bindings, for diagnostics.
+    nonisolated static func bindingDifferences(
+        _ lhs: HomeConversationBinding,
+        _ rhs: HomeConversationBinding
+    ) -> String {
+        var fields: [String] = []
+        if lhs.profileID != rhs.profileID { fields.append("profile") }
+        if lhs.conversationHandle != rhs.conversationHandle { fields.append("handle") }
+        if lhs.endpoint != rhs.endpoint { fields.append("endpoint") }
+        if lhs.route != rhs.route { fields.append("route") }
+        if lhs.householdBinding != rhs.householdBinding { fields.append("household") }
+        if lhs.capabilities != rhs.capabilities { fields.append("capabilities") }
+        return fields.joined(separator: ",")
     }
 
     private func applyHomeConnectionFailure(
@@ -1945,13 +2003,18 @@ final class ConversationStore {
             } catch { return }
             if Task.isCancelled || !isLifecycleActive { return }
 
-            switch await homeClient.reconnect(binding: binding) {
+            let reconnectOutcome = await homeClient.reconnect(binding: binding)
+            HomeConnectionTrace.reconnect(reconnectOutcome)
+            switch reconnectOutcome {
             case .ready(
                 let readyBinding,
                 let unresolvedTurn,
                 let confirmsNoUnresolvedTurn
             ):
-                guard readyBinding == binding else {
+                guard Self.isSameConversation(readyBinding, binding) else {
+                    HomeConnectionTrace.localMismatch(
+                        site: "transport_loss_reconnect_ready_vs_binding fields=\(Self.bindingDifferences(readyBinding, binding))"
+                    )
                     applyHomeConnectionFailure(
                         .home(code: .conversationMismatch, phase: .reconnect),
                         unavailable: true

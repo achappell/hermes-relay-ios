@@ -124,6 +124,50 @@ struct OSLogHomeBridgeDiagnostics: HomeBridgeDiagnostics, Sendable {
     }
 }
 
+/// Debug-only trace of how a Home connect was decided: what `open` and
+/// `reconnect` returned, and which local claim check refused a result.
+/// Codes, phases, and fixed site names only — never handles or content.
+enum HomeConnectionTrace {
+    #if DEBUG
+    private static let logger = Logger(
+        subsystem: "com.achappell.HermesRelayIOS",
+        category: "home-bridge"
+    )
+    #endif
+
+    static func open(_ outcome: HomeOpenOutcome) {
+        switch outcome {
+        case .ready:
+            record("home connect open result=ready")
+        case .unavailable(let failure):
+            record("home connect open result=unavailable \(failure.diagnosticSummary)")
+        case .disconnected(let failure):
+            record("home connect open result=disconnected \(failure.diagnosticSummary)")
+        }
+    }
+
+    static func reconnect(_ outcome: HomeReconnectOutcome) {
+        switch outcome {
+        case .ready(_, let unresolvedTurn, _):
+            record("home connect reconnect result=ready unresolved_turn=\(unresolvedTurn != nil)")
+        case .unavailable(let failure):
+            record("home connect reconnect result=unavailable \(failure.diagnosticSummary)")
+        case .disconnected(let failure):
+            record("home connect reconnect result=disconnected \(failure.diagnosticSummary)")
+        }
+    }
+
+    static func localMismatch(site: String) {
+        record("home connect local mismatch site=\(site)")
+    }
+
+    private static func record(_ message: String) {
+        #if DEBUG
+        logger.info("\(message, privacy: .public)")
+        #endif
+    }
+}
+
 enum HomeBridgeDiagnosticsFactory {
     static func make() -> any HomeBridgeDiagnostics {
         #if DEBUG

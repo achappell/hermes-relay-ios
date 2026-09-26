@@ -208,9 +208,19 @@ actor FakeHomeBridgeSessionClient: HomeBridgeSessionClient {
             self.nextReconnectFailure = nil
             return .unavailable(nextReconnectFailure)
         }
-        self.binding = requestedBinding
+        // Like Home, answer with the capabilities the bridge advertises now,
+        // not whatever the caller carried in.
+        let readyBinding = HomeConversationBinding(
+            profileID: requestedBinding.profileID,
+            conversationHandle: requestedBinding.conversationHandle,
+            endpoint: requestedBinding.endpoint,
+            route: requestedBinding.route,
+            householdBinding: requestedBinding.householdBinding,
+            capabilities: configuredCapabilities
+        )
+        self.binding = readyBinding
         return .ready(
-            binding: requestedBinding,
+            binding: readyBinding,
             unresolvedTurn: unresolvedTurn,
             confirmsNoUnresolvedTurn: unresolvedTurn == nil && reconnectConfirmsNoUnresolvedTurn
         )

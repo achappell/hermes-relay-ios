@@ -237,6 +237,43 @@ final class HermesRelayIOSTests: XCTestCase {
         )
     }
 
+    func testHomeReconnectMatchesConversationIdentityNotCapabilities() {
+        let held = HomeConversationBinding(
+            profileID: UUID(uuidString: "11111111-2222-3333-4444-555555555555")!,
+            conversationHandle: "handle-1",
+            endpoint: URL(string: "wss://home.example/api/v1/bridge/ws")!,
+            route: HomeRouteIdentity(routeClass: .home, id: "route-1"),
+            householdBinding: "household-1",
+            capabilities: HomeBridgeCapabilities()
+        )
+        let reconnected = HomeConversationBinding(
+            profileID: held.profileID,
+            conversationHandle: held.conversationHandle,
+            endpoint: held.endpoint,
+            route: held.route,
+            householdBinding: held.householdBinding,
+            capabilities: HomeBridgeCapabilities(
+                commands: ["open"], heartbeat: true, interrupt: true, timing: .absent
+            )
+        )
+        let otherConversation = HomeConversationBinding(
+            profileID: held.profileID,
+            conversationHandle: "handle-2",
+            endpoint: held.endpoint,
+            route: held.route,
+            householdBinding: held.householdBinding,
+            capabilities: reconnected.capabilities
+        )
+
+        XCTAssertTrue(ConversationStore.isSameConversation(reconnected, held))
+        XCTAssertFalse(ConversationStore.isSameConversation(otherConversation, held))
+        XCTAssertEqual(ConversationStore.bindingDifferences(reconnected, held), "capabilities")
+        XCTAssertEqual(
+            ConversationStore.bindingDifferences(otherConversation, held),
+            "handle,capabilities"
+        )
+    }
+
     @MainActor
     func testComposerIgnoresOrdinaryEditsAndPastedLines() {
         XCTAssertNil(ContentView.draftSubmittedByReturn(from: "Hell", to: "Hello"))
