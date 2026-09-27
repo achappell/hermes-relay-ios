@@ -1135,8 +1135,12 @@ final class HermesRelayIOSTests: XCTestCase {
         model.start(observing: activityStore)
 
         await activityStore.reportMicrophone(level: 0.68)
-        for _ in 0..<10 {
-            await Task.yield()
+        // The model observes the store on its own task. A fixed number of
+        // yields raced that task on loaded CI runners, so wait for the
+        // snapshot with a time bound instead.
+        let deadline = ContinuousClock.now + .seconds(2)
+        while model.snapshot.microphoneActivity != .speech, ContinuousClock.now < deadline {
+            try? await Task.sleep(for: .milliseconds(1))
         }
 
         XCTAssertEqual(model.snapshot.microphoneLevel, 0.68, accuracy: 0.001)
