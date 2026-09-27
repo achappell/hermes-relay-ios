@@ -246,6 +246,8 @@ actor FakeHomeClientService: HomeClientService {
     private(set) var sessionChoices: [HomeClientSessionChoice] = []
     /// Denials for a resume of a given session reference.
     var sessionDenials: [String: HomeClientDenial] = [:]
+    /// A denial for `most_recent` claims (e.g. the latest session is busy).
+    var mostRecentDenial: HomeClientDenial?
     /// The session reference each claimed handle is bound to.
     private var sessionRefsByHandle: [String: String] = [:]
     private var newSessionCounter = 0
@@ -307,6 +309,10 @@ actor FakeHomeClientService: HomeClientService {
 
     func setSessionDenials(_ denials: [String: HomeClientDenial]) {
         sessionDenials = denials
+    }
+
+    func setMostRecentDenial(_ denial: HomeClientDenial?) {
+        mostRecentDenial = denial
     }
 
     /// Simulates a new session's first accepted turn giving it a reference.
@@ -390,6 +396,9 @@ actor FakeHomeClientService: HomeClientService {
         case .new:
             session = HomeClaimedSession(resumed: false, sessionRef: nil)
         case .mostRecent:
+            if let mostRecentDenial {
+                throw HomeClientServiceError.denied(mostRecentDenial)
+            }
             // Home falls back to a new session when the Profile has none.
             session = sessions.first.map { HomeClaimedSession(resumed: true, sessionRef: $0.sessionRef) }
                 ?? HomeClaimedSession(resumed: false, sessionRef: nil)

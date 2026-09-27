@@ -1247,6 +1247,25 @@ final class HomeClientPairingTests: XCTestCase {
     }
 
     @MainActor
+    func testABusyLatestSessionStartsANewOneInsteadOfLockingOut() async throws {
+        let fixture = try await Self.makeFixture()
+        _ = try await Self.pair(fixture)
+        await fixture.service.resetCalls()
+        await fixture.service.setSessions(Self.sessions())
+        // The latest session is held elsewhere, e.g. a scheduled job.
+        await fixture.service.setMostRecentDenial(.sessionBusy)
+        let store = try await Self.storeWithHistory(fixture)
+
+        await store.connect()
+
+        XCTAssertTrue(store.connectionState.isConnected)
+        let choices = await fixture.service.sessionChoices
+        XCTAssertEqual(choices, [.mostRecent, .new])
+        XCTAssertEqual(store.homeSession, HomeCurrentSession(sessionRef: nil, title: nil))
+        XCTAssertEqual(store.messages.last?.text, ConversationStore.newHomeConversationDividerText)
+    }
+
+    @MainActor
     func testNewSessionClosesTheCurrentClaimAndAddsADivider() async throws {
         let fixture = try await Self.makeFixture()
         _ = try await Self.pair(fixture)
