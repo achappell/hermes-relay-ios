@@ -507,23 +507,6 @@ struct AmbientHUDView: View {
         .padding(.bottom, 16)
         .frame(maxWidth: 900, maxHeight: .infinity)
         .frame(maxWidth: .infinity)
-        .background {
-            HermesVisualTokens.canvas
-                .ignoresSafeArea()
-        }
-        .overlay {
-            LinearGradient(
-                colors: [
-                    doorwayTint.opacity(0.12),
-                    Color.clear,
-                    doorwayTint.opacity(0.04),
-                ],
-                startPoint: .topLeading,
-                endPoint: .bottomTrailing
-            )
-            .ignoresSafeArea()
-            .allowsHitTesting(false)
-        }
         .accessibilityElement(children: .contain)
     }
 
@@ -785,6 +768,31 @@ struct AmbientHUDView: View {
         .padding(.vertical, 14)
         .relayPanel(cornerRadius: 16, fill: HermesVisualTokens.panel)
         .accessibilityElement(children: .contain)
+    }
+}
+
+/// The HUD's full-bleed canvas and connection tint. It sits behind the
+/// scrolling HUD rather than inside it, so the scroll view cannot clip it
+/// short of the screen edges.
+struct AmbientHUDBackdrop: View {
+    let doorwayState: ConversationDoorwayState
+
+    var body: some View {
+        let tint = HermesVisualTokens.color(for: doorwayState)
+        HermesVisualTokens.canvas
+            .overlay {
+                LinearGradient(
+                    colors: [
+                        tint.opacity(0.12),
+                        Color.clear,
+                        tint.opacity(0.04),
+                    ],
+                    startPoint: .topLeading,
+                    endPoint: .bottomTrailing
+                )
+            }
+            .ignoresSafeArea()
+            .allowsHitTesting(false)
     }
 }
 

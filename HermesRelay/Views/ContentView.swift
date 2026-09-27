@@ -162,9 +162,47 @@ struct ContentView: View {
         )
     }
 
+    /// The composer is a vertical `TextField`, which inserts Return as a
+    /// newline instead of calling `onSubmit`. A single inserted newline is the
+    /// Send key: this returns the draft without it. Pasted multi-line text is
+    /// an edit, not a submission, and returns nil.
+    static func draftSubmittedByReturn(from oldDraft: String, to newDraft: String) -> String? {
+        guard newDraft.count == oldDraft.count + 1 else { return nil }
+        let sharedPrefix = zip(oldDraft, newDraft).prefix { $0 == $1 }.count
+        let insertedIndex = newDraft.index(newDraft.startIndex, offsetBy: sharedPrefix)
+        guard newDraft[insertedIndex].isNewline else { return nil }
+        var submitted = newDraft
+        submitted.remove(at: insertedIndex)
+        return submitted == oldDraft ? submitted : nil
+    }
+
     var body: some View {
         NavigationStack {
-            ambientHUD
+            // At rest the HUD is pinned to the visible height, so it
+            // compresses the transcript above the bottom bar as it always has.
+            // Beside the keyboard it cannot fit on any iPhone, so while the
+            // composer is focused it may grow and scroll: the composer stays
+            // above the keyboard, and the interactive dismiss has a scroll
+            // view to act on. The scroll view is always present — swapping
+            // it in on focus counted as a scroll and dismissed the keyboard.
+            GeometryReader { proxy in
+                let isComposing = focusedField == .composer
+                ScrollView {
+                    ambientHUD
+                        .frame(height: isComposing ? nil : proxy.size.height)
+                        .frame(minHeight: proxy.size.height)
+                }
+                .scrollDisabled(!isComposing)
+                .scrollBounceBehavior(.basedOnSize)
+            }
+            .background {
+                AmbientHUDBackdrop(
+                    doorwayState: ConversationDoorwayState(
+                        connectionState: store.connectionState,
+                        profileName: store.activeProfileDisplayName
+                    )
+                )
+            }
             .safeAreaInset(edge: .bottom, spacing: 0) {
                 bottomSurface
             }
@@ -396,7 +434,15 @@ struct ContentView: View {
                     .submitLabel(.send)
                     .padding(.horizontal, 12)
                     .padding(.vertical, 9)
-                    .onSubmit(sendDraftIfPossible)
+                    .onSubmit(submitFromReturnKey)
+                    .onChange(of: store.draft) { oldDraft, newDraft in
+                        guard let submitted = Self.draftSubmittedByReturn(
+                            from: oldDraft,
+                            to: newDraft
+                        ) else { return }
+                        store.draft = submitted
+                        submitFromReturnKey()
+                    }
                     .relayGlass(cornerRadius: 18, interactive: true)
 
                 Button(action: sendDraftIfPossible) {
@@ -463,6 +509,16 @@ struct ContentView: View {
             }
             composer
         }
+    }
+
+    /// Return always leaves the keyboard: it sends when it can, and otherwise
+    /// dismisses so the send button and any notice behind it are reachable.
+    private func submitFromReturnKey() {
+        guard canSend else {
+            focusedField = nil
+            return
+        }
+        sendDraftIfPossible()
     }
 
     private func sendDraftIfPossible() {

@@ -222,6 +222,30 @@ final class HermesRelayIOSTests: XCTestCase {
     }
 
     @MainActor
+    func testComposerReturnKeySubmitsDraftWithoutTheNewline() {
+        XCTAssertEqual(
+            ContentView.draftSubmittedByReturn(from: "Hello", to: "Hello\n"),
+            "Hello"
+        )
+        XCTAssertEqual(
+            ContentView.draftSubmittedByReturn(from: "Hello there", to: "Hello\n there"),
+            "Hello there"
+        )
+        XCTAssertEqual(
+            ContentView.draftSubmittedByReturn(from: "Line one\nLine two", to: "Line one\nLine two\n"),
+            "Line one\nLine two"
+        )
+    }
+
+    @MainActor
+    func testComposerIgnoresOrdinaryEditsAndPastedLines() {
+        XCTAssertNil(ContentView.draftSubmittedByReturn(from: "Hell", to: "Hello"))
+        XCTAssertNil(ContentView.draftSubmittedByReturn(from: "Hello", to: "Hello\nworld"))
+        XCTAssertNil(ContentView.draftSubmittedByReturn(from: "Hello\n", to: "Hello\nX"))
+        XCTAssertNil(ContentView.draftSubmittedByReturn(from: "Hello\n", to: "Hello"))
+    }
+
+    @MainActor
     func testContentViewKeepsVoiceInterfaceVisibleDuringFocusedCapture() {
         XCTAssertTrue(
             ContentView.shouldShowVoiceInterface(
