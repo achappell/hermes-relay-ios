@@ -642,7 +642,7 @@ struct RecentTranscriptRail: View {
                         }
                         .padding(.vertical, 4)
                     }
-                    .frame(maxHeight: 152)
+                    .frame(minHeight: 52, maxHeight: 152)
                     .contentShape(Rectangle())
                     .simultaneousGesture(
                         DragGesture(minimumDistance: 3)
@@ -815,7 +815,11 @@ private struct LiveTranscriptEntryView: View {
                     }
                     .padding(.vertical, 2)
                 }
-                .frame(height: viewportHeight)
+                // Flexible, not fixed: when the screen is tight (large text,
+                // a notice above the orb, a smaller phone) the live reply
+                // gives up height first, down to about two lines, instead of
+                // pushing the screen behind the bottom bar (IOS-UX-F5).
+                .frame(minHeight: 52, maxHeight: viewportHeight)
                 .scrollEdgeEffectStyle(.soft, for: .top)
                 .onAppear {
                     scrollToLatest(using: proxy, animated: false)
