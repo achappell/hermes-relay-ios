@@ -208,6 +208,34 @@ final class VoiceSessionCoordinatorTests: XCTestCase {
     }
 
     @MainActor
+    func testATapAndThePauseEndingTheSameRecordingSendOnce() async {
+        let input = CoordinatorSpeechInput(finalUpdate: SpeechRecognitionUpdate(text: "Hello Hermes", isFinal: true))
+        let client = CoordinatorHermesSessionClient(events: [
+            .messageStart,
+            .textDelta("Hello back"),
+            .audioStart(AudioFormat(sampleRate: 24_000, channels: 1, sampleWidth: 2)),
+            .audioChunk(Data([0, 1])),
+            .audioEnd,
+            .turnComplete(turnID: "turn-1"),
+        ])
+        let store = await connectedStore(client)
+        let coordinator = VoiceSessionCoordinator(store: store, input: input, output: CoordinatorAudioOutput())
+
+        await coordinator.beginCapture()
+        await input.emit(SpeechRecognitionUpdate(text: "Hello Herm", isFinal: false))
+        await waitUntil { coordinator.provisionalText == "Hello Herm" }
+
+        // The user taps to send just as the pause timer fires.
+        async let tap: Void = coordinator.endCaptureAndSend()
+        async let pause: Void = coordinator.endCaptureAndSend()
+        _ = await (tap, pause)
+
+        XCTAssertEqual(client.sentTurns, ["Hello Hermes"])
+        XCTAssertEqual(coordinator.state, .complete)
+        XCTAssertEqual(store.messages.map(\.role), [.user, .assistant])
+    }
+
+    @MainActor
     func testNoPauseClockRunsBeforeTheFirstWord() async throws {
         let input = CoordinatorSpeechInput(finalUpdate: SpeechRecognitionUpdate(text: "Hello Hermes", isFinal: true))
         let client = CoordinatorHermesSessionClient(events: [.turnComplete(turnID: "turn-1")])
