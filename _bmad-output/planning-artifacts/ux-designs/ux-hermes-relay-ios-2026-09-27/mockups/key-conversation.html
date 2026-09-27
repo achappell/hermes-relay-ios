@@ -1,0 +1,214 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Voice Screen States</title>
+<style>
+/*
+  Key screen: conversation screen, voice controls.
+  Governed by DESIGN.md (Colors, Layout & Spacing, Components: voice orb, status line,
+  cancel link, hands-free switch, reply rail) and EXPERIENCE.md (Voice and Tone table,
+  State Patterns, Interaction Primitives, Key Flows 1 and 2). Spines win on conflict.
+  Offline: inline CSS, system fonts, no JS.
+*/
+:root {
+  --canvas: #0B101B; --console: #101725; --panel: #0D1320; --raised: #182338;
+  --ink: #EAF7FF; --ink2: #B3C0D2; --live: #62E6C7; --attention: #FFCF5C;
+  --identity: #7C8CFF; --unavailable: #FF7D9C; --hair: rgba(179,192,210,.22);
+  --page: #05080F; --page-ink: #EAF7FF;
+}
+@media (prefers-color-scheme: light) {
+  :root:not([data-theme="dark"]) { --page: #E9EDF4; --page-ink: #0B101B; }
+}
+:root[data-theme="light"] { --page: #E9EDF4; --page-ink: #0B101B; }
+* { box-sizing: border-box; }
+body { margin: 0; background: var(--page); color: var(--page-ink);
+  font: 15px/1.4 -apple-system, BlinkMacSystemFont, "SF Pro Text", system-ui, sans-serif; padding: 24px 16px; }
+h1 { font-size: 20px; margin: 0 0 4px; }
+.lede { margin: 0 0 24px; opacity: .75; max-width: 70ch; }
+.grid { display: flex; flex-wrap: wrap; gap: 28px; }
+figure { margin: 0; }
+figcaption { font-size: 13px; margin-top: 10px; max-width: 300px; opacity: .8; }
+figcaption b { display: block; opacity: 1; }
+
+/* Phone frame and screen tokens (dark by default, .light for the light adaptation) */
+.phone { width: 300px; height: 620px; border-radius: 44px; padding: 10px; background: #000;
+  box-shadow: 0 18px 50px rgba(0,0,0,.35); }
+.screen { --s-canvas: var(--canvas); --s-console: var(--console); --s-panel: var(--panel);
+  --s-ink: var(--ink); --s-ink2: var(--ink2); --s-live: var(--live); --s-attn: var(--attention);
+  --s-id: var(--identity); --s-hair: var(--hair);
+  height: 100%; border-radius: 34px; overflow: hidden; background: var(--s-canvas); color: var(--s-ink);
+  display: flex; flex-direction: column; position: relative; }
+.screen.light { --s-canvas: #F5F7FB; --s-console: #FFFFFF; --s-panel: #F0F3F8; --s-ink: #0B101B;
+  --s-ink2: #526176; --s-live: #087F4D; --s-attn: #976B00; --s-id: #4C59D9; --s-hair: rgba(82,97,118,.22); }
+.status-bar { height: 34px; display: flex; justify-content: space-between; align-items: center; padding: 0 22px;
+  font-size: 12px; font-weight: 600; }
+
+/* Zone 1: header */
+.header { margin: 4px 12px 0; padding: 9px 12px; border-radius: 16px; background: var(--s-console);
+  border: 1px solid var(--s-hair); display: flex; gap: 10px; align-items: center; }
+.dot { width: 8px; height: 8px; border-radius: 50%; background: var(--s-live); flex: none; }
+.header .who { font-size: 13px; font-weight: 600; }
+.header .conv { font-size: 11.5px; font-weight: 500; display: flex; gap: 4px; align-items: center; }
+.header .meta { font-size: 10.5px; color: var(--s-ink2); font-family: ui-monospace, "SF Mono", monospace; }
+.gear { margin-left: auto; width: 28px; height: 28px; border-radius: 50%; border: 1px solid var(--s-hair);
+  display: grid; place-items: center; font-size: 13px; color: var(--s-ink2); }
+
+/* Zone 2: voice */
+.voice { flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 12px; }
+.orb { position: relative; width: 170px; height: 170px; display: grid; place-items: center; }
+.ring { position: absolute; inset: 0; border-radius: 50%; border: 1.5px solid var(--tint); opacity: .16; }
+.ring.r2 { inset: 14px; opacity: .22; } .ring.r3 { inset: 28px; opacity: .3; }
+.core { width: 92px; height: 92px; border-radius: 50%;
+  background: radial-gradient(circle at 35% 30%, color-mix(in srgb, var(--tint) 70%, white), var(--tint) 70%);
+  display: grid; place-items: center; box-shadow: 0 0 34px color-mix(in srgb, var(--tint) 45%, transparent); }
+.core svg { width: 30px; height: 30px; fill: #fff; }
+.orb.live .ring { opacity: .34; } .orb.live .ring.r2 { opacity: .42; } .orb.live .ring.r3 { opacity: .5; }
+.orb.disabled .core svg { opacity: .7; }
+.status { font-weight: 600; font-size: 16px; color: var(--tint); text-align: center; }
+.status span { font-weight: 400; color: var(--s-ink2); }
+.cancel { font-size: 12px; font-weight: 500; padding: 6px 14px; border-radius: 999px; border: 1px solid var(--s-hair);
+  color: var(--s-ink); }
+.switch-row { display: flex; align-items: center; gap: 10px; font-size: 12.5px; }
+.switch-row small { display: block; color: var(--s-ink2); font-size: 10.5px; max-width: 170px; }
+.toggle { width: 38px; height: 23px; border-radius: 999px; background: var(--s-hair); position: relative; flex: none; }
+.toggle::after { content: ""; position: absolute; top: 2px; left: 2px; width: 19px; height: 19px; border-radius: 50%;
+  background: #fff; box-shadow: 0 1px 3px rgba(0,0,0,.3); }
+.toggle.on { background: var(--s-id); } .toggle.on::after { left: 17px; }
+
+/* Zone 3: reply rail */
+.rail { margin: 0 12px; padding: 10px 12px; border-radius: 16px; background: var(--s-panel); border: 1px solid var(--s-hair);
+  font-size: 12.5px; min-height: 74px; }
+.rail .you { color: var(--s-ink2); margin-bottom: 4px; }
+.rail .you b, .rail .herm b { font-size: 10px; letter-spacing: .04em; text-transform: uppercase; display: block; font-weight: 600; }
+.rail .spoken { color: var(--s-ink); } .rail .unspoken { color: transparent; }
+.rail .live { color: var(--s-ink); }
+.rail .live::after { content: "▍"; color: var(--s-live); margin-left: 1px; }
+
+/* Zone 4: typing */
+.typing { margin: 10px 12px 14px; padding: 9px; border-radius: 20px; background: var(--s-console);
+  border: 1px solid var(--s-hair); display: flex; gap: 8px; align-items: center; }
+.hist { width: 30px; height: 30px; border-radius: 50%; border: 1px solid var(--s-hair); display: grid; place-items: center;
+  font-size: 11px; color: var(--s-ink2); }
+.field { flex: 1; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; height: 34px; border-radius: 12px; background: var(--s-panel); color: var(--s-ink2); font-size: 12.5px;
+  display: flex; align-items: center; padding: 0 10px; }
+.send { width: 34px; height: 34px; border-radius: 50%; background: var(--s-hair); display: grid; place-items: center;
+  color: var(--s-ink2); font-weight: 700; }
+.note { position: absolute; right: 10px; bottom: 76px; font-size: 9.5px; color: var(--s-ink2); }
+</style>
+</head>
+<body>
+<h1>Conversation screen: voice controls</h1>
+<p class="lede">Key-screen mock for the voice UX pass (2026-09-27). The orb is the only talk control; its glyph shows what a tap will do and the line under it reads "State · Action". Hands-free ("Keep listening") sits under the orb; the bottom bar is for typing only. Hermes's reply appears in step with its voice. Glyphs are drawn stand-ins for the SF Symbols named in DESIGN.md (mic.fill, stop.fill, hand.raised.fill, ear).</p>
+
+<div class="grid">
+
+<!-- 1. Ready (dark) -->
+<figure>
+<div class="phone"><div class="screen">
+  <div class="status-bar"><span>7:00</span><span>●●● 93%</span></div>
+  <div class="header"><span class="dot"></span><div>
+    <div class="who">Amanda</div>
+    <div class="conv">Weekend trip ▾</div>
+    <div class="meta">Connected · 00:05</div></div><span class="gear">⚙</span></div>
+  <div class="voice" style="--tint: var(--s-id)">
+    <div class="orb"><span class="ring"></span><span class="ring r2"></span><span class="ring r3"></span>
+      <div class="core"><svg viewBox="0 0 24 24"><path d="M12 14a3 3 0 0 0 3-3V5a3 3 0 0 0-6 0v6a3 3 0 0 0 3 3zm5-3a5 5 0 0 1-10 0H5a7 7 0 0 0 6 6.92V21h2v-3.08A7 7 0 0 0 19 11z"/></svg></div></div>
+    <div class="status">Ready <span>· Tap to talk</span></div>
+    <div class="switch-row"><span class="toggle"></span><div>Keep listening<small>Talk, pause, and Hermes answers. Tap the orb to interrupt.</small></div></div>
+  </div>
+  <div class="rail"><div class="you"><b>You</b>Where did we land on the hotel?</div>
+    <div class="herm"><b>Hermes</b><span class="spoken">The one by the harbour, two nights from Friday.</span></div></div>
+  <div class="typing"><span class="hist">▲</span><span class="hist">▼</span><span class="field">Message Hermes…</span><span class="send">↑</span></div>
+</div></div>
+<figcaption><b>1 · Ready (dark)</b>Connected and idle. Tapping the orb starts listening (Flow 1, step 1–2). No microphone button in the bottom bar.</figcaption>
+</figure>
+
+<!-- 2. Listening after a tap -->
+<figure>
+<div class="phone"><div class="screen">
+  <div class="status-bar"><span>7:01</span><span>●●● 93%</span></div>
+  <div class="header"><span class="dot"></span><div>
+    <div class="who">Amanda</div>
+    <div class="conv">Weekend trip ▾</div>
+    <div class="meta">Connected · 00:41</div></div><span class="gear">⚙</span></div>
+  <div class="voice" style="--tint: var(--s-live)">
+    <div class="orb live"><span class="ring"></span><span class="ring r2"></span><span class="ring r3"></span>
+      <div class="core"><svg viewBox="0 0 24 24"><rect x="6" y="6" width="12" height="12" rx="2"/></svg></div></div>
+    <div class="status">Listening <span>· Tap to send</span></div>
+    <span class="cancel">Cancel</span>
+    <div class="switch-row"><span class="toggle"></span><div>Keep listening<small>Talk, pause, and Hermes answers. Tap the orb to interrupt.</small></div></div>
+  </div>
+  <div class="rail"><div class="you"><b>You</b><span class="live">Can you check if they have parking</span></div></div>
+  <div class="typing"><span class="hist">▲</span><span class="hist">▼</span><span class="field">Message Hermes…</span><span class="send">↑</span></div>
+</div></div>
+<figcaption><b>2 · Listening (tapped)</b>Your words appear live. Pausing ~1.5 s sends on its own; the stop glyph sends early; Cancel discards (Flow 1, steps 3–4).</figcaption>
+</figure>
+
+<!-- 3. Speaking -->
+<figure>
+<div class="phone"><div class="screen">
+  <div class="status-bar"><span>7:01</span><span>●●● 93%</span></div>
+  <div class="header"><span class="dot"></span><div>
+    <div class="who">Amanda</div>
+    <div class="conv">Weekend trip ▾</div>
+    <div class="meta">Connected · 00:52</div></div><span class="gear">⚙</span></div>
+  <div class="voice" style="--tint: var(--s-attn)">
+    <div class="orb live"><span class="ring"></span><span class="ring r2"></span><span class="ring r3"></span>
+      <div class="core"><svg viewBox="0 0 24 24"><path d="M18 8.5a1.5 1.5 0 0 0-3 0V12h-.5V5.5a1.5 1.5 0 0 0-3 0V12H11V4.5a1.5 1.5 0 0 0-3 0V13l-1.9-1.9a1.5 1.5 0 0 0-2.1 2.1L8.5 18A6 6 0 0 0 18 15z"/></svg></div></div>
+    <div class="status">Speaking <span>· Tap to interrupt</span></div>
+    <div class="switch-row"><span class="toggle"></span><div>Keep listening<small>Talk, pause, and Hermes answers. Tap the orb to interrupt.</small></div></div>
+  </div>
+  <div class="rail"><div class="you"><b>You</b>Can you check if they have parking?</div>
+    <div class="herm"><b>Hermes</b><span class="spoken">Yes, they have a small garage for guests, </span><span class="unspoken">about twenty dollars a night, booked at check-in.</span></div></div>
+  <div class="typing"><span class="hist">▲</span><span class="hist">▼</span><span class="field">Message Hermes…</span><span class="send">↑</span></div>
+</div></div>
+<figcaption><b>3 · Speaking</b>The reply appears in step with the voice; nothing streamed while it was thinking. The hand glyph interrupts (Flow 1, step 5).</figcaption>
+</figure>
+
+<!-- 4. Hands-free waiting -->
+<figure>
+<div class="phone"><div class="screen">
+  <div class="status-bar"><span>18:12</span><span>●●● 71%</span></div>
+  <div class="header"><span class="dot"></span><div>
+    <div class="who">Amanda</div>
+    <div class="conv">Dinner plan ▾</div>
+    <div class="meta">Connected · 04:10</div></div><span class="gear">⚙</span></div>
+  <div class="voice" style="--tint: var(--s-id)">
+    <div class="orb disabled"><span class="ring"></span><span class="ring r2"></span><span class="ring r3"></span>
+      <div class="core"><svg viewBox="0 0 24 24"><path d="M17 8.5A5 5 0 0 0 7 8.5c0 1.7.8 2.8 1.6 3.7.7.8 1.4 1.5 1.4 2.8a3 3 0 0 0 6 0h-2a1 1 0 0 1-2 0c0-2-1-3.1-1.9-4-.6-.7-1.1-1.3-1.1-2.5a3 3 0 0 1 6 0z"/></svg></div></div>
+    <div class="status">Listening for speech</div>
+    <div class="switch-row"><span class="toggle on"></span><div>Keep listening<small>Talk, pause, and Hermes answers. Tap the orb to interrupt.</small></div></div>
+  </div>
+  <div class="rail"><div class="you"><b>You</b>How long do I roast the squash?</div>
+    <div class="herm"><b>Hermes</b><span class="spoken">About forty minutes at 400°F, turning once halfway.</span></div></div>
+  <div class="typing"><span class="hist">▲</span><span class="hist">▼</span><span class="field">Message Hermes…</span><span class="send">↑</span></div>
+</div></div>
+<figcaption><b>4 · Hands-free waiting</b>"Keep listening" is on; the app listens again after each reply. The orb isn't tappable while waiting. Voice interruption is off by default (Settings), so the TV won't cut Hermes off (Flow 2).</figcaption>
+</figure>
+
+<!-- 5. Ready (light) -->
+<figure>
+<div class="phone"><div class="screen light">
+  <div class="status-bar"><span>7:00</span><span>●●● 93%</span></div>
+  <div class="header"><span class="dot"></span><div>
+    <div class="who">Jensen</div>
+    <div class="conv">Untitled conversation ▾</div>
+    <div class="meta">Connected · 00:02</div></div><span class="gear">⚙</span></div>
+  <div class="voice" style="--tint: var(--s-id)">
+    <div class="orb"><span class="ring"></span><span class="ring r2"></span><span class="ring r3"></span>
+      <div class="core"><svg viewBox="0 0 24 24"><path d="M12 14a3 3 0 0 0 3-3V5a3 3 0 0 0-6 0v6a3 3 0 0 0 3 3zm5-3a5 5 0 0 1-10 0H5a7 7 0 0 0 6 6.92V21h2v-3.08A7 7 0 0 0 19 11z"/></svg></div></div>
+    <div class="status">Ready <span>· Tap to talk</span></div>
+    <div class="switch-row"><span class="toggle"></span><div>Keep listening<small>Talk, pause, and Hermes answers. Tap the orb to interrupt.</small></div></div>
+  </div>
+  <div class="rail"><div class="you"><b>You</b>What time is soccer on Saturday?</div>
+    <div class="herm"><b>Hermes</b><span class="spoken">Ten o'clock at the east field.</span></div></div>
+  <div class="typing"><span class="hist">▲</span><span class="hist">▼</span><span class="field">Message Hermes…</span><span class="send">↑</span></div>
+</div></div>
+<figcaption><b>5 · Ready (light)</b>The light adaptation with the same roles. The first thing Jensen tries, tapping the orb, works.</figcaption>
+</figure>
+
+</div>
+</body>
+</html>
