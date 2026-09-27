@@ -2,7 +2,7 @@
 name: Hermes Relay
 description: Voice-first conversation doorway to Hermes on iOS and macOS. Night Console identity; calm at rest, explicit in every state. This spine covers the voice controls on the conversation screen.
 status: final
-scope: voice controls (central voice orb, status line, hands-free switch, reply rail, bottom bar)
+scope: voice controls (central voice orb, status line, hands-free pill, reply rail, bottom bar)
 updated: 2026-09-27
 colors:
   canvas: '#F5F7FB'
@@ -65,9 +65,16 @@ components:
   status-line:
     typography: '{typography.state}'
     action-typography: '{typography.action-hint}'
-  hands-free-switch:
+  hands-free-pill:
+    height: 30
     min-hit-target: 44
-    active-tint: '{colors.identity}'
+    glyph: arrow.triangle.2.circlepath
+    rounded: '{rounded.pill}'
+    off-border: '{colors.ink-secondary}'
+    off-ink: '{colors.ink-secondary}'
+    on-fill: '{colors.identity}'
+    on-ink: '#FFFFFF'
+    typography: '{typography.caption}'
   cancel-link:
     min-hit-target: 44
     typography: '{typography.caption}'
@@ -105,7 +112,7 @@ SF Pro throughout, with Dynamic Type. The status line has two parts: the state (
 The conversation screen has four zones, top to bottom:
 
 1. **Header** — Profile, conversation title, connection.
-2. **Voice** — the voice orb, the status line under it, then Cancel (only while listening) and the hands-free switch.
+2. **Voice** — the voice orb, the status line under it, then Cancel (only while listening) and the hands-free pill.
 3. **Reply rail** — the latest exchange.
 4. **Typing** — prompt history, composer, send.
 
@@ -113,11 +120,11 @@ The voice zone is vertically centred when there is room; with the keyboard up it
 
 ## Elevation & Depth
 
-The orb sits directly on the canvas, not inside a card. The reply rail is a flat panel (`{colors.panel}`, hairline border). Liquid Glass is reserved for the grouped typing surface and small interactive controls (hands-free switch). No glass on the orb.
+The orb sits directly on the canvas, not inside a card. The reply rail is a flat panel (`{colors.panel}`, hairline border). Liquid Glass is reserved for the grouped typing surface. The hands-free pill is a plain outlined or filled capsule, not glass. No glass on the orb.
 
 ## Shapes
 
-Cards `{rounded.card}`, controls `{rounded.control}`, the outer typing container `{rounded.outer}`, status pills `{rounded.pill}`. The orb and hands-free switch are circles.
+Cards `{rounded.card}`, controls `{rounded.control}`, the outer typing container `{rounded.outer}`, status pills `{rounded.pill}`. The orb is a circle; the hands-free pill is a capsule.
 
 ## Components
 
@@ -146,9 +153,9 @@ Core and ring colour follow the phase role (`live` listening, `attention` thinki
 
 A small text button under the status line, only while a tapped recording is listening. Label "Cancel".
 
-### Hands-free switch (`{components.hands-free-switch}`)
+### Hands-free pill (`{components.hands-free-pill}`)
 
-A labelled switch under the orb: "Keep listening". On uses `{colors.identity}`. iOS only.
+A small capsule under the status line: loop glyph + "Keep listening". It is deliberately quieter than the orb and status line. Off: hairline outline, `{colors.ink-secondary}` text and glyph. On: filled `{colors.identity}` with white text and glyph. No caption. iOS only.
 
 ### Reply rail (`{components.reply-rail}`)
 
@@ -159,6 +166,7 @@ The last few turns. Hermes's reply appears in step with its voice; your words ap
 - **Do** make the orb the only way to talk on this screen.
 - **Do** show state and action in words every time.
 - **Don't** put a second microphone button anywhere on this screen.
+- **Don't** let the hands-free control compete with the orb: a small pill, never a full switch row with a caption.
 - **Don't** stream Hermes's text before it speaks.
 - **Don't** animate the orb when idle; activity is for real activity. Reduced motion freezes it.
 - **Don't** use a microphone glyph when a tap would do something else.

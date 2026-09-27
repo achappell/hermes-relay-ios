@@ -1,7 +1,7 @@
 ---
 name: Hermes Relay
 status: final
-scope: voice controls (central voice orb, status line, hands-free switch, reply rail, bottom bar)
+scope: voice controls (central voice orb, status line, hands-free pill, reply rail, bottom bar)
 sources:
   - _bmad-output/implementation-artifacts/ios-visual-design-pass.md
   - docs/superpowers/specs/2026-08-30-ios-voice-interface-design.md
@@ -53,7 +53,7 @@ Plain, short, action-first. The status line always reads "State · Action".
 | Not connected | Unavailable / Connecting… / Configure a relay to begin | connection glyph |
 
 - Cancel link: "Cancel".
-- Hands-free switch: "Keep listening", with a caption "Talk, pause, and Hermes answers. Tap the orb to interrupt."
+- Hands-free pill: "Keep listening". No caption. Its accessibility hint, and a one-time tip shown in place of the status line's action the first time it is turned on, read: "Talk, pause, and Hermes answers. Tap the orb to interrupt."
 - Voice interruption setting (Settings): "Interrupt Hermes by talking (headphones only)".
 - Blocked states say why, e.g. "Hands-free is on. Turn it off to talk by tapping."
 
@@ -69,9 +69,10 @@ Plain, short, action-first. The status line always reads "State · Action".
 
 - Status line directly under the orb. Cancel appears under it only while a tapped recording is listening; it discards without sending.
 
-### Hands-free switch ("Keep listening")
+### Hands-free pill ("Keep listening")
 
-- Under the status line. Arms conversation mode: listen, send on a pause, answer, listen again.
+- A small pill under the status line; tapping it toggles. Off is outlined, on is filled, and the status line then reads "Listening for speech". Accessibility: a toggle button, label "Keep listening", value On/Off, hint as in Voice and Tone.
+- Arms conversation mode: listen, send on a pause, answer, listen again.
 - Never armed automatically (not at launch, on connect, or after a reply). Disarms when the app leaves the foreground or the connection drops (as today).
 
 ### Reply rail
@@ -85,7 +86,7 @@ Plain, short, action-first. The status line always reads "State · Action".
 Visual reference: [key-conversation.html](mockups/key-conversation.html). The spine wins on conflict.
 
 
-| State | Orb | Tap does | Rail | Hands-free switch |
+| State | Orb | Tap does | Rail | Hands-free pill |
 |---|---|---|---|---|
 | Idle | mic, still | Start listening | Last exchange | Enabled |
 | Listening (tap) | stop, live | Send now | Your live words | Enabled (turning on cancels nothing) |
@@ -107,10 +108,10 @@ Visual reference: [key-conversation.html](mockups/key-conversation.html). The sp
 ## Accessibility Floor
 
 - The orb is one button: label "Voice", value = current state, hint = what a tap does (e.g. "Starts listening.").
-- VoiceOver order: Profile → state (orb) → Cancel / hands-free → reply rail → typing.
+- VoiceOver order: Profile → state (orb) → Cancel / hands-free pill → reply rail → typing.
 - Announce state changes once, not every recognition or audio frame.
 - Reduced motion freezes the orb rings and glyph pulse; the status line still carries state.
-- Hit targets: orb 260 pt, Cancel and switch at least 44 pt.
+- Hit targets: orb 260 pt, Cancel and the hands-free pill at least 44 pt (the pill's hit area extends beyond its 30 pt height).
 - Every state is readable without colour.
 
 ## Key Flows
@@ -137,7 +138,7 @@ Visual reference: [key-conversation.html](mockups/key-conversation.html). The sp
 
 ## Responsive & Platform
 
-- **macOS:** same orb, status line, Cancel and reply rail. No hands-free switch and no voice-interruption setting (hands-free is iOS-only). Orb supports pointer hover and keyboard activation (Space/Return when focused).
+- **macOS:** same orb, status line, Cancel and reply rail. No hands-free pill and no voice-interruption setting (hands-free is iOS-only). Orb supports pointer hover and keyboard activation (Space/Return when focused).
 - **Small iPhones / large Dynamic Type:** the voice zone keeps the orb and status line visible; the reply rail compresses first.
 
 ## Settled after review
