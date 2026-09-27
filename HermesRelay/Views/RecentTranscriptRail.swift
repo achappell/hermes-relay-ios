@@ -616,6 +616,12 @@ struct RecentTranscriptRail: View {
         )
     }
 
+    /// The newest Hermes reply when it is also the last line in the card.
+    private var latestReplyID: String? {
+        guard let last = historyEntries.last, last.role == .assistant else { return nil }
+        return last.id
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
             if let liveEntry {
@@ -632,8 +638,11 @@ struct RecentTranscriptRail: View {
                     ScrollView(.vertical, showsIndicators: false) {
                         LazyVStack(alignment: .leading, spacing: 9) {
                             ForEach(historyEntries) { entry in
-                                RecentTranscriptEntryView(entry: entry)
-                                    .id(entry.id)
+                                RecentTranscriptEntryView(
+                                    entry: entry,
+                                    isLatestReply: entry.id == latestReplyID
+                                )
+                                .id(entry.id)
                             }
 
                             Color.clear
@@ -768,15 +777,18 @@ struct RecentTranscriptRail: View {
 
 private struct RecentTranscriptEntryView: View {
     let entry: RecentTranscriptEntry
+    /// The newest Hermes reply keeps the size it had while being spoken, so
+    /// the text does not shrink the moment the voice stops (IOS-UX-F5).
+    var isLatestReply = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 4) {
             RecentTranscriptEntryHeader(entry: entry)
 
             Text(entry.text)
-                .font(.callout)
+                .font(isLatestReply ? .title3 : .callout)
                 .foregroundStyle(HermesVisualTokens.primaryInk)
-                .lineSpacing(2)
+                .lineSpacing(isLatestReply ? 3 : 2)
                 .fixedSize(horizontal: false, vertical: true)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
