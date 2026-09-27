@@ -75,6 +75,11 @@ components:
     on-fill: '{colors.identity}'
     on-ink: '#FFFFFF'
     typography: '{typography.caption}'
+  recent-prompts-button:
+    diameter: 32
+    min-hit-target: 44
+    glyph: clock.arrow.circlepath
+    ink: '{colors.ink-secondary}'
   cancel-link:
     min-hit-target: 44
     typography: '{typography.caption}'
@@ -114,7 +119,7 @@ The conversation screen has four zones, top to bottom:
 1. **Header** — Profile, conversation title, connection.
 2. **Voice** — the voice orb, the status line under it, then Cancel (only while listening) and the hands-free pill.
 3. **Reply rail** — the latest exchange.
-4. **Typing** — prompt history, composer, send.
+4. **Typing** — Recent prompts button, composer, send.
 
 The voice zone is vertically centred when there is room; with the keyboard up it scrolls away and the typing zone stays above the keyboard. Spacing follows `{spacing.*}` (4/8/12/16/24/32).
 
@@ -157,6 +162,10 @@ A small text button under the status line, only while a tapped recording is list
 
 A small capsule under the status line: loop glyph + "Keep listening". It is deliberately quieter than the orb and status line. Off: hairline outline, `{colors.ink-secondary}` text and glyph. On: filled `{colors.identity}` with white text and glyph. No caption. iOS only.
 
+### Recent prompts button (`{components.recent-prompts-button}`)
+
+A single small circular button left of the composer with a clock glyph, in `{colors.ink-secondary}`. It replaces the two ▲▼ arrows and appears only when there is history. It opens a native menu of recent prompts.
+
 ### Reply rail (`{components.reply-rail}`)
 
 The last few turns. Hermes's reply appears in step with its voice; your words appear live while you talk.
@@ -166,6 +175,7 @@ The last few turns. Hermes's reply appears in step with its voice; your words ap
 - **Do** make the orb the only way to talk on this screen.
 - **Do** show state and action in words every time.
 - **Don't** put a second microphone button anywhere on this screen.
+- **Don't** use bare ▲▼ chevrons for prompt history; one labelled Recent prompts button.
 - **Don't** let the hands-free control compete with the orb: a small pill, never a full switch row with a caption.
 - **Don't** stream Hermes's text before it speaks.
 - **Don't** animate the orb when idle; activity is for real activity. Reduced motion freezes it.

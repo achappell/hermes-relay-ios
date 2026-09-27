@@ -33,7 +33,7 @@ One screen, four zones (see DESIGN.md Layout):
 | Header | Profile, conversation title, connection and recovery | Voice actions |
 | Voice | Starting, sending, cancelling and interrupting speech; hands-free | Typed input |
 | Reply rail | The latest exchange, in step with speech | Controls |
-| Typing | Composer, prompt history, send | Voice capture |
+| Typing | Recent prompts, composer, send | Voice capture |
 
 This supersedes the 2026-09-11 rule that the bottom surface owns capture: voice now lives with the orb.
 
@@ -74,6 +74,13 @@ Plain, short, action-first. The status line always reads "State · Action".
 - A small pill under the status line; tapping it toggles. Off is outlined, on is filled, and the status line then reads "Listening for speech". Accessibility: a toggle button, label "Keep listening", value On/Off, hint as in Voice and Tone.
 - Arms conversation mode: listen, send on a pause, answer, listen again.
 - Never armed automatically (not at launch, on connect, or after a reply). Disarms when the app leaves the foreground or the connection drops (as today).
+
+### Recent prompts
+
+- One small clock button left of the composer, only when there is history (replaces the ▲▼ arrows).
+- Tapping it opens a native menu titled "Recent prompts": up to 8 of your recent typed prompts, newest first, each on one line (truncated). Choosing one puts it in the composer, focused, to edit or send; it never sends by itself.
+- Typed prompts only, in memory only (never saved), cleared when the active Profile changes.
+- Accessibility: button label "Recent prompts"; each menu item reads the prompt text.
 
 ### Reply rail
 

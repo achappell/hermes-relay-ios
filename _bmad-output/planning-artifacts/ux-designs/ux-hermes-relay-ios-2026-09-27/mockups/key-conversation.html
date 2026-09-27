@@ -88,8 +88,14 @@ figcaption b { display: block; opacity: 1; }
 /* Zone 4: typing */
 .typing { margin: 10px 12px 14px; padding: 9px; border-radius: 20px; background: var(--s-console);
   border: 1px solid var(--s-hair); display: flex; gap: 8px; align-items: center; }
-.hist { width: 30px; height: 30px; border-radius: 50%; border: 1px solid var(--s-hair); display: grid; place-items: center;
-  font-size: 11px; color: var(--s-ink2); }
+.hist { width: 32px; height: 32px; border-radius: 50%; border: 1px solid var(--s-hair); display: grid; place-items: center;
+  color: var(--s-ink2); flex: none; }
+.hist svg { width: 16px; height: 16px; fill: currentColor; }
+.menu { position: absolute; left: 14px; bottom: 64px; width: 238px; border-radius: 14px; background: var(--s-console);
+  border: 1px solid var(--s-hair); box-shadow: 0 12px 30px rgba(0,0,0,.45); font-size: 12.5px; overflow: hidden; }
+.menu .title { font-size: 11px; color: var(--s-ink2); padding: 8px 12px 6px; }
+.menu .item { padding: 9px 12px; border-top: 1px solid var(--s-hair); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.dim { position: absolute; inset: 0; background: rgba(0,0,0,.28); }
 .field { flex: 1; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; height: 34px; border-radius: 12px; background: var(--s-panel); color: var(--s-ink2); font-size: 12.5px;
   display: flex; align-items: center; padding: 0 10px; }
 .send { width: 34px; height: 34px; border-radius: 50%; background: var(--s-hair); display: grid; place-items: center;
@@ -119,7 +125,7 @@ figcaption b { display: block; opacity: 1; }
   </div>
   <div class="rail"><div class="you"><b>You</b>Where did we land on the hotel?</div>
     <div class="herm"><b>Hermes</b><span class="spoken">The one by the harbour, two nights from Friday.</span></div></div>
-  <div class="typing"><span class="hist">▲</span><span class="hist">▼</span><span class="field">Message Hermes…</span><span class="send">↑</span></div>
+  <div class="typing"><span class="hist" title="Recent prompts"><svg viewBox="0 0 24 24"><path d="M13 3a9 9 0 0 0-9 9H1l3.9 3.9L9 12H6a7 7 0 1 1 2.05 4.95l-1.42 1.42A9 9 0 1 0 13 3zm-1 5v5l4.25 2.52.77-1.28-3.52-2.09V8z"/></svg></span><span class="field">Message Hermes…</span><span class="send">↑</span></div>
 </div></div>
 <figcaption><b>1 · Ready (dark)</b>Connected and idle. Tapping the orb starts listening (Flow 1, step 1–2). No microphone button in the bottom bar.</figcaption>
 </figure>
@@ -140,7 +146,7 @@ figcaption b { display: block; opacity: 1; }
     <div class="pill"><svg viewBox="0 0 24 24"><path d="M12 5V2L8 6l4 4V7a5 5 0 0 1 4.9 6l1.5 1.5A7 7 0 0 0 12 5zm-4.9 4.5L5.6 8A7 7 0 0 0 12 19v3l4-4-4-4v3a5 5 0 0 1-4.9-7.5z"/></svg>Keep listening</div>
   </div>
   <div class="rail"><div class="you"><b>You</b><span class="live">Can you check if they have parking</span></div></div>
-  <div class="typing"><span class="hist">▲</span><span class="hist">▼</span><span class="field">Message Hermes…</span><span class="send">↑</span></div>
+  <div class="typing"><span class="hist" title="Recent prompts"><svg viewBox="0 0 24 24"><path d="M13 3a9 9 0 0 0-9 9H1l3.9 3.9L9 12H6a7 7 0 1 1 2.05 4.95l-1.42 1.42A9 9 0 1 0 13 3zm-1 5v5l4.25 2.52.77-1.28-3.52-2.09V8z"/></svg></span><span class="field">Message Hermes…</span><span class="send">↑</span></div>
 </div></div>
 <figcaption><b>2 · Listening (tapped)</b>Your words appear live. Pausing ~1.5 s sends on its own; the stop glyph sends early; Cancel discards (Flow 1, steps 3–4).</figcaption>
 </figure>
@@ -161,7 +167,7 @@ figcaption b { display: block; opacity: 1; }
   </div>
   <div class="rail"><div class="you"><b>You</b>Can you check if they have parking?</div>
     <div class="herm"><b>Hermes</b><span class="spoken">Yes, they have a small garage for guests, </span><span class="unspoken">about twenty dollars a night, booked at check-in.</span></div></div>
-  <div class="typing"><span class="hist">▲</span><span class="hist">▼</span><span class="field">Message Hermes…</span><span class="send">↑</span></div>
+  <div class="typing"><span class="hist" title="Recent prompts"><svg viewBox="0 0 24 24"><path d="M13 3a9 9 0 0 0-9 9H1l3.9 3.9L9 12H6a7 7 0 1 1 2.05 4.95l-1.42 1.42A9 9 0 1 0 13 3zm-1 5v5l4.25 2.52.77-1.28-3.52-2.09V8z"/></svg></span><span class="field">Message Hermes…</span><span class="send">↑</span></div>
 </div></div>
 <figcaption><b>3 · Speaking</b>The reply appears in step with the voice; nothing streamed while it was thinking. The hand glyph interrupts (Flow 1, step 5).</figcaption>
 </figure>
@@ -182,7 +188,7 @@ figcaption b { display: block; opacity: 1; }
   </div>
   <div class="rail"><div class="you"><b>You</b>How long do I roast the squash?</div>
     <div class="herm"><b>Hermes</b><span class="spoken">About forty minutes at 400°F, turning once halfway.</span></div></div>
-  <div class="typing"><span class="hist">▲</span><span class="hist">▼</span><span class="field">Message Hermes…</span><span class="send">↑</span></div>
+  <div class="typing"><span class="hist" title="Recent prompts"><svg viewBox="0 0 24 24"><path d="M13 3a9 9 0 0 0-9 9H1l3.9 3.9L9 12H6a7 7 0 1 1 2.05 4.95l-1.42 1.42A9 9 0 1 0 13 3zm-1 5v5l4.25 2.52.77-1.28-3.52-2.09V8z"/></svg></span><span class="field">Message Hermes…</span><span class="send">↑</span></div>
 </div></div>
 <figcaption><b>4 · Hands-free waiting</b>The "Keep listening" pill is on (filled); the app listens again after each reply. The orb isn't tappable while waiting. Voice interruption is off by default (Settings), so the TV won't cut Hermes off (Flow 2).</figcaption>
 </figure>
@@ -203,11 +209,37 @@ figcaption b { display: block; opacity: 1; }
   </div>
   <div class="rail"><div class="you"><b>You</b>What time is soccer on Saturday?</div>
     <div class="herm"><b>Hermes</b><span class="spoken">Ten o'clock at the east field.</span></div></div>
-  <div class="typing"><span class="hist">▲</span><span class="hist">▼</span><span class="field">Message Hermes…</span><span class="send">↑</span></div>
+  <div class="typing"><span class="hist" title="Recent prompts"><svg viewBox="0 0 24 24"><path d="M13 3a9 9 0 0 0-9 9H1l3.9 3.9L9 12H6a7 7 0 1 1 2.05 4.95l-1.42 1.42A9 9 0 1 0 13 3zm-1 5v5l4.25 2.52.77-1.28-3.52-2.09V8z"/></svg></span><span class="field">Message Hermes…</span><span class="send">↑</span></div>
 </div></div>
 <figcaption><b>5 · Ready (light)</b>The light adaptation with the same roles. The first thing Jensen tries, tapping the orb, works.</figcaption>
 </figure>
 
+
+<!-- 6. Recent prompts menu -->
+<figure>
+<div class="phone"><div class="screen">
+  <div class="status-bar"><span>7:03</span><span>●●● 92%</span></div>
+  <div class="header"><span class="dot"></span><div>
+    <div class="who">Amanda</div>
+    <div class="conv">Weekend trip ▾</div>
+    <div class="meta">Connected · 02:30</div></div><span class="gear">⚙</span></div>
+  <div class="voice" style="--tint: var(--s-id)">
+    <div class="orb"><span class="ring"></span><span class="ring r2"></span><span class="ring r3"></span>
+      <div class="core"><svg viewBox="0 0 24 24"><path d="M12 14a3 3 0 0 0 3-3V5a3 3 0 0 0-6 0v6a3 3 0 0 0 3 3zm5-3a5 5 0 0 1-10 0H5a7 7 0 0 0 6 6.92V21h2v-3.08A7 7 0 0 0 19 11z"/></svg></div></div>
+    <div class="status">Ready <span>· Tap to talk</span></div>
+    <div class="pill"><svg viewBox="0 0 24 24"><path d="M12 5V2L8 6l4 4V7a5 5 0 0 1 4.9 6l1.5 1.5A7 7 0 0 0 12 5zm-4.9 4.5L5.6 8A7 7 0 0 0 12 19v3l4-4-4-4v3a5 5 0 0 1-4.9-7.5z"/></svg>Keep listening</div>
+  </div>
+  <div class="rail"><div class="you"><b>You</b>Can you check if they have parking?</div>
+    <div class="herm"><b>Hermes</b><span class="spoken">Yes, they have a small garage for guests, about twenty dollars a night.</span></div></div>
+  <div class="typing"><span class="hist" title="Recent prompts"><svg viewBox="0 0 24 24"><path d="M13 3a9 9 0 0 0-9 9H1l3.9 3.9L9 12H6a7 7 0 1 1 2.05 4.95l-1.42 1.42A9 9 0 1 0 13 3zm-1 5v5l4.25 2.52.77-1.28-3.52-2.09V8z"/></svg></span><span class="field">Message Hermes…</span><span class="send">↑</span></div>
+  <div class="dim"></div>
+  <div class="menu"><div class="title">Recent prompts</div>
+    <div class="item">Book the harbour hotel for Friday and Saturday</div>
+    <div class="item">Add a reminder to pack the chargers</div>
+    <div class="item">What's the weather there this weekend?</div></div>
+</div></div>
+<figcaption><b>6 · Recent prompts</b>One clock button replaces the ▲▼ arrows and appears only when there's history. Choosing a typed prompt puts it in the box to edit or send; it never sends by itself.</figcaption>
+</figure>
 </div>
 </body>
 </html>
