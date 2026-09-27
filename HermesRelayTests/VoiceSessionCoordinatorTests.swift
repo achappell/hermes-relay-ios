@@ -180,6 +180,77 @@ final class VoiceSessionCoordinatorTests: XCTestCase {
     }
 
     @MainActor
+    func testATappedRecordingSendsItselfAfterAPause() async {
+        let input = CoordinatorSpeechInput(finalUpdate: SpeechRecognitionUpdate(text: "Hello Hermes", isFinal: true))
+        let client = CoordinatorHermesSessionClient(events: [
+            .messageStart,
+            .textDelta("Hello back"),
+            .audioStart(AudioFormat(sampleRate: 24_000, channels: 1, sampleWidth: 2)),
+            .audioChunk(Data([0, 1])),
+            .audioEnd,
+            .turnComplete(turnID: "turn-1"),
+        ])
+        let store = await connectedStore(client)
+        let coordinator = VoiceSessionCoordinator(
+            store: store,
+            input: input,
+            output: CoordinatorAudioOutput(),
+            handsFreeSilenceDurationNanoseconds: 20_000_000
+        )
+
+        await coordinator.beginCapture()
+        await input.emit(SpeechRecognitionUpdate(text: "Hello Herm", isFinal: false))
+
+        // No second tap: the pause after the last word sends the turn.
+        await waitUntil { coordinator.state == .complete }
+        XCTAssertEqual(client.sentTurns, ["Hello Hermes"])
+        XCTAssertEqual(store.messages.map(\.role), [.user, .assistant])
+    }
+
+    @MainActor
+    func testNoPauseClockRunsBeforeTheFirstWord() async throws {
+        let input = CoordinatorSpeechInput(finalUpdate: SpeechRecognitionUpdate(text: "Hello Hermes", isFinal: true))
+        let client = CoordinatorHermesSessionClient(events: [.turnComplete(turnID: "turn-1")])
+        let store = await connectedStore(client)
+        let coordinator = VoiceSessionCoordinator(
+            store: store,
+            input: input,
+            output: CoordinatorAudioOutput(),
+            handsFreeSilenceDurationNanoseconds: 20_000_000
+        )
+
+        await coordinator.beginCapture()
+        await input.emit(SpeechRecognitionUpdate(text: "  ", isFinal: false))
+        try await Task.sleep(nanoseconds: 100_000_000)
+
+        XCTAssertEqual(client.sentTurns, [], "Silence before speaking must not send")
+        XCTAssertTrue(coordinator.state.isCaptureActive)
+        await coordinator.cancelCapture()
+    }
+
+    @MainActor
+    func testCancelStopsThePauseClockWithoutSending() async throws {
+        let input = CoordinatorSpeechInput(finalUpdate: SpeechRecognitionUpdate(text: "Hello Hermes", isFinal: true))
+        let client = CoordinatorHermesSessionClient(events: [.turnComplete(turnID: "turn-1")])
+        let store = await connectedStore(client)
+        let coordinator = VoiceSessionCoordinator(
+            store: store,
+            input: input,
+            output: CoordinatorAudioOutput(),
+            handsFreeSilenceDurationNanoseconds: 20_000_000
+        )
+
+        await coordinator.beginCapture()
+        await input.emit(SpeechRecognitionUpdate(text: "Never mind", isFinal: false))
+        await waitUntil { coordinator.provisionalText == "Never mind" }
+        await coordinator.cancelCapture()
+        try await Task.sleep(nanoseconds: 100_000_000)
+
+        XCTAssertEqual(client.sentTurns, [])
+        XCTAssertEqual(coordinator.state, .idle)
+    }
+
+    @MainActor
     func testLateProcessingAndUnknownEventsDoNotRegressSpeaking() async throws {
         let format = AudioFormat(sampleRate: 24_000, channels: 1, sampleWidth: 2)
         let output = CoordinatorAudioOutput(
@@ -1605,29 +1676,28 @@ final class VoiceSessionCoordinatorTests: XCTestCase {
 
     func testHandsFreeBargeInRequiresAnEchoSafeAudioRoute() {
         XCTAssertTrue(
-            HandsFreeBargeInPolicy.shouldInterrupt(
-                state: .speaking,
-                route: .echoSafe
-            )
+            HandsFreeBargeInPolicy.shouldInterrupt(state: .speaking, route: .echoSafe, interruptByTalking: true)
         )
         XCTAssertFalse(
-            HandsFreeBargeInPolicy.shouldInterrupt(
-                state: .speaking,
-                route: .notEchoSafe
-            )
+            HandsFreeBargeInPolicy.shouldInterrupt(state: .speaking, route: .notEchoSafe, interruptByTalking: true)
         )
         XCTAssertFalse(
-            HandsFreeBargeInPolicy.shouldInterrupt(
-                state: .speaking,
-                route: .unknown
-            )
+            HandsFreeBargeInPolicy.shouldInterrupt(state: .speaking, route: .unknown, interruptByTalking: true)
         )
         XCTAssertTrue(
-            HandsFreeBargeInPolicy.shouldInterrupt(
-                state: .thinking,
-                route: .notEchoSafe
-            )
+            HandsFreeBargeInPolicy.shouldInterrupt(state: .thinking, route: .notEchoSafe, interruptByTalking: true)
         )
+    }
+
+    func testVoiceInterruptionIsOffUnlessOptedIn() {
+        for state in [VoiceState.thinking, .buffering, .speaking] {
+            for route in [HandsFreeAudioRouteSafety.echoSafe, .notEchoSafe, .unknown] {
+                XCTAssertFalse(
+                    HandsFreeBargeInPolicy.shouldInterrupt(state: state, route: route, interruptByTalking: false),
+                    "Without the opt-in only a tap interrupts (\(state), \(route))"
+                )
+            }
+        }
     }
 
     @MainActor
@@ -2133,7 +2203,8 @@ final class VoiceSessionCoordinatorTests: XCTestCase {
             output: CoordinatorAudioOutput(),
             handsFreeInput: handsFreeInput,
             routeSafetyProvider: FixedHandsFreeRouteSafetyProvider(.notEchoSafe),
-            handsFreeSilenceDurationNanoseconds: 0
+            handsFreeSilenceDurationNanoseconds: 0,
+            interruptByTalking: { true }
         )
 
         let responseTask = Task { await coordinator.sendDraft() }
@@ -2157,6 +2228,45 @@ final class VoiceSessionCoordinatorTests: XCTestCase {
     }
 
     @MainActor
+    func testWithoutTheOptInSpeechDuringAReplyIsIgnoredEvenOnHeadphones() async throws {
+        let handsFreeInput = CoordinatorHandsFreeInput()
+        let client = InterruptibleCoordinatorHermesSessionClient(supportsInterrupt: true)
+        let store = ConversationStore(client: client)
+        await store.connect()
+        store.draft = "Start the answer"
+        let coordinator = VoiceSessionCoordinator(
+            store: store,
+            input: CoordinatorSpeechInput(),
+            output: CoordinatorAudioOutput(),
+            handsFreeInput: handsFreeInput,
+            routeSafetyProvider: FixedHandsFreeRouteSafetyProvider(.echoSafe),
+            handsFreeSilenceDurationNanoseconds: 0,
+            interruptByTalking: { false }
+        )
+
+        let responseTask = Task { await coordinator.sendDraft() }
+        await client.waitUntilTurnStarted()
+        await waitUntil { coordinator.state == .speaking }
+
+        await coordinator.toggleHandsFree()
+        // Someone talks (or the TV) while Hermes speaks.
+        await handsFreeInput.emit(
+            .activity(handsFreeSnapshot(.speech, playbackActive: true))
+        )
+        try await Task.sleep(nanoseconds: 100_000_000)
+
+        let interruptCount = await client.interruptCount
+        XCTAssertEqual(interruptCount, 0, "Only a tap interrupts without the opt-in")
+        XCTAssertEqual(coordinator.state, .speaking)
+        XCTAssertNotEqual(coordinator.handsFreeStatus, .blockedByAudioRoute, "Nothing is blocked; speech is simply ignored")
+
+        // A tap still interrupts.
+        await coordinator.disableHandsFree()
+        _ = await coordinator.interruptActiveTurn()
+        await responseTask.value
+    }
+
+    @MainActor
     func testHandsFreeBargeInInterruptsSafelyAndStartsOneNewCapture() async {
         let handsFreeInput = CoordinatorHandsFreeInput()
         let client = InterruptibleCoordinatorHermesSessionClient(supportsInterrupt: true)
@@ -2169,7 +2279,8 @@ final class VoiceSessionCoordinatorTests: XCTestCase {
             output: CoordinatorAudioOutput(),
             handsFreeInput: handsFreeInput,
             routeSafetyProvider: FixedHandsFreeRouteSafetyProvider(.echoSafe),
-            handsFreeSilenceDurationNanoseconds: 0
+            handsFreeSilenceDurationNanoseconds: 0,
+            interruptByTalking: { true }
         )
 
         let responseTask = Task { await coordinator.sendDraft() }

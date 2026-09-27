@@ -1,12 +1,28 @@
 import Foundation
 import Observation
 
+/// Local voice preferences. Stored on this device only; content-free.
+enum VoicePreferences {
+    static let interruptByTalkingKey = "voice.interruptByTalking"
+
+    /// "Interrupt Hermes by talking (headphones only)". Off by default: with
+    /// it off, interrupting a reply is tap-only on every route (IOS-UX-F5).
+    @MainActor
+    static var interruptByTalking: Bool {
+        get { UserDefaults.standard.bool(forKey: interruptByTalkingKey) }
+        set { UserDefaults.standard.set(newValue, forKey: interruptByTalkingKey) }
+    }
+}
+
 enum HandsFreeBargeInPolicy {
     static func shouldInterrupt(
         state: VoiceState,
-        route: HandsFreeAudioRouteSafety
+        route: HandsFreeAudioRouteSafety,
+        interruptByTalking: Bool
     ) -> Bool {
         guard state.isResponseActive else { return false }
+        // Voice interruption is opt-in; without it only a tap interrupts.
+        guard interruptByTalking else { return false }
         guard state.isOutputActive else { return true }
         return route == .echoSafe
     }
@@ -100,6 +116,11 @@ final class VoiceSessionCoordinator {
     private var playbackPositionTask: Task<Void, Never>?
     private var handsFreeTask: Task<Void, Never>?
     private var handsFreeSilenceTask: Task<Void, Never>?
+    /// A tapped recording sends itself after a pause in recognised speech
+    /// (IOS-UX-F5), using the same endpoint as hands-free.
+    private let interruptByTalking: @MainActor () -> Bool
+    private var tappedPauseTask: Task<Void, Never>?
+    private var tappedPauseGeneration = 0
     private var handsFreeCaptureGeneration: UInt64 = 0
     private var handsFreeFinalText: String?
     private var isFinishingHandsFreeInput = false
@@ -119,8 +140,10 @@ final class VoiceSessionCoordinator {
         recognitionFinishTimeoutNanoseconds: UInt64 = 2_000_000_000,
         handsFreeInput: (any HandsFreeInput)? = nil,
         routeSafetyProvider: any HandsFreeAudioRouteSafetyProvider = SystemHandsFreeAudioRouteSafetyProvider(),
-        handsFreeSilenceDurationNanoseconds: UInt64 = 1_500_000_000
+        handsFreeSilenceDurationNanoseconds: UInt64 = 1_500_000_000,
+        interruptByTalking: @escaping @MainActor () -> Bool = { VoicePreferences.interruptByTalking }
     ) {
+        self.interruptByTalking = interruptByTalking
         self.store = store
         self.input = input
         self.handsFreeInput = handsFreeInput
@@ -314,11 +337,18 @@ final class VoiceSessionCoordinator {
     private func startHandsFreeCaptureIfNeeded() async -> Bool {
         guard isHandsFreeArmed else { return false }
         if state.isResponseActive {
+            // With voice interruption off, speech during a reply is ignored
+            // quietly: only a tap on the orb interrupts.
+            guard interruptByTalking() else { return false }
             let route = state.isOutputActive
                 ? await routeSafetyProvider.currentSafety()
                 : .echoSafe
             guard isHandsFreeArmed else { return false }
-            guard HandsFreeBargeInPolicy.shouldInterrupt(state: state, route: route) else {
+            guard HandsFreeBargeInPolicy.shouldInterrupt(
+                state: state,
+                route: route,
+                interruptByTalking: interruptByTalking()
+            ) else {
                 handsFreeStatus = .blockedByAudioRoute
                 return false
             }
@@ -347,6 +377,36 @@ final class VoiceSessionCoordinator {
         isHandsFreeCaptureActive = true
         handsFreeStatus = .listening
         state = .listening
+    }
+
+    /// Restarts the pause clock on every recognised word. When no new words
+    /// arrive for the endpoint duration, the recording ends and sends, as if
+    /// the orb had been tapped. Nothing starts before the first word.
+    private func scheduleTappedPause() {
+        guard captureTask != nil, !isHandsFreeCaptureActive else { return }
+        tappedPauseTask?.cancel()
+        tappedPauseGeneration &+= 1
+        let generation = tappedPauseGeneration
+        let duration = handsFreeSilenceDurationNanoseconds
+        tappedPauseTask = Task { @MainActor [weak self] in
+            do {
+                try await Task.sleep(nanoseconds: duration)
+            } catch {
+                return
+            }
+            guard let self,
+                  self.tappedPauseGeneration == generation,
+                  self.captureTask != nil,
+                  self.state.isCaptureActive else { return }
+            self.tappedPauseTask = nil
+            await self.endCaptureAndSend()
+        }
+    }
+
+    private func cancelTappedPause() {
+        tappedPauseTask?.cancel()
+        tappedPauseTask = nil
+        tappedPauseGeneration &+= 1
     }
 
     private func scheduleHandsFreeSilence() {
@@ -498,6 +558,7 @@ final class VoiceSessionCoordinator {
     }
 
     func endCaptureAndSend() async {
+        cancelTappedPause()
         if isHandsFreeCaptureActive {
             await finishHandsFreeCapture()
             return
@@ -692,6 +753,7 @@ final class VoiceSessionCoordinator {
     }
 
     func cancelCapture() async {
+        cancelTappedPause()
         if isHandsFreeCaptureActive {
             isHandsFreeCaptureActive = false
             handsFreeCaptureGeneration &+= 1
@@ -909,6 +971,9 @@ final class VoiceSessionCoordinator {
                     }
                     if self.state == .listening {
                         self.state = .transcribing
+                    }
+                    if !update.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                        self.scheduleTappedPause()
                     }
                 }
             }

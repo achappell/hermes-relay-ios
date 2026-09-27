@@ -282,6 +282,10 @@ struct ContentView: View {
         .sheet(isPresented: $showingHomeSessions) {
             HomeSessionsView(store: store)
         }
+        .onChange(of: store.activeProfileID) {
+            // Recent prompts belong to the Profile they were typed in.
+            promptHistory = PromptHistory()
+        }
         .onChange(of: pairingInbox?.pendingLink, initial: true) { _, link in
             guard let link else { return }
             pairingInbox?.pendingLink = nil
@@ -356,6 +360,31 @@ struct ContentView: View {
         )
     }
 
+    /// One labelled button replaces the ▲▼ arrows (IOS-UX-F5). Choosing a
+    /// prompt fills the composer to edit or send; it never sends by itself.
+    private var recentPromptsMenu: some View {
+        Menu {
+            Section("Recent prompts") {
+                ForEach(promptHistory.recent(), id: \.self) { prompt in
+                    Button {
+                        store.draft = prompt
+                        focusedField = .composer
+                    } label: {
+                        Text(prompt).lineLimit(1)
+                    }
+                }
+            }
+        } label: {
+            Image(systemName: "clock.arrow.circlepath")
+                .frame(width: 16, height: 16)
+                .foregroundStyle(HermesVisualTokens.secondaryInk)
+        }
+        .menuIndicator(.hidden)
+        .accessibilityLabel("Recent prompts")
+        .accessibilityIdentifier("recent-prompts")
+        .relayGlassButtonStyle()
+    }
+
     private var composer: some View {
         VStack(spacing: 8) {
             if showsCachedDraftNotice {
@@ -409,29 +438,9 @@ struct ContentView: View {
             }
 
             HStack(alignment: .bottom, spacing: 8) {
-                Button {
-                    if let previous = promptHistory.previous(currentDraft: store.draft) {
-                        store.draft = previous
-                    }
-                } label: {
-                    Image(systemName: "chevron.up")
-                        .frame(width: 16, height: 16)
+                if !promptHistory.isEmpty {
+                    recentPromptsMenu
                 }
-                .disabled(promptHistory.isEmpty)
-                .accessibilityLabel("Previous prompt")
-                .relayGlassButtonStyle()
-
-                Button {
-                    if let next = promptHistory.next() {
-                        store.draft = next
-                    }
-                } label: {
-                    Image(systemName: "chevron.down")
-                        .frame(width: 16, height: 16)
-                }
-                .disabled(promptHistory.isEmpty)
-                .accessibilityLabel("Next prompt")
-                .relayGlassButtonStyle()
 
                 TextField("Message Hermes…", text: $store.draft, axis: .vertical)
                     .focused($focusedField, equals: .composer)
@@ -467,13 +476,6 @@ struct ContentView: View {
         .padding(.vertical, 10)
     }
 
-    private var voiceInterface: some View {
-        VoiceControl(coordinator: voiceCoordinator)
-        .padding(.horizontal, 12)
-        .padding(.top, 8)
-        .padding(.bottom, 4)
-    }
-
     @ViewBuilder
     private var bottomSurface: some View {
         if #available(iOS 26.0, macOS 26.0, *) {
@@ -504,16 +506,10 @@ struct ContentView: View {
         }
     }
 
+    /// The bottom surface is for typing. Talking, sending, interrupting and
+    /// hands-free live with the voice orb (IOS-UX-F5).
     private var bottomControls: some View {
         VStack(spacing: 0) {
-            if Self.shouldShowVoiceInterface(
-                isConnected: store.connectionState.isConnected,
-                isComposerFocused: focusedField != nil,
-                state: voiceCoordinator.state,
-                isHandsFreeArmed: voiceCoordinator.isHandsFreeArmed
-            ) {
-                voiceInterface
-            }
             composer
         }
     }

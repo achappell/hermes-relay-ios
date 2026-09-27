@@ -419,6 +419,23 @@ struct AmbientHUDView: View {
         )
     }
 
+    /// The orb is the voice control only when connected; otherwise it keeps
+    /// showing the connection state and is not tappable.
+    private var orbCoordinator: VoiceSessionCoordinator? {
+        doorwayState == .connected ? voiceCoordinator : nil
+    }
+
+    /// State, then what a tap on the orb will do: "Ready · Tap to talk".
+    private var orbStatusLine: String {
+        guard let orbCoordinator else { return doorwayStatusLabel }
+        let action = VoiceControlInteractionPolicy.orbAction(
+            state: orbCoordinator.state,
+            isHandsFreeArmed: orbCoordinator.isHandsFreeArmed,
+            isHandsFreeCaptureActive: orbCoordinator.isHandsFreeCaptureActive
+        )
+        return "\(doorwayStatusLabel) · \(action.prompt)"
+    }
+
     private var doorwayStatusLabel: String {
         doorwayState == .connected ? presentation.statusLabel : doorwayState.statusLabel
     }
@@ -486,16 +503,41 @@ struct AmbientHUDView: View {
 
             Spacer(minLength: 20)
 
-            AmbientVisualizer(
-                presentation: presentation,
-                doorwayState: doorwayState
-            )
+            if let orbCoordinator {
+                VoiceOrbButton(
+                    coordinator: orbCoordinator,
+                    presentation: presentation,
+                    doorwayState: doorwayState,
+                    statusLabel: doorwayStatusLabel
+                )
+            } else {
+                AmbientVisualizer(
+                    presentation: presentation,
+                    doorwayState: doorwayState
+                )
+            }
 
             VStack(spacing: 8) {
-                Text(doorwayStatusLabel)
+                Text(orbStatusLine)
                     .font(.headline.weight(.semibold))
                     .foregroundStyle(doorwayTint)
                     .accessibilityHidden(true)
+
+                if let orbCoordinator, orbCoordinator.state.isCaptureActive,
+                   !orbCoordinator.isHandsFreeArmed {
+                    Button("Cancel") {
+                        Task { await orbCoordinator.cancelCapture() }
+                    }
+                    .font(.footnote.weight(.medium))
+                    .relayGlassButtonStyle()
+                    .accessibilityHint("Stops listening without sending.")
+                }
+
+                #if os(iOS)
+                if let orbCoordinator {
+                    HandsFreePill(coordinator: orbCoordinator)
+                }
+                #endif
 
                 if let recoveryMessage = doorwayState.recoveryMessage {
                     doorwayRecoveryNotice(message: recoveryMessage)
@@ -847,9 +889,76 @@ private struct SessionHeaderAccessibility: ViewModifier {
     }
 }
 
+/// The central orb as the voice control: tap to talk, tap to send, tap to
+/// interrupt. Its glyph shows what a tap will do.
+private struct VoiceOrbButton: View {
+    let coordinator: VoiceSessionCoordinator
+    let presentation: AmbientHUDPresentation
+    let doorwayState: ConversationDoorwayState
+    let statusLabel: String
+    @State private var isActionInFlight = false
+
+    private var action: VoiceOrbAction {
+        VoiceControlInteractionPolicy.orbAction(
+            state: coordinator.state,
+            isHandsFreeArmed: coordinator.isHandsFreeArmed,
+            isHandsFreeCaptureActive: coordinator.isHandsFreeCaptureActive
+        )
+    }
+
+    private var isResponseActive: Bool {
+        VoiceControlInteractionPolicy.isResponseActive(coordinator.state)
+    }
+
+    var body: some View {
+        Button(action: perform) {
+            AmbientVisualizer(
+                presentation: presentation,
+                doorwayState: doorwayState,
+                actionImage: action.systemImage
+            )
+            .contentShape(Circle())
+        }
+        .buttonStyle(VoiceOrbPressStyle())
+        .disabled(
+            VoiceControlInteractionPolicy.isDisabled(
+                isActionInFlight: isActionInFlight,
+                state: coordinator.state,
+                isHandsFreeArmed: coordinator.isHandsFreeArmed
+            )
+        )
+        .accessibilityLabel("Voice")
+        .accessibilityValue(statusLabel)
+        .accessibilityHint(action.accessibilityHint)
+        .accessibilityIdentifier("voice-orb")
+    }
+
+    private func perform() {
+        guard !isActionInFlight || isResponseActive else { return }
+        isActionInFlight = true
+        Task { @MainActor in
+            await VoiceControlInteractionPolicy.performPrimaryAction(on: coordinator)
+            isActionInFlight = false
+        }
+    }
+}
+
+/// A slight press-in so the orb feels like the button it is.
+private struct VoiceOrbPressStyle: ButtonStyle {
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .scaleEffect(configuration.isPressed && !reduceMotion ? 0.94 : 1)
+            .animation(reduceMotion ? nil : .easeOut(duration: 0.12), value: configuration.isPressed)
+    }
+}
+
 private struct AmbientVisualizer: View {
     let presentation: AmbientHUDPresentation
     let doorwayState: ConversationDoorwayState
+    /// Set when the orb is the voice control: the glyph shows the action.
+    var actionImage: String? = nil
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     private var tint: Color {
@@ -866,6 +975,7 @@ private struct AmbientVisualizer: View {
     }
 
     private var systemImage: String {
+        if let actionImage { return actionImage }
         switch doorwayState {
         case .unconfigured:
             return "slider.horizontal.3"
@@ -914,6 +1024,7 @@ private struct AmbientVisualizer: View {
             .accessibilityElement(children: .ignore)
             .accessibilityLabel(accessibilityLabel)
             .accessibilityValue(accessibilityValue)
+            .accessibilityHidden(actionImage != nil)
         }
     }
 

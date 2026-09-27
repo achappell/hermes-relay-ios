@@ -53,6 +53,17 @@ final class HermesRelayIOSTests: XCTestCase {
         XCTAssertNil(message.createdAt)
     }
 
+    func testRecentPromptsAreNewestFirstWithoutRepeatsAndBounded() {
+        var history = PromptHistory(limit: 50)
+        for prompt in ["one", "two", "three", "two", "four"] {
+            history.record(prompt)
+        }
+
+        XCTAssertEqual(history.recent(limit: 8), ["four", "two", "three", "one"])
+        XCTAssertEqual(history.recent(limit: 2), ["four", "two"])
+        XCTAssertEqual(PromptHistory().recent(), [])
+    }
+
     func testPromptHistoryIsBoundedAndRestoresTheDraftAtTheEnd() {
         var history = PromptHistory(limit: 2)
         history.record("first")
