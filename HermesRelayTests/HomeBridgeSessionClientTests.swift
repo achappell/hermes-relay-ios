@@ -362,6 +362,58 @@ final class HomeBridgeSessionClientTests: XCTestCase {
         await fixture.client.close()
     }
 
+    func testTitleAcceptsHermesSessionTitleReply() async throws {
+        // Home renames through Hermes's session.title, so the reply is that
+        // method's result, not a command.dispatch result.
+        let fixture = try await makeFixture()
+        await fixture.socket.setNextResultJSON(for: "conversation.open", """
+        {"schema":1,"status":"ready","conversation_handle":"opaque-home-conversation",\
+        "route":{"class":"home","id":"home-a"},\
+        "capabilities":{"commands":["title"],"timing":"absent","interrupt":true,"audio":true},\
+        "unresolved_turn":false}
+        """)
+        guard case .ready(let binding, _) = await fixture.client.open(claim: fixture.claim) else {
+            return XCTFail("A valid Home bridge response must become ready")
+        }
+        await fixture.socket.setNextResultJSON(for: "command.dispatch", """
+        {"schema":1,"conversation_handle":"opaque-home-conversation","title":"Groceries","pending":false}
+        """)
+
+        let outcome = await fixture.client.dispatch(
+            HomeCommandRequest(binding: binding, name: "title", argument: "Groceries")
+        )
+
+        guard case .completed(let result) = outcome else {
+            return XCTFail("A session.title reply must complete the rename, got \(outcome)")
+        }
+        XCTAssertEqual(result.name, "title")
+        XCTAssertEqual(result.status, .completed)
+        await fixture.client.close()
+    }
+
+    func testTitleRejectsAReplyForAnotherConversation() async throws {
+        let fixture = try await makeFixture()
+        await fixture.socket.setNextResultJSON(for: "conversation.open", """
+        {"schema":1,"status":"ready","conversation_handle":"opaque-home-conversation",\
+        "route":{"class":"home","id":"home-a"},\
+        "capabilities":{"commands":["title"],"timing":"absent","interrupt":true,"audio":true},\
+        "unresolved_turn":false}
+        """)
+        guard case .ready(let binding, _) = await fixture.client.open(claim: fixture.claim) else {
+            return XCTFail("A valid Home bridge response must become ready")
+        }
+        await fixture.socket.setNextResultJSON(for: "command.dispatch", """
+        {"schema":1,"conversation_handle":"another-conversation","title":"Groceries","pending":false}
+        """)
+
+        let outcome = await fixture.client.dispatch(
+            HomeCommandRequest(binding: binding, name: "title", argument: "Groceries")
+        )
+
+        XCTAssertEqual(outcome, .rejected(.home(code: .protocolError, phase: .command)))
+        await fixture.client.close()
+    }
+
     func testRefusedOpenLetsAFreshClaimOpenOnItsOwnSocket() async throws {
         // A held claim whose reconnect grace ended while the app was in the
         // background: Home refuses it, and the app makes one fresh claim.
