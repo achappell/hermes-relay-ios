@@ -121,6 +121,10 @@ final class VoiceSessionCoordinator {
     private let interruptByTalking: @MainActor () -> Bool
     private var tappedPauseTask: Task<Void, Never>?
     private var tappedPauseGeneration = 0
+    /// True while a tapped recording is being ended and sent. A tap and the
+    /// pause timer can both ask to end the same recording; only the first
+    /// may, or the second resets state in the middle of the reply.
+    private var isEndingTappedCapture = false
     private var handsFreeCaptureGeneration: UInt64 = 0
     private var handsFreeFinalText: String?
     private var isFinishingHandsFreeInput = false
@@ -383,7 +387,7 @@ final class VoiceSessionCoordinator {
     /// arrive for the endpoint duration, the recording ends and sends, as if
     /// the orb had been tapped. Nothing starts before the first word.
     private func scheduleTappedPause() {
-        guard captureTask != nil, !isHandsFreeCaptureActive else { return }
+        guard captureTask != nil, !isHandsFreeCaptureActive, !isEndingTappedCapture else { return }
         tappedPauseTask?.cancel()
         tappedPauseGeneration &+= 1
         let generation = tappedPauseGeneration
@@ -569,11 +573,15 @@ final class VoiceSessionCoordinator {
             applyCaptureStart(result)
             await captureStartGate.clear(id: pendingStart.id)
         }
-        guard let captureTask else { return }
+        guard let captureTask, !isEndingTappedCapture else { return }
+        isEndingTappedCapture = true
         state = .transcribing
         requestInputFinish()
         await waitForRecognitionCompletion(captureTask)
         self.captureTask = nil
+        // With the recording task cleared, a late second call finds nothing
+        // to end; the guard only needs to cover the wait above.
+        isEndingTappedCapture = false
 
         if let captureFailureMessage {
             provisionalText = ""
