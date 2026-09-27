@@ -774,16 +774,31 @@ final class ConversationStore {
         homeBridgeState = .connecting
         connectionState = .connecting
         transientError = nil
-        let sessionChoice = nextHomeSessionChoice
+        var sessionChoice = nextHomeSessionChoice
         let chosenTitle = pendingHomeSessionTitle
         // One choice per claim: later connects continue the latest session.
         nextHomeSessionChoice = .mostRecent
         pendingHomeSessionTitle = nil
         do {
-            guard let claim = try await homeClaimProvider.conversationClaim(
-                for: profileID,
-                session: sessionChoice
-            ) else {
+            let provided: HomeConversationClaim?
+            do {
+                provided = try await homeClaimProvider.conversationClaim(
+                    for: profileID,
+                    session: sessionChoice
+                )
+            } catch HomeClientConnectError.denied(let denial)
+                where sessionChoice == .mostRecent
+                    && (denial == .sessionBusy || denial == .sessionUnavailable) {
+                // The latest session is held elsewhere (another device, a
+                // scheduled job, or this device's own lingering claim). The
+                // default must never lock the user out: start a new one.
+                sessionChoice = .new
+                provided = try await homeClaimProvider.conversationClaim(
+                    for: profileID,
+                    session: .new
+                )
+            }
+            guard let claim = provided else {
                 applyPairedClaimFailure(message: "Home pairing is unavailable for this Hermes Profile.",
                                         failure: .home(code: .authorizationUnavailable, phase: .authorization))
                 return false
