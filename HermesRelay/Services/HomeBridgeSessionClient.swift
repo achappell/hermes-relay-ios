@@ -720,7 +720,9 @@ actor URLSessionHomeBridgeSessionClient: HomeBridgeSessionClient {
                     return try await self.request(id: requestID, method: "command.dispatch", params: requestParams)
                 }
             )
-            let result = try decodeCommandResult(response, binding: command.binding)
+            let result = command.name.lowercased() == "title"
+                ? try decodeTitleResult(response, binding: command.binding)
+                : try decodeCommandResult(response, binding: command.binding)
             switch result.status {
             case .accepted, .completed:
                 return .completed(result)
@@ -1658,6 +1660,34 @@ private func decodeCommandResult(
         name: name,
         status: status,
         safeCode: (response.result["code"] as? String).flatMap(HomeFailureCode.init(rawValue:))
+    )
+}
+
+/// Home renames through Hermes's `session.title` rather than
+/// `command.dispatch`, so a `title` reply is that method's result
+/// (`title`, `pending`) with Home's schema and handle, not a command result.
+private func decodeTitleResult(
+    _ response: HomeWireResponse,
+    binding: HomeConversationBinding
+) throws -> HomeCommandResult {
+    if let errorCode = response.errorCode { throw HomeBridgeWireFailure(code: errorCode) }
+    try requireKeys(response.result, allowed: ["schema", "conversation_handle", "title", "pending"])
+    guard (intValue(response.result["schema"]) ?? 0) == 1,
+          let handle = response.result["conversation_handle"] as? String,
+          handle == binding.conversationHandle,
+          response.result["title"] is String else {
+        throw HomeWireDecodingError.invalidShape
+    }
+    // `pending` means Hermes stores the title with the session's first
+    // message; the rename is still accepted.
+    let pending = response.result["pending"] as? Bool ?? false
+    return HomeCommandResult(
+        conversationHandle: handle,
+        turnID: nil,
+        correlationID: "title",
+        name: "title",
+        status: pending ? .accepted : .completed,
+        safeCode: nil
     )
 }
 
