@@ -330,7 +330,7 @@ struct ContentView: View {
             isPlaybackDurationFinal: voiceCoordinator.isPlaybackDurationFinal,
             hasTranscript: !store.messages.isEmpty,
             canConfigure: configurationStore != nil,
-            unconfirmedTurnText: store.unconfirmedTurnText,
+            unconfirmedTurnText: store.unresolvedTurnTextForDisplay,
             onResendUnconfirmedTurn: {
                 Task { await voiceCoordinator.resendUnconfirmedTurn() }
             },

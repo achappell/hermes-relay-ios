@@ -53,6 +53,21 @@ final class HermesRelayIOSTests: XCTestCase {
         XCTAssertNil(message.createdAt)
     }
 
+    @MainActor
+    func testRecoveryCardOnlyShowsForAnUnresolvedTurnNotWhileSending() {
+        let store = ConversationStore()
+        store.unconfirmedTurnText = "What time is soccer?"
+
+        store.isSending = true
+        XCTAssertNil(store.unresolvedTurnTextForDisplay, "A normal send is not a failure")
+
+        store.isSending = false
+        XCTAssertEqual(store.unresolvedTurnTextForDisplay, "What time is soccer?")
+
+        store.unconfirmedTurnText = nil
+        XCTAssertNil(store.unresolvedTurnTextForDisplay)
+    }
+
     func testRecentPromptsAreNewestFirstWithoutRepeatsAndBounded() {
         var history = PromptHistory(limit: 50)
         for prompt in ["one", "two", "three", "two", "four"] {

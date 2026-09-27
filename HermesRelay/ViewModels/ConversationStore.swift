@@ -932,6 +932,23 @@ final class ConversationStore {
         return connectionState.isConnected
     }
 
+    /// The unconfirmed prompt to offer for recovery (Resend), only when a
+    /// turn is genuinely unresolved. `unconfirmedTurnText` is also the
+    /// crash-safety marker written as soon as a prompt is sent, so showing
+    /// it directly made every normal send look like a failure.
+    var unresolvedTurnTextForDisplay: String? {
+        guard let text = unconfirmedTurnText else { return nil }
+        if isHomeMode {
+            switch homeTurnDeliveryState {
+            case .uncertain, .failedKnown, .idle:
+                return isSending ? nil : text
+            case .awaitingAcceptance, .accepted, .completed, .interrupted:
+                return nil
+            }
+        }
+        return isSending ? nil : text
+    }
+
     // MARK: Home client sessions
 
     /// A paired Home profile whose claims name Hermes sessions.
