@@ -10,6 +10,7 @@ struct ContentView: View {
     @State private var voiceCoordinator: VoiceSessionCoordinator
     @State private var showingConfiguration = false
     @State private var showingHistory = false
+    @State private var showingHomeSessions = false
     @State private var promptHistory = PromptHistory()
     @State private var hudModel: AmbientHUDModel
     @State private var pairingLinkRequest: HomePairingLinkRequest?
@@ -278,6 +279,9 @@ struct ContentView: View {
         .sheet(isPresented: $showingHistory) {
             TranscriptHistoryView(messages: store.messages)
         }
+        .sheet(isPresented: $showingHomeSessions) {
+            HomeSessionsView(store: store)
+        }
         .onChange(of: pairingInbox?.pendingLink, initial: true) { _, link in
             guard let link else { return }
             pairingInbox?.pendingLink = nil
@@ -346,7 +350,9 @@ struct ContentView: View {
             homeAudioState: store.isHomeMode ? store.homeAudioState : nil,
             homeTimingCapability: store.isHomeMode ? .absent : nil,
             pendingHomePromptKind: store.pendingHomePrompt?.prompt.kind,
-            homeCommandEventCount: store.homeCommandEvents.count
+            homeCommandEventCount: store.homeCommandEvents.count,
+            homeSessionTitle: store.homeSession?.title,
+            onShowSessions: store.supportsHomeSessions ? { showingHomeSessions = true } : nil
         )
     }
 

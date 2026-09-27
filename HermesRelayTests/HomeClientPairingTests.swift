@@ -1103,6 +1103,350 @@ final class HomeClientPairingTests: XCTestCase {
         XCTAssertEqual(decoded, pairing)
     }
 
+    // MARK: - Client sessions (IOS-HOME-02 slice 2)
+
+    func testClaimBodiesNameTheChosenSessionAndDecodeWhatHomeBound() async throws {
+        let transport = ScriptedHomeTransport()
+        let service = URLSessionHomeClientService(transport: transport)
+        let home = try HomeClientBaseURL(Self.home)
+        let credential = Data(Self.credential.utf8)
+
+        await transport.enqueue(200, json([
+            "schema": 1, "claim_id": "client-1", "decision": "granted", "configuration_revision": 13,
+            "conversation_handle": "opaque-handle-1", "session": ["mode": "resumed", "session_ref": "sref-latest"],
+        ]))
+        let latest = try await service.claimConversation(
+            home: home, credential: credential,
+            HomeClientClaimRequest(
+                claimID: "client-1", deviceID: "id-7", configurationRevision: 13,
+                grantID: "grant-a", session: .mostRecent
+            )
+        )
+        await transport.enqueue(200, json([
+            "schema": 1, "claim_id": "client-2", "decision": "granted", "configuration_revision": 13,
+            "conversation_handle": "opaque-handle-2", "session": ["mode": "resumed", "session_ref": "sref-older"],
+        ]))
+        let resumed = try await service.claimConversation(
+            home: home, credential: credential,
+            HomeClientClaimRequest(
+                claimID: "client-2", deviceID: "id-7", configurationRevision: 13,
+                grantID: "grant-a", session: .resume(sessionRef: "sref-older")
+            )
+        )
+
+        XCTAssertEqual(latest.session, HomeClaimedSession(resumed: true, sessionRef: "sref-latest"))
+        XCTAssertEqual(resumed.session, HomeClaimedSession(resumed: true, sessionRef: "sref-older"))
+        XCTAssertFalse(String(describing: resumed).contains("sref-older"))
+        XCTAssertFalse(String(describing: resumed.session).contains("sref-older"))
+        let requests = await transport.requests
+        XCTAssertEqual(requests[0].body?["session"] as? NSDictionary, ["mode": "most_recent"] as NSDictionary)
+        XCTAssertEqual(
+            requests[1].body?["session"] as? NSDictionary,
+            ["mode": "resume", "session_ref": "sref-older"] as NSDictionary
+        )
+    }
+
+    func testAResumeGrantBoundToAnotherSessionIsRejected() async throws {
+        let transport = ScriptedHomeTransport()
+        let service = URLSessionHomeClientService(transport: transport)
+        await transport.enqueue(200, json([
+            "schema": 1, "claim_id": "client-1", "decision": "granted", "configuration_revision": 13,
+            "conversation_handle": "opaque-handle-1", "session": ["mode": "resumed", "session_ref": "sref-other"],
+        ]))
+
+        do {
+            _ = try await service.claimConversation(
+                home: try HomeClientBaseURL(Self.home), credential: Data(Self.credential.utf8),
+                HomeClientClaimRequest(
+                    claimID: "client-1", deviceID: "id-7", configurationRevision: 13,
+                    grantID: "grant-a", session: .resume(sessionRef: "sref-asked")
+                )
+            )
+            XCTFail("A resume must bind exactly the session that was asked for")
+        } catch {
+            XCTAssertEqual(error as? HomeClientServiceError, .invalidResponse)
+        }
+    }
+
+    func testSessionListAndClaimLookupMatchTheHomeContract() async throws {
+        let transport = ScriptedHomeTransport()
+        let service = URLSessionHomeClientService(transport: transport)
+        let home = try HomeClientBaseURL(Self.home)
+        let credential = Data(Self.credential.utf8)
+        await transport.enqueue(200, json([
+            "schema": 1,
+            "sessions": [
+                ["session_ref": "sref-1", "title": "Grocery plan", "started_at": 1_727_120_000.0,
+                 "message_count": 14, "active": false],
+                ["session_ref": "sref-2", "title": "", "started_at": 0, "message_count": 0, "active": true],
+            ],
+        ]))
+        await transport.enqueue(200, json(["schema": 1, "session_ref": NSNull()]))
+
+        let sessions = try await service.listSessions(
+            home: home, credential: credential,
+            HomeClientSessionListRequest(grantID: "grant-a", limit: 50)
+        )
+        let lookup = try await service.claimSession(
+            home: home, credential: credential,
+            HomeClientClaimSessionRequest(conversationHandle: "opaque-handle-1")
+        )
+
+        XCTAssertEqual(sessions, [
+            HomeClientSessionSummary(
+                sessionRef: "sref-1", title: "Grocery plan",
+                startedAt: Date(timeIntervalSince1970: 1_727_120_000), messageCount: 14, active: false
+            ),
+            HomeClientSessionSummary(sessionRef: "sref-2", title: "", startedAt: nil, messageCount: 0, active: true),
+        ])
+        XCTAssertNil(lookup.sessionRef)
+        XCTAssertFalse(String(describing: sessions[0]).contains("Grocery"))
+        let requests = await transport.requests
+        XCTAssertEqual(requests.map(\.path), ["/api/v1/client-sessions/list", "/api/v1/client-claims/session"])
+        XCTAssertEqual(requests[0].body, ["schema": 1, "grant_id": "grant-a", "limit": 50] as NSDictionary)
+        XCTAssertEqual(requests[1].body, ["schema": 1, "conversation_handle": "opaque-handle-1"] as NSDictionary)
+        XCTAssertEqual(requests[0].authorization, "Device \(Self.credential)")
+    }
+
+    func testSessionRowsRejectUnknownFieldsAndImpossibleValues() throws {
+        let decoder = JSONDecoder()
+        let valid: [String: Any] = [
+            "session_ref": "sref-1", "title": "", "started_at": 1.0, "message_count": 0, "active": false,
+        ]
+        XCTAssertNoThrow(try decoder.decode(
+            HomeClientSessionSummary.self, from: JSONSerialization.data(withJSONObject: valid)
+        ))
+        for broken in [
+            valid.merging(["extra": 1]) { $1 },
+            valid.merging(["message_count": -1]) { $1 },
+            valid.merging(["session_ref": ""]) { $1 },
+            valid.merging(["started_at": -5.0]) { $1 },
+        ] {
+            XCTAssertThrowsError(try decoder.decode(
+                HomeClientSessionSummary.self, from: JSONSerialization.data(withJSONObject: broken)
+            ))
+        }
+    }
+
+    @MainActor
+    func testConnectContinuesTheMostRecentSessionWithoutADivider() async throws {
+        let fixture = try await Self.makeFixture()
+        _ = try await Self.pair(fixture)
+        await fixture.service.resetCalls()
+        await fixture.service.setSessions(Self.sessions())
+        let store = try await Self.storeWithHistory(fixture)
+
+        await store.connect()
+
+        XCTAssertTrue(store.connectionState.isConnected)
+        XCTAssertEqual(store.homeSession, HomeCurrentSession(sessionRef: "sref-latest", title: nil))
+        XCTAssertTrue(store.supportsHomeSessions)
+        let choices = await fixture.service.sessionChoices
+        XCTAssertEqual(choices, [.mostRecent])
+        XCTAssertEqual(store.messages.map(\.text), ["Earlier", "Reply"], "Continuing adds no divider")
+    }
+
+    @MainActor
+    func testNewSessionClosesTheCurrentClaimAndAddsADivider() async throws {
+        let fixture = try await Self.makeFixture()
+        _ = try await Self.pair(fixture)
+        await fixture.service.resetCalls()
+        await fixture.service.setSessions(Self.sessions())
+        let store = try await Self.storeWithHistory(fixture)
+        await store.connect()
+
+        let switched = await store.startNewHomeSession()
+
+        XCTAssertTrue(switched)
+        XCTAssertTrue(store.connectionState.isConnected)
+        let closes = await fixture.echo.totalConversationCloses()
+        XCTAssertEqual(closes, 1)
+        let choices = await fixture.service.sessionChoices
+        XCTAssertEqual(choices, [.mostRecent, .new])
+        XCTAssertEqual(store.homeSession, HomeCurrentSession(sessionRef: nil, title: nil))
+        XCTAssertEqual(store.messages.last?.text, ConversationStore.newHomeConversationDividerText)
+    }
+
+    @MainActor
+    func testResumingFromTheListAddsATitledDividerAndNeverResends() async throws {
+        let fixture = try await Self.makeFixture()
+        _ = try await Self.pair(fixture)
+        await fixture.service.resetCalls()
+        await fixture.service.setSessions(Self.sessions())
+        let store = try await Self.storeWithHistory(fixture)
+        await store.connect()
+        let listed = try await store.loadHomeSessions()
+
+        let switched = await store.resumeHomeSession(try XCTUnwrap(listed.first { $0.sessionRef == "sref-older" }))
+
+        XCTAssertTrue(switched)
+        let choices = await fixture.service.sessionChoices
+        XCTAssertEqual(choices, [.mostRecent, .resume(sessionRef: "sref-older")])
+        XCTAssertEqual(store.homeSession, HomeCurrentSession(sessionRef: "sref-older", title: "Weekend trip"))
+        XCTAssertEqual(store.messages.last?.text, "Resumed: Weekend trip")
+        let submitted = await fixture.echo.allSubmittedTexts()
+        XCTAssertEqual(submitted, [])
+        try Self.assertNoSessionReferenceReachedDisk(fixture)
+    }
+
+    @MainActor
+    func testASessionInUseElsewhereIsNotSwitchedTo() async throws {
+        let fixture = try await Self.makeFixture()
+        _ = try await Self.pair(fixture)
+        await fixture.service.resetCalls()
+        await fixture.service.setSessions(Self.sessions())
+        let store = try await Self.storeWithHistory(fixture)
+        await store.connect()
+        let listed = try await store.loadHomeSessions()
+        let busy = try XCTUnwrap(listed.first { $0.active })
+
+        let switched = await store.resumeHomeSession(busy)
+
+        XCTAssertFalse(switched)
+        XCTAssertTrue(store.connectionState.isConnected, "The current conversation is untouched")
+        let closes = await fixture.echo.totalConversationCloses()
+        XCTAssertEqual(closes, 0)
+        XCTAssertEqual(store.transientError, HomeClientConnectError.denied(.sessionBusy).errorDescription)
+    }
+
+    @MainActor
+    func testARefusedResumeContinuesTheLatestSessionOnceAndSaysSo() async throws {
+        let fixture = try await Self.makeFixture()
+        _ = try await Self.pair(fixture)
+        await fixture.service.resetCalls()
+        await fixture.service.setSessions(Self.sessions())
+        // The list said it was free, but another device took it meanwhile.
+        await fixture.service.setSessionDenials(["sref-older": .sessionBusy])
+        let store = try await Self.storeWithHistory(fixture)
+        await store.connect()
+        let listed = try await store.loadHomeSessions()
+        let older = try XCTUnwrap(listed.first { $0.sessionRef == "sref-older" })
+
+        let switched = await store.resumeHomeSession(older)
+
+        XCTAssertFalse(switched)
+        XCTAssertTrue(store.connectionState.isConnected)
+        let choices = await fixture.service.sessionChoices
+        XCTAssertEqual(choices, [.mostRecent, .resume(sessionRef: "sref-older"), .mostRecent])
+        XCTAssertEqual(store.homeSession?.sessionRef, "sref-latest")
+        XCTAssertTrue(store.transientError?.contains("Continued the latest conversation instead.") == true)
+    }
+
+    @MainActor
+    func testSwitchingWaitsForTheCurrentTurn() async throws {
+        let fixture = try await Self.makeFixture()
+        _ = try await Self.pair(fixture)
+        await fixture.service.resetCalls()
+        await fixture.service.setSessions(Self.sessions())
+        let store = try await Self.storeWithHistory(fixture)
+        await store.connect()
+        store.isSending = true
+
+        let switched = await store.startNewHomeSession()
+
+        XCTAssertFalse(switched)
+        XCTAssertNotNil(store.homeSessionSwitchBlockedReason)
+        let closes = await fixture.echo.totalConversationCloses()
+        XCTAssertEqual(closes, 0)
+        let choices = await fixture.service.sessionChoices
+        XCTAssertEqual(choices, [.mostRecent])
+    }
+
+    @MainActor
+    func testRenameUsesHermesTitleCommandOnlyWhenAdvertised() async throws {
+        let fixture = try await Self.makeFixture()
+        _ = try await Self.pair(fixture)
+        await fixture.service.resetCalls()
+        await fixture.service.setSessions(Self.sessions())
+        let store = try await Self.storeWithHistory(fixture)
+        await store.connect()
+        XCTAssertFalse(store.canRenameHomeSession, "Hermes did not advertise title")
+        let unadvertised = await store.renameHomeSession(to: "Groceries")
+        XCTAssertFalse(unadvertised)
+
+        fixture.echo.advertisedCommands = ["title"]
+        _ = await store.startNewHomeSession()
+        let listed = try await store.loadHomeSessions()
+        _ = await store.resumeHomeSession(try XCTUnwrap(listed.first { $0.sessionRef == "sref-latest" }))
+        XCTAssertTrue(store.canRenameHomeSession)
+
+        let renamed = await store.renameHomeSession(to: "  Groceries ")
+
+        XCTAssertTrue(renamed)
+        XCTAssertEqual(store.homeSession?.title, "Groceries")
+        let client = try XCTUnwrap(fixture.echo.clients.last)
+        let commands = await client.dispatchedCommands
+        XCTAssertEqual(commands.map(\.name), ["title"])
+        XCTAssertEqual(commands.map(\.argument), ["Groceries"])
+    }
+
+    @MainActor
+    func testLoadingSessionsLearnsANewSessionsReferenceAfterItsFirstTurn() async throws {
+        let fixture = try await Self.makeFixture()
+        _ = try await Self.pair(fixture)
+        let store = fixture.makeStore()
+        await store.loadConfiguredClient()
+        await store.connect()
+        XCTAssertEqual(store.homeSession, HomeCurrentSession(sessionRef: nil, title: nil))
+        let client = try XCTUnwrap(fixture.echo.clients.last)
+        let lastOpened = await client.lastOpenedHandle()
+        let handle = try XCTUnwrap(lastOpened)
+        await fixture.service.assignSessionRef("sref-fresh", toHandle: handle)
+        await fixture.service.setSessions([
+            HomeClientSessionSummary(sessionRef: "sref-fresh", title: "Fresh start", startedAt: nil, messageCount: 2, active: false),
+        ])
+
+        let sessions = try await store.loadHomeSessions()
+
+        XCTAssertEqual(sessions.map(\.sessionRef), ["sref-fresh"])
+        XCTAssertEqual(store.homeSession, HomeCurrentSession(sessionRef: "sref-fresh", title: "Fresh start"))
+    }
+
+    private static func sessions() -> [HomeClientSessionSummary] {
+        [
+            HomeClientSessionSummary(
+                sessionRef: "sref-latest", title: "", startedAt: Date(timeIntervalSince1970: 1_800_000_000),
+                messageCount: 6, active: false
+            ),
+            HomeClientSessionSummary(
+                sessionRef: "sref-older", title: "Weekend trip", startedAt: Date(timeIntervalSince1970: 1_799_000_000),
+                messageCount: 12, active: false
+            ),
+            HomeClientSessionSummary(
+                sessionRef: "sref-puck", title: "Kitchen timer", startedAt: Date(timeIntervalSince1970: 1_798_000_000),
+                messageCount: 3, active: true
+            ),
+        ]
+    }
+
+    @MainActor
+    private static func storeWithHistory(_ fixture: PairingFixture) async throws -> ConversationStore {
+        let profileID = try await Self.profileID(fixture, grant: "grant-a")
+        let persistence = JSONConversationPersistence(
+            fileURL: ConversationPersistenceFile.url(in: fixture.directory, for: profileID)
+        )
+        try await persistence.save(PersistedConversation(
+            messages: [TranscriptMessage(role: .user, text: "Earlier"), TranscriptMessage(role: .assistant, text: "Reply")],
+            draft: ""
+        ))
+        let store = fixture.makeStore()
+        await store.loadConfiguredClient()
+        await store.loadPersistedConversation()
+        return store
+    }
+
+    private static func assertNoSessionReferenceReachedDisk(
+        _ fixture: PairingFixture,
+        file: StaticString = #filePath,
+        line: UInt = #line
+    ) throws {
+        let files = FileManager.default.enumerator(at: fixture.directory, includingPropertiesForKeys: nil)
+        while let url = files?.nextObject() as? URL {
+            guard let contents = try? String(contentsOf: url, encoding: .utf8) else { continue }
+            XCTAssertFalse(contents.contains("sref-"), "A session reference reached \(url.lastPathComponent)", file: file, line: line)
+        }
+    }
+
     // MARK: - Fixture
 
     private static func pair(
@@ -1507,6 +1851,8 @@ private final class EchoHomeBridgeClientFactory: HomeBridgeSessionClientFactory,
     private let lock = NSLock()
     private var made: [EchoHomeBridgeClient] = []
     private var ended: Set<String> = []
+    /// Commands the next bridges advertise, as Hermes would (e.g. `title`).
+    var advertisedCommands: Set<String> = []
 
     var clients: [EchoHomeBridgeClient] {
         lock.lock(); defer { lock.unlock() }
@@ -1525,7 +1871,13 @@ private final class EchoHomeBridgeClientFactory: HomeBridgeSessionClientFactory,
     }
 
     func make(profileID: UUID, mode: AppleTransportMode) -> any HomeBridgeSessionClient {
-        let client = EchoHomeBridgeClient(isEnded: { [weak self] in self?.isEnded($0) ?? false })
+        lock.lock()
+        let commands = advertisedCommands
+        lock.unlock()
+        let client = EchoHomeBridgeClient(
+            isEnded: { [weak self] in self?.isEnded($0) ?? false },
+            commands: commands
+        )
         lock.lock()
         made.append(client)
         lock.unlock()
@@ -1558,9 +1910,15 @@ private actor EchoHomeBridgeClient: HomeBridgeSessionClient {
     nonisolated(unsafe) private(set) var openedHandlesSnapshot: [String] = []
 
     private let isEnded: @Sendable (String) -> Bool
+    private let commands: Set<String>
+    private(set) var dispatchedCommands: [HomeCommandRequest] = []
 
-    init(isEnded: @escaping @Sendable (String) -> Bool = { _ in false }) {
+    init(
+        isEnded: @escaping @Sendable (String) -> Bool = { _ in false },
+        commands: Set<String> = []
+    ) {
         self.isEnded = isEnded
+        self.commands = commands
         let pair = AsyncThrowingStream<HomeBridgeEvent, Error>.makeStream()
         stream = pair.stream
         continuation = pair.continuation
@@ -1577,7 +1935,7 @@ private actor EchoHomeBridgeClient: HomeBridgeSessionClient {
         if isEnded(claim.conversationHandle) {
             return .unavailable(.home(code: .staleConversation, phase: .open))
         }
-        let capabilities = HomeBridgeCapabilities(commands: [], heartbeat: true, interrupt: true)
+        let capabilities = HomeBridgeCapabilities(commands: commands, heartbeat: true, interrupt: true)
         let binding = HomeConversationBinding(
             profileID: claim.profileID,
             conversationHandle: claim.conversationHandle,
@@ -1628,7 +1986,18 @@ private actor EchoHomeBridgeClient: HomeBridgeSessionClient {
     }
 
     func dispatch(_ command: HomeCommandRequest) async -> HomeCommandOutcome {
-        .rejected(.home(code: .capabilityUnavailable, phase: .command))
+        guard commands.contains(command.name) else {
+            return .rejected(.home(code: .capabilityUnavailable, phase: .command))
+        }
+        dispatchedCommands.append(command)
+        return .completed(HomeCommandResult(
+            conversationHandle: command.binding.conversationHandle,
+            turnID: nil,
+            correlationID: "command-\(dispatchedCommands.count)",
+            name: command.name,
+            status: .completed,
+            safeCode: nil
+        ))
     }
 
     func ping(binding: HomeConversationBinding) async -> HomePingOutcome { .alive }

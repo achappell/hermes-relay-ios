@@ -1,6 +1,6 @@
 ---
 id: IOS-HOME-02
-status: backlog
+status: in-progress
 product_epic: 1
 created: 2026-09-23
 ---
@@ -24,4 +24,4 @@ Consume Home pairing links/codes, store per-Home credentials in Keychain, handle
 
 ## Readiness
 
-Approved backlog scope. Owning BMAD specification/readiness review must settle API details and a bounded execution plan before implementation. No implementation or runtime acceptance is claimed.
+Delivered in slices. Slice 1, pair and connect through a client claim ([spec](spec-ios-home-02-pair-and-connect.md)), is merged with partial iOS live evidence; see [validation-ios-home-02.md](validation-ios-home-02.md). Still open, and required before this story closes (`deferred-work.md`): session management (list, resume, most-recent, new and rename Home client sessions, with `session_busy`/`session_unavailable` handling) and Profile-owner administration (pending grants, holders, revoke, unpair), plus the remaining iOS live checks and the macOS live gate. Each open slice needs its own specification and readiness review before implementation.

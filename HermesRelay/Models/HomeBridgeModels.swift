@@ -392,17 +392,22 @@ struct HomeConversationClaim: Equatable, Sendable {
     /// True only for a paired client's first `ready`. Home names its route
     /// identity then; the client pins it and later claims require that route.
     let routePinPending: Bool
+    /// The Hermes session a paired client claim is bound to, as Home
+    /// reported it. Nil for operator-provisioned handles. Memory only.
+    let claimedSession: HomeClaimedSession?
 
     init(
         profileID: UUID,
         conversationHandle: String,
         approvedRoute: HomeApprovedRoute,
-        routePinPending: Bool = false
+        routePinPending: Bool = false,
+        claimedSession: HomeClaimedSession? = nil
     ) {
         self.profileID = profileID
         self.conversationHandle = conversationHandle
         self.approvedRoute = approvedRoute
         self.routePinPending = routePinPending
+        self.claimedSession = claimedSession
     }
 
     /// Whether a `ready` naming `route` satisfies this claim. An unpinned
@@ -423,7 +428,8 @@ struct HomeConversationClaim: Equatable, Sendable {
                 identity: route,
                 householdBinding: approvedRoute.householdBinding
             ),
-            routePinPending: false
+            routePinPending: false,
+            claimedSession: claimedSession
         )
     }
 }

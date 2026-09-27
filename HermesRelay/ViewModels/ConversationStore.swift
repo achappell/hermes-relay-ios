@@ -44,12 +44,29 @@ final class ConversationStore {
     /// A paired personal client makes a fresh single-use claim on each
     /// connect. Its handle is kept in memory only.
     private var homeClaimsPerConnect = false
-    private var pendingNewHomeConversationDivider = false
+    /// The local divider to insert once the next paired claim is ready.
+    private var pendingHomeDividerText: String?
+    /// The session the next paired claim names. Connecting continues the
+    /// Profile's latest session; the Sessions sheet can choose otherwise.
+    private var nextHomeSessionChoice: HomeClientSessionChoice = .mostRecent
+    /// The title of a session chosen from the list, for its divider.
+    private var pendingHomeSessionTitle: String?
+    /// The Hermes session of the current paired claim. Memory only: the
+    /// reference is opaque and grant-scoped, and titles are user content.
+    private(set) var homeSession: HomeCurrentSession?
     /// Set when Home can no longer resume the conversation that holds an
     /// uncertain turn; the user must choose to start a new one.
     private(set) var canStartNewHomeConversation = false
 
     static let newHomeConversationDividerText = "New conversation"
+    static let resumedLatestHomeSessionDividerText = "Continued the latest conversation"
+
+    static func resumedHomeSessionDividerText(title: String?) -> String {
+        guard let title = title?.trimmingCharacters(in: .whitespacesAndNewlines), !title.isEmpty else {
+            return "Resumed an earlier conversation"
+        }
+        return "Resumed: \(title)"
+    }
 
     var connectionState: ConnectionState = .disconnected
     var sessionMetadata: SessionMetadata?
@@ -291,7 +308,12 @@ final class ConversationStore {
                     // in memory from this profile may still be within Home's
                     // reconnect grace.
                     homeClaimsPerConnect = true
-                    if homeClaim?.profileID != profile.id { homeClaim = nil }
+                    if homeClaim?.profileID != profile.id {
+                        homeClaim = nil
+                        homeSession = nil
+                        nextHomeSessionChoice = .mostRecent
+                        pendingHomeSessionTitle = nil
+                    }
                     homeRouteState = HomeRouteState(
                         status: .unattempted,
                         identity: homeClaim?.approvedRoute.identity,
@@ -479,9 +501,9 @@ final class ConversationStore {
                 capabilities: capabilities,
                 client: homeClient
             )
-            if pendingNewHomeConversationDivider {
-                pendingNewHomeConversationDivider = false
-                await insertNewHomeConversationDividerIfNeeded()
+            if let dividerText = pendingHomeDividerText {
+                pendingHomeDividerText = nil
+                await insertHomeDividerIfNeeded(dividerText)
             }
         case .unavailable(.reconnectRequired):
             guard let binding = reconnectBinding(for: claim) else {
@@ -726,7 +748,7 @@ final class ConversationStore {
             // connect makes a fresh one, and an uncertain turn is never
             // replayed into it.
             homeClaim = nil
-            pendingNewHomeConversationDivider = false
+            pendingHomeDividerText = nil
             if homeRecovery != nil {
                 presentHomeContinuityLost()
             }
@@ -752,8 +774,16 @@ final class ConversationStore {
         homeBridgeState = .connecting
         connectionState = .connecting
         transientError = nil
+        let sessionChoice = nextHomeSessionChoice
+        let chosenTitle = pendingHomeSessionTitle
+        // One choice per claim: later connects continue the latest session.
+        nextHomeSessionChoice = .mostRecent
+        pendingHomeSessionTitle = nil
         do {
-            guard let claim = try await homeClaimProvider.conversationClaim(for: profileID) else {
+            guard let claim = try await homeClaimProvider.conversationClaim(
+                for: profileID,
+                session: sessionChoice
+            ) else {
                 applyPairedClaimFailure(message: "Home pairing is unavailable for this Hermes Profile.",
                                         failure: .home(code: .authorizationUnavailable, phase: .authorization))
                 return false
@@ -763,7 +793,7 @@ final class ConversationStore {
                 return false
             }
             homeClaim = claim
-            pendingNewHomeConversationDivider = true
+            recordClaimedHomeSession(claim, choice: sessionChoice, chosenTitle: chosenTitle)
             canStartNewHomeConversation = false
             if homeClient == nil {
                 homeClient = (homeClientFactory ?? UnavailableHomeBridgeSessionClientFactory())
@@ -788,6 +818,42 @@ final class ConversationStore {
                     ?? .home(code: .authorizationUnavailable, phase: .authorization)
             )
             return false
+        }
+    }
+
+    /// Remembers the claim's session and chooses the divider shown once it is
+    /// ready: none when the same session continues, "New conversation" for a
+    /// new one, and "Resumed: <title>" for a session chosen from the list.
+    private func recordClaimedHomeSession(
+        _ claim: HomeConversationClaim,
+        choice: HomeClientSessionChoice,
+        chosenTitle: String?
+    ) {
+        guard let claimed = claim.claimedSession else {
+            // A provider without client sessions: every claim is new.
+            homeSession = nil
+            pendingHomeDividerText = Self.newHomeConversationDividerText
+            return
+        }
+        let previous = homeSession
+        guard claimed.resumed else {
+            homeSession = HomeCurrentSession(sessionRef: claimed.sessionRef, title: nil)
+            pendingHomeDividerText = Self.newHomeConversationDividerText
+            return
+        }
+        let sameSession = previous?.sessionRef != nil && previous?.sessionRef == claimed.sessionRef
+        let title = chosenTitle ?? (sameSession ? previous?.title : nil)
+        homeSession = HomeCurrentSession(sessionRef: claimed.sessionRef, title: title)
+        if case .resume = choice {
+            pendingHomeDividerText = Self.resumedHomeSessionDividerText(title: chosenTitle)
+        } else if sameSession || previous == nil || previous?.sessionRef == nil {
+            // Continuing where this client left off, the first connect after
+            // launch, or a new session whose reference was never looked up
+            // (Home names it at the first turn, so it is almost always the
+            // latest): the local transcript already leads here.
+            pendingHomeDividerText = nil
+        } else {
+            pendingHomeDividerText = Self.resumedLatestHomeSessionDividerText
         }
     }
 
@@ -851,6 +917,125 @@ final class ConversationStore {
         return connectionState.isConnected
     }
 
+    // MARK: Home client sessions
+
+    /// A paired Home profile whose claims name Hermes sessions.
+    var supportsHomeSessions: Bool {
+        isHomeMode && homeClaimsPerConnect && homeSession != nil
+    }
+
+    /// Why the session cannot be switched right now, or nil.
+    var homeSessionSwitchBlockedReason: String? {
+        if isSending || activeTurnText != nil {
+            return "Finish the current turn before switching conversations."
+        }
+        if homeRecovery != nil || unconfirmedTurnText != nil {
+            return "Resolve the unconfirmed turn before switching conversations."
+        }
+        if !connectionState.isConnected {
+            return "Connect to Home before switching conversations."
+        }
+        return nil
+    }
+
+    /// Renaming uses Hermes's own `title` command, only when advertised and
+    /// once the session has a reference (after its first accepted turn).
+    var canRenameHomeSession: Bool {
+        guard supportsHomeSessions,
+              homeSession?.sessionRef != nil,
+              let binding = homeConversationBinding else { return false }
+        return binding.capabilities.commands.contains("title")
+    }
+
+    /// The Profile's sessions, newest first. Also learns the current
+    /// session's reference and title when they are not yet known.
+    func loadHomeSessions() async throws -> [HomeClientSessionSummary] {
+        guard supportsHomeSessions, let profileID = activeProfileID, let homeClaimProvider else {
+            return []
+        }
+        if homeSession?.sessionRef == nil, let handle = homeClaim?.conversationHandle,
+           let sessionRef = try? await homeClaimProvider.clientSessionRef(
+               for: profileID,
+               conversationHandle: handle
+           ),
+           activeProfileID == profileID, homeClaim?.conversationHandle == handle {
+            homeSession?.sessionRef = sessionRef
+        }
+        let sessions = try await homeClaimProvider.clientSessions(for: profileID) ?? []
+        guard activeProfileID == profileID else { return [] }
+        if let sessionRef = homeSession?.sessionRef,
+           let current = sessions.first(where: { $0.sessionRef == sessionRef }) {
+            homeSession?.title = current.title.isEmpty ? nil : current.title
+        }
+        return sessions
+    }
+
+    /// Closes the current claim and continues in a new Hermes session.
+    @discardableResult
+    func startNewHomeSession() async -> Bool {
+        await switchHomeSession(to: .new, title: nil)
+    }
+
+    /// Closes the current claim and continues in `session`. A session held
+    /// by another claim is refused here without closing anything.
+    @discardableResult
+    func resumeHomeSession(_ session: HomeClientSessionSummary) async -> Bool {
+        guard session.sessionRef != homeSession?.sessionRef else { return true }
+        guard !session.active else {
+            transientError = HomeClientConnectError.denied(.sessionBusy).errorDescription
+            return false
+        }
+        return await switchHomeSession(
+            to: .resume(sessionRef: session.sessionRef),
+            title: session.title
+        )
+    }
+
+    /// Renames the current session through Hermes's `title` command.
+    @discardableResult
+    func renameHomeSession(to title: String) async -> Bool {
+        let trimmed = title.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty, canRenameHomeSession else { return false }
+        switch await dispatchHomeCommand(name: "title", argument: trimmed) {
+        case .completed:
+            homeSession?.title = trimmed
+            return true
+        case .rejected, .uncertain:
+            transientError = "Hermes did not rename this conversation. Try again."
+            return false
+        }
+    }
+
+    /// One claim, one session: switching closes the current claim and makes
+    /// a new one naming the session, as a CLI reconnects. Nothing is resent.
+    private func switchHomeSession(
+        to choice: HomeClientSessionChoice,
+        title: String?
+    ) async -> Bool {
+        guard supportsHomeSessions else { return false }
+        if let reason = homeSessionSwitchBlockedReason {
+            transientError = reason
+            return false
+        }
+        await disconnect()
+        nextHomeSessionChoice = choice
+        pendingHomeSessionTitle = title
+        await connect()
+        if connectionState.isConnected { return true }
+        // The chosen session was refused after the old claim closed.
+        // Continue the latest session once rather than leave the user
+        // disconnected, and say so.
+        guard case .resume = choice else { return false }
+        let refusal = transientError
+        await connect()
+        if connectionState.isConnected {
+            transientError = [refusal, "Continued the latest conversation instead."]
+                .compactMap { $0 }
+                .joined(separator: " ")
+        }
+        return false
+    }
+
     /// Explicit Disconnect. A paired claim is closed on Home with
     /// `conversation.close`; the next Connect starts a new conversation.
     func disconnect() async {
@@ -885,18 +1070,27 @@ final class ConversationStore {
             _ = await homeClient.close(binding: binding)
         }
         homeClaim = nil
-        pendingNewHomeConversationDivider = false
+        pendingHomeDividerText = nil
     }
 
-    private func insertNewHomeConversationDividerIfNeeded() async {
+    /// Marks where the conversation continues in a different Hermes session.
+    /// Consecutive switches without messages keep only the latest divider.
+    private func insertHomeDividerIfNeeded(_ text: String) async {
         guard !messages.isEmpty else { return }
-        if let last = messages.last,
-           last.role == .system,
-           last.text == Self.newHomeConversationDividerText {
-            return
+        if let last = messages.last, last.role == .system, Self.isHomeDivider(last.text) {
+            guard last.text != text else { return }
+            messages.removeLast()
         }
-        messages.append(TranscriptMessage(role: .system, text: Self.newHomeConversationDividerText))
+        guard !messages.isEmpty else { return }
+        messages.append(TranscriptMessage(role: .system, text: text))
         await persistConversation()
+    }
+
+    private static func isHomeDivider(_ text: String) -> Bool {
+        text == newHomeConversationDividerText
+            || text == resumedLatestHomeSessionDividerText
+            || text == resumedHomeSessionDividerText(title: nil)
+            || text.hasPrefix("Resumed: ")
     }
 
     /// A paired claim's handle never reaches disk; recovery records carry a
@@ -1866,6 +2060,9 @@ final class ConversationStore {
         await closeHomeClient()
         homeClaim = nil
         homeClaimsPerConnect = false
+        homeSession = nil
+        nextHomeSessionChoice = .mostRecent
+        pendingHomeSessionTitle = nil
         canStartNewHomeConversation = false
 
         connectionState = .disconnected

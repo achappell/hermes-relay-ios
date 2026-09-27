@@ -34,6 +34,20 @@ protocol HomeClientService: Sendable {
         credential: Data,
         _ request: HomeClientClaimRequest
     ) async throws -> HomeClientClaimGrant
+
+    /// The grant's Profile sessions, newest first (`POST /api/v1/client-sessions/list`).
+    func listSessions(
+        home: HomeClientBaseURL,
+        credential: Data,
+        _ request: HomeClientSessionListRequest
+    ) async throws -> [HomeClientSessionSummary]
+
+    /// The session this device's own claim uses (`POST /api/v1/client-claims/session`).
+    func claimSession(
+        home: HomeClientBaseURL,
+        credential: Data,
+        _ request: HomeClientClaimSessionRequest
+    ) async throws -> HomeClientClaimSessionLookup
 }
 
 struct URLSessionHomeClientService: HomeClientService, CustomStringConvertible {
@@ -116,7 +130,40 @@ struct URLSessionHomeClientService: HomeClientService, CustomStringConvertible {
               grant.configurationRevision == claim.configurationRevision else {
             throw HomeClientServiceError.invalidResponse
         }
+        if case .resume(let sessionRef) = claim.session,
+           !grant.session.resumed || grant.session.sessionRef != sessionRef {
+            // Home must bind exactly the session that was asked for.
+            throw HomeClientServiceError.invalidResponse
+        }
         return grant
+    }
+
+    func listSessions(
+        home: HomeClientBaseURL,
+        credential: Data,
+        _ list: HomeClientSessionListRequest
+    ) async throws -> [HomeClientSessionSummary] {
+        let request = try makeRequest(
+            home.apiURL("/api/v1/client-sessions/list"),
+            method: "POST",
+            body: list,
+            credential: credential
+        )
+        return try await send(request, as: HomeClientSessionList.self).sessions
+    }
+
+    func claimSession(
+        home: HomeClientBaseURL,
+        credential: Data,
+        _ lookup: HomeClientClaimSessionRequest
+    ) async throws -> HomeClientClaimSessionLookup {
+        let request = try makeRequest(
+            home.apiURL("/api/v1/client-claims/session"),
+            method: "POST",
+            body: lookup,
+            credential: credential
+        )
+        return try await send(request, as: HomeClientClaimSessionLookup.self)
     }
 
     private func makeRequest<Body: Encodable>(
@@ -188,7 +235,20 @@ actor FakeHomeClientService: HomeClientService {
         case renew(generation: Int)
         case configuration
         case claim(grantID: String, revision: Int)
+        case listSessions(grantID: String)
+        case claimSession
     }
+
+    /// The Profile's sessions, newest first, as the list route returns them.
+    var sessions: [HomeClientSessionSummary] = []
+    var listError: HomeClientServiceError?
+    /// Session choices of every claim, in order.
+    private(set) var sessionChoices: [HomeClientSessionChoice] = []
+    /// Denials for a resume of a given session reference.
+    var sessionDenials: [String: HomeClientDenial] = [:]
+    /// The session reference each claimed handle is bound to.
+    private var sessionRefsByHandle: [String: String] = [:]
+    private var newSessionCounter = 0
 
     private(set) var calls: [Call] = []
     private(set) var submissions: [HomeEnrollmentSubmission] = []
@@ -214,6 +274,7 @@ actor FakeHomeClientService: HomeClientService {
 
     func resetCalls() {
         calls.removeAll()
+        sessionChoices.removeAll()
     }
 
     func setConsumeResults(_ results: [Result<HomeCredentialMaterial, HomeClientServiceError>]) {
@@ -234,6 +295,23 @@ actor FakeHomeClientService: HomeClientService {
 
     func setDeniedGrants(_ denials: [String: HomeClientDenial]) {
         deniedGrants = denials
+    }
+
+    func setSessions(_ sessions: [HomeClientSessionSummary]) {
+        self.sessions = sessions
+    }
+
+    func setListError(_ error: HomeClientServiceError?) {
+        listError = error
+    }
+
+    func setSessionDenials(_ denials: [String: HomeClientDenial]) {
+        sessionDenials = denials
+    }
+
+    /// Simulates a new session's first accepted turn giving it a reference.
+    func assignSessionRef(_ sessionRef: String, toHandle handle: String) {
+        sessionRefsByHandle[handle] = sessionRef
     }
 
     func setSubmitError(_ error: HomeClientServiceError?) {
@@ -302,23 +380,64 @@ actor FakeHomeClientService: HomeClientService {
     ) async throws -> HomeClientClaimGrant {
         calls.append(.claim(grantID: request.grantID, revision: request.configurationRevision))
         credentialsSeen.append(credential)
+        sessionChoices.append(request.session)
         claimCounter += 1
         if let denial = deniedGrants[request.grantID] {
             throw HomeClientServiceError.denied(denial)
         }
+        let session: HomeClaimedSession
+        switch request.session {
+        case .new:
+            session = HomeClaimedSession(resumed: false, sessionRef: nil)
+        case .mostRecent:
+            // Home falls back to a new session when the Profile has none.
+            session = sessions.first.map { HomeClaimedSession(resumed: true, sessionRef: $0.sessionRef) }
+                ?? HomeClaimedSession(resumed: false, sessionRef: nil)
+        case .resume(let sessionRef):
+            if let denial = sessionDenials[sessionRef] {
+                throw HomeClientServiceError.denied(denial)
+            }
+            guard sessions.contains(where: { $0.sessionRef == sessionRef }) else {
+                throw HomeClientServiceError.denied(.sessionUnavailable)
+            }
+            session = HomeClaimedSession(resumed: true, sessionRef: sessionRef)
+        }
+        let handle: String
         if !claimResults.isEmpty {
             let result = claimResults.count > 1 ? claimResults.removeFirst() : claimResults[0]
-            let handle = try result.get()
-            return HomeClientClaimGrant(
-                claimID: request.claimID,
-                configurationRevision: request.configurationRevision,
-                conversationHandle: handle
-            )
+            handle = try result.get()
+        } else {
+            handle = "fake-client-claim-\(claimCounter)"
+        }
+        if let sessionRef = session.sessionRef {
+            sessionRefsByHandle[handle] = sessionRef
         }
         return HomeClientClaimGrant(
             claimID: request.claimID,
             configurationRevision: request.configurationRevision,
-            conversationHandle: "fake-client-claim-\(claimCounter)"
+            conversationHandle: handle,
+            session: session
         )
+    }
+
+    func listSessions(
+        home: HomeClientBaseURL,
+        credential: Data,
+        _ request: HomeClientSessionListRequest
+    ) async throws -> [HomeClientSessionSummary] {
+        calls.append(.listSessions(grantID: request.grantID))
+        credentialsSeen.append(credential)
+        if let listError { throw listError }
+        return Array(sessions.prefix(request.limit))
+    }
+
+    func claimSession(
+        home: HomeClientBaseURL,
+        credential: Data,
+        _ request: HomeClientClaimSessionRequest
+    ) async throws -> HomeClientClaimSessionLookup {
+        calls.append(.claimSession)
+        credentialsSeen.append(credential)
+        return HomeClientClaimSessionLookup(sessionRef: sessionRefsByHandle[request.conversationHandle])
     }
 }

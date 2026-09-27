@@ -265,6 +265,10 @@ enum HomeClientConnectError: Error, LocalizedError, Equatable, Sendable {
                 return "Home configuration needs an administrator update before this Profile can connect."
             case .serviceUnavailable:
                 return "Home cannot accept conversations right now. Connect again later."
+            case .sessionBusy:
+                return "That conversation is open on another device. Try again once it finishes there."
+            case .sessionUnavailable:
+                return "That conversation is no longer available on Home."
             default:
                 return "Home did not grant a conversation (\(denial.rawValue))."
             }
@@ -298,7 +302,7 @@ private final class HomeClientResultBox<Value>: @unchecked Sendable {
 }
 
 /// Renews when due, reads the configuration revision, and makes one fresh
-/// `session: new` client claim per connect. Claims are single-use and expire
+/// client claim per connect, naming the session to use. Claims are single-use and expire
 /// shortly after issue, so none is ever cached here.
 actor HomeClientClaimCoordinator {
     private let service: any HomeClientService
@@ -327,7 +331,10 @@ actor HomeClientClaimCoordinator {
 
     /// Nil when the profile is not paired, so callers fall through to the
     /// operator-provisioned claim.
-    func claim(for profileID: UUID) async throws -> HomeConversationClaim? {
+    func claim(
+        for profileID: UUID,
+        session: HomeClientSessionChoice = .mostRecent
+    ) async throws -> HomeConversationClaim? {
         // An unreadable pairing file is "not paired", so operator-provisioned
         // profiles fall through unchanged.
         guard let paired = try? await pairings.pairing(forProfile: profileID),
@@ -348,7 +355,8 @@ actor HomeClientClaimCoordinator {
                     claimID: "client-\(makeID())",
                     deviceID: pairing.deviceID,
                     configurationRevision: configuration.revision,
-                    grantID: grantID
+                    grantID: grantID,
+                    session: session
                 )
                 do {
                     let home = pairing.home
@@ -359,13 +367,52 @@ actor HomeClientClaimCoordinator {
                         profileID: profileID,
                         conversationHandle: grant.conversationHandle,
                         approvedRoute: pairing.approvedRoute,
-                        routePinPending: pairing.pinnedRouteID == nil
+                        routePinPending: pairing.pinnedRouteID == nil,
+                        claimedSession: grant.session
                     )
                 } catch HomeClientServiceError.denied(.staleConfiguration) where !refreshedAfterStale {
                     refreshedAfterStale = true
                     configuration = try await readConfiguration(&pairing)
                 }
             }
+        } catch {
+            throw await connectError(error, pairing: pairing)
+        }
+    }
+
+    /// The profile's Hermes sessions, newest first. Nil when not paired.
+    func sessions(for profileID: UUID, limit: Int = 50) async throws -> [HomeClientSessionSummary]? {
+        guard let pairing = try? await pairings.pairing(forProfile: profileID),
+              let grantID = pairing.grantID(for: profileID) else {
+            return nil
+        }
+        do {
+            guard pairing.credentialUsable else {
+                throw HomeClientConnectError.pairAgain(home: pairing.home.displayName)
+            }
+            let home = pairing.home
+            let request = HomeClientSessionListRequest(grantID: grantID, limit: max(1, min(limit, 50)))
+            return try await withCredential(pairing) { [service] credential in
+                try await service.listSessions(home: home, credential: credential, request)
+            }
+        } catch {
+            throw await connectError(error, pairing: pairing)
+        }
+    }
+
+    /// The session reference a claim of this profile is bound to; nil until
+    /// a new session's first accepted turn, or when not paired.
+    func sessionRef(for profileID: UUID, conversationHandle: String) async throws -> String? {
+        guard let pairing = try? await pairings.pairing(forProfile: profileID) else { return nil }
+        do {
+            guard pairing.credentialUsable else {
+                throw HomeClientConnectError.pairAgain(home: pairing.home.displayName)
+            }
+            let home = pairing.home
+            let request = HomeClientClaimSessionRequest(conversationHandle: conversationHandle)
+            return try await withCredential(pairing) { [service] credential in
+                try await service.claimSession(home: home, credential: credential, request)
+            }.sessionRef
         } catch {
             throw await connectError(error, pairing: pairing)
         }

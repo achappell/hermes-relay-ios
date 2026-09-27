@@ -4,7 +4,7 @@ struct AppHomeConversationClaimProvider: HomeConversationClaimProvider {
     let fakeEnabled: Bool
     let liveStore: (any HomeLiveConfigurationStore)?
     /// Paired personal clients: renew if due, read the configuration
-    /// revision, and make a fresh `session: new` client claim.
+    /// revision, and make a fresh client claim naming the session.
     let pairedClaims: HomeClientClaimCoordinator?
 
     init(
@@ -18,16 +18,37 @@ struct AppHomeConversationClaimProvider: HomeConversationClaimProvider {
     }
 
     func conversationClaim(for profileID: UUID) async throws -> HomeConversationClaim? {
+        try await conversationClaim(for: profileID, session: .mostRecent)
+    }
+
+    func conversationClaim(
+        for profileID: UUID,
+        session: HomeClientSessionChoice
+    ) async throws -> HomeConversationClaim? {
         #if DEBUG
         if fakeEnabled {
             return HomeDemoFixtures.claim(for: profileID)
         }
         #endif
-        if let pairedClaims, let claim = try await pairedClaims.claim(for: profileID) {
+        if let pairedClaims, let claim = try await pairedClaims.claim(for: profileID, session: session) {
             return claim
         }
         // Operator-provisioned handles keep working unchanged.
         return try await liveStore?.conversationClaim(for: profileID)
+    }
+
+    func supportsClientSessions(for profileID: UUID) async -> Bool {
+        await claimsPerConnect(for: profileID)
+    }
+
+    func clientSessions(for profileID: UUID) async throws -> [HomeClientSessionSummary]? {
+        guard let pairedClaims else { return nil }
+        return try await pairedClaims.sessions(for: profileID)
+    }
+
+    func clientSessionRef(for profileID: UUID, conversationHandle: String) async throws -> String? {
+        guard let pairedClaims else { return nil }
+        return try await pairedClaims.sessionRef(for: profileID, conversationHandle: conversationHandle)
     }
 
     func claimsPerConnect(for profileID: UUID) async -> Bool {

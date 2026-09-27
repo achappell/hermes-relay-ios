@@ -493,12 +493,189 @@ struct HomeClientDeviceConfiguration: Decodable, Equatable, Sendable {
     }
 }
 
-/// `POST /api/v1/client-claims`. This slice always asks for a new session.
+/// Which Hermes session a client claim should use (HOME-NW-17). The client
+/// owns the session lifecycle; a claim is bound to exactly one session.
+enum HomeClientSessionChoice: Equatable, Sendable, CustomStringConvertible {
+    case new
+    /// Home asks Standard for the Profile's latest session and falls back to
+    /// `new` when there is none.
+    case mostRecent
+    /// A grant-scoped opaque reference from the session list. Never persisted.
+    case resume(sessionRef: String)
+
+    fileprivate var wireBody: [String: String] {
+        switch self {
+        case .new: return ["mode": "new"]
+        case .mostRecent: return ["mode": "most_recent"]
+        case .resume(let sessionRef): return ["mode": "resume", "session_ref": sessionRef]
+        }
+    }
+
+    var description: String {
+        switch self {
+        case .new: return "new"
+        case .mostRecent: return "most_recent"
+        case .resume: return "resume(<redacted>)"
+        }
+    }
+}
+
+/// The session a granted claim is bound to, as Home reported it. The
+/// reference is opaque, grant-scoped, and held in memory only.
+struct HomeClaimedSession: Equatable, Sendable, CustomStringConvertible,
+    CustomDebugStringConvertible, CustomReflectable {
+    /// False when Home created a session (including `most_recent` with none).
+    let resumed: Bool
+    /// Nil for a new session until its first accepted turn.
+    let sessionRef: String?
+
+    var description: String { "HomeClaimedSession(resumed: \(resumed))" }
+    var debugDescription: String { description }
+    var customMirror: Mirror { Mirror(self, children: ["resumed": resumed]) }
+}
+
+/// The Hermes session the app is in, for the Sessions sheet and header.
+/// Memory only; the reference is nil for a new session until Home names it.
+struct HomeCurrentSession: Equatable, Sendable, CustomStringConvertible,
+    CustomDebugStringConvertible, CustomReflectable {
+    var sessionRef: String?
+    var title: String?
+
+    var description: String { "HomeCurrentSession(known: \(sessionRef != nil))" }
+    var debugDescription: String { description }
+    var customMirror: Mirror { Mirror(self, children: ["known": sessionRef != nil]) }
+}
+
+/// One row of `POST /api/v1/client-sessions/list`: the Profile's sessions,
+/// newest first. Titles are user content and are never logged.
+struct HomeClientSessionSummary: Decodable, Equatable, Sendable, Identifiable,
+    CustomStringConvertible, CustomDebugStringConvertible, CustomReflectable {
+    let sessionRef: String
+    let title: String
+    /// Nil when Hermes reports no start time.
+    let startedAt: Date?
+    let messageCount: Int
+    /// Another active claim (a Room device, another window) holds it.
+    let active: Bool
+
+    var id: String { sessionRef }
+
+    init(sessionRef: String, title: String, startedAt: Date?, messageCount: Int, active: Bool) {
+        self.sessionRef = sessionRef
+        self.title = title
+        self.startedAt = startedAt
+        self.messageCount = messageCount
+        self.active = active
+    }
+
+    private enum CodingKeys: String, CodingKey, CaseIterable {
+        case sessionRef = "session_ref"
+        case title
+        case startedAt = "started_at"
+        case messageCount = "message_count"
+        case active
+    }
+
+    init(from decoder: Decoder) throws {
+        try HomeClientStrictKeys.require(decoder, allowed: CodingKeys.allCases)
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        sessionRef = try values.decode(String.self, forKey: .sessionRef)
+        guard !sessionRef.isEmpty else { throw HomeWireDecodingError.invalidShape }
+        title = try values.decode(String.self, forKey: .title)
+        let started = try values.decode(Double.self, forKey: .startedAt)
+        guard started.isFinite, started >= 0 else { throw HomeWireDecodingError.invalidShape }
+        startedAt = started > 0 ? Date(timeIntervalSince1970: started) : nil
+        messageCount = try values.decode(Int.self, forKey: .messageCount)
+        guard messageCount >= 0 else { throw HomeWireDecodingError.invalidShape }
+        active = try values.decode(Bool.self, forKey: .active)
+    }
+
+    var description: String { "HomeClientSessionSummary(messages: \(messageCount), active: \(active))" }
+    var debugDescription: String { description }
+    var customMirror: Mirror { Mirror(self, children: ["messageCount": messageCount, "active": active]) }
+}
+
+/// `POST /api/v1/client-sessions/list` body.
+struct HomeClientSessionListRequest: Encodable, Equatable, Sendable {
+    let grantID: String
+    let limit: Int
+
+    private enum CodingKeys: String, CodingKey {
+        case schema
+        case grantID = "grant_id"
+        case limit
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var values = encoder.container(keyedBy: CodingKeys.self)
+        try values.encode(1, forKey: .schema)
+        try values.encode(grantID, forKey: .grantID)
+        try values.encode(limit, forKey: .limit)
+    }
+}
+
+struct HomeClientSessionList: Decodable, Equatable, Sendable {
+    let sessions: [HomeClientSessionSummary]
+
+    private enum CodingKeys: String, CodingKey, CaseIterable { case schema, sessions }
+
+    init(from decoder: Decoder) throws {
+        try HomeClientStrictKeys.require(decoder, allowed: CodingKeys.allCases)
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        guard try values.decode(Int.self, forKey: .schema) == 1 else {
+            throw HomeWireDecodingError.unsupportedSchema
+        }
+        sessions = try values.decode([HomeClientSessionSummary].self, forKey: .sessions)
+    }
+}
+
+/// `POST /api/v1/client-claims/session` body: which session does this claim use?
+struct HomeClientClaimSessionRequest: Encodable, Equatable, Sendable, CustomStringConvertible {
+    let conversationHandle: String
+
+    private enum CodingKeys: String, CodingKey {
+        case schema
+        case conversationHandle = "conversation_handle"
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var values = encoder.container(keyedBy: CodingKeys.self)
+        try values.encode(1, forKey: .schema)
+        try values.encode(conversationHandle, forKey: .conversationHandle)
+    }
+
+    var description: String { "HomeClientClaimSessionRequest(handle: <redacted>)" }
+}
+
+/// Response of `POST /api/v1/client-claims/session`. Nil until the claim's
+/// session has its first accepted turn.
+struct HomeClientClaimSessionLookup: Decodable, Equatable, Sendable {
+    let sessionRef: String?
+
+    private enum CodingKeys: String, CodingKey, CaseIterable {
+        case schema
+        case sessionRef = "session_ref"
+    }
+
+    init(sessionRef: String?) { self.sessionRef = sessionRef }
+
+    init(from decoder: Decoder) throws {
+        try HomeClientStrictKeys.require(decoder, allowed: CodingKeys.allCases)
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        guard try values.decode(Int.self, forKey: .schema) == 1 else {
+            throw HomeWireDecodingError.unsupportedSchema
+        }
+        sessionRef = try values.decodeIfPresent(String.self, forKey: .sessionRef)
+    }
+}
+
+/// `POST /api/v1/client-claims`, naming the session the claim should use.
 struct HomeClientClaimRequest: Encodable, Equatable, Sendable {
     let claimID: String
     let deviceID: String
     let configurationRevision: Int
     let grantID: String
+    var session: HomeClientSessionChoice = .new
 
     private enum CodingKeys: String, CodingKey {
         case schema
@@ -516,17 +693,18 @@ struct HomeClientClaimRequest: Encodable, Equatable, Sendable {
         try values.encode(deviceID, forKey: .deviceID)
         try values.encode(configurationRevision, forKey: .configurationRevision)
         try values.encode(grantID, forKey: .grantID)
-        try values.encode(["mode": "new"], forKey: .session)
+        try values.encode(session.wireBody, forKey: .session)
     }
 }
 
-/// A granted claim. Only the opaque handle is kept, in memory; the session
-/// reference Home returns is not retained.
+/// A granted claim. The opaque handle and session reference are kept in
+/// memory only.
 struct HomeClientClaimGrant: Decodable, Equatable, Sendable, CustomStringConvertible,
     CustomDebugStringConvertible, CustomReflectable {
     let claimID: String
     let configurationRevision: Int
     let conversationHandle: String
+    let session: HomeClaimedSession
 
     private enum CodingKeys: String, CodingKey, CaseIterable {
         case schema
@@ -538,6 +716,8 @@ struct HomeClientClaimGrant: Decodable, Equatable, Sendable, CustomStringConvert
     }
 
     private struct Session: Decodable {
+        let value: HomeClaimedSession
+
         private enum CodingKeys: String, CodingKey, CaseIterable {
             case mode
             case sessionRef = "session_ref"
@@ -548,14 +728,24 @@ struct HomeClientClaimGrant: Decodable, Equatable, Sendable, CustomStringConvert
             let values = try decoder.container(keyedBy: CodingKeys.self)
             let mode = try values.decode(String.self, forKey: .mode)
             guard ["new", "resumed"].contains(mode) else { throw HomeWireDecodingError.invalidShape }
-            _ = try values.decodeIfPresent(String.self, forKey: .sessionRef)
+            let sessionRef = try values.decodeIfPresent(String.self, forKey: .sessionRef)
+            if let sessionRef, sessionRef.isEmpty { throw HomeWireDecodingError.invalidShape }
+            // A resumed session always names its reference.
+            if mode == "resumed", sessionRef == nil { throw HomeWireDecodingError.invalidShape }
+            value = HomeClaimedSession(resumed: mode == "resumed", sessionRef: sessionRef)
         }
     }
 
-    init(claimID: String, configurationRevision: Int, conversationHandle: String) {
+    init(
+        claimID: String,
+        configurationRevision: Int,
+        conversationHandle: String,
+        session: HomeClaimedSession = HomeClaimedSession(resumed: false, sessionRef: nil)
+    ) {
         self.claimID = claimID
         self.configurationRevision = configurationRevision
         self.conversationHandle = conversationHandle
+        self.session = session
     }
 
     init(from decoder: Decoder) throws {
@@ -570,7 +760,7 @@ struct HomeClientClaimGrant: Decodable, Equatable, Sendable, CustomStringConvert
         claimID = try values.decode(String.self, forKey: .claimID)
         configurationRevision = try values.decode(Int.self, forKey: .configurationRevision)
         conversationHandle = try values.decode(String.self, forKey: .conversationHandle)
-        _ = try values.decode(Session.self, forKey: .session)
+        session = try values.decode(Session.self, forKey: .session).value
         guard !conversationHandle.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
             throw HomeWireDecodingError.invalidShape
         }
