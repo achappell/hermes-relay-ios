@@ -124,6 +124,50 @@ struct OSLogHomeBridgeDiagnostics: HomeBridgeDiagnostics, Sendable {
     }
 }
 
+/// Debug-only trace of how a Home connect was decided: what `open` and
+/// `reconnect` returned, and which local claim check refused a result.
+/// Codes, phases, and fixed site names only — never handles or content.
+enum HomeConnectionTrace {
+    #if DEBUG
+    private static let logger = Logger(
+        subsystem: "com.achappell.HermesRelayIOS",
+        category: "home-bridge"
+    )
+    #endif
+
+    static func open(_ outcome: HomeOpenOutcome) {
+        switch outcome {
+        case .ready:
+            record("home connect open result=ready")
+        case .unavailable(let failure):
+            record("home connect open result=unavailable \(failure.diagnosticSummary)")
+        case .disconnected(let failure):
+            record("home connect open result=disconnected \(failure.diagnosticSummary)")
+        }
+    }
+
+    static func reconnect(_ outcome: HomeReconnectOutcome) {
+        switch outcome {
+        case .ready(_, let unresolvedTurn, _):
+            record("home connect reconnect result=ready unresolved_turn=\(unresolvedTurn != nil)")
+        case .unavailable(let failure):
+            record("home connect reconnect result=unavailable \(failure.diagnosticSummary)")
+        case .disconnected(let failure):
+            record("home connect reconnect result=disconnected \(failure.diagnosticSummary)")
+        }
+    }
+
+    static func localMismatch(site: String) {
+        record("home connect local mismatch site=\(site)")
+    }
+
+    private static func record(_ message: String) {
+        #if DEBUG
+        logger.info("\(message, privacy: .public)")
+        #endif
+    }
+}
+
 enum HomeBridgeDiagnosticsFactory {
     static func make() -> any HomeBridgeDiagnostics {
         #if DEBUG
@@ -254,11 +298,13 @@ actor URLSessionHomeBridgeSessionClient: HomeBridgeSessionClient {
                 guard ready.reason == .reconnectRequired
                     || ready.reason == .turnActive
                     || ready.unresolvedTurn == true else {
+                    await abandonRefusedConversation()
                     return .unavailable(mapOpenReason(ready.reason ?? .protocolError))
                 }
                 if claim.routePinPending, currentBinding == nil {
                     // A reconnect binding needs a named route; a first
                     // paired open has none yet.
+                    await abandonRefusedConversation()
                     return .unavailable(mapOpenReason(ready.reason ?? .protocolError))
                 }
                 let hasEstablishedBinding = currentBinding != nil
@@ -329,9 +375,11 @@ actor URLSessionHomeBridgeSessionClient: HomeBridgeSessionClient {
             return .disconnected(.home(code: .transportTimeout, phase: .open))
         } catch {
             let failure = failure(for: error, phase: .open)
-            return failure.classification == .uncertain
-                ? .disconnected(failure)
-                : .unavailable(failure)
+            guard failure.classification != .uncertain else {
+                return .disconnected(failure)
+            }
+            await abandonRefusedConversation()
+            return .unavailable(failure)
         }
     }
 
@@ -791,6 +839,18 @@ actor URLSessionHomeBridgeSessionClient: HomeBridgeSessionClient {
         eventContinuation = nil
         eventStream = nil
         await connection?.close()
+    }
+
+    /// Home refused this conversation, e.g. a claim whose reconnect grace
+    /// ended while the app was in the background. Home's endpoint stays
+    /// bound to the refused handle, so the next claim needs its own socket,
+    /// and the refused binding must not gate it: reusing either turned the
+    /// fresh claim's open into `conversation_mismatch`.
+    private func abandonRefusedConversation() async {
+        currentClaim = nil
+        currentBinding = nil
+        reconnectCapabilitiesUnverified = false
+        await retireSocketForReconnect()
     }
 
     private func retireSocketForReconnect() async {
