@@ -362,6 +362,41 @@ final class HomeBridgeSessionClientTests: XCTestCase {
         await fixture.client.close()
     }
 
+    func testRefusedOpenLetsAFreshClaimOpenOnItsOwnSocket() async throws {
+        // A held claim whose reconnect grace ended while the app was in the
+        // background: Home refuses it, and the app makes one fresh claim.
+        let fixture = try await makeFixture()
+        await fixture.socket.setNextOpenReason("stale_conversation")
+        let freshClaim = HomeConversationClaim(
+            profileID: fixture.claim.profileID,
+            conversationHandle: "fresh-home-conversation",
+            approvedRoute: fixture.claim.approvedRoute
+        )
+        await fixture.secondSocket.setNextResultJSON(for: "conversation.open", """
+        {"schema":1,"status":"ready","conversation_handle":"fresh-home-conversation",\
+        "route":{"class":"home","id":"home-a"},\
+        "capabilities":{"commands":[],"timing":"absent","interrupt":true,"audio":true},\
+        "unresolved_turn":false}
+        """)
+
+        let refused = await fixture.client.open(claim: fixture.claim)
+        let fresh = await fixture.client.open(claim: freshClaim)
+
+        XCTAssertEqual(
+            refused,
+            .unavailable(.home(code: .staleConversation, phase: .open))
+        )
+        guard case .ready(let binding, _) = fresh else {
+            return XCTFail("A fresh claim must open after Home refused the held one, got \(fresh)")
+        }
+        XCTAssertEqual(binding.conversationHandle, "fresh-home-conversation")
+        let socketOpenCount = await fixture.factory.openCount
+        XCTAssertEqual(socketOpenCount, 2)
+        let firstSocketMethods = try await fixture.socket.sentMethods()
+        XCTAssertEqual(firstSocketMethods, ["conversation.open"])
+        await fixture.client.close()
+    }
+
     func testReconnectRequiredOpenRetiresSocketForExplicitReconnect() async throws {
         let fixture = try await makeFixture()
         await fixture.socket.setNextOpenReason(HomeWireReason.reconnectRequired.rawValue)
