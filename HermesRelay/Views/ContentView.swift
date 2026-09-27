@@ -245,6 +245,7 @@ struct ContentView: View {
                 case .background: input = .background
                 @unknown default: input = .inactive
                 }
+                DiagnosticsJournal.shared.record("app phase=\(input)")
                 Task { _ = await lifecycleCoordinator.handle(input) }
             }
         }

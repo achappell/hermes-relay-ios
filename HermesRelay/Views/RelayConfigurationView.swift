@@ -705,6 +705,19 @@ struct RelayConfigurationView: View {
                         .disabled(isLoading || isSaving)
                     }
                 }
+
+                Section {
+                    ShareLink(
+                        item: DiagnosticsExport(journal: .shared),
+                        preview: SharePreview("Hermes Relay diagnostics")
+                    ) {
+                        Label("Share diagnostics", systemImage: "stethoscope")
+                    }
+                } header: {
+                    Text("Troubleshooting")
+                } footer: {
+                    Text("Connection events only: no messages, voice, or passwords. Send it to whoever is helping you.")
+                }
             }
             .navigationTitle("Configure Relay")
             #if os(iOS)

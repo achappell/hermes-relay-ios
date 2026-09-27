@@ -57,6 +57,8 @@
 		A100000000000000000000D2 /* VisualDesignTokens.swift in Sources */ = {isa = PBXBuildFile; fileRef = A100000000000000000000D3 /* VisualDesignTokens.swift */; };
 		A100000000000000000000E1 /* HomeBridgeModels.swift in Sources */ = {isa = PBXBuildFile; fileRef = A100000000000000000000E0 /* HomeBridgeModels.swift */; };
 		A100000000000000000000E2 /* HomeBridgeSessionClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = A100000000000000000000E3 /* HomeBridgeSessionClient.swift */; };
+		D1A600000000000000000001 /* DiagnosticsJournal.swift in Sources */ = {isa = PBXBuildFile; fileRef = D1A600000000000000000002 /* DiagnosticsJournal.swift */; };
+		D1A600000000000000000003 /* DiagnosticsJournalTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D1A600000000000000000004 /* DiagnosticsJournalTests.swift */; };
 		A100000000000000000000E4 /* FakeHomeBridgeSessionClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = A100000000000000000000E5 /* FakeHomeBridgeSessionClient.swift */; };
 		A100000000000000000000E6 /* HomeCredentialStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = A100000000000000000000E7 /* HomeCredentialStore.swift */; };
 		A100000000000000000000E8 /* HomeConfigurationMigration.swift in Sources */ = {isa = PBXBuildFile; fileRef = A100000000000000000000E9 /* HomeConfigurationMigration.swift */; };
@@ -140,6 +142,8 @@
 		A100000000000000000000D3 /* VisualDesignTokens.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VisualDesignTokens.swift; sourceTree = "<group>"; };
 		A100000000000000000000E0 /* HomeBridgeModels.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HomeBridgeModels.swift; sourceTree = "<group>"; };
 		A100000000000000000000E3 /* HomeBridgeSessionClient.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HomeBridgeSessionClient.swift; sourceTree = "<group>"; };
+		D1A600000000000000000002 /* DiagnosticsJournal.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DiagnosticsJournal.swift; sourceTree = "<group>"; };
+		D1A600000000000000000004 /* DiagnosticsJournalTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DiagnosticsJournalTests.swift; sourceTree = "<group>"; };
 		A100000000000000000000E5 /* FakeHomeBridgeSessionClient.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FakeHomeBridgeSessionClient.swift; sourceTree = "<group>"; };
 		A100000000000000000000E7 /* HomeCredentialStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HomeCredentialStore.swift; sourceTree = "<group>"; };
 		A100000000000000000000E9 /* HomeConfigurationMigration.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HomeConfigurationMigration.swift; sourceTree = "<group>"; };
@@ -209,6 +213,7 @@
 				A10000000000000000000032 /* RelayConfigurationTests.swift */,
 				A100000000000000000000F5 /* HomeBridgeEnvelopeTests.swift */,
 				A100000000000000000000F7 /* HomeBridgeSessionClientTests.swift */,
+				D1A600000000000000000004 /* DiagnosticsJournalTests.swift */,
 				A100000000000000000000F9 /* HomeBridgeAudioTests.swift */,
 				A100000000000000000000FB /* HomeConfigurationMigrationTests.swift */,
 				A1000000000000000000010B /* HomeClientPairingTests.swift */,
@@ -255,6 +260,7 @@
 			children = (
 				A10000000000000000000023 /* HermesSessionClient.swift */,
 				A100000000000000000000E3 /* HomeBridgeSessionClient.swift */,
+				D1A600000000000000000002 /* DiagnosticsJournal.swift */,
 				A100000000000000000000F3 /* URLSessionHomeBridgeSessionClient.swift */,
 				A100000000000000000000E5 /* FakeHomeBridgeSessionClient.swift */,
 				A100000000000000000000E7 /* HomeCredentialStore.swift */,
@@ -444,6 +450,7 @@
 				A100000000000000000000D2 /* VisualDesignTokens.swift in Sources */,
 				A100000000000000000000E1 /* HomeBridgeModels.swift in Sources */,
 				A100000000000000000000E2 /* HomeBridgeSessionClient.swift in Sources */,
+				D1A600000000000000000001 /* DiagnosticsJournal.swift in Sources */,
 				A100000000000000000000F2 /* URLSessionHomeBridgeSessionClient.swift in Sources */,
 				A100000000000000000000E4 /* FakeHomeBridgeSessionClient.swift in Sources */,
 				A100000000000000000000E6 /* HomeCredentialStore.swift in Sources */,
@@ -476,6 +483,7 @@
 				A100000000000000000000C0 /* DeviceDiscoveryTests.swift in Sources */,
 				A100000000000000000000F4 /* HomeBridgeEnvelopeTests.swift in Sources */,
 				A100000000000000000000F6 /* HomeBridgeSessionClientTests.swift in Sources */,
+				D1A600000000000000000003 /* DiagnosticsJournalTests.swift in Sources */,
 				A100000000000000000000F8 /* HomeBridgeAudioTests.swift in Sources */,
 				A100000000000000000000FA /* HomeConfigurationMigrationTests.swift in Sources */,
 				A1000000000000000000010A /* HomeClientPairingTests.swift in Sources */,

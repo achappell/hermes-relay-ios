@@ -124,9 +124,10 @@ struct OSLogHomeBridgeDiagnostics: HomeBridgeDiagnostics, Sendable {
     }
 }
 
-/// Debug-only trace of how a Home connect was decided: what `open` and
-/// `reconnect` returned, and which local claim check refused a result.
-/// Codes, phases, and fixed site names only — never handles or content.
+/// Trace of how a Home connect was decided: what `open` and `reconnect`
+/// returned, and which local claim check refused a result. Journaled in every
+/// build for Share diagnostics, and logged in Debug builds. Codes, phases,
+/// and fixed site names only — never handles or content.
 enum HomeConnectionTrace {
     #if DEBUG
     private static let logger = Logger(
@@ -162,6 +163,7 @@ enum HomeConnectionTrace {
     }
 
     private static func record(_ message: String) {
+        DiagnosticsJournal.shared.record(message)
         #if DEBUG
         logger.info("\(message, privacy: .public)")
         #endif
@@ -169,11 +171,11 @@ enum HomeConnectionTrace {
 }
 
 enum HomeBridgeDiagnosticsFactory {
-    static func make() -> any HomeBridgeDiagnostics {
+    static func make(journal: DiagnosticsJournal = .shared) -> any HomeBridgeDiagnostics {
         #if DEBUG
-        return OSLogHomeBridgeDiagnostics()
+        return JournalingHomeBridgeDiagnostics(journal: journal, next: OSLogHomeBridgeDiagnostics())
         #else
-        return NoopHomeBridgeDiagnostics()
+        return JournalingHomeBridgeDiagnostics(journal: journal, next: nil)
         #endif
     }
 }
