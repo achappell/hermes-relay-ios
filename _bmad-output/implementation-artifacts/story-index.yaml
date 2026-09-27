@@ -323,6 +323,16 @@ stories:
     depends_on: []
     acceptance_overlay: _bmad-output/implementation-artifacts/course-correction-2026-09-23.md
     historical_horizon: later
+  - id: IOS-DIAG-01
+    title: Share content-free connection diagnostics from the app
+    kind: next-wave
+    spec: _bmad-output/implementation-artifacts/spec-ios-diag-01-share-diagnostics.md
+    tracker_key: ios-diag-01
+    product_epic: 6
+    owner: hermes-relay-ios
+    release_scope: migration
+    depends_on: []
+    acceptance_overlay: _bmad-output/implementation-artifacts/course-correction-2026-09-23.md
 epic_scheme: hermes-home-2026-09-23
 epics:
   1: Connect personal clients through HomeBridge

@@ -273,6 +273,11 @@ final class ConversationStore {
                 ? await homeClaimProvider?.claimsPerConnect(for: profile.id) == true
                 : false
             homeClaimsPerConnect = claimsPerConnect
+            // The profile ID is a random local UUID; its prefix tells
+            // profiles apart in a shared journal without naming anyone.
+            DiagnosticsJournal.shared.record(
+                "profile loaded id=\(profile.id.uuidString.prefix(8)) mode=\(transportMode.rawValue) claims_per_connect=\(claimsPerConnect)"
+            )
             if transportMode == .home {
                 homeOperationsSuppressed = false
                 homeConversationBinding = nil
