@@ -335,6 +335,10 @@ struct AmbientHUDView: View {
     let homeTimingCapability: HomeTimingCapability?
     let pendingHomePromptKind: HomeStructuredPromptKind?
     let homeCommandEventCount: Int
+    /// The current Home client session's title; nil when unnamed or unknown.
+    let homeSessionTitle: String?
+    /// Opens the Sessions sheet; nil when the profile has no client sessions.
+    let onShowSessions: (() -> Void)?
 
     init(
         presentation: AmbientHUDPresentation,
@@ -366,7 +370,9 @@ struct AmbientHUDView: View {
         homeAudioState: HomeAudioState? = nil,
         homeTimingCapability: HomeTimingCapability? = nil,
         pendingHomePromptKind: HomeStructuredPromptKind? = nil,
-        homeCommandEventCount: Int = 0
+        homeCommandEventCount: Int = 0,
+        homeSessionTitle: String? = nil,
+        onShowSessions: (() -> Void)? = nil
     ) {
         self.presentation = presentation
         self.connectionState = connectionState
@@ -398,6 +404,8 @@ struct AmbientHUDView: View {
         self.homeTimingCapability = homeTimingCapability
         self.pendingHomePromptKind = pendingHomePromptKind
         self.homeCommandEventCount = homeCommandEventCount
+        self.homeSessionTitle = homeSessionTitle
+        self.onShowSessions = onShowSessions
     }
 
     private var liveProvisionalText: String {
@@ -705,12 +713,17 @@ struct AmbientHUDView: View {
                     .fill(connectionState.statusColor)
                     .frame(width: 8, height: 8)
 
-                VStack(alignment: .leading, spacing: 2) {
-                    Text(profileName ?? "No Profile selected")
-                        .font(.subheadline.weight(.semibold))
-                    Text("Hermes Profile · \(doorwayState.statusLabel) · \(SessionDurationFormatter.string(startedAt: sessionStartedAt, now: context.date))")
-                        .font(.caption)
-                        .foregroundStyle(HermesVisualTokens.secondaryInk)
+                if let onShowSessions {
+                    Button(action: onShowSessions) {
+                        headerLabels(now: context.date, showsSession: true)
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel(
+                        "Conversation \(homeSessionTitle ?? "untitled"), Hermes Profile \(profileName ?? "not selected"), \(doorwayState.statusLabel)"
+                    )
+                    .accessibilityHint("Shows this Profile's conversations")
+                } else {
+                    headerLabels(now: context.date, showsSession: false)
                 }
 
                 Spacer(minLength: 8)
@@ -727,11 +740,32 @@ struct AmbientHUDView: View {
             .padding(.vertical, 10)
             .frame(maxWidth: .infinity, alignment: .leading)
             .relayPanel(cornerRadius: 16, fill: HermesVisualTokens.consoleSurface)
-            .accessibilityElement(children: .combine)
-            .accessibilityLabel(
-                "Hermes Profile \(profileName ?? "not selected"), \(doorwayState.statusLabel), session duration \(SessionDurationFormatter.string(startedAt: sessionStartedAt, now: context.date))"
-            )
+            .modifier(SessionHeaderAccessibility(
+                combines: onShowSessions == nil,
+                label: "Hermes Profile \(profileName ?? "not selected"), \(doorwayState.statusLabel), session duration \(SessionDurationFormatter.string(startedAt: sessionStartedAt, now: context.date))"
+            ))
         }
+    }
+
+    private func headerLabels(now: Date, showsSession: Bool) -> some View {
+        VStack(alignment: .leading, spacing: 2) {
+            Text(profileName ?? "No Profile selected")
+                .font(.subheadline.weight(.semibold))
+            if showsSession {
+                HStack(spacing: 4) {
+                    Text(homeSessionTitle ?? "Untitled conversation")
+                        .lineLimit(1)
+                    Image(systemName: "chevron.down")
+                        .imageScale(.small)
+                }
+                .font(.caption.weight(.medium))
+                .foregroundStyle(HermesVisualTokens.primaryInk)
+            }
+            Text("Hermes Profile · \(doorwayState.statusLabel) · \(SessionDurationFormatter.string(startedAt: sessionStartedAt, now: now))")
+                .font(.caption)
+                .foregroundStyle(HermesVisualTokens.secondaryInk)
+        }
+        .contentShape(Rectangle())
     }
 
     private var captionArea: some View {
@@ -793,6 +827,23 @@ struct AmbientHUDBackdrop: View {
             }
             .ignoresSafeArea()
             .allowsHitTesting(false)
+    }
+}
+
+/// The header reads as one element unless it holds the Sessions button,
+/// which must stay separately focusable.
+private struct SessionHeaderAccessibility: ViewModifier {
+    let combines: Bool
+    let label: String
+
+    func body(content: Content) -> some View {
+        if combines {
+            content
+                .accessibilityElement(children: .combine)
+                .accessibilityLabel(label)
+        } else {
+            content.accessibilityElement(children: .contain)
+        }
     }
 }
 

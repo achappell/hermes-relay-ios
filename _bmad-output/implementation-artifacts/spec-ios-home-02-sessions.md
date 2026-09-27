@@ -2,7 +2,7 @@
 title: 'IOS-HOME-02 (slice 2) — Manage Home client sessions on iOS and macOS'
 type: 'feature'
 created: '2026-09-26'
-status: 'draft'
+status: 'in-progress'
 route: 'dispatch'
 review_loop_iteration: 0
 context:
@@ -24,7 +24,7 @@ context:
 ## Decisions (2026-09-26, user)
 
 1. **Default session on connect: most recent.** Connect claims `{"mode": "most_recent"}`; Home falls back to `new` when the Profile has no stored session. This applies to launch, Profile switch, and the fresh claim made after a claim is refused (for example after the reconnect grace).
-2. **Placement: a sheet from the profile header.** Tapping the header card opens a Sessions sheet: the list (title, last active, message count, an "In use" badge for `active: true`), New session, Resume on a row, and Rename current.
+2. **Placement: a sheet from the profile header.** Tapping the header card opens a Sessions sheet: the list (title, start time, message count, an "In use" badge for `active: true`), New session, Resume on a row, and Rename current.
 3. **Transcript on resume: keep it, add a divider.** Resuming keeps the local transcript and inserts a local divider "Resumed: <title>". Hermes holds the full history and uses it for replies; Home has no API to return old messages, and none is invented.
 
 ## Boundaries & Constraints
@@ -89,3 +89,9 @@ Acceptance: a session started on one client (e.g. the TUI or a Puck) can be resu
 ## Spec Change Log
 
 - 2026-09-26: Drafted with the user's three decisions; awaiting readiness review.
+- 2026-09-26 (readiness review against the code and Home):
+  - Home's list rows carry `started_at` (start time, `0` when unknown), not last activity; the sheet shows "Started".
+  - Every paired claim used to set the "New conversation" divider. With `most_recent` the divider follows what Home bound: none when the same session continues (or on the first connect after launch), "New conversation" for a new session, "Resumed: <title>" for a list choice, and "Continued the latest conversation" when `most_recent` lands in a different session than this client last used. A new session's reference is unknown until looked up, so an unknown previous reference counts as the same session.
+  - Consecutive switches without messages keep only the latest divider.
+  - Pairing's activation handshake also claims `most_recent`; it is a short verification and does not change behavior.
+  - A session already marked `active` in the list is refused before closing the current claim; a resume refused by Home after the close falls back to `most_recent` once and says so.

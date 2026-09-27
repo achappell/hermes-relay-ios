@@ -5,10 +5,36 @@ protocol HomeConversationClaimProvider: Sendable {
     /// True for a paired personal client: its claims are single-use, so a
     /// fresh one is made on every connect rather than when a profile loads.
     func claimsPerConnect(for profileID: UUID) async -> Bool
+    /// A paired client's claim naming the session to use. Providers without
+    /// client sessions ignore the choice.
+    func conversationClaim(
+        for profileID: UUID,
+        session: HomeClientSessionChoice
+    ) async throws -> HomeConversationClaim?
+    /// True when the profile's claims can name sessions and list them.
+    func supportsClientSessions(for profileID: UUID) async -> Bool
+    /// The profile's Hermes sessions, newest first; nil when unsupported.
+    func clientSessions(for profileID: UUID) async throws -> [HomeClientSessionSummary]?
+    /// The session reference a claim is bound to; nil until a new session's
+    /// first accepted turn, or when unsupported.
+    func clientSessionRef(for profileID: UUID, conversationHandle: String) async throws -> String?
 }
 
 extension HomeConversationClaimProvider {
     func claimsPerConnect(for profileID: UUID) async -> Bool { false }
+
+    func conversationClaim(
+        for profileID: UUID,
+        session: HomeClientSessionChoice
+    ) async throws -> HomeConversationClaim? {
+        try await conversationClaim(for: profileID)
+    }
+
+    func supportsClientSessions(for profileID: UUID) async -> Bool { false }
+
+    func clientSessions(for profileID: UUID) async throws -> [HomeClientSessionSummary]? { nil }
+
+    func clientSessionRef(for profileID: UUID, conversationHandle: String) async throws -> String? { nil }
 }
 
 struct StaticHomeConversationClaimProvider: HomeConversationClaimProvider {

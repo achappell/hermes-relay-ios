@@ -82,6 +82,40 @@ Related live finding (Home, not this story): spoken replies stuttered at about 0
 
 Not run. Record separately: pairing from a pasted link and from a typed code, a typed turn, a voice turn, stop, reconnect within the grace period, and Disconnect.
 
+## Slice 2 — session management
+
+Spec: [spec-ios-home-02-sessions.md](spec-ios-home-02-sessions.md). Gates are kept separate from slice 1.
+
+| Gate | Status | Evidence |
+| --- | --- | --- |
+| Local (deterministic) | Complete | Below |
+| Merge | Not started | — |
+| iOS live | Not run | — |
+| macOS live | Not run | — |
+
+### Local gate (2026-09-26, Xcode 26.6)
+
+- Full iOS Simulator suite: 517 tests, 0 failures, on the branch rebased onto `main` at `96fef32` (after #103 and #104), including 12 new `HomeClientPairingTests` for this slice (56 in that class).
+- macOS build: succeeded.
+
+| Scenario | Deterministic evidence |
+| --- | --- |
+| Claim names the session; resumed/new decoded; refs redacted in descriptions | `testClaimBodiesNameTheChosenSessionAndDecodeWhatHomeBound` |
+| A resume bound to another session is rejected | `testAResumeGrantBoundToAnotherSessionIsRejected` |
+| List and claim-session lookup bodies, auth and decoding | `testSessionListAndClaimLookupMatchTheHomeContract`, `testSessionRowsRejectUnknownFieldsAndImpossibleValues` |
+| Connect continues the most recent session, no divider | `testConnectContinuesTheMostRecentSessionWithoutADivider` |
+| New session closes the claim and adds a divider | `testNewSessionClosesTheCurrentClaimAndAddsADivider` |
+| Resume adds "Resumed: <title>", resends nothing, no ref on disk | `testResumingFromTheListAddsATitledDividerAndNeverResends` |
+| Session in use elsewhere is refused without closing | `testASessionInUseElsewhereIsNotSwitchedTo` |
+| Refused resume falls back to the latest session once | `testARefusedResumeContinuesTheLatestSessionOnceAndSaysSo` |
+| Switching waits for the current turn | `testSwitchingWaitsForTheCurrentTurn` |
+| Rename via Hermes `title` only when advertised | `testRenameUsesHermesTitleCommandOnlyWhenAdvertised` |
+| A new session's reference is learned after its first turn | `testLoadingSessionsLearnsANewSessionsReferenceAfterItsFirstTurn` |
+
+### Live checks to record (iOS and macOS separately)
+
+Connect lands in the most recent session; the sheet lists sessions started on another client (TUI or a Room device); resume one; New conversation; rename (if Hermes advertises `title`); `session_busy` against a session held by another claim; background beyond the grace returns to the same session.
+
 ## Evidence safety
 
 This record contains no credentials, pairing codes, handles, prompts, response text, raw protocol frames, PCM data, or microphone captures.
