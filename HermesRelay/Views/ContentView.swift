@@ -451,6 +451,17 @@ struct ContentView: View {
                     .padding(.horizontal, 12)
                     .padding(.vertical, 9)
                     .onSubmit(submitFromReturnKey)
+                    #if os(iOS)
+                    .toolbar {
+                        // A visible way out of the keyboard; swiping down on
+                        // the conversation also works but is not discoverable.
+                        ToolbarItemGroup(placement: .keyboard) {
+                            Spacer()
+                            Button("Done") { focusedField = nil }
+                                .accessibilityIdentifier("keyboard-done")
+                        }
+                    }
+                    #endif
                     .onChange(of: store.draft) { oldDraft, newDraft in
                         guard let submitted = Self.draftSubmittedByReturn(
                             from: oldDraft,

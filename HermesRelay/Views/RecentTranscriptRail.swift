@@ -440,9 +440,15 @@ enum RecentTranscriptDisplay {
         }
         let liveID = activeAssistantID.uuidString
 
-        return projection.entries.map { entry in
+        // The reply follows the voice (IOS-UX-F5): nothing is shown while
+        // Hermes is still working, and once it speaks, only what has been
+        // spoken. The full text appears when the turn ends.
+        return projection.entries.compactMap { entry in
             guard entry.id == liveID else { return entry }
-            let pacedText: String? = revealedTexts[entry.id].flatMap { revealedText -> String? in
+            guard playbackPosition != nil else { return nil }
+            // Once speech has started, never show less than already shown:
+            // a revised timing or growing audio buffer must not retract text.
+            let shownText: String? = revealedTexts[entry.id].flatMap { revealedText -> String? in
                 guard !revealedText.isEmpty else { return nil }
                 return entry.text.hasPrefix(revealedText) ? revealedText : nil
             }
@@ -454,14 +460,17 @@ enum RecentTranscriptDisplay {
                 isPlaybackDurationFinal: isPlaybackDurationFinal,
                 fallbackPlaybackOrigin: fallbackPlaybackOrigin
             )
+            // Audio is playing but no clock is authoritative yet: show the
+            // first word rather than an empty card mid-speech.
             let visibleText = longestValidPrefix(
                 in: entry.text,
-                candidates: [pacedText, playbackText]
+                candidates: [shownText, playbackText]
             ) ?? RecentTranscriptReveal.nextText(
                 current: "",
                 target: entry.text,
                 characterBudget: 1
             )
+            guard !visibleText.isEmpty else { return nil }
             return RecentTranscriptEntry(
                 id: entry.id,
                 role: entry.role,
@@ -552,7 +561,10 @@ struct RecentTranscriptRail: View {
     @State private var fallbackOriginTargetID: String?
 
     private static let bottomAnchorID = "recent-transcript-bottom"
-    private static let liveTranscriptViewportHeight: CGFloat = 192
+    // With its header, the live entry stays within the history card's 152 pt
+    // cap, so the screen does not grow behind the bottom bar when a reply
+    // starts playing (IOS-UX-F5). The text scrolls to keep the latest words.
+    private static let liveTranscriptViewportHeight: CGFloat = 124
     // Text-only turns still need a restrained reveal so a complete response
     // does not appear as one abrupt block.
     private static let revealStepNanoseconds: UInt64 = 320_000_000
