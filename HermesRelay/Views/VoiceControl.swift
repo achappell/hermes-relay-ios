@@ -1,5 +1,11 @@
 import SwiftUI
 
+struct VoiceOrbAction: Equatable, Sendable {
+    let systemImage: String
+    let prompt: String
+    let accessibilityHint: String
+}
+
 enum VoiceControlInteractionPolicy {
     static func isResponseActive(_ state: VoiceState) -> Bool {
         state.isResponseActive
@@ -23,192 +29,114 @@ enum VoiceControlInteractionPolicy {
         (isActionInFlight && !isResponseActive(state))
             || (isHandsFreeArmed && !isResponseActive(state))
     }
+
+    /// What a tap on the voice orb will do, shown as its glyph and prompt.
+    /// The orb shows the action; the status label beside it shows the state.
+    static func orbAction(
+        state: VoiceState,
+        isHandsFreeArmed: Bool,
+        isHandsFreeCaptureActive: Bool
+    ) -> VoiceOrbAction {
+        if isResponseActive(state) {
+            return VoiceOrbAction(
+                systemImage: "hand.raised.fill",
+                prompt: "Tap to interrupt",
+                accessibilityHint: isHandsFreeArmed
+                    ? "Stops the reply."
+                    : "Stops the reply and starts listening."
+            )
+        }
+        if isHandsFreeArmed {
+            return VoiceOrbAction(
+                systemImage: isHandsFreeCaptureActive ? "waveform" : "ear",
+                prompt: isHandsFreeCaptureActive ? "Hands-free listening" : "Listening for speech",
+                accessibilityHint: "Hands-free is on. Turn it off to talk by tapping."
+            )
+        }
+        if state.isCaptureActive {
+            return VoiceOrbAction(
+                systemImage: "stop.fill",
+                prompt: "Tap to send",
+                accessibilityHint: "Stops listening and sends what you said."
+            )
+        }
+        return VoiceOrbAction(
+            systemImage: "mic.fill",
+            prompt: "Tap to talk",
+            accessibilityHint: "Starts listening."
+        )
+    }
+
+    /// The single voice action behind the voice orb: stop and send while
+    /// capturing, interrupt a response, otherwise start capturing.
+    @MainActor
+    static func performPrimaryAction(on coordinator: VoiceSessionCoordinator) async {
+        if coordinator.state.isCaptureActive {
+            await coordinator.endCaptureAndSend()
+        } else if isResponseActive(coordinator.state) {
+            if coordinator.isHandsFreeArmed {
+                _ = await coordinator.interruptActiveTurn()
+            } else {
+                await coordinator.interruptAndBeginCapture()
+            }
+        } else {
+            await coordinator.beginCapture()
+        }
+    }
 }
 
-struct VoiceControl: View {
+/// "Keep listening" (hands-free) as a quiet pill under the voice orb's status
+/// line. Off is outlined; on is filled with the identity tint. iOS only.
+struct HandsFreePill: View {
     let coordinator: VoiceSessionCoordinator
+    @State private var isActionInFlight = false
 
-    private var isCapturing: Bool {
-        coordinator.state.isCaptureActive
-    }
-
-    private var isResponseActive: Bool {
-        VoiceControlInteractionPolicy.isResponseActive(coordinator.state)
-    }
-
-    private var isHandsFreeCaptureActive: Bool {
-        coordinator.isHandsFreeCaptureActive
-    }
-
-    private var isHandsFreeWaiting: Bool {
-        coordinator.isHandsFreeArmed && !isHandsFreeCaptureActive && !isResponseActive
-    }
+    private var isOn: Bool { coordinator.isHandsFreeArmed }
 
     var body: some View {
-        HStack(spacing: 12) {
-            VStack(alignment: .leading, spacing: 2) {
-                Text(
-                    isHandsFreeCaptureActive
-                        ? "Hands-free listening"
-                        : isHandsFreeWaiting
-                        ? "Listening for speech"
-                        : isCapturing
-                        ? "Tap to stop"
-                        : isResponseActive ? "Tap to interrupt" : "Tap to record"
-                )
-                    .font(.subheadline.weight(.semibold))
-
-                #if os(iOS)
-                Text(coordinator.handsFreeStatus.label)
-                    .font(.caption)
-                    .foregroundStyle(HermesVisualTokens.secondaryInk)
-                #endif
+        Button(action: toggle) {
+            HStack(spacing: 6) {
+                Image(systemName: "arrow.triangle.2.circlepath")
+                    .imageScale(.small)
+                Text("Keep listening")
             }
-
-            Spacer(minLength: 8)
-
-            if isCapturing {
-                Button("Cancel") {
-                    Task { await coordinator.cancelCapture() }
-                }
-                .font(.footnote.weight(.medium))
-                .relayGlassButtonStyle()
+            .font(.caption.weight(.medium))
+            .foregroundStyle(isOn ? Color.white : HermesVisualTokens.secondaryInk)
+            .padding(.horizontal, 12)
+            .frame(height: 30)
+            .background {
+                Capsule().fill(isOn ? HermesVisualTokens.identity : Color.clear)
             }
-
-            RecordButton(coordinator: coordinator)
-            .frame(width: 52, height: 52)
-            .relayCircleGlass(
-                tint: isCapturing ? HermesVisualTokens.live : isResponseActive ? HermesVisualTokens.attention : nil,
-                interactive: true
-            )
-
-            #if os(iOS)
-            HandsFreeButton(coordinator: coordinator)
-                .frame(width: 44, height: 44)
-                .relayCircleGlass(
-                    tint: coordinator.isHandsFreeArmed ? HermesVisualTokens.identity : nil,
-                    interactive: true
+            .overlay {
+                Capsule().strokeBorder(
+                    isOn ? HermesVisualTokens.identity : HermesVisualTokens.secondaryInk.opacity(0.45),
+                    lineWidth: 1
                 )
-            #endif
+            }
+            // Keep a 44 pt hit area around the 30 pt capsule.
+            .padding(.vertical, 7)
+            .contentShape(Rectangle())
         }
+        .buttonStyle(.plain)
+        .disabled(
+            isActionInFlight
+                || (coordinator.state.isCaptureActive && !coordinator.isHandsFreeCaptureActive)
+        )
+        .accessibilityLabel("Keep listening")
+        .accessibilityValue(isOn ? "On" : "Off")
+        .accessibilityHint(Self.explanation)
+        .accessibilityAddTraits(.isToggle)
+        .accessibilityIdentifier("keep-listening")
     }
 
-    struct RecordButton: View {
-        let coordinator: VoiceSessionCoordinator
-        @State private var isActionInFlight = false
+    static let explanation = "Talk, pause, and Hermes answers. Tap the orb to interrupt."
 
-        private var isCapturing: Bool {
-            coordinator.state.isCaptureActive
-        }
-
-        private var isResponseActive: Bool {
-            VoiceControlInteractionPolicy.isResponseActive(coordinator.state)
-        }
-
-        var body: some View {
-            Button(action: toggleCapture) {
-                Image(systemName: coordinator.state.systemImage)
-                    .font(.headline)
-                    .foregroundStyle(isCapturing || isResponseActive ? HermesVisualTokens.canvas : HermesVisualTokens.primaryInk)
-                    .frame(width: 52, height: 52)
-                    .contentShape(Circle())
-                    .background {
-                        if isCapturing {
-                            Circle().fill(HermesVisualTokens.live)
-                        } else if isResponseActive {
-                            Circle().fill(HermesVisualTokens.attention)
-                        }
-                    }
-            }
-            .buttonStyle(.plain)
-            .disabled(
-                VoiceControlInteractionPolicy.isDisabled(
-                    isActionInFlight: isActionInFlight,
-                    state: coordinator.state,
-                    isHandsFreeArmed: coordinator.isHandsFreeArmed
-                )
-            )
-            .accessibilityLabel("Voice control")
-            .accessibilityValue(
-                isCapturing
-                    ? "Recording. Tap to stop."
-                    : isResponseActive
-                        ? "Response playing. Tap to interrupt."
-                        : "Ready. Tap to record."
-            )
-            .accessibilityHint(
-                isCapturing
-                    ? "Tap to stop recording and send."
-                    : isResponseActive
-                        ? "Tap to stop playback and start a new recording."
-                        : "Tap to start recording."
-            )
-        }
-
-        private func toggleCapture() {
-            guard !isActionInFlight || isResponseActive else { return }
-            isActionInFlight = true
-            let shouldEndCapture = isCapturing
-            let shouldInterruptResponse = isResponseActive
-            Task { @MainActor in
-                if shouldEndCapture {
-                    await coordinator.endCaptureAndSend()
-                } else if shouldInterruptResponse {
-                    if coordinator.isHandsFreeArmed {
-                        _ = await coordinator.interruptActiveTurn()
-                    } else {
-                        await coordinator.interruptAndBeginCapture()
-                    }
-                } else {
-                    await coordinator.beginCapture()
-                }
-                isActionInFlight = false
-            }
-        }
-    }
-
-    struct HandsFreeButton: View {
-        let coordinator: VoiceSessionCoordinator
-        @State private var isActionInFlight = false
-
-        var body: some View {
-            Button(action: toggleHandsFree) {
-                Image(systemName: coordinator.handsFreeStatus.systemImage)
-                    .font(.headline)
-                    .foregroundStyle(coordinator.isHandsFreeArmed ? HermesVisualTokens.canvas : HermesVisualTokens.primaryInk)
-                    .frame(width: 44, height: 44)
-                    .contentShape(Circle())
-                    .background {
-                        if coordinator.isHandsFreeArmed {
-                            Circle().fill(HermesVisualTokens.identity)
-                        }
-                    }
-            }
-            .buttonStyle(.plain)
-            .disabled(
-                isActionInFlight
-                    || (coordinator.state.isCaptureActive && !coordinator.isHandsFreeCaptureActive)
-            )
-            .accessibilityLabel("Hands-free mode")
-            .accessibilityValue(
-                coordinator.isHandsFreeArmed
-                    ? coordinator.handsFreeStatus.label
-                    : "Off"
-            )
-            .accessibilityHint(
-                coordinator.isHandsFreeArmed
-                    ? "Tap to stop hands-free listening."
-                    : "Tap to enable hands-free listening."
-            )
-        }
-
-        private func toggleHandsFree() {
-            guard !isActionInFlight else { return }
-            isActionInFlight = true
-            Task { @MainActor in
-                await coordinator.toggleHandsFree()
-                isActionInFlight = false
-            }
+    private func toggle() {
+        guard !isActionInFlight else { return }
+        isActionInFlight = true
+        Task { @MainActor in
+            await coordinator.toggleHandsFree()
+            isActionInFlight = false
         }
     }
 }

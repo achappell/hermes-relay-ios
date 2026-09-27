@@ -14,6 +14,18 @@ struct PromptHistory: Equatable, Sendable {
         entries.isEmpty
     }
 
+    /// Recent typed prompts for the Recent prompts menu: newest first,
+    /// without repeats, at most `limit` (IOS-UX-F5).
+    func recent(limit: Int = 8) -> [String] {
+        var seen = Set<String>()
+        var result: [String] = []
+        for entry in entries.reversed() where seen.insert(entry).inserted {
+            result.append(entry)
+            if result.count == limit { break }
+        }
+        return result
+    }
+
     mutating func record(_ text: String) {
         let text = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !text.isEmpty else { return }
