@@ -1740,6 +1740,66 @@ final class HomeClientPairingTests: XCTestCase {
         XCTAssertTrue(calls.isEmpty, "Unpair is local; Home offers no device self-revoke")
     }
 
+    @MainActor
+    func testUnpairRemovesThePairedProfilesHomeAdminCredential() async throws {
+        let fixture = try await Self.makeFixture()
+        _ = try await Self.pair(fixture)
+        let pairing = try await Self.firstPairing(fixture)
+        let profileID = try XCTUnwrap(pairing.profileID(for: "grant-a"))
+        let route = HomeApprovedRoute(
+            endpoint: URL(string: "wss://home.example/api/v1/bridge/ws")!,
+            identity: HomeRouteIdentity(routeClass: .home, id: "home"),
+            householdBinding: "household"
+        )
+        let adminStore = KeychainHomeAdminCredentialStore(secureStore: fixture.secure)
+        try await adminStore.save("home-admin-secret", for: profileID, approvedRoute: route)
+        let model = RelayProfileListModel(
+            configurationStore: fixture.configuration,
+            conversationDirectory: fixture.directory,
+            homeAdminCredentialStore: adminStore,
+            homePairingCoordinator: fixture.coordinator
+        )
+        await model.load()
+
+        _ = try await model.unpair(pairingID: pairing.id)
+
+        let remaining = try await adminStore.load(for: profileID, approvedRoute: route)
+        XCTAssertNil(remaining)
+        XCTAssertNil(model.errorMessage)
+    }
+
+    @MainActor
+    func testOwnerModelIgnoresAnOlderLoadThatAnswersLate() async throws {
+        let fixture = try await Self.makeFixture()
+        _ = try await Self.pair(fixture)
+        let pairing = try await Self.firstPairing(fixture)
+        let pending = Self.holder("grant-x", device: "Jensen's iPad", status: .pendingOwner)
+        await fixture.service.setPendingGrants([pending])
+        await fixture.service.setHolders([Self.holder("grant-a", device: "Amanda's iPhone", thisDevice: true)])
+        let model = HomeOwnerAdministrationModel(
+            pairingID: pairing.id,
+            homeName: pairing.home.displayName,
+            coordinator: fixture.coordinator,
+            performUnpair: {}
+        )
+        // The first load reads the pending list, then stalls on the holders.
+        await fixture.service.holdNextHoldersList()
+        let staleLoad = Task { await model.load() }
+        while !(await fixture.service.isHoldingHoldersList) { await Task.yield() }
+
+        // The owner approves meanwhile; the refresh after it sees no request.
+        await model.decide(pending, .approve)
+        guard case .loaded(let fresh) = model.state else { return XCTFail("Expected a loaded overview") }
+        XCTAssertTrue(fresh.pending.isEmpty)
+
+        await fixture.service.releaseHeldHoldersList()
+        await staleLoad.value
+
+        guard case .loaded(let after) = model.state else { return XCTFail("Expected a loaded overview") }
+        XCTAssertTrue(after.pending.isEmpty, "A late answer must not bring the decided request back")
+        XCTAssertEqual(after.holders.first { $0.grantID == "grant-x" }?.status, .active)
+    }
+
     // MARK: - Fixture
 
     private static func pair(

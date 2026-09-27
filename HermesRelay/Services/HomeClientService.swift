@@ -311,6 +311,8 @@ actor FakeHomeClientService: HomeClientService {
     /// Errors answered by the pending and holder lists, in order; the last one repeats.
     var pendingErrors: [HomeClientServiceError] = []
     var holdersError: HomeClientServiceError?
+    private var holdNextHolders = false
+    private var heldHolders: CheckedContinuation<Void, Never>?
     /// Errors answered for a decision on one grant.
     var decisionErrors: [String: HomeClientServiceError] = [:]
 
@@ -541,6 +543,19 @@ actor FakeHomeClientService: HomeClientService {
         holdersError = error
     }
 
+    /// Makes the next holder list wait until `releaseHeldHoldersList()`, so a
+    /// test can overlap two loads.
+    func holdNextHoldersList() {
+        holdNextHolders = true
+    }
+
+    var isHoldingHoldersList: Bool { heldHolders != nil }
+
+    func releaseHeldHoldersList() {
+        heldHolders?.resume()
+        heldHolders = nil
+    }
+
     func setDecisionErrors(_ errors: [String: HomeClientServiceError]) {
         decisionErrors = errors
     }
@@ -563,8 +578,13 @@ actor FakeHomeClientService: HomeClientService {
     ) async throws -> [HomeProfileGrantHolder] {
         calls.append(.holders)
         credentialsSeen.append(credential)
+        let answer = holders
+        if holdNextHolders {
+            holdNextHolders = false
+            await withCheckedContinuation { heldHolders = $0 }
+        }
         if let holdersError { throw holdersError }
-        return holders
+        return answer
     }
 
     /// Applies the decision the way Home does: approve activates a pending

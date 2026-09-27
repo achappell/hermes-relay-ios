@@ -113,8 +113,14 @@ final class RelayProfileListModel {
         let current = try await configurationStore.loadCollection()
         let removedIDs = Set(pairing.profiles.map(\.profileID))
         let removedSelected = current.selectedID.map { removedIDs.contains($0) } ?? false
+        var adminCleanupFailed = false
         for profileID in removedIDs where current.profiles.contains(where: { $0.id == profileID }) {
             try await configurationStore.deleteProfile(id: profileID)
+            do {
+                try await homeAdminCredentialStore?.delete(for: profileID)
+            } catch {
+                adminCleanupFailed = true
+            }
             if let conversationDirectory {
                 try? FileManager.default.removeItem(
                     at: ConversationPersistenceFile.url(in: conversationDirectory, for: profileID)
@@ -128,6 +134,9 @@ final class RelayProfileListModel {
             throw error
         }
         await load()
+        if adminCleanupFailed {
+            errorMessage = "The Home was unpaired, but a Home admin credential could not be removed. Remove it from Keychain before reusing this device."
+        }
         return removedSelected
     }
 }

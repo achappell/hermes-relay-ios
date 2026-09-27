@@ -25,6 +25,9 @@ final class HomeOwnerAdministrationModel {
     private let pairingID: UUID
     private let coordinator: HomeClientPairingCoordinator
     private let performUnpair: @MainActor () async throws -> Void
+    /// Counts loads so an older one that answers late cannot replace a newer
+    /// answer, such as the list refreshed after a decision.
+    private var loadGeneration = 0
 
     init(
         pairingID: UUID,
@@ -41,12 +44,17 @@ final class HomeOwnerAdministrationModel {
     var isBusy: Bool { busyGrantID != nil || isUnpairing }
 
     func load() async {
+        loadGeneration += 1
+        let generation = loadGeneration
         if case .failed = state { state = .loading }
         do {
-            state = .loaded(try await coordinator.ownerOverview(pairingID: pairingID))
+            let overview = try await coordinator.ownerOverview(pairingID: pairingID)
+            guard generation == loadGeneration else { return }
+            state = .loaded(overview)
         } catch is CancellationError {
             return
         } catch {
+            guard generation == loadGeneration else { return }
             state = .failed(error.localizedDescription)
         }
     }
