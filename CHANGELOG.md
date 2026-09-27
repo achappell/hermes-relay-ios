@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.4.1 (2026-09-27)
+
+<!-- Release notes generated using configuration in .github/release.yml at main -->
+
+## What's Changed
+### Other Changes
+* fix(ios): usable composer with the keyboard up, and no conversation_mismatch after backgrounding by @achappell in https://github.com/achappell/hermes-relay-ios/pull/99
+
+
+**Full Changelog**: https://github.com/achappell/hermes-relay-ios/compare/v0.4.0...v0.4.1
+
 ## 0.4.0 (2026-09-25)
 
 <!-- Release notes generated using configuration in .github/release.yml at main -->
