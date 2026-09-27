@@ -695,13 +695,22 @@ final class HermesRelayIOSTests: XCTestCase {
             revealedTexts: [current.id.uuidString: "Bogota is "],
             speechTimings: [],
             playbackDuration: nil,
-            playbackPosition: nil,
+            playbackPosition: 0.5,
             isPlaybackDurationFinal: false
         )
 
         XCTAssertEqual(displayedEntries.first?.text, "Lima is the capital of Peru.")
         XCTAssertEqual(displayedEntries.last?.text, "Bogota is ")
         XCTAssertEqual(displayedEntries.filter(\.isLive).map(\.text), ["Bogota is "])
+
+        let beforeSpeech = RecentTranscriptDisplay.entries(
+            projection: projection,
+            isResponseActive: true,
+            activeAssistantID: current.id,
+            revealedTexts: [current.id.uuidString: "Bogota is "]
+        )
+        XCTAssertEqual(beforeSpeech.map(\.text), ["Lima is the capital of Peru."],
+                       "Earlier replies stay; the reply in progress waits for its voice")
     }
 
     func testRecentTranscriptDisplayUsesAudioDurationWithoutSpeechTiming() {
@@ -1075,7 +1084,7 @@ final class HermesRelayIOSTests: XCTestCase {
         XCTAssertEqual(projection.entries.map(\.isLive), [false, false, true])
     }
 
-    func testRecentTranscriptShowsFirstWordBeforeRevealTaskPublishesState() {
+    func testReplyTextWaitsForSpeechToStart() {
         let response = "Hermes keeps the answer visible while speaking."
         let message = TranscriptMessage(role: .assistant, text: response)
         let projection = RecentTranscriptProjection(
@@ -1092,10 +1101,11 @@ final class HermesRelayIOSTests: XCTestCase {
             revealedTexts: [:]
         )
 
-        XCTAssertEqual(displayedEntries.last?.text, "Hermes ")
+        // Follow the voice (IOS-UX-F5): nothing streams while Hermes works.
+        XCTAssertTrue(displayedEntries.isEmpty)
     }
 
-    func testRecentTranscriptDisplayDoesNotHideAssistantForAnEmptyRevealCursor() {
+    func testAPacedRevealCursorDoesNotShowTextBeforeSpeech() {
         let messageID = UUID()
         let projection = RecentTranscriptProjection(
             messages: [
@@ -1110,10 +1120,10 @@ final class HermesRelayIOSTests: XCTestCase {
             projection: projection,
             isResponseActive: true,
             activeAssistantID: messageID,
-            revealedTexts: [messageID.uuidString: ""]
+            revealedTexts: [messageID.uuidString: "Hermes is "]
         )
 
-        XCTAssertEqual(displayedEntries.last?.text, "Hermes ")
+        XCTAssertTrue(displayedEntries.isEmpty, "No reply text before its voice, even if paced text exists")
     }
 
     func testSessionDurationFormatsMinuteAndHourDurations() {
