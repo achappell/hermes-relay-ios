@@ -1,5 +1,22 @@
 # Changelog
 
+## 0.5.0 (2026-09-27)
+
+<!-- Release notes generated using configuration in .github/release.yml at main -->
+
+## What's Changed
+### Other Changes
+* test(ios): wait for the HUD activity snapshot with a time bound by @achappell in https://github.com/achappell/hermes-relay-ios/pull/101
+* fix(ios): open a fresh Home claim after a refused reconnect by @achappell in https://github.com/achappell/hermes-relay-ios/pull/103
+* feat(ios): share content-free connection diagnostics from Settings (IOS-DIAG-01) by @achappell in https://github.com/achappell/hermes-relay-ios/pull/104
+* IOS-HOME-02 slice 2: manage Home client sessions by @achappell in https://github.com/achappell/hermes-relay-ios/pull/105
+* fix(ios): accept Hermes's session.title reply when renaming by @achappell in https://github.com/achappell/hermes-relay-ios/pull/106
+* docs(ux): voice controls UX pass by @achappell in https://github.com/achappell/hermes-relay-ios/pull/107
+* feat(ios): make the voice orb the talk control by @achappell in https://github.com/achappell/hermes-relay-ios/pull/108
+
+
+**Full Changelog**: https://github.com/achappell/hermes-relay-ios/compare/v0.4.1...v0.5.0
+
 ## 0.4.1 (2026-09-27)
 
 <!-- Release notes generated using configuration in .github/release.yml at main -->
