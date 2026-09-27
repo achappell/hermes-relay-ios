@@ -397,6 +397,46 @@ final class HomeBridgeSessionClientTests: XCTestCase {
         await fixture.client.close()
     }
 
+    func testRefusedReconnectLetsAFreshClaimOpenOnItsOwnSocket() async throws {
+        // Home refuses reconnecting the held conversation and the app makes
+        // one fresh claim on the same client.
+        let fixture = try await makeFixture()
+        guard case .ready(let binding, _) = await fixture.client.open(claim: fixture.claim) else {
+            return XCTFail("A valid Home bridge response must become ready")
+        }
+        await fixture.socket.setNextError(
+            for: "conversation.reconnect",
+            jsonRPCCode: -32_000,
+            homeCode: "stale_conversation"
+        )
+        let freshClaim = HomeConversationClaim(
+            profileID: fixture.claim.profileID,
+            conversationHandle: "fresh-home-conversation",
+            approvedRoute: fixture.claim.approvedRoute
+        )
+        await fixture.secondSocket.setNextResultJSON(for: "conversation.open", """
+        {"schema":1,"status":"ready","conversation_handle":"fresh-home-conversation",\
+        "route":{"class":"home","id":"home-a"},\
+        "capabilities":{"commands":[],"timing":"absent","interrupt":true,"audio":true},\
+        "unresolved_turn":false}
+        """)
+
+        let refused = await fixture.client.reconnect(binding: binding)
+        let fresh = await fixture.client.open(claim: freshClaim)
+
+        XCTAssertEqual(
+            refused,
+            .unavailable(.home(code: .staleConversation, phase: .reconnect))
+        )
+        guard case .ready(let freshBinding, _) = fresh else {
+            return XCTFail("A fresh claim must open after Home refused the reconnect, got \(fresh)")
+        }
+        XCTAssertEqual(freshBinding.conversationHandle, "fresh-home-conversation")
+        let socketOpenCount = await fixture.factory.openCount
+        XCTAssertEqual(socketOpenCount, 2)
+        await fixture.client.close()
+    }
+
     func testReconnectRequiredOpenRetiresSocketForExplicitReconnect() async throws {
         let fixture = try await makeFixture()
         await fixture.socket.setNextOpenReason(HomeWireReason.reconnectRequired.rawValue)

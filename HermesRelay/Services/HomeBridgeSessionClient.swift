@@ -426,9 +426,11 @@ actor URLSessionHomeBridgeSessionClient: HomeBridgeSessionClient {
                 capabilitiesAreEstablished: !reconnectCapabilitiesUnverified
             )
             guard result.routeMatches else {
+                await abandonRefusedConversation()
                 return .unavailable(.route(.identityMismatch))
             }
             guard result.capabilitiesMatch else {
+                await abandonRefusedConversation()
                 return .unavailable(.home(code: .conversationMismatch, phase: .reconnect))
             }
             switch result.status {
@@ -460,6 +462,7 @@ actor URLSessionHomeBridgeSessionClient: HomeBridgeSessionClient {
                     || result.unresolvedTurnID != nil {
                     return .unavailable(.reconnectRequired)
                 }
+                await abandonRefusedConversation()
                 return .unavailable(mapOpenReason(result.reason ?? .protocolError))
             }
         } catch is HomeWireDecodingError {
@@ -470,9 +473,11 @@ actor URLSessionHomeBridgeSessionClient: HomeBridgeSessionClient {
             return .disconnected(.home(code: .transportTimeout, phase: .reconnect))
         } catch {
             let failure = failure(for: error, phase: .reconnect)
-            return failure.classification == .uncertain
-                ? .disconnected(failure)
-                : .unavailable(failure)
+            guard failure.classification != .uncertain else {
+                return .disconnected(failure)
+            }
+            await abandonRefusedConversation()
+            return .unavailable(failure)
         }
     }
 
@@ -841,8 +846,8 @@ actor URLSessionHomeBridgeSessionClient: HomeBridgeSessionClient {
         await connection?.close()
     }
 
-    /// Home refused this conversation, e.g. a claim whose reconnect grace
-    /// ended while the app was in the background. Home's endpoint stays
+    /// Home refused this conversation on open or reconnect, e.g. a claim
+    /// whose reconnect grace ended while the app was in the background. Home's endpoint stays
     /// bound to the refused handle, so the next claim needs its own socket,
     /// and the refused binding must not gate it: reusing either turned the
     /// fresh claim's open into `conversation_mismatch`.
