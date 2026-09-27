@@ -378,7 +378,7 @@ struct HomePairingView: View {
             .disabled(model.isRefreshing)
             .accessibilityIdentifier("home-pairing-refresh")
         } footer: {
-            Text("Refresh after a Profile owner approves a waiting grant.")
+            Text("A waiting Profile is approved from a device already using it, in Settings → Home pairing. Refresh afterwards.")
         }
     }
 

@@ -297,6 +297,42 @@ enum HomeClientConnectError: Error, LocalizedError, Equatable, Sendable {
     }
 }
 
+struct HomeProfileOwnerOverview: Equatable, Sendable {
+    let pending: [HomeProfileGrantHolder]
+    let holders: [HomeProfileGrantHolder]
+
+    struct HolderGroup: Equatable, Identifiable, Sendable {
+        let profileLabel: String
+        let holders: [HomeProfileGrantHolder]
+        var id: String { profileLabel }
+    }
+
+    /// Holders grouped by Profile label, in Home's order.
+    var holderGroups: [HolderGroup] {
+        var order: [String] = []
+        var groups: [String: [HomeProfileGrantHolder]] = [:]
+        for holder in holders {
+            if groups[holder.profileLabel] == nil { order.append(holder.profileLabel) }
+            groups[holder.profileLabel, default: []].append(holder)
+        }
+        return order.map { HolderGroup(profileLabel: $0, holders: groups[$0] ?? []) }
+    }
+}
+
+enum HomeOwnerAdministrationError: Error, LocalizedError, Equatable, Sendable {
+    case notAllowed
+    case alreadyDecided
+
+    var errorDescription: String? {
+        switch self {
+        case .notAllowed:
+            return "Home did not allow this change. This device may no longer hold that Profile, and on a shared Profile only the Home page can remove another device."
+        case .alreadyDecided:
+            return "This request expired or was already decided."
+        }
+    }
+}
+
 private final class HomeClientResultBox<Value>: @unchecked Sendable {
     var value: Value?
 }
@@ -416,6 +452,70 @@ actor HomeClientClaimCoordinator {
         } catch {
             throw await connectError(error, pairing: pairing)
         }
+    }
+
+    /// Pending owner requests and holders for the Profiles this device holds.
+    func ownerOverview(pairingID: UUID) async throws -> HomeProfileOwnerOverview {
+        let pairing = try await usablePairing(pairingID)
+        do {
+            let home = pairing.home
+            let pending = try await withCredential(pairing) { [service] credential in
+                try await service.pendingProfileGrants(home: home, credential: credential)
+            }
+            let holders = try await withCredential(pairing) { [service] credential in
+                try await service.profileHolders(home: home, credential: credential)
+            }
+            return HomeProfileOwnerOverview(pending: pending, holders: holders)
+        } catch {
+            throw await connectError(error, pairing: pairing)
+        }
+    }
+
+    /// Approves, rejects or revokes one grant. Only an explicit user action
+    /// calls this; nothing is retried.
+    func decideProfileGrant(
+        pairingID: UUID,
+        grantID: String,
+        action: HomeProfileGrantAction
+    ) async throws -> HomeProfileGrantDecision {
+        let pairing = try await usablePairing(pairingID)
+        let home = pairing.home
+        do {
+            return try await withCredential(pairing) { [service] credential in
+                try await service.decideProfileGrant(
+                    home: home,
+                    credential: credential,
+                    grantID: grantID,
+                    action: action
+                )
+            }
+        } catch HomeClientServiceError.denied(.unauthorized) {
+            // Home answers 401 both for a bad credential and for a decision
+            // this device may not make. A readable pending list proves the
+            // credential, so only the decision was refused.
+            do {
+                _ = try await withCredential(pairing) { [service] credential in
+                    try await service.pendingProfileGrants(home: home, credential: credential)
+                }
+            } catch {
+                throw await connectError(error, pairing: pairing)
+            }
+            throw HomeOwnerAdministrationError.notAllowed
+        } catch HomeClientServiceError.denied(.notFound) {
+            throw HomeOwnerAdministrationError.alreadyDecided
+        } catch {
+            throw await connectError(error, pairing: pairing)
+        }
+    }
+
+    private func usablePairing(_ pairingID: UUID) async throws -> HomeClientPairing {
+        guard let pairing = try await pairings.pairing(id: pairingID) else {
+            throw HomeClientPairingStoreError.unknownPairing
+        }
+        guard pairing.credentialUsable else {
+            throw HomeClientConnectError.pairAgain(home: pairing.home.displayName)
+        }
+        return pairing
     }
 
     /// Renews if due, then reads grants and revision into the pairing record.
@@ -797,6 +897,32 @@ actor HomeClientPairingCoordinator {
     func profileRemoved(_ profileID: UUID) async throws {
         guard let emptied = try await pairings.removeProfile(profileID) else { return }
         try await credentials.removeCredential(for: emptied.id)
+    }
+
+    func ownerOverview(pairingID: UUID) async throws -> HomeProfileOwnerOverview {
+        try await claimCoordinator.ownerOverview(pairingID: pairingID)
+    }
+
+    func decideProfileGrant(
+        pairingID: UUID,
+        grantID: String,
+        action: HomeProfileGrantAction
+    ) async throws -> HomeProfileGrantDecision {
+        try await claimCoordinator.decideProfileGrant(pairingID: pairingID, grantID: grantID, action: action)
+    }
+
+    /// Forgets this Home locally: the Keychain credential first, so a failure
+    /// leaves the record in place for another try, then the pairing record.
+    /// Home keeps listing the device until it is removed on the Home page;
+    /// Home offers no device self-revoke. Returns the forgotten pairing so the
+    /// caller can remove its app profiles.
+    func unpair(pairingID: UUID) async throws -> HomeClientPairing {
+        guard let pairing = try await pairings.pairing(id: pairingID) else {
+            throw HomeClientPairingStoreError.unknownPairing
+        }
+        try await credentials.removeCredential(for: pairing.id)
+        try await pairings.remove(pairingID: pairing.id)
+        return pairing
     }
 
     private func ensureProfiles(_ pairing: HomeClientPairing) async throws -> HomeClientPairing {

@@ -48,6 +48,26 @@ protocol HomeClientService: Sendable {
         credential: Data,
         _ request: HomeClientClaimSessionRequest
     ) async throws -> HomeClientClaimSessionLookup
+
+    /// Grants waiting for this device's owner decision (`GET /api/v1/profile-grants/pending`).
+    func pendingProfileGrants(
+        home: HomeClientBaseURL,
+        credential: Data
+    ) async throws -> [HomeProfileGrantHolder]
+
+    /// Every device holding a Profile this device holds (`GET /api/v1/profile-grants/holders`).
+    func profileHolders(
+        home: HomeClientBaseURL,
+        credential: Data
+    ) async throws -> [HomeProfileGrantHolder]
+
+    /// `POST /api/v1/profile-grants/{grant_id}/approve|reject|revoke`.
+    func decideProfileGrant(
+        home: HomeClientBaseURL,
+        credential: Data,
+        grantID: String,
+        action: HomeProfileGrantAction
+    ) async throws -> HomeProfileGrantDecision
 }
 
 struct URLSessionHomeClientService: HomeClientService, CustomStringConvertible {
@@ -166,6 +186,49 @@ struct URLSessionHomeClientService: HomeClientService, CustomStringConvertible {
         return try await send(request, as: HomeClientClaimSessionLookup.self)
     }
 
+    func pendingProfileGrants(
+        home: HomeClientBaseURL,
+        credential: Data
+    ) async throws -> [HomeProfileGrantHolder] {
+        let request = try makeRequest(
+            home.apiURL("/api/v1/profile-grants/pending"),
+            method: "GET",
+            body: Optional<HomeProfileGrantActionBody>.none,
+            credential: credential
+        )
+        return try await send(request, as: HomeProfileGrantPendingList.self).pending
+    }
+
+    func profileHolders(
+        home: HomeClientBaseURL,
+        credential: Data
+    ) async throws -> [HomeProfileGrantHolder] {
+        let request = try makeRequest(
+            home.apiURL("/api/v1/profile-grants/holders"),
+            method: "GET",
+            body: Optional<HomeProfileGrantActionBody>.none,
+            credential: credential
+        )
+        return try await send(request, as: HomeProfileGrantHolderList.self).holders
+    }
+
+    func decideProfileGrant(
+        home: HomeClientBaseURL,
+        credential: Data,
+        grantID: String,
+        action: HomeProfileGrantAction
+    ) async throws -> HomeProfileGrantDecision {
+        let request = try makeRequest(
+            home.apiURL("/api/v1/profile-grants/\(try pathSegment(grantID))/\(action.rawValue)"),
+            method: "POST",
+            body: HomeProfileGrantActionBody(),
+            credential: credential
+        )
+        let decision = try await send(request, as: HomeProfileGrantDecision.self)
+        guard decision.grantID == grantID else { throw HomeClientServiceError.invalidResponse }
+        return decision
+    }
+
     private func makeRequest<Body: Encodable>(
         _ url: URL,
         method: String,
@@ -237,7 +300,19 @@ actor FakeHomeClientService: HomeClientService {
         case claim(grantID: String, revision: Int)
         case listSessions(grantID: String)
         case claimSession
+        case pendingGrants
+        case holders
+        case decide(grantID: String, action: HomeProfileGrantAction)
     }
+
+    /// Grants waiting for this device's decision, and every holder, as Home lists them.
+    var pendingGrants: [HomeProfileGrantHolder] = []
+    var holders: [HomeProfileGrantHolder] = []
+    /// Errors answered by the pending and holder lists, in order; the last one repeats.
+    var pendingErrors: [HomeClientServiceError] = []
+    var holdersError: HomeClientServiceError?
+    /// Errors answered for a decision on one grant.
+    var decisionErrors: [String: HomeClientServiceError] = [:]
 
     /// The Profile's sessions, newest first, as the list route returns them.
     var sessions: [HomeClientSessionSummary] = []
@@ -448,5 +523,88 @@ actor FakeHomeClientService: HomeClientService {
         calls.append(.claimSession)
         credentialsSeen.append(credential)
         return HomeClientClaimSessionLookup(sessionRef: sessionRefsByHandle[request.conversationHandle])
+    }
+
+    func setPendingGrants(_ grants: [HomeProfileGrantHolder]) {
+        pendingGrants = grants
+    }
+
+    func setHolders(_ holders: [HomeProfileGrantHolder]) {
+        self.holders = holders
+    }
+
+    func setPendingErrors(_ errors: [HomeClientServiceError]) {
+        pendingErrors = errors
+    }
+
+    func setHoldersError(_ error: HomeClientServiceError?) {
+        holdersError = error
+    }
+
+    func setDecisionErrors(_ errors: [String: HomeClientServiceError]) {
+        decisionErrors = errors
+    }
+
+    func pendingProfileGrants(
+        home: HomeClientBaseURL,
+        credential: Data
+    ) async throws -> [HomeProfileGrantHolder] {
+        calls.append(.pendingGrants)
+        credentialsSeen.append(credential)
+        if !pendingErrors.isEmpty {
+            throw pendingErrors.count > 1 ? pendingErrors.removeFirst() : pendingErrors[0]
+        }
+        return pendingGrants
+    }
+
+    func profileHolders(
+        home: HomeClientBaseURL,
+        credential: Data
+    ) async throws -> [HomeProfileGrantHolder] {
+        calls.append(.holders)
+        credentialsSeen.append(credential)
+        if let holdersError { throw holdersError }
+        return holders
+    }
+
+    /// Applies the decision the way Home does: approve activates a pending
+    /// grant, reject removes it, revoke removes a holder.
+    func decideProfileGrant(
+        home: HomeClientBaseURL,
+        credential: Data,
+        grantID: String,
+        action: HomeProfileGrantAction
+    ) async throws -> HomeProfileGrantDecision {
+        calls.append(.decide(grantID: grantID, action: action))
+        credentialsSeen.append(credential)
+        if let error = decisionErrors[grantID] { throw error }
+        switch action {
+        case .approve, .reject:
+            guard let index = pendingGrants.firstIndex(where: { $0.grantID == grantID }) else {
+                throw HomeClientServiceError.denied(.notFound)
+            }
+            let grant = pendingGrants.remove(at: index)
+            holders.removeAll { $0.grantID == grantID }
+            guard action == .approve else {
+                return HomeProfileGrantDecision(grantID: grantID, status: .rejected)
+            }
+            holders.append(HomeProfileGrantHolder(
+                grantID: grant.grantID,
+                deviceLabel: grant.deviceLabel,
+                deviceType: grant.deviceType,
+                profileLabel: grant.profileLabel,
+                status: .active,
+                createdAt: grant.createdAt
+            ))
+            return HomeProfileGrantDecision(grantID: grantID, status: .active)
+        case .revoke:
+            guard holders.contains(where: { $0.grantID == grantID })
+                || pendingGrants.contains(where: { $0.grantID == grantID }) else {
+                throw HomeClientServiceError.denied(.notFound)
+            }
+            holders.removeAll { $0.grantID == grantID }
+            pendingGrants.removeAll { $0.grantID == grantID }
+            return HomeProfileGrantDecision(grantID: grantID, status: .revoked)
+        }
     }
 }

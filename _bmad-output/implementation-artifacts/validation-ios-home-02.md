@@ -116,6 +116,37 @@ Spec: [spec-ios-home-02-sessions.md](spec-ios-home-02-sessions.md). Gates are ke
 
 Connect lands in the most recent session; the sheet lists sessions started on another client (TUI or a Room device); resume one; New conversation; rename (if Hermes advertises `title`); `session_busy` against a session held by another claim; background beyond the grace returns to the same session.
 
+## Slice 3 — Profile-owner administration
+
+Spec: [spec-ios-home-02-owner-administration.md](spec-ios-home-02-owner-administration.md). Implemented on branch `claude/ios-grant-approval-e7uc0p` against the Home `main` `profile-grants` routes.
+
+### Local gate (2026-09-27): open
+
+The implementation container has no Swift toolchain. Its network policy also denied `download.swift.org`, so no Linux stand-in could be installed. Nothing in this slice has been compiled or run. Before review, record:
+
+- Focused `HomeClientPairingTests` (the slice-3 tests below), the full iOS Simulator suite, and the macOS build on Xcode 26.6.
+
+| Matrix row | Test |
+| --- | --- |
+| Routes, methods, `Device` authorization, `{"schema": 1}` body, holder decoding, redacted descriptions | `testProfileGrantRoutesMatchTheHomeContract` |
+| Decision for another grant, unknown holder field, `401` surfaced as a denial | `testProfileGrantResponsesOutsideTheContractAreRejected` |
+| Approve a pending grant; holders grouped by Profile | `testOwnerApprovesAPendingGrantAndSeesItAmongTheHolders` |
+| `401` on a decision with a readable pending list: not allowed, credential kept | `testARefusedDecisionKeepsAUsableCredential` |
+| `401` on a decision and on the list: Pair again, pairing marked unusable | `testARefusedDecisionWithARefusedCredentialMeansPairAgain` |
+| `404 not_found`: expired or already decided | `testAnExpiredOrDecidedRequestSaysSo` |
+| Unreachable Home leaves the pairing usable | `testOwnerListsReportAnUnreachableHomeWithoutMarkingThePairing` |
+| Screen model: outcome message, refresh, busy state cleared | `testOwnerModelShowsTheOutcomeAndRefreshes` |
+| Unpair removes profiles, transcripts, record and Keychain credential, keeps unrelated profiles, and makes no Home call | `testUnpairForgetsTheHomeLocallyWithoutCallingHome` |
+
+### Live checks to record (iOS and macOS separately)
+
+- Approve a second client's `pending_owner` grant from the phone; the requester's Refresh gains the profile.
+- Reject a request.
+- Revoke a holder of an owned Profile.
+- Attempt to revoke another holder of a shared Profile and see "Home did not allow this change".
+- Holders show "This device" and the bootstrap device.
+- Unpair, then confirm that the Home page still lists the device until it is removed there.
+
 ## Evidence safety
 
 This record contains no credentials, pairing codes, handles, prompts, response text, raw protocol frames, PCM data, or microphone captures.

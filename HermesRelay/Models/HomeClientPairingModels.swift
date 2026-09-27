@@ -316,6 +316,8 @@ struct HomeClientGrantStatus: RawRepresentable, Codable, Hashable, Sendable {
 
     static let active = HomeClientGrantStatus(rawValue: "active")
     static let pendingOwner = HomeClientGrantStatus(rawValue: "pending_owner")
+    static let rejected = HomeClientGrantStatus(rawValue: "rejected")
+    static let revoked = HomeClientGrantStatus(rawValue: "revoked")
 }
 
 /// One Profile grant as Home presents it: an opaque `grant_id` and a display
@@ -626,6 +628,153 @@ struct HomeClientSessionList: Decodable, Equatable, Sendable {
             throw HomeWireDecodingError.unsupportedSchema
         }
         sessions = try values.decode([HomeClientSessionSummary].self, forKey: .sessions)
+    }
+}
+
+// MARK: - Profile grants (owner administration)
+
+/// One device's grant to a Profile this device holds, as Home lists it for
+/// pending requests and holders. Other devices appear by label and type only.
+struct HomeProfileGrantHolder: Decodable, Equatable, Sendable, Identifiable,
+    CustomStringConvertible, CustomDebugStringConvertible, CustomReflectable {
+    let grantID: String
+    let deviceLabel: String
+    let deviceType: String
+    let profileLabel: String
+    let status: HomeClientGrantStatus
+    /// Granted by the admin as the Profile's first device.
+    let bootstrap: Bool
+    let isThisDevice: Bool
+    let createdAt: Date?
+
+    var id: String { grantID }
+    var isPending: Bool { status == .pendingOwner }
+
+    init(
+        grantID: String,
+        deviceLabel: String,
+        deviceType: String,
+        profileLabel: String,
+        status: HomeClientGrantStatus,
+        bootstrap: Bool = false,
+        isThisDevice: Bool = false,
+        createdAt: Date? = nil
+    ) {
+        self.grantID = grantID
+        self.deviceLabel = deviceLabel
+        self.deviceType = deviceType
+        self.profileLabel = profileLabel
+        self.status = status
+        self.bootstrap = bootstrap
+        self.isThisDevice = isThisDevice
+        self.createdAt = createdAt
+    }
+
+    private enum CodingKeys: String, CodingKey, CaseIterable {
+        case grantID = "grant_id"
+        case deviceLabel = "device_label"
+        case deviceType = "device_type"
+        case profileLabel = "profile_label"
+        case status, bootstrap
+        case isThisDevice = "this_device"
+        case createdAt = "created_at"
+    }
+
+    init(from decoder: Decoder) throws {
+        try HomeClientStrictKeys.require(decoder, allowed: CodingKeys.allCases)
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        grantID = try HomeClientStrictKeys.identifier(values.decode(String.self, forKey: .grantID))
+        deviceLabel = try values.decode(String.self, forKey: .deviceLabel)
+        deviceType = try values.decode(String.self, forKey: .deviceType)
+        profileLabel = try values.decode(String.self, forKey: .profileLabel)
+        status = try values.decode(HomeClientGrantStatus.self, forKey: .status)
+        bootstrap = try values.decode(Bool.self, forKey: .bootstrap)
+        isThisDevice = try values.decode(Bool.self, forKey: .isThisDevice)
+        let created = try values.decode(Double.self, forKey: .createdAt)
+        guard created.isFinite, created >= 0 else { throw HomeWireDecodingError.invalidShape }
+        createdAt = created > 0 ? Date(timeIntervalSince1970: created) : nil
+    }
+
+    var description: String { "HomeProfileGrantHolder(status: \(status.rawValue), thisDevice: \(isThisDevice))" }
+    var debugDescription: String { description }
+    var customMirror: Mirror { Mirror(self, children: ["status": status.rawValue, "thisDevice": isThisDevice]) }
+}
+
+/// `GET /api/v1/profile-grants/pending`.
+struct HomeProfileGrantPendingList: Decodable, Equatable, Sendable {
+    let pending: [HomeProfileGrantHolder]
+
+    private enum CodingKeys: String, CodingKey, CaseIterable { case schema, pending }
+
+    init(from decoder: Decoder) throws {
+        try HomeClientStrictKeys.require(decoder, allowed: CodingKeys.allCases)
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        guard try values.decode(Int.self, forKey: .schema) == 1 else {
+            throw HomeWireDecodingError.unsupportedSchema
+        }
+        pending = try values.decode([HomeProfileGrantHolder].self, forKey: .pending)
+    }
+}
+
+/// `GET /api/v1/profile-grants/holders`.
+struct HomeProfileGrantHolderList: Decodable, Equatable, Sendable {
+    let holders: [HomeProfileGrantHolder]
+
+    private enum CodingKeys: String, CodingKey, CaseIterable { case schema, holders }
+
+    init(from decoder: Decoder) throws {
+        try HomeClientStrictKeys.require(decoder, allowed: CodingKeys.allCases)
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        guard try values.decode(Int.self, forKey: .schema) == 1 else {
+            throw HomeWireDecodingError.unsupportedSchema
+        }
+        holders = try values.decode([HomeProfileGrantHolder].self, forKey: .holders)
+    }
+}
+
+enum HomeProfileGrantAction: String, Equatable, Sendable {
+    case approve
+    case reject
+    case revoke
+}
+
+/// `POST /api/v1/profile-grants/{grant_id}/{action}` body.
+struct HomeProfileGrantActionBody: Encodable, Equatable, Sendable {
+    private enum CodingKeys: String, CodingKey { case schema }
+
+    func encode(to encoder: Encoder) throws {
+        var values = encoder.container(keyedBy: CodingKeys.self)
+        try values.encode(1, forKey: .schema)
+    }
+}
+
+/// The grant's status after a decision or revoke.
+struct HomeProfileGrantDecision: Decodable, Equatable, Sendable {
+    let grantID: String
+    let status: HomeClientGrantStatus
+
+    init(grantID: String, status: HomeClientGrantStatus) {
+        self.grantID = grantID
+        self.status = status
+    }
+
+    private enum CodingKeys: String, CodingKey, CaseIterable { case schema, grant }
+    private enum GrantKeys: String, CodingKey, CaseIterable {
+        case grantID = "grant_id"
+        case status
+    }
+
+    init(from decoder: Decoder) throws {
+        try HomeClientStrictKeys.require(decoder, allowed: CodingKeys.allCases)
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        guard try values.decode(Int.self, forKey: .schema) == 1 else {
+            throw HomeWireDecodingError.unsupportedSchema
+        }
+        let grant = try values.superDecoder(forKey: .grant)
+        try HomeClientStrictKeys.require(grant, allowed: GrantKeys.allCases)
+        let grantValues = try grant.container(keyedBy: GrantKeys.self)
+        grantID = try HomeClientStrictKeys.identifier(grantValues.decode(String.self, forKey: .grantID))
+        status = try grantValues.decode(HomeClientGrantStatus.self, forKey: .status)
     }
 }
 
