@@ -19,6 +19,7 @@ final class ConversationStore {
     private let homeClock: any HomeMonotonicClock
     private let homeOperationDeadlines: HomeOperationDeadlines
     private let homeTurnAudioDeadlines: HomeTurnAudioDeadlines
+    private var homeAudioLastReceivedAt: ContinuousClock.Instant?
     private var homeClient: (any HomeBridgeSessionClient)?
     private var homeClaim: HomeConversationClaim?
     private var homeConversationBinding: HomeConversationBinding?
@@ -694,19 +695,13 @@ final class ConversationStore {
         return fields.joined(separator: ",")
     }
 
-    /// Whether Home's reconnect names the same conversation. Capabilities are
-    /// excluded: Home reports its current ones, and a binding rebuilt from a
-    /// held claim after backgrounding carries none, so comparing them turned
-    /// every quick return to the app into `conversation_mismatch`.
+    /// Whether Home's reconnect names the same conversation; see
+    /// `HomeConversationBinding.isSameConversation(as:)`.
     nonisolated static func isSameConversation(
         _ lhs: HomeConversationBinding,
         _ rhs: HomeConversationBinding
     ) -> Bool {
-        lhs.profileID == rhs.profileID
-            && lhs.conversationHandle == rhs.conversationHandle
-            && lhs.endpoint == rhs.endpoint
-            && lhs.route == rhs.route
-            && lhs.householdBinding == rhs.householdBinding
+        lhs.isSameConversation(as: rhs)
     }
 
     /// Names of the fields that differ between two bindings, for diagnostics.
@@ -714,12 +709,7 @@ final class ConversationStore {
         _ lhs: HomeConversationBinding,
         _ rhs: HomeConversationBinding
     ) -> String {
-        var fields: [String] = []
-        if lhs.profileID != rhs.profileID { fields.append("profile") }
-        if lhs.conversationHandle != rhs.conversationHandle { fields.append("handle") }
-        if lhs.endpoint != rhs.endpoint { fields.append("endpoint") }
-        if lhs.route != rhs.route { fields.append("route") }
-        if lhs.householdBinding != rhs.householdBinding { fields.append("household") }
+        var fields = lhs.identityDifferences(from: rhs)
         if lhs.capabilities != rhs.capabilities { fields.append("capabilities") }
         return fields.joined(separator: ",")
     }
@@ -1209,6 +1199,7 @@ final class ConversationStore {
                   !homeAudioTerminal,
                   !homeAudioTerminalProcessing,
                   !data.isEmpty else { return }
+            homeAudioLastReceivedAt = homeClock.now()
             for event in homeNormalizer.normalizeHomeAudio(event) {
                 if let homeEventHandler { await homeEventHandler(event) }
             }
@@ -1316,17 +1307,23 @@ final class ConversationStore {
         }
     }
 
+    /// Home streams speech at about real time, so a long reply's audio can
+    /// take well over `audioTerminal` to arrive. The deadline is for silence:
+    /// it runs from the latest audio received, not from `audio_start`.
     private func scheduleHomeAudioDeadline(for turn: HomeTurnBinding?) {
         guard let turn else { return }
         homeAudioTimeoutTask?.cancel()
-        let deadline = homeClock.now().advanced(
-            by: homeTurnAudioDeadlines.audioTerminal
-        )
+        homeAudioLastReceivedAt = homeClock.now()
         homeAudioTimeoutTask = Task { [weak self] in
-            do {
-                try await self?.homeClock.sleep(until: deadline)
-            } catch {
-                return
+            while true {
+                guard let lastReceived = self?.homeAudioLastReceivedAt,
+                      let silence = self?.homeTurnAudioDeadlines.audioTerminal else { return }
+                do {
+                    try await self?.homeClock.sleep(until: lastReceived.advanced(by: silence))
+                } catch {
+                    return
+                }
+                guard let latest = self?.homeAudioLastReceivedAt, latest > lastReceived else { break }
             }
             guard let self,
                   self.homeTurnBinding == turn else { return }
