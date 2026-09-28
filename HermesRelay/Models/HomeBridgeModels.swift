@@ -315,6 +315,11 @@ enum HomeBridgeDiagnostic: Equatable, Sendable {
 
 protocol HomeBridgeDiagnostics: Sendable {
     func record(_ event: HomeBridgeDiagnostic) async
+    func connectionResult(ready: Bool, code: HomeFailureCode?, phase: HomeFailurePhase) async
+}
+
+extension HomeBridgeDiagnostics {
+    func connectionResult(ready: Bool, code: HomeFailureCode?, phase: HomeFailurePhase) async {}
 }
 
 struct NoopHomeBridgeDiagnostics: HomeBridgeDiagnostics {
