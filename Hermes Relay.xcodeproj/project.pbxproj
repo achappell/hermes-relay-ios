@@ -67,6 +67,7 @@
 		A10000000000000000000104 /* HomeClientPairingStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000000000000000000105 /* HomeClientPairingStore.swift */; };
 		A10000000000000000000106 /* HomePairingView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000000000000000000107 /* HomePairingView.swift */; };
 		A10000000000000000000110 /* HomeSessionsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000000000000000000111 /* HomeSessionsView.swift */; };
+		A10000000000000000000112 /* HomeOwnerAdministrationView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000000000000000000113 /* HomeOwnerAdministrationView.swift */; };
 		A10000000000000000000108 /* HomePairingScannerView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000000000000000000109 /* HomePairingScannerView.swift */; };
 		A1000000000000000000010A /* HomeClientPairingTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1000000000000000000010B /* HomeClientPairingTests.swift */; };
 		A100000000000000000000F0 /* AppleLifecycleCoordinator.swift in Sources */ = {isa = PBXBuildFile; fileRef = A100000000000000000000F1 /* AppleLifecycleCoordinator.swift */; };
@@ -153,6 +154,7 @@
 		A10000000000000000000105 /* HomeClientPairingStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HomeClientPairingStore.swift; sourceTree = "<group>"; };
 		A10000000000000000000107 /* HomePairingView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HomePairingView.swift; sourceTree = "<group>"; };
 		A10000000000000000000111 /* HomeSessionsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HomeSessionsView.swift; sourceTree = "<group>"; };
+		A10000000000000000000113 /* HomeOwnerAdministrationView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HomeOwnerAdministrationView.swift; sourceTree = "<group>"; };
 		A10000000000000000000109 /* HomePairingScannerView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HomePairingScannerView.swift; sourceTree = "<group>"; };
 		A1000000000000000000010B /* HomeClientPairingTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HomeClientPairingTests.swift; sourceTree = "<group>"; };
 		A1000000000000000000010C /* Release-Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = "Release-Info.plist"; sourceTree = "<group>"; };
@@ -307,6 +309,7 @@
 				A100000000000000000000B3 /* RelayConfigurationView.swift */,
 				A10000000000000000000107 /* HomePairingView.swift */,
 				A10000000000000000000111 /* HomeSessionsView.swift */,
+				A10000000000000000000113 /* HomeOwnerAdministrationView.swift */,
 				A10000000000000000000109 /* HomePairingScannerView.swift */,
 				A10000000000000000000025 /* ContentView.swift */,
 				A10000000000000000000026 /* MessageBubble.swift */,
@@ -463,6 +466,7 @@
 				A10000000000000000000104 /* HomeClientPairingStore.swift in Sources */,
 				A10000000000000000000106 /* HomePairingView.swift in Sources */,
 				A10000000000000000000110 /* HomeSessionsView.swift in Sources */,
+				A10000000000000000000112 /* HomeOwnerAdministrationView.swift in Sources */,
 				A10000000000000000000108 /* HomePairingScannerView.swift in Sources */,
 				A100000000000000000000F0 /* AppleLifecycleCoordinator.swift in Sources */,
 			);

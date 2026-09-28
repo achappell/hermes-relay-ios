@@ -9,6 +9,7 @@ final class RelayProfileListModel {
     private(set) var collection = RelayProfileCollection()
     /// App profiles bound to a Home pairing grant.
     private(set) var pairedProfileIDs: Set<UUID> = []
+    private(set) var pairings: [HomeClientPairing] = []
     var errorMessage: String?
 
     private let configurationStore: RelayConfigurationStore
@@ -39,8 +40,10 @@ final class RelayProfileListModel {
         }
         if let homePairingCoordinator,
            let pairings = try? await homePairingCoordinator.allPairings() {
+            self.pairings = pairings
             pairedProfileIDs = Set(pairings.flatMap { $0.profiles.map(\.profileID) })
         } else {
+            pairings = []
             pairedProfileIDs = []
         }
     }
@@ -96,6 +99,45 @@ final class RelayProfileListModel {
             errorMessage = error.localizedDescription
             return false
         }
+    }
+
+    /// Forgets a Home locally: its saved profiles and their transcripts first,
+    /// then the pairing record and Keychain credential. A failure part-way
+    /// leaves the pairing in place so Unpair can be tried again. Returns
+    /// whether the selected profile was among those removed.
+    func unpair(pairingID: UUID) async throws -> Bool {
+        guard let homePairingCoordinator else { throw HomeClientPairingStoreError.unknownPairing }
+        guard let pairing = try await homePairingCoordinator.allPairings().first(where: { $0.id == pairingID }) else {
+            throw HomeClientPairingStoreError.unknownPairing
+        }
+        let current = try await configurationStore.loadCollection()
+        let removedIDs = Set(pairing.profiles.map(\.profileID))
+        let removedSelected = current.selectedID.map { removedIDs.contains($0) } ?? false
+        var adminCleanupFailed = false
+        for profileID in removedIDs where current.profiles.contains(where: { $0.id == profileID }) {
+            try await configurationStore.deleteProfile(id: profileID)
+            do {
+                try await homeAdminCredentialStore?.delete(for: profileID)
+            } catch {
+                adminCleanupFailed = true
+            }
+            if let conversationDirectory {
+                try? FileManager.default.removeItem(
+                    at: ConversationPersistenceFile.url(in: conversationDirectory, for: profileID)
+                )
+            }
+        }
+        do {
+            _ = try await homePairingCoordinator.unpair(pairingID: pairingID)
+        } catch {
+            await load()
+            throw error
+        }
+        await load()
+        if adminCleanupFailed {
+            errorMessage = "The Home was unpaired, but a Home admin credential could not be removed. Remove it from Keychain before reusing this device."
+        }
+        return removedSelected
     }
 }
 
@@ -377,6 +419,8 @@ struct RelayConfigurationView: View {
     @State private var showingDeviceDiscovery = false
     @State private var showingHomeSetup = false
     @State private var showingHomePairing = false
+    @State private var refreshingHomeID: UUID?
+    @State private var homeRefreshMessages: [UUID: String] = [:]
     @State private var homeAdminCredential = ""
     @State private var hasStoredHomeAdminCredential = false
     @State private var homeAdminHouseholdBinding: String?
@@ -511,8 +555,49 @@ struct RelayConfigurationView: View {
                 }
                 #endif
 
-                if homePairingCoordinator != nil {
+                if let homePairingCoordinator {
                     Section {
+                        ForEach(listModel.pairings) { pairing in
+                            NavigationLink {
+                                HomeOwnerAdministrationView(
+                                    model: HomeOwnerAdministrationModel(
+                                        pairingID: pairing.id,
+                                        homeName: pairing.home.displayName,
+                                        coordinator: homePairingCoordinator,
+                                        performUnpair: { try await unpair(pairingID: pairing.id) }
+                                    )
+                                )
+                            } label: {
+                                VStack(alignment: .leading, spacing: 2) {
+                                    Text(pairing.home.displayName)
+                                    Text(pairing.credentialUsable
+                                        ? "Approve requests, see devices, or unpair"
+                                        : "Pair again to use this Home")
+                                        .font(.caption)
+                                        .foregroundStyle(HermesVisualTokens.secondaryInk)
+                                }
+                            }
+                            .accessibilityIdentifier("manage-home-pairing")
+                            Button {
+                                Task { await refreshHomeProfiles(pairingID: pairing.id) }
+                            } label: {
+                                HStack {
+                                    Label("Refresh Profiles", systemImage: "arrow.clockwise")
+                                    Spacer()
+                                    if refreshingHomeID == pairing.id {
+                                        ProgressView()
+                                    }
+                                }
+                            }
+                            .disabled(refreshingHomeID != nil || !pairing.credentialUsable)
+                            .accessibilityLabel("Refresh Profiles for \(pairing.home.displayName)")
+                            .accessibilityIdentifier("refresh-home-profiles")
+                            if let message = homeRefreshMessages[pairing.id] {
+                                Text(message)
+                                    .font(.footnote)
+                                    .foregroundStyle(HermesVisualTokens.secondaryInk)
+                            }
+                        }
                         Button {
                             showingHomePairing = true
                         } label: {
@@ -525,7 +610,7 @@ struct RelayConfigurationView: View {
                     } header: {
                         Text("Home pairing")
                     } footer: {
-                        Text("The Home credential is stored only in Keychain and renewed automatically.")
+                        Text("After a Profile owner approves this device, refresh its Profiles here. The Home credential is stored in Keychain and renewed automatically.")
                     }
                 }
 
@@ -829,6 +914,32 @@ struct RelayConfigurationView: View {
         // Selecting is the switch. Without this the app kept talking to the
         // previous relay until the user also pressed Save.
         await onSaved()
+    }
+
+    private func refreshHomeProfiles(pairingID: UUID) async {
+        guard let homePairingCoordinator, refreshingHomeID == nil else { return }
+        refreshingHomeID = pairingID
+        homeRefreshMessages[pairingID] = nil
+        defer { refreshingHomeID = nil }
+        do {
+            let summary = try await homePairingCoordinator.refresh(pairingID: pairingID)
+            await listModel.load()
+            await onSaved()
+            homeRefreshMessages[pairingID] = summary.activationFailure ?? "Profiles updated."
+        } catch {
+            homeRefreshMessages[pairingID] = error.localizedDescription
+        }
+    }
+
+    private func unpair(pairingID: UUID) async throws {
+        let removedProfileIDs = Set(listModel.pairings.first { $0.id == pairingID }?.profiles.map(\.profileID) ?? [])
+        let removedSelected = try await listModel.unpair(pairingID: pairingID)
+        if let editingProfileID, removedProfileIDs.contains(editingProfileID) {
+            addProfile()
+        }
+        if removedSelected {
+            await onSelectedProfileDeleted()
+        }
     }
 
     private func delete(_ profile: RelayProfile) async {

@@ -1466,6 +1466,340 @@ final class HomeClientPairingTests: XCTestCase {
         }
     }
 
+    // MARK: - Profile-owner administration (IOS-HOME-02 slice 3)
+
+    private static func holder(
+        _ grantID: String,
+        device: String,
+        profile: String = "Amanda",
+        status: HomeClientGrantStatus = .active,
+        thisDevice: Bool = false
+    ) -> HomeProfileGrantHolder {
+        HomeProfileGrantHolder(
+            grantID: grantID,
+            deviceLabel: device,
+            deviceType: "ios",
+            profileLabel: profile,
+            status: status,
+            isThisDevice: thisDevice,
+            createdAt: Date(timeIntervalSince1970: 1_727_120_000)
+        )
+    }
+
+    func testProfileGrantRoutesMatchTheHomeContract() async throws {
+        let transport = ScriptedHomeTransport()
+        let service = URLSessionHomeClientService(transport: transport)
+        let home = try HomeClientBaseURL(Self.home)
+        let credential = Data(Self.credential.utf8)
+        let view: [String: Any] = [
+            "grant_id": "grant-x", "device_label": "Jensen's iPad", "device_type": "ios",
+            "profile_label": "Amanda", "status": "pending_owner", "bootstrap": false,
+            "this_device": false, "created_at": 1_727_120_000.0,
+        ]
+        await transport.enqueue(200, json(["schema": 1, "pending": [view]]))
+        await transport.enqueue(200, json(["schema": 1, "holders": [
+            view.merging(["grant_id": "grant-a", "device_label": "Amanda's iPhone", "status": "active",
+                          "bootstrap": true, "this_device": true]) { $1 },
+        ]]))
+        await transport.enqueue(200, json(["schema": 1, "grant": ["grant_id": "grant-x", "status": "active"]]))
+
+        let pending = try await service.pendingProfileGrants(home: home, credential: credential)
+        let holders = try await service.profileHolders(home: home, credential: credential)
+        let decision = try await service.decideProfileGrant(
+            home: home, credential: credential, grantID: "grant-x", action: .approve
+        )
+
+        XCTAssertEqual(pending, [HomeProfileGrantHolder(
+            grantID: "grant-x", deviceLabel: "Jensen's iPad", deviceType: "ios", profileLabel: "Amanda",
+            status: .pendingOwner, createdAt: Date(timeIntervalSince1970: 1_727_120_000)
+        )])
+        XCTAssertTrue(pending[0].isPending)
+        XCTAssertEqual(holders.map(\.isThisDevice), [true])
+        XCTAssertEqual(holders.map(\.bootstrap), [true])
+        XCTAssertEqual(decision, HomeProfileGrantDecision(grantID: "grant-x", status: .active))
+        XCTAssertFalse(String(describing: pending[0]).contains("Jensen"))
+        XCTAssertFalse(String(reflecting: pending[0]).contains("grant-x"))
+
+        let requests = await transport.requests
+        XCTAssertEqual(requests.map(\.path), [
+            "/api/v1/profile-grants/pending",
+            "/api/v1/profile-grants/holders",
+            "/api/v1/profile-grants/grant-x/approve",
+        ])
+        XCTAssertEqual(requests.map(\.method), ["GET", "GET", "POST"])
+        XCTAssertEqual(requests.map(\.authorization), Array(repeating: "Device \(Self.credential)", count: 3))
+        XCTAssertNil(requests[0].bodyData)
+        XCTAssertEqual(requests[2].body, ["schema": 1] as NSDictionary)
+    }
+
+    func testProfileGrantResponsesOutsideTheContractAreRejected() async throws {
+        let transport = ScriptedHomeTransport()
+        let service = URLSessionHomeClientService(transport: transport)
+        let home = try HomeClientBaseURL(Self.home)
+        let credential = Data(Self.credential.utf8)
+        await transport.enqueue(200, json(["schema": 1, "grant": ["grant_id": "grant-other", "status": "revoked"]]))
+        await transport.enqueue(200, json(["schema": 1, "holders": [[
+            "grant_id": "grant-a", "device_label": "A", "device_type": "ios", "profile_label": "Amanda",
+            "status": "active", "bootstrap": false, "this_device": true, "created_at": 1.0,
+            "device_id": "leaked",
+        ]]]))
+        await transport.enqueue(401, json(["schema": 1, "error": ["code": "unauthorized"]]))
+
+        do {
+            _ = try await service.decideProfileGrant(home: home, credential: credential, grantID: "grant-x", action: .revoke)
+            XCTFail("A decision must answer for the grant that was asked about")
+        } catch {
+            XCTAssertEqual(error as? HomeClientServiceError, .invalidResponse)
+        }
+        do {
+            _ = try await service.profileHolders(home: home, credential: credential)
+            XCTFail("An unknown holder field must be rejected")
+        } catch {
+            XCTAssertEqual(error as? HomeClientServiceError, .invalidResponse)
+        }
+        do {
+            _ = try await service.decideProfileGrant(home: home, credential: credential, grantID: "grant-x", action: .reject)
+            XCTFail("401 must surface as a denial")
+        } catch {
+            XCTAssertEqual(error as? HomeClientServiceError, .denied(.unauthorized))
+        }
+        let paths = await transport.requests.map(\.path)
+        XCTAssertEqual(paths.last, "/api/v1/profile-grants/grant-x/reject")
+    }
+
+    func testOwnerApprovesAPendingGrantAndSeesItAmongTheHolders() async throws {
+        let fixture = try await Self.makeFixture()
+        _ = try await Self.pair(fixture)
+        let pairing = try await Self.firstPairing(fixture)
+        await fixture.service.setPendingGrants([Self.holder("grant-x", device: "Jensen's iPad", status: .pendingOwner)])
+        await fixture.service.setHolders([
+            Self.holder("grant-a", device: "Amanda's iPhone", thisDevice: true),
+            Self.holder("grant-k", device: "Kitchen Touch", profile: "Kitchen"),
+            Self.holder("grant-x", device: "Jensen's iPad", status: .pendingOwner),
+        ])
+
+        let before = try await fixture.coordinator.ownerOverview(pairingID: pairing.id)
+        XCTAssertEqual(before.pending.map(\.grantID), ["grant-x"])
+        XCTAssertEqual(before.holderGroups.map(\.profileLabel), ["Amanda", "Kitchen"])
+        XCTAssertEqual(before.holderGroups[0].holders.map(\.grantID), ["grant-a", "grant-x"])
+
+        let decision = try await fixture.coordinator.decideProfileGrant(
+            pairingID: pairing.id, grantID: "grant-x", action: .approve
+        )
+        let after = try await fixture.coordinator.ownerOverview(pairingID: pairing.id)
+
+        XCTAssertEqual(decision.status, .active)
+        XCTAssertTrue(after.pending.isEmpty)
+        XCTAssertEqual(after.holders.first { $0.grantID == "grant-x" }?.status, .active)
+        let calls = await fixture.service.calls
+        XCTAssertTrue(calls.contains(.decide(grantID: "grant-x", action: .approve)))
+        let credentials = await fixture.service.credentialsSeen
+        XCTAssertTrue(credentials.allSatisfy { $0 == Data(Self.credential.utf8) })
+    }
+
+    func testARefusedDecisionKeepsAUsableCredential() async throws {
+        let fixture = try await Self.makeFixture()
+        _ = try await Self.pair(fixture)
+        let pairing = try await Self.firstPairing(fixture)
+        // Home answers 401 when a shared-Profile holder revokes another device.
+        await fixture.service.setHolders([Self.holder("grant-k", device: "Kitchen Touch", profile: "Kitchen")])
+        await fixture.service.setDecisionErrors(["grant-k": .denied(.unauthorized)])
+
+        do {
+            _ = try await fixture.coordinator.decideProfileGrant(pairingID: pairing.id, grantID: "grant-k", action: .revoke)
+            XCTFail("A refused decision must be reported")
+        } catch {
+            XCTAssertEqual(error as? HomeOwnerAdministrationError, .notAllowed)
+        }
+        let after = try await Self.firstPairing(fixture)
+        XCTAssertTrue(after.credentialUsable)
+        let calls = await fixture.service.calls
+        XCTAssertEqual(calls.suffix(2), [.decide(grantID: "grant-k", action: .revoke), .pendingGrants])
+    }
+
+    func testARefusedDecisionWithARefusedCredentialMeansPairAgain() async throws {
+        let fixture = try await Self.makeFixture()
+        _ = try await Self.pair(fixture)
+        let pairing = try await Self.firstPairing(fixture)
+        await fixture.service.setDecisionErrors(["grant-x": .denied(.unauthorized)])
+        await fixture.service.setPendingErrors([.denied(.unauthorized)])
+
+        do {
+            _ = try await fixture.coordinator.decideProfileGrant(pairingID: pairing.id, grantID: "grant-x", action: .approve)
+            XCTFail("A revoked credential must be reported")
+        } catch {
+            XCTAssertEqual(error as? HomeClientConnectError, .pairAgain(home: "home.example.ts.net"))
+        }
+        let after = try await Self.firstPairing(fixture)
+        XCTAssertFalse(after.credentialUsable)
+        do {
+            _ = try await fixture.coordinator.ownerOverview(pairingID: pairing.id)
+            XCTFail("An unusable pairing must not call Home")
+        } catch {
+            XCTAssertEqual(error as? HomeClientConnectError, .pairAgain(home: "home.example.ts.net"))
+        }
+    }
+
+    func testAnExpiredOrDecidedRequestSaysSo() async throws {
+        let fixture = try await Self.makeFixture()
+        _ = try await Self.pair(fixture)
+        let pairing = try await Self.firstPairing(fixture)
+
+        do {
+            _ = try await fixture.coordinator.decideProfileGrant(pairingID: pairing.id, grantID: "grant-gone", action: .reject)
+            XCTFail("A missing request must be reported")
+        } catch {
+            XCTAssertEqual(error as? HomeOwnerAdministrationError, .alreadyDecided)
+        }
+    }
+
+    func testOwnerListsReportAnUnreachableHomeWithoutMarkingThePairing() async throws {
+        let fixture = try await Self.makeFixture()
+        _ = try await Self.pair(fixture)
+        let pairing = try await Self.firstPairing(fixture)
+        await fixture.service.setHoldersError(.transportUnavailable)
+
+        do {
+            _ = try await fixture.coordinator.ownerOverview(pairingID: pairing.id)
+            XCTFail("An unreachable Home must be reported")
+        } catch {
+            XCTAssertEqual(error as? HomeClientConnectError, .homeUnreachable)
+        }
+        let after = try await Self.firstPairing(fixture)
+        XCTAssertTrue(after.credentialUsable)
+    }
+
+    @MainActor
+    func testOwnerModelShowsTheOutcomeAndRefreshes() async throws {
+        let fixture = try await Self.makeFixture()
+        _ = try await Self.pair(fixture)
+        let pairing = try await Self.firstPairing(fixture)
+        let pending = Self.holder("grant-x", device: "Jensen's iPad", status: .pendingOwner)
+        await fixture.service.setPendingGrants([pending])
+        await fixture.service.setHolders([Self.holder("grant-a", device: "Amanda's iPhone", thisDevice: true)])
+        let model = HomeOwnerAdministrationModel(
+            pairingID: pairing.id,
+            homeName: pairing.home.displayName,
+            coordinator: fixture.coordinator,
+            performUnpair: {}
+        )
+
+        await model.load()
+        guard case .loaded(let before) = model.state else { return XCTFail("Expected a loaded overview") }
+        XCTAssertEqual(before.pending, [pending])
+
+        await model.decide(pending, .reject)
+
+        guard case .loaded(let after) = model.state else { return XCTFail("Expected a loaded overview") }
+        XCTAssertTrue(after.pending.isEmpty)
+        XCTAssertFalse(model.actionFailed)
+        XCTAssertEqual(model.actionMessage, "Jensen's iPad's request for Amanda was rejected.")
+        XCTAssertNil(model.busyGrantID)
+
+        await model.decide(pending, .approve)
+        XCTAssertTrue(model.actionFailed)
+        XCTAssertEqual(model.actionMessage, HomeOwnerAdministrationError.alreadyDecided.localizedDescription)
+    }
+
+    @MainActor
+    func testUnpairForgetsTheHomeLocallyWithoutCallingHome() async throws {
+        let fixture = try await Self.makeFixture()
+        _ = try await Self.pair(fixture)
+        let pairing = try await Self.firstPairing(fixture)
+        let selected = try XCTUnwrap(pairing.profileID(for: "grant-a"))
+        let transcript = ConversationPersistenceFile.url(in: fixture.directory, for: selected)
+        try Data("{}".utf8).write(to: transcript)
+        let unrelated = try RelayProfile(
+            endpoint: URL(string: "wss://relay.example/ws")!,
+            clientID: "client",
+            deviceID: "device",
+            displayName: "Other relay"
+        )
+        try await fixture.configuration.saveProfile(unrelated)
+        await fixture.service.resetCalls()
+        let model = RelayProfileListModel(
+            configurationStore: fixture.configuration,
+            conversationDirectory: fixture.directory,
+            homePairingCoordinator: fixture.coordinator
+        )
+        await model.load()
+        XCTAssertEqual(model.pairings.map(\.id), [pairing.id])
+
+        let removedSelected = try await model.unpair(pairingID: pairing.id)
+
+        XCTAssertTrue(removedSelected)
+        XCTAssertTrue(model.pairings.isEmpty)
+        XCTAssertTrue(model.pairedProfileIDs.isEmpty)
+        XCTAssertEqual(model.collection.profiles.map(\.id), [unrelated.id])
+        XCTAssertFalse(FileManager.default.fileExists(atPath: transcript.path))
+        let remaining = try await fixture.pairings.pairings()
+        XCTAssertTrue(remaining.isEmpty)
+        XCTAssertNil(fixture.secure.value(account: HomeCredentialKeychain.account(forPairing: pairing.id)))
+        XCTAssertEqual(fixture.secure.valueCount(matching: Data(Self.credential.utf8)), 0)
+        let calls = await fixture.service.calls
+        XCTAssertTrue(calls.isEmpty, "Unpair is local; Home offers no device self-revoke")
+    }
+
+    @MainActor
+    func testUnpairRemovesThePairedProfilesHomeAdminCredential() async throws {
+        let fixture = try await Self.makeFixture()
+        _ = try await Self.pair(fixture)
+        let pairing = try await Self.firstPairing(fixture)
+        let profileID = try XCTUnwrap(pairing.profileID(for: "grant-a"))
+        let route = HomeApprovedRoute(
+            endpoint: URL(string: "wss://home.example/api/v1/bridge/ws")!,
+            identity: HomeRouteIdentity(routeClass: .home, id: "home"),
+            householdBinding: "household"
+        )
+        let adminStore = KeychainHomeAdminCredentialStore(secureStore: fixture.secure)
+        try await adminStore.save("home-admin-secret", for: profileID, approvedRoute: route)
+        let model = RelayProfileListModel(
+            configurationStore: fixture.configuration,
+            conversationDirectory: fixture.directory,
+            homeAdminCredentialStore: adminStore,
+            homePairingCoordinator: fixture.coordinator
+        )
+        await model.load()
+
+        _ = try await model.unpair(pairingID: pairing.id)
+
+        let remaining = try await adminStore.load(for: profileID, approvedRoute: route)
+        XCTAssertNil(remaining)
+        XCTAssertNil(model.errorMessage)
+    }
+
+    @MainActor
+    func testOwnerModelIgnoresAnOlderLoadThatAnswersLate() async throws {
+        let fixture = try await Self.makeFixture()
+        _ = try await Self.pair(fixture)
+        let pairing = try await Self.firstPairing(fixture)
+        let pending = Self.holder("grant-x", device: "Jensen's iPad", status: .pendingOwner)
+        await fixture.service.setPendingGrants([pending])
+        await fixture.service.setHolders([Self.holder("grant-a", device: "Amanda's iPhone", thisDevice: true)])
+        let model = HomeOwnerAdministrationModel(
+            pairingID: pairing.id,
+            homeName: pairing.home.displayName,
+            coordinator: fixture.coordinator,
+            performUnpair: {}
+        )
+        // The first load reads the pending list, then stalls on the holders.
+        await fixture.service.holdNextHoldersList()
+        let staleLoad = Task { await model.load() }
+        while !(await fixture.service.isHoldingHoldersList) { await Task.yield() }
+
+        // The owner approves meanwhile; the refresh after it sees no request.
+        await model.decide(pending, .approve)
+        guard case .loaded(let fresh) = model.state else { return XCTFail("Expected a loaded overview") }
+        XCTAssertTrue(fresh.pending.isEmpty)
+
+        await fixture.service.releaseHeldHoldersList()
+        await staleLoad.value
+
+        guard case .loaded(let after) = model.state else { return XCTFail("Expected a loaded overview") }
+        XCTAssertTrue(after.pending.isEmpty, "A late answer must not bring the decided request back")
+        XCTAssertEqual(after.holders.first { $0.grantID == "grant-x" }?.status, .active)
+    }
+
     // MARK: - Fixture
 
     private static func pair(
@@ -1744,6 +2078,7 @@ private struct FixedPairingRouteProvider: HomeApprovedRouteProvider {
 
 private struct RecordedHomeRequest: Sendable {
     let path: String
+    var method: String? = nil
     let authorization: String?
     let bodyData: Data?
 
@@ -1764,6 +2099,7 @@ private actor ScriptedHomeTransport: HomeHTTPTransport {
     func data(for request: URLRequest) async throws -> (Data, HomeHTTPResponse) {
         requests.append(RecordedHomeRequest(
             path: request.url?.path ?? "",
+            method: request.httpMethod,
             authorization: request.value(forHTTPHeaderField: "Authorization"),
             bodyData: request.httpBody
         ))

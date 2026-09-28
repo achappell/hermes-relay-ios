@@ -119,9 +119,9 @@ board reconciliation remains paused.
 - source_spec: `_bmad-output/implementation-artifacts/spec-ios-home-02-sessions.md`
   summary: IOS-HOME-02 session management — list, resume, most-recent, new and rename (Hermes `title`) Home client sessions, with `session_busy`/`session_unavailable` handling.
   evidence: Split on 2026-09-24 from the IOS-HOME-02 build; the user chose to ship pair-and-connect first. Remains IOS-HOME-02 scope; the story does not close without it.
-- source_spec: none
+- source_spec: `_bmad-output/implementation-artifacts/spec-ios-home-02-owner-administration.md`
   summary: IOS-HOME-02 Profile-owner administration — list and approve/reject/revoke pending grants, show Profile holders, and unpair from a Home.
-  evidence: Split on 2026-09-24 from the IOS-HOME-02 build; the user chose to ship pair-and-connect first. Remains IOS-HOME-02 scope; the story does not close without it.
+  evidence: Split on 2026-09-24 from the IOS-HOME-02 build; the user chose to ship pair-and-connect first. Remains IOS-HOME-02 scope; the story does not close without it. Slice 3 implemented on 2026-09-27 (in review; compile, simulator and live gates open).
 - source_spec: `_bmad-output/implementation-artifacts/spec-ios-home-02-pair-and-connect.md`
   summary: Compile and run the IOS-HOME-02 slice-1 SwiftUI/AVFoundation code, the full iOS simulator suite, the macOS build, and verify the Release Info.plist merge on Xcode 26.6.
   evidence: The implementation container had no Xcode; only the Apple-agnostic code was compiled and tested (Swift 6.2 on Linux). See validation-ios-home-02.md.

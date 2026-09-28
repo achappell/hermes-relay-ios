@@ -116,6 +116,37 @@ Spec: [spec-ios-home-02-sessions.md](spec-ios-home-02-sessions.md). Gates are ke
 
 Connect lands in the most recent session; the sheet lists sessions started on another client (TUI or a Room device); resume one; New conversation; rename (if Hermes advertises `title`); `session_busy` against a session held by another claim; background beyond the grace returns to the same session.
 
+## Slice 3 — Profile-owner administration
+
+Spec: [spec-ios-home-02-owner-administration.md](spec-ios-home-02-owner-administration.md). Implemented on branch `claude/ios-grant-approval-e7uc0p` against the Home `main` `profile-grants` routes.
+
+### Local gate (2026-09-27): open
+
+The implementation container has no Swift toolchain. Its network policy also denied `download.swift.org`, so no Linux stand-in could be installed. Nothing in this slice has been compiled or run. Before review, record:
+
+- Focused `HomeClientPairingTests` (the slice-3 tests below), the full iOS Simulator suite, and the macOS build on Xcode 26.6.
+
+| Matrix row | Test |
+| --- | --- |
+| Routes, methods, `Device` authorization, `{"schema": 1}` body, holder decoding, redacted descriptions | `testProfileGrantRoutesMatchTheHomeContract` |
+| Decision for another grant, unknown holder field, `401` surfaced as a denial | `testProfileGrantResponsesOutsideTheContractAreRejected` |
+| Approve a pending grant; holders grouped by Profile | `testOwnerApprovesAPendingGrantAndSeesItAmongTheHolders` |
+| `401` on a decision with a readable pending list: not allowed, credential kept | `testARefusedDecisionKeepsAUsableCredential` |
+| `401` on a decision and on the list: Pair again, pairing marked unusable | `testARefusedDecisionWithARefusedCredentialMeansPairAgain` |
+| `404 not_found`: expired or already decided | `testAnExpiredOrDecidedRequestSaysSo` |
+| Unreachable Home leaves the pairing usable | `testOwnerListsReportAnUnreachableHomeWithoutMarkingThePairing` |
+| Screen model: outcome message, refresh, busy state cleared | `testOwnerModelShowsTheOutcomeAndRefreshes` |
+| Unpair removes profiles, transcripts, record and Keychain credential, keeps unrelated profiles, and makes no Home call | `testUnpairForgetsTheHomeLocallyWithoutCallingHome` |
+
+### Live checks to record (iOS and macOS separately)
+
+- Approve a second client's `pending_owner` grant from the phone; the requester's Refresh gains the profile.
+- Reject a request.
+- Revoke a holder of an owned Profile.
+- Attempt to revoke another holder of a shared Profile and see "Home did not allow this change".
+- Holders show "This device" and the bootstrap device.
+- Unpair, then confirm that the Home page still lists the device until it is removed there.
+
 ## Evidence safety
 
 This record contains no credentials, pairing codes, handles, prompts, response text, raw protocol frames, PCM data, or microphone captures.
@@ -125,3 +156,11 @@ This record contains no credentials, pairing codes, handles, prompts, response t
 - Leaving the foreground closes the socket but not the claim. Home closes it after its reconnect grace (default 120 s). Frequent background and foreground cycles beyond the grace each create a claim, which counts toward `claim_limit` until Home closes the old ones.
 - A paired claim's handle is never written to disk. After a relaunch, an uncertain turn therefore reports lost continuity and offers a new conversation; it cannot be reconnected.
 - If a Keychain write succeeds but its reference metadata write does not during renewal, the next connect asks the user to pair again.
+
+## Visible Profile refresh follow-up — 2026-09-27
+
+During physical iOS acceptance, Amanda approved a pending request and confirmed that the recipient gained the approved Profiles after using the existing pairing-screen Refresh. Home and the phone's saved pairing both held active grants while Saved profiles still showed only the previously available shared Profile. The action was difficult to discover under Pair with Home.
+
+Added Refresh Profiles directly beneath each paired Home in Settings. It invokes the existing pairing coordinator refresh, reloads Saved profiles, notifies the conversation surface, and shows progress plus a success/error message beside that Home. Refresh is disabled while another refresh runs or the Home credential is unusable. No new pairing is required.
+
+Validation used the available Xcode 27.0 (27A266a), rather than the documented Xcode 26.6 baseline: 99 focused HomeClientPairingTests and RelayConfigurationTests passed; the full iOS 26.5 Simulator suite passed 539 tests with zero failures or skips; the macOS build passed with signing disabled. `git diff --check` passed. A fresh iPhone 17 Pro simulator with a synthetic Home pairing showed the accessible Refresh Profiles button in Settings without opening Pair with Home; tapping it without a credential showed the expected Keychain error in place and re-enabled the action. Existing deterministic tests cover adding newly approved Profiles. The new control has not been installed or exercised on a physical device; the live approval/refresh confirmation above used the previous UI.
