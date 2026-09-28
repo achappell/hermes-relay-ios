@@ -156,3 +156,11 @@ This record contains no credentials, pairing codes, handles, prompts, response t
 - Leaving the foreground closes the socket but not the claim. Home closes it after its reconnect grace (default 120 s). Frequent background and foreground cycles beyond the grace each create a claim, which counts toward `claim_limit` until Home closes the old ones.
 - A paired claim's handle is never written to disk. After a relaunch, an uncertain turn therefore reports lost continuity and offers a new conversation; it cannot be reconnected.
 - If a Keychain write succeeds but its reference metadata write does not during renewal, the next connect asks the user to pair again.
+
+## Visible Profile refresh follow-up — 2026-09-27
+
+During physical iOS acceptance, Amanda approved a pending request and confirmed that the recipient gained the approved Profiles after using the existing pairing-screen Refresh. Home and the phone's saved pairing both held active grants while Saved profiles still showed only the previously available shared Profile. The action was difficult to discover under Pair with Home.
+
+Added Refresh Profiles directly beneath each paired Home in Settings. It invokes the existing pairing coordinator refresh, reloads Saved profiles, notifies the conversation surface, and shows progress plus a success/error message beside that Home. Refresh is disabled while another refresh runs or the Home credential is unusable. No new pairing is required.
+
+Validation used the available Xcode 27.0 (27A266a), rather than the documented Xcode 26.6 baseline: 99 focused HomeClientPairingTests and RelayConfigurationTests passed; the full iOS 26.5 Simulator suite passed 539 tests with zero failures or skips; the macOS build passed with signing disabled. `git diff --check` passed. A fresh iPhone 17 Pro simulator with a synthetic Home pairing showed the accessible Refresh Profiles button in Settings without opening Pair with Home; tapping it without a credential showed the expected Keychain error in place and re-enabled the action. Existing deterministic tests cover adding newly approved Profiles. The new control has not been installed or exercised on a physical device; the live approval/refresh confirmation above used the previous UI.
