@@ -77,9 +77,11 @@ struct UnavailableHomeBridgeSessionClient: HomeBridgeSessionClient {
 
 struct DefaultHomeBridgeSessionClientFactory: HomeBridgeSessionClientFactory {
     let dependencies: HomeBridgeClientDependencies
+    let reporter: AutomaticDiagnosticsReporter?
 
-    init(dependencies: HomeBridgeClientDependencies) {
+    init(dependencies: HomeBridgeClientDependencies, reporter: AutomaticDiagnosticsReporter? = nil) {
         self.dependencies = dependencies
+        self.reporter = reporter
     }
 
     func make(
@@ -94,7 +96,13 @@ struct DefaultHomeBridgeSessionClientFactory: HomeBridgeSessionClientFactory {
         guard dependencies.publicAdapterEnabled else {
             return UnavailableHomeBridgeSessionClient()
         }
-        return URLSessionHomeBridgeSessionClient(dependencies: dependencies)
+        let diagnostics: any HomeBridgeDiagnostics
+        if let reporter {
+            diagnostics = ReportingHomeBridgeDiagnostics(profileID: profileID, reporter: reporter, next: dependencies.diagnostics)
+        } else {
+            diagnostics = dependencies.diagnostics
+        }
+        return URLSessionHomeBridgeSessionClient(dependencies: dependencies, diagnostics: diagnostics)
     }
 }
 
@@ -234,14 +242,25 @@ actor URLSessionHomeBridgeSessionClient: HomeBridgeSessionClient {
 
     init(
         dependencies: HomeBridgeClientDependencies,
-        deadlines: HomeOperationDeadlines = .default
+        deadlines: HomeOperationDeadlines = .default,
+        diagnostics: (any HomeBridgeDiagnostics)? = nil
     ) {
         self.dependencies = dependencies
         self.deadlines = deadlines
-        self.diagnostics = dependencies.diagnostics
+        self.diagnostics = diagnostics ?? dependencies.diagnostics
     }
 
     func open(claim: HomeConversationClaim) async -> HomeOpenOutcome {
+        let outcome = await openConversation(claim: claim)
+        switch outcome {
+        case .ready: await diagnostics.connectionResult(ready: true, code: nil, phase: .open)
+        case .unavailable(let failure), .disconnected(let failure):
+            await diagnostics.connectionResult(ready: false, code: failure.safeCode, phase: .open)
+        }
+        return outcome
+    }
+
+    private func openConversation(claim: HomeConversationClaim) async -> HomeOpenOutcome {
         guard !closed else { return .disconnected(.home(code: .transportUnavailable, phase: .lifecycle)) }
         guard dependencies.publicAdapterEnabled else { return .unavailable(.publicAdapterUnavailable) }
         do {
@@ -395,7 +414,17 @@ actor URLSessionHomeBridgeSessionClient: HomeBridgeSessionClient {
         }
     }
 
-    func reconnect(binding requested: HomeConversationBinding) async -> HomeReconnectOutcome {
+    func reconnect(binding: HomeConversationBinding) async -> HomeReconnectOutcome {
+        let outcome = await reconnectConversation(binding: binding)
+        switch outcome {
+        case .ready: await diagnostics.connectionResult(ready: true, code: nil, phase: .reconnect)
+        case .unavailable(let failure), .disconnected(let failure):
+            await diagnostics.connectionResult(ready: false, code: failure.safeCode, phase: .reconnect)
+        }
+        return outcome
+    }
+
+    private func reconnectConversation(binding requested: HomeConversationBinding) async -> HomeReconnectOutcome {
         guard !closed else { return .disconnected(.home(code: .transportUnavailable, phase: .lifecycle)) }
         do {
             guard validateBindingIdentity(requested) == nil else {
@@ -948,6 +977,7 @@ actor URLSessionHomeBridgeSessionClient: HomeBridgeSessionClient {
             } catch is CancellationError {
                 return
             } catch let error as HomeWireDecodingError {
+                guard readerGeneration == generation, !closed else { return }
                 await diagnostics.record(.transportLost)
                 await transportLost(
                     generation: readerGeneration,
@@ -955,6 +985,7 @@ actor URLSessionHomeBridgeSessionClient: HomeBridgeSessionClient {
                 )
                 return
             } catch {
+                guard readerGeneration == generation, !closed else { return }
                 await diagnostics.record(.transportLost)
                 await transportLost(generation: readerGeneration)
                 return
@@ -1560,7 +1591,14 @@ private func decodeUnresolvedTurnID(
         return (topLevelTurnID, topLevelCursor)
     }
     if let object = value as? [String: Any] {
-        try requireKeys(object, allowed: ["schema", "conversation_handle", "turn_id", "status", "resume_cursor"])
+        // Home adds delivery uncertainty after rebuilding an upstream. Keep
+        // the original turn unresolved; accepting this field never authorizes replay.
+        try requireKeys(object, allowed: ["schema", "conversation_handle", "turn_id", "status", "delivery", "resume_cursor"])
+        if let delivery = object["delivery"] {
+            guard delivery as? String == "uncertain" else {
+                throw HomeWireDecodingError.invalidShape
+            }
+        }
         let schema = object["schema"]
         let conversationHandle = try optionalNonEmptyString(object, key: "conversation_handle")
         let nestedTurnID = try optionalNonEmptyString(object, key: "turn_id")

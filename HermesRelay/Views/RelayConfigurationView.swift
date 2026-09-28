@@ -390,6 +390,7 @@ struct HomeLiveSetupView: View {
 struct RelayConfigurationView: View {
     /// Voice interruption opt-in (IOS-UX-F5); read by the voice coordinator.
     @AppStorage(VoicePreferences.interruptByTalkingKey) private var interruptByTalking = false
+    @Environment(\.automaticDiagnostics) private var automaticDiagnostics
     let configurationStore: RelayConfigurationStore
     /// Live connection state, so the list can show which profile is actually
     /// connected rather than only which one is selected.
@@ -806,6 +807,9 @@ struct RelayConfigurationView: View {
                     Text("With Keep listening on, speaking while Hermes answers stops it, but only on headphones. Off: tap the orb to interrupt, so the TV or other people can't cut Hermes off.")
                 }
                 #endif
+                if let automaticDiagnostics {
+                    AutomaticDiagnosticsSettings(reporter: automaticDiagnostics)
+                }
 
                 Section {
                     ShareLink(
