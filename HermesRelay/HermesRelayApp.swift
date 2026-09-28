@@ -3,6 +3,8 @@ import SwiftUI
 @MainActor
 @main
 struct HermesRelayIOSApp: App {
+    @Environment(\.scenePhase) private var scenePhase
+    private let automaticDiagnostics: AutomaticDiagnosticsReporter
     @State private var store: ConversationStore
     private let configuration: RelayConfigurationStore
     private let deviceDiscoveryClient: any DeviceDiscoveryClient
@@ -55,6 +57,13 @@ struct HermesRelayIOSApp: App {
             pairings: homePairingStore,
             credentials: homeCredentialStore
         )
+        let uploader = ClientDiagnosticUploader(transport: URLSessionHomeHTTPTransport(), credentials: homeCredentialStore)
+        let automaticDiagnostics = AutomaticDiagnosticsReporter(
+            fileURL: appDirectory.appendingPathComponent("Diagnostics/automatic-reports.json"),
+            pairings: { try await homePairingStore.pairings() },
+            upload: { pairing, report in try await uploader.send(pairing: pairing, report: report) }
+        )
+        self.automaticDiagnostics = automaticDiagnostics
         let liveHomeFactory = DefaultHomeBridgeSessionClientFactory(
             dependencies: HomeBridgeClientDependencies(
                 routeProvider: AppHomeApprovedRouteProvider(
@@ -68,7 +77,8 @@ struct HermesRelayIOSApp: App {
                 diagnostics: HomeBridgeDiagnosticsFactory.make(),
                 publicAdapterEnabled: true,
                 routePinRecorder: homePairingStore
-            )
+            ),
+            reporter: automaticDiagnostics
         )
         let homeClaimProvider = AppHomeConversationClaimProvider(
             fakeEnabled: homeFakeEnabled,
@@ -142,6 +152,16 @@ struct HermesRelayIOSApp: App {
                 homePairingCoordinator: homePairingCoordinator,
                 pairingInbox: pairingInbox
             )
+            .environment(\.automaticDiagnostics, automaticDiagnostics)
+            .task(id: scenePhase) {
+                let phase: ClientDiagnosticEvent.Name = scenePhase == .active ? .active : (scenePhase == .background ? .background : .inactive)
+                await automaticDiagnostics.lifecycle(phase)
+                guard scenePhase == .active else { return }
+                while !Task.isCancelled {
+                    await automaticDiagnostics.flush()
+                    do { try await Task.sleep(for: .seconds(30)) } catch { return }
+                }
+            }
             .onOpenURL { url in
                 // Only `hermes-home://pair` links are handled; nothing is
                 // submitted until the pairing sheet validates the link.

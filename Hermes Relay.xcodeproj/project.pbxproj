@@ -77,6 +77,9 @@
 		A100000000000000000000F8 /* HomeBridgeAudioTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A100000000000000000000F9 /* HomeBridgeAudioTests.swift */; };
 		A100000000000000000000FA /* HomeConfigurationMigrationTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A100000000000000000000FB /* HomeConfigurationMigrationTests.swift */; };
 		A100000000000000000000FC /* AppleLifecycleTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A100000000000000000000FD /* AppleLifecycleTests.swift */; };
+		D1A800000000000000000001 /* AutomaticDiagnostics.swift in Sources */ = {isa = PBXBuildFile; fileRef = D1A700000000000000000001 /* AutomaticDiagnostics.swift */; };
+		D1A800000000000000000002 /* AutomaticDiagnosticsSettings.swift in Sources */ = {isa = PBXBuildFile; fileRef = D1A700000000000000000002 /* AutomaticDiagnosticsSettings.swift */; };
+		D1A800000000000000000003 /* AutomaticDiagnosticsTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D1A700000000000000000003 /* AutomaticDiagnosticsTests.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -165,6 +168,9 @@
 		A100000000000000000000F9 /* HomeBridgeAudioTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HomeBridgeAudioTests.swift; sourceTree = "<group>"; };
 		A100000000000000000000FB /* HomeConfigurationMigrationTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HomeConfigurationMigrationTests.swift; sourceTree = "<group>"; };
 		A100000000000000000000FD /* AppleLifecycleTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppleLifecycleTests.swift; sourceTree = "<group>"; };
+		D1A700000000000000000001 /* AutomaticDiagnostics.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AutomaticDiagnostics.swift; sourceTree = "<group>"; };
+		D1A700000000000000000002 /* AutomaticDiagnosticsSettings.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AutomaticDiagnosticsSettings.swift; sourceTree = "<group>"; };
+		D1A700000000000000000003 /* AutomaticDiagnosticsTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AutomaticDiagnosticsTests.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -218,6 +224,7 @@
 				A100000000000000000000F5 /* HomeBridgeEnvelopeTests.swift */,
 				A100000000000000000000F7 /* HomeBridgeSessionClientTests.swift */,
 				D1A600000000000000000004 /* DiagnosticsJournalTests.swift */,
+				D1A700000000000000000003 /* AutomaticDiagnosticsTests.swift */,
 				A100000000000000000000F9 /* HomeBridgeAudioTests.swift */,
 				A100000000000000000000FB /* HomeConfigurationMigrationTests.swift */,
 				A1000000000000000000010B /* HomeClientPairingTests.swift */,
@@ -265,6 +272,7 @@
 				A10000000000000000000023 /* HermesSessionClient.swift */,
 				A100000000000000000000E3 /* HomeBridgeSessionClient.swift */,
 				D1A600000000000000000002 /* DiagnosticsJournal.swift */,
+				D1A700000000000000000001 /* AutomaticDiagnostics.swift */,
 				A100000000000000000000F3 /* URLSessionHomeBridgeSessionClient.swift */,
 				A100000000000000000000E5 /* FakeHomeBridgeSessionClient.swift */,
 				A100000000000000000000E7 /* HomeCredentialStore.swift */,
@@ -307,6 +315,7 @@
 			children = (
 				A100000000000000000000C9 /* DeviceDiscoveryView.swift */,
 				A100000000000000000000B3 /* RelayConfigurationView.swift */,
+				D1A700000000000000000002 /* AutomaticDiagnosticsSettings.swift */,
 				A10000000000000000000107 /* HomePairingView.swift */,
 				A10000000000000000000111 /* HomeSessionsView.swift */,
 				A10000000000000000000113 /* HomeOwnerAdministrationView.swift */,
@@ -425,6 +434,7 @@
 				A10000000000000000000013 /* HermesSessionClient.swift in Sources */,
 				A10000000000000000000014 /* ConversationStore.swift in Sources */,
 				A100000000000000000000B2 /* RelayConfigurationView.swift in Sources */,
+				D1A800000000000000000002 /* AutomaticDiagnosticsSettings.swift in Sources */,
 				A10000000000000000000015 /* ContentView.swift in Sources */,
 				A10000000000000000000016 /* MessageBubble.swift in Sources */,
 				A100000000000000000000B0 /* RelayProfileCollection.swift in Sources */,
@@ -457,6 +467,7 @@
 				A100000000000000000000E1 /* HomeBridgeModels.swift in Sources */,
 				A100000000000000000000E2 /* HomeBridgeSessionClient.swift in Sources */,
 				D1A600000000000000000001 /* DiagnosticsJournal.swift in Sources */,
+				D1A800000000000000000001 /* AutomaticDiagnostics.swift in Sources */,
 				A100000000000000000000F2 /* URLSessionHomeBridgeSessionClient.swift in Sources */,
 				A100000000000000000000E4 /* FakeHomeBridgeSessionClient.swift in Sources */,
 				A100000000000000000000E6 /* HomeCredentialStore.swift in Sources */,
@@ -492,6 +503,7 @@
 				A100000000000000000000F4 /* HomeBridgeEnvelopeTests.swift in Sources */,
 				A100000000000000000000F6 /* HomeBridgeSessionClientTests.swift in Sources */,
 				D1A600000000000000000003 /* DiagnosticsJournalTests.swift in Sources */,
+				D1A800000000000000000003 /* AutomaticDiagnosticsTests.swift in Sources */,
 				A100000000000000000000F8 /* HomeBridgeAudioTests.swift in Sources */,
 				A100000000000000000000FA /* HomeConfigurationMigrationTests.swift in Sources */,
 				A1000000000000000000010A /* HomeClientPairingTests.swift in Sources */,
