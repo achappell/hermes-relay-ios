@@ -1,5 +1,20 @@
 # Changelog
 
+## 0.6.0 (2026-09-28)
+
+<!-- Release notes generated using configuration in .github/release.yml at main -->
+
+## What's Changed
+### Other Changes
+* fix(ios): make approved Profile refresh visible in Settings by @achappell in https://github.com/achappell/hermes-relay-ios/pull/110
+* feat(ios): approve Profile grants, see holders and unpair a Home (IOS-HOME-02) by @achappell in https://github.com/achappell/hermes-relay-ios/pull/109
+* fix(ios): Home resume, claim leaks, and long replies cut off (IOS-HOME-03) by @achappell in https://github.com/achappell/hermes-relay-ios/pull/112
+* feat: persist and send opted-in Home connection reports by @achappell in https://github.com/achappell/hermes-relay-ios/pull/115
+* fix: recover Apple sessions after Home rebuilds the upstream by @achappell in https://github.com/achappell/hermes-relay-ios/pull/113
+
+
+**Full Changelog**: https://github.com/achappell/hermes-relay-ios/compare/v0.5.0...v0.6.0
+
 ## 0.5.0 (2026-09-27)
 
 <!-- Release notes generated using configuration in .github/release.yml at main -->
