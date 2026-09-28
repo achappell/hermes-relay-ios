@@ -1152,6 +1152,54 @@ final class HomeBridgeSessionClientTests: XCTestCase {
         await fixture.client.close()
     }
 
+    func testURLSessionClientAcceptsUncertainDeliveryAfterHomeRebuildWithoutReplay() async throws {
+        let fixture = try await makeFixture()
+        guard case .ready(let binding, _) = await fixture.client.open(claim: fixture.claim) else {
+            return XCTFail("A valid Home bridge response must become ready")
+        }
+        await fixture.socket.setNextResultJSON(for: "conversation.reconnect", """
+        {"schema":1,"status":"ready","conversation_handle":"opaque-home-conversation",
+        "route":{"class":"home","id":"home-a"},
+        "capabilities":{"commands":["open"],"heartbeat":true,"interrupt":true,"audio":true,"timing":"absent"},
+        "unresolved_turn":{"schema":1,"conversation_handle":"opaque-home-conversation",
+        "turn_id":"interrupted-turn","status":"uncertain","delivery":"uncertain"}}
+        """)
+
+        let outcome = await fixture.client.reconnect(binding: binding)
+
+        XCTAssertEqual(outcome, .ready(
+            binding: binding,
+            unresolvedTurn: HomeUnresolvedTurn(turnID: "interrupted-turn", resumeCursor: nil),
+            confirmsNoUnresolvedTurn: false
+        ))
+        let methods = try await fixture.socket.sentMethods()
+        XCTAssertEqual(methods, ["conversation.open", "conversation.reconnect"])
+        await fixture.client.close()
+    }
+
+    func testURLSessionClientRejectsInvalidRebuiltTurnDeliveryOrIdentity() async throws {
+        for (delivery, handle) in [
+            ("true", "opaque-home-conversation"),
+            ("\"complete\"", "opaque-home-conversation"),
+            ("\"uncertain\"", "another-conversation"),
+        ] {
+            let fixture = try await makeFixture()
+            guard case .ready(let binding, _) = await fixture.client.open(claim: fixture.claim) else {
+                return XCTFail("A valid Home bridge response must become ready")
+            }
+            await fixture.socket.setNextResultJSON(for: "conversation.reconnect", """
+            {"schema":1,"status":"ready","conversation_handle":"opaque-home-conversation",
+            "unresolved_turn":{"schema":1,"conversation_handle":"\(handle)",
+            "turn_id":"interrupted-turn","status":"uncertain","delivery":\(delivery)}}
+            """)
+
+            let outcome = await fixture.client.reconnect(binding: binding)
+
+            XCTAssertEqual(outcome, .unavailable(.home(code: .protocolError, phase: .reconnect)))
+            await fixture.client.close()
+        }
+    }
+
     func testURLSessionClientRejectsAReconnectReplyForAnotherRoute() async throws {
         let fixture = try await makeFixture()
         guard case .ready(let binding, _) = await fixture.client.open(claim: fixture.claim) else {

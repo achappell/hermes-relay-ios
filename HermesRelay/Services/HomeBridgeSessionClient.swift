@@ -1560,7 +1560,14 @@ private func decodeUnresolvedTurnID(
         return (topLevelTurnID, topLevelCursor)
     }
     if let object = value as? [String: Any] {
-        try requireKeys(object, allowed: ["schema", "conversation_handle", "turn_id", "status", "resume_cursor"])
+        // Home adds delivery uncertainty after rebuilding an upstream. Keep
+        // the original turn unresolved; accepting this field never authorizes replay.
+        try requireKeys(object, allowed: ["schema", "conversation_handle", "turn_id", "status", "delivery", "resume_cursor"])
+        if let delivery = object["delivery"] {
+            guard delivery as? String == "uncertain" else {
+                throw HomeWireDecodingError.invalidShape
+            }
+        }
         let schema = object["schema"]
         let conversationHandle = try optionalNonEmptyString(object, key: "conversation_handle")
         let nestedTurnID = try optionalNonEmptyString(object, key: "turn_id")
