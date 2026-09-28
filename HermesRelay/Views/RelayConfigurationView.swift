@@ -419,6 +419,8 @@ struct RelayConfigurationView: View {
     @State private var showingDeviceDiscovery = false
     @State private var showingHomeSetup = false
     @State private var showingHomePairing = false
+    @State private var refreshingHomeID: UUID?
+    @State private var homeRefreshMessages: [UUID: String] = [:]
     @State private var homeAdminCredential = ""
     @State private var hasStoredHomeAdminCredential = false
     @State private var homeAdminHouseholdBinding: String?
@@ -576,6 +578,25 @@ struct RelayConfigurationView: View {
                                 }
                             }
                             .accessibilityIdentifier("manage-home-pairing")
+                            Button {
+                                Task { await refreshHomeProfiles(pairingID: pairing.id) }
+                            } label: {
+                                HStack {
+                                    Label("Refresh Profiles", systemImage: "arrow.clockwise")
+                                    Spacer()
+                                    if refreshingHomeID == pairing.id {
+                                        ProgressView()
+                                    }
+                                }
+                            }
+                            .disabled(refreshingHomeID != nil || !pairing.credentialUsable)
+                            .accessibilityLabel("Refresh Profiles for \(pairing.home.displayName)")
+                            .accessibilityIdentifier("refresh-home-profiles")
+                            if let message = homeRefreshMessages[pairing.id] {
+                                Text(message)
+                                    .font(.footnote)
+                                    .foregroundStyle(HermesVisualTokens.secondaryInk)
+                            }
                         }
                         Button {
                             showingHomePairing = true
@@ -589,7 +610,7 @@ struct RelayConfigurationView: View {
                     } header: {
                         Text("Home pairing")
                     } footer: {
-                        Text("The Home credential is stored only in Keychain and renewed automatically.")
+                        Text("After a Profile owner approves this device, refresh its Profiles here. The Home credential is stored in Keychain and renewed automatically.")
                     }
                 }
 
@@ -893,6 +914,21 @@ struct RelayConfigurationView: View {
         // Selecting is the switch. Without this the app kept talking to the
         // previous relay until the user also pressed Save.
         await onSaved()
+    }
+
+    private func refreshHomeProfiles(pairingID: UUID) async {
+        guard let homePairingCoordinator, refreshingHomeID == nil else { return }
+        refreshingHomeID = pairingID
+        homeRefreshMessages[pairingID] = nil
+        defer { refreshingHomeID = nil }
+        do {
+            let summary = try await homePairingCoordinator.refresh(pairingID: pairingID)
+            await listModel.load()
+            await onSaved()
+            homeRefreshMessages[pairingID] = summary.activationFailure ?? "Profiles updated."
+        } catch {
+            homeRefreshMessages[pairingID] = error.localizedDescription
+        }
     }
 
     private func unpair(pairingID: UUID) async throws {
