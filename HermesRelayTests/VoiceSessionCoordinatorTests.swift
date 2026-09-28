@@ -1380,6 +1380,73 @@ final class VoiceSessionCoordinatorTests: XCTestCase {
     }
 
     @MainActor
+    func testHomeAudioLongerThanTheSilenceDeadlinePlaysThrough() async throws {
+        // Pilot 2026-09-27: Home streams speech at about real time, and every
+        // reply whose audio took over 30 s to arrive was cut off as
+        // "Audio playback failed" while its audio was still arriving.
+        let fixture = try await makeHomeVoiceReviewFixture(
+            audioDeadlines: HomeTurnAudioDeadlines(
+                audioStart: .seconds(5),
+                controlTerminal: .seconds(30),
+                audioTerminal: .milliseconds(300),
+                playbackDrain: .seconds(5)
+            )
+        )
+        defer { try? FileManager.default.removeItem(at: fixture.profileURL.deletingLastPathComponent()) }
+        let configured = await fixture.store.loadConfiguredClient()
+        XCTAssertTrue(configured)
+        await fixture.store.connect()
+        let coordinator = VoiceSessionCoordinator(
+            store: fixture.store,
+            input: CoordinatorSpeechInput(),
+            output: CoordinatorAudioOutput()
+        )
+        fixture.store.draft = "Tell me a long story"
+        let responseTask = Task { @MainActor in
+            await coordinator.sendDraft()
+        }
+        await waitForHomeVoiceSubmission(fixture.client, atLeast: 1)
+        let scope = HomeEventScope(
+            conversationHandle: fixture.claim.conversationHandle,
+            turnID: "turn-1",
+            correlationID: "correlation-1"
+        )
+        await fixture.client.emit(.audioStart(
+            scope,
+            HomeAudioFormat(sampleRate: 24_000, channels: 1, sampleWidth: 2)
+        ))
+        // Nine chunks 100 ms apart: 900 ms of streaming, three times the
+        // deadline, with no silence longer than it.
+        for _ in 0..<9 {
+            await fixture.client.emit(.binaryPCM(scope, Data([0, 1, 2, 3])))
+            try await Task.sleep(for: .milliseconds(100))
+        }
+        await fixture.client.emit(.audioTerminal(scope, .end))
+        await fixture.client.emit(.standard(HomeStandardEvent(
+            type: .messageComplete,
+            scope: scope,
+            payload: .final(
+                rendered: nil,
+                text: "Once upon a time",
+                status: "complete",
+                reasoning: nil,
+                failureReason: nil
+            )
+        )))
+        await fixture.client.emit(.standard(HomeStandardEvent(
+            type: .turnComplete,
+            scope: scope,
+            payload: .terminal(kind: .terminal)
+        )))
+        await responseTask.value
+
+        XCTAssertNotEqual(
+            coordinator.state,
+            .failed("Audio playback failed. The response text is still available.")
+        )
+    }
+
+    @MainActor
     func testHomePlaybackDrainFailureReleasesTurnForNextRequest() async throws {
         let fixture = try await makeHomeVoiceReviewFixture()
         defer { try? FileManager.default.removeItem(at: fixture.profileURL.deletingLastPathComponent()) }
@@ -2340,7 +2407,9 @@ final class VoiceSessionCoordinatorTests: XCTestCase {
     }
 
     @MainActor
-    private func makeHomeVoiceReviewFixture() async throws -> HomeVoiceReviewFixture {
+    private func makeHomeVoiceReviewFixture(
+        audioDeadlines: HomeTurnAudioDeadlines = .default
+    ) async throws -> HomeVoiceReviewFixture {
         let profileID = UUID(uuidString: "EEEEEEEE-FFFF-0000-1111-222222222222")!
         let profile = try RelayProfile(
             id: profileID,
@@ -2377,7 +2446,8 @@ final class VoiceSessionCoordinatorTests: XCTestCase {
         let store = ConversationStore(
             configurationStore: configurationStore,
             homeClientFactory: FakeHomeBridgeSessionClientFactory(client: client),
-            homeClaimProvider: StaticHomeConversationClaimProvider(claim: claim)
+            homeClaimProvider: StaticHomeConversationClaimProvider(claim: claim),
+            homeTurnAudioDeadlines: audioDeadlines
         )
         return HomeVoiceReviewFixture(
             store: store,

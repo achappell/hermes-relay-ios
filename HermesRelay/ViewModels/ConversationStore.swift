@@ -19,6 +19,7 @@ final class ConversationStore {
     private let homeClock: any HomeMonotonicClock
     private let homeOperationDeadlines: HomeOperationDeadlines
     private let homeTurnAudioDeadlines: HomeTurnAudioDeadlines
+    private var homeAudioLastReceivedAt: ContinuousClock.Instant?
     private var homeClient: (any HomeBridgeSessionClient)?
     private var homeClaim: HomeConversationClaim?
     private var homeConversationBinding: HomeConversationBinding?
@@ -1198,6 +1199,7 @@ final class ConversationStore {
                   !homeAudioTerminal,
                   !homeAudioTerminalProcessing,
                   !data.isEmpty else { return }
+            homeAudioLastReceivedAt = homeClock.now()
             for event in homeNormalizer.normalizeHomeAudio(event) {
                 if let homeEventHandler { await homeEventHandler(event) }
             }
@@ -1305,17 +1307,23 @@ final class ConversationStore {
         }
     }
 
+    /// Home streams speech at about real time, so a long reply's audio can
+    /// take well over `audioTerminal` to arrive. The deadline is for silence:
+    /// it runs from the latest audio received, not from `audio_start`.
     private func scheduleHomeAudioDeadline(for turn: HomeTurnBinding?) {
         guard let turn else { return }
         homeAudioTimeoutTask?.cancel()
-        let deadline = homeClock.now().advanced(
-            by: homeTurnAudioDeadlines.audioTerminal
-        )
+        homeAudioLastReceivedAt = homeClock.now()
         homeAudioTimeoutTask = Task { [weak self] in
-            do {
-                try await self?.homeClock.sleep(until: deadline)
-            } catch {
-                return
+            while true {
+                guard let lastReceived = self?.homeAudioLastReceivedAt,
+                      let silence = self?.homeTurnAudioDeadlines.audioTerminal else { return }
+                do {
+                    try await self?.homeClock.sleep(until: lastReceived.advanced(by: silence))
+                } catch {
+                    return
+                }
+                guard let latest = self?.homeAudioLastReceivedAt, latest > lastReceived else { break }
             }
             guard let self,
                   self.homeTurnBinding == turn else { return }
