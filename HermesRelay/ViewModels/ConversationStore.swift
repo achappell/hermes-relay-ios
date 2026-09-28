@@ -694,19 +694,13 @@ final class ConversationStore {
         return fields.joined(separator: ",")
     }
 
-    /// Whether Home's reconnect names the same conversation. Capabilities are
-    /// excluded: Home reports its current ones, and a binding rebuilt from a
-    /// held claim after backgrounding carries none, so comparing them turned
-    /// every quick return to the app into `conversation_mismatch`.
+    /// Whether Home's reconnect names the same conversation; see
+    /// `HomeConversationBinding.isSameConversation(as:)`.
     nonisolated static func isSameConversation(
         _ lhs: HomeConversationBinding,
         _ rhs: HomeConversationBinding
     ) -> Bool {
-        lhs.profileID == rhs.profileID
-            && lhs.conversationHandle == rhs.conversationHandle
-            && lhs.endpoint == rhs.endpoint
-            && lhs.route == rhs.route
-            && lhs.householdBinding == rhs.householdBinding
+        lhs.isSameConversation(as: rhs)
     }
 
     /// Names of the fields that differ between two bindings, for diagnostics.
@@ -714,12 +708,7 @@ final class ConversationStore {
         _ lhs: HomeConversationBinding,
         _ rhs: HomeConversationBinding
     ) -> String {
-        var fields: [String] = []
-        if lhs.profileID != rhs.profileID { fields.append("profile") }
-        if lhs.conversationHandle != rhs.conversationHandle { fields.append("handle") }
-        if lhs.endpoint != rhs.endpoint { fields.append("endpoint") }
-        if lhs.route != rhs.route { fields.append("route") }
-        if lhs.householdBinding != rhs.householdBinding { fields.append("household") }
+        var fields = lhs.identityDifferences(from: rhs)
         if lhs.capabilities != rhs.capabilities { fields.append("capabilities") }
         return fields.joined(separator: ",")
     }

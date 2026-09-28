@@ -258,15 +258,25 @@ actor URLSessionHomeBridgeSessionClient: HomeBridgeSessionClient {
                 return .unavailable(.route(.identityMismatch))
             }
             if let currentBinding {
-                guard currentBinding.profileID == claim.profileID,
-                      currentBinding.conversationHandle == claim.conversationHandle,
-                      currentBinding.endpoint == claim.approvedRoute.endpoint,
-                      claim.accepts(route: currentBinding.route),
-                      currentBinding.householdBinding == claim.approvedRoute.householdBinding else {
+                let sameConversation = currentBinding.profileID == claim.profileID
+                    && currentBinding.conversationHandle == claim.conversationHandle
+                    && currentBinding.endpoint == claim.approvedRoute.endpoint
+                    && claim.accepts(route: currentBinding.route)
+                    && currentBinding.householdBinding == claim.approvedRoute.householdBinding
+                if sameConversation {
+                    if bridgeReady, socket != nil {
+                        return .ready(binding: currentBinding, capabilities: capabilities)
+                    }
+                } else if bridgeReady, socket != nil {
+                    // A live conversation must be closed before another opens.
+                    HomeConnectionTrace.localMismatch(site: "client_open_claim_vs_live_binding")
                     return .unavailable(.home(code: .conversationMismatch, phase: .open))
-                }
-                if bridgeReady, socket != nil {
-                    return .ready(binding: currentBinding, capabilities: capabilities)
+                } else {
+                    // The earlier conversation is no longer live here. Pinning
+                    // it refused every fresh claim locally and left each one
+                    // open on Home until it expired (pilot 2026-09-27).
+                    HomeConnectionTrace.localMismatch(site: "client_open_dropped_stale_binding")
+                    await abandonRefusedConversation()
                 }
             }
             bridgeReady = false
@@ -385,12 +395,16 @@ actor URLSessionHomeBridgeSessionClient: HomeBridgeSessionClient {
         }
     }
 
-    func reconnect(binding: HomeConversationBinding) async -> HomeReconnectOutcome {
+    func reconnect(binding requested: HomeConversationBinding) async -> HomeReconnectOutcome {
         guard !closed else { return .disconnected(.home(code: .transportUnavailable, phase: .lifecycle)) }
         do {
-            guard validateBindingIdentity(binding) == nil else {
+            guard validateBindingIdentity(requested) == nil else {
                 return .unavailable(.home(code: .conversationMismatch, phase: .reconnect))
             }
+            // Same conversation: keep the capabilities this client
+            // established, not the caller's copy, which may be rebuilt from a
+            // held claim with none.
+            let binding = currentBinding ?? requested
             bridgeReady = false
             if socket == nil {
                 let route = HomeApprovedRoute(
@@ -1311,8 +1325,17 @@ actor URLSessionHomeBridgeSessionClient: HomeBridgeSessionClient {
     }
 
     private func validateBindingIdentity(_ binding: HomeConversationBinding) -> HomeBridgeFailure? {
-        guard let currentBinding else { return .home(code: .conversationMismatch, phase: .lifecycle) }
-        guard currentBinding == binding else { return .home(code: .conversationMismatch, phase: .lifecycle) }
+        guard let currentBinding else {
+            HomeConnectionTrace.localMismatch(site: "client_binding_absent")
+            return .home(code: .conversationMismatch, phase: .lifecycle)
+        }
+        let differences = currentBinding.identityDifferences(from: binding)
+        guard differences.isEmpty else {
+            HomeConnectionTrace.localMismatch(
+                site: "client_binding_vs_current fields=\(differences.joined(separator: ","))"
+            )
+            return .home(code: .conversationMismatch, phase: .lifecycle)
+        }
         return nil
     }
 

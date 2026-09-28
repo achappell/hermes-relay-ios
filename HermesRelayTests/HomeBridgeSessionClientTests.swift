@@ -285,6 +285,111 @@ final class HomeBridgeSessionClientTests: XCTestCase {
         await fixture.client.close()
     }
 
+    func testReconnectOfTheSameConversationIgnoresTheCallersCapabilities() async throws {
+        // Pilot 2026-09-27: the store's binding for the held conversation
+        // carried no capabilities, and the client refused its own reconnect
+        // as `conversation_mismatch` without asking Home.
+        let fixture = try await makeFixture()
+        guard case .ready(let binding, _) = await fixture.client.open(claim: fixture.claim) else {
+            return XCTFail("A valid Home bridge response must become ready")
+        }
+        let rebuilt = HomeConversationBinding(
+            profileID: binding.profileID,
+            conversationHandle: binding.conversationHandle,
+            endpoint: binding.endpoint,
+            route: binding.route,
+            householdBinding: binding.householdBinding,
+            capabilities: HomeBridgeCapabilities()
+        )
+        XCTAssertNotEqual(rebuilt.capabilities, binding.capabilities)
+
+        let outcome = await fixture.client.reconnect(binding: rebuilt)
+
+        XCTAssertEqual(
+            outcome,
+            .ready(binding: binding, unresolvedTurn: nil, confirmsNoUnresolvedTurn: true)
+        )
+        let methods = try await fixture.socket.sentMethods()
+        XCTAssertEqual(methods.last, "conversation.reconnect")
+        await fixture.client.close()
+    }
+
+    func testReconnectOfAnotherConversationIsRefusedLocally() async throws {
+        let fixture = try await makeFixture()
+        guard case .ready(let binding, _) = await fixture.client.open(claim: fixture.claim) else {
+            return XCTFail("A valid Home bridge response must become ready")
+        }
+        let other = HomeConversationBinding(
+            profileID: binding.profileID,
+            conversationHandle: "another-home-conversation",
+            endpoint: binding.endpoint,
+            route: binding.route,
+            householdBinding: binding.householdBinding,
+            capabilities: binding.capabilities
+        )
+
+        let outcome = await fixture.client.reconnect(binding: other)
+
+        XCTAssertEqual(
+            outcome,
+            .unavailable(.home(code: .conversationMismatch, phase: .reconnect))
+        )
+        let methods = try await fixture.socket.sentMethods()
+        XCTAssertFalse(methods.contains("conversation.reconnect"))
+        await fixture.client.close()
+    }
+
+    func testAFreshClaimOpensAfterTheHeldConversationStoppedBeingLive() async throws {
+        // Pilot 2026-09-27: after a refused reconnect, the client still held
+        // the old conversation, refused every fresh claim's open locally, and
+        // each refused claim stayed open on Home until the device hit its
+        // claim limit.
+        let fixture = try await makeFixture()
+        await fixture.socket.setNextOpenReason(HomeWireReason.reconnectRequired.rawValue)
+        let held = await fixture.client.open(claim: fixture.claim)
+        XCTAssertEqual(held, .unavailable(.reconnectRequired))
+        let freshClaim = HomeConversationClaim(
+            profileID: fixture.claim.profileID,
+            conversationHandle: "fresh-home-conversation",
+            approvedRoute: fixture.claim.approvedRoute
+        )
+        await fixture.secondSocket.setNextResultJSON(for: "conversation.open", """
+        {"schema":1,"status":"ready","conversation_handle":"fresh-home-conversation",\
+        "route":{"class":"home","id":"home-a"},\
+        "capabilities":{"commands":[],"timing":"absent","interrupt":true,"audio":true},\
+        "unresolved_turn":false}
+        """)
+
+        let fresh = await fixture.client.open(claim: freshClaim)
+
+        guard case .ready(let binding, _) = fresh else {
+            return XCTFail("A fresh claim must reach Home, got \(fresh)")
+        }
+        XCTAssertEqual(binding.conversationHandle, "fresh-home-conversation")
+        let freshMethods = try await fixture.secondSocket.sentMethods()
+        XCTAssertEqual(freshMethods, ["conversation.open"])
+        await fixture.client.close()
+    }
+
+    func testAFreshClaimCannotReplaceALiveConversation() async throws {
+        let fixture = try await makeFixture()
+        guard case .ready = await fixture.client.open(claim: fixture.claim) else {
+            return XCTFail("A valid Home bridge response must become ready")
+        }
+        let freshClaim = HomeConversationClaim(
+            profileID: fixture.claim.profileID,
+            conversationHandle: "fresh-home-conversation",
+            approvedRoute: fixture.claim.approvedRoute
+        )
+
+        let fresh = await fixture.client.open(claim: freshClaim)
+
+        XCTAssertEqual(fresh, .unavailable(.home(code: .conversationMismatch, phase: .open)))
+        let socketOpenCount = await fixture.factory.openCount
+        XCTAssertEqual(socketOpenCount, 1)
+        await fixture.client.close()
+    }
+
     func testReconnectConfirmsAnExplicitNoUnresolvedTurn() async throws {
         let fixture = try await makeFixture()
         guard case .ready(let binding, _) = await fixture.client.open(claim: fixture.claim) else {

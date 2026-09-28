@@ -154,6 +154,17 @@ stories:
     depends_on:
       - home:HOME-NW-17
     github_issue: https://github.com/achappell/hermes-relay-ios/issues/91
+  - id: IOS-HOME-03
+    title: Keep Home conversations resumable, stop leaking claims, and let people close open ones
+    kind: local
+    spec: _bmad-output/implementation-artifacts/spec-ios-home-03-claim-lifecycle.md
+    tracker_key: ios-home-03
+    product_epic: 1
+    owner: hermes-relay-ios
+    release_scope: migration
+    depends_on:
+      - home:HOME-NW-17
+      - home:HOME-NW-18
   - id: IOS-STD-01
     title: Offer explicit Standard-only setup on iOS and macOS
     kind: course-correction

@@ -383,6 +383,26 @@ struct HomeConversationBinding: Equatable, Sendable {
     let route: HomeRouteIdentity
     let householdBinding: String
     let capabilities: HomeBridgeCapabilities
+
+    /// Whether both name the same Home conversation. Capabilities are
+    /// excluded: Home reports its current ones on every `ready`, and a
+    /// binding rebuilt from a held claim carries none, so comparing them
+    /// turned a quick return to the app into `conversation_mismatch`.
+    func isSameConversation(as other: HomeConversationBinding) -> Bool {
+        identityDifferences(from: other).isEmpty
+    }
+
+    /// Names (never values) of the identity fields that differ, for
+    /// diagnostics.
+    func identityDifferences(from other: HomeConversationBinding) -> [String] {
+        var fields: [String] = []
+        if profileID != other.profileID { fields.append("profile") }
+        if conversationHandle != other.conversationHandle { fields.append("handle") }
+        if endpoint != other.endpoint { fields.append("endpoint") }
+        if route != other.route { fields.append("route") }
+        if householdBinding != other.householdBinding { fields.append("household") }
+        return fields
+    }
 }
 
 struct HomeConversationClaim: Equatable, Sendable {
