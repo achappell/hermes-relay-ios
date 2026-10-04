@@ -172,6 +172,12 @@ final class ConversationStore {
     // second loss reported while it is running is the same outage, not a new
     // one, so it must not stack a second backoff ladder.
     private var reconnectTask: Task<Void, Never>?
+    // A Home open or reconnect that failed at the transport is retried on the
+    // reconnect policy's ladder, reusing the held claim. A fresh connect,
+    // Disconnect, lifecycle change, or profile change ends the ladder.
+    private var homeConnectRetryTask: Task<Void, Never>?
+    private var homeConnectRetryAttempt = 0
+    private var homeConnectRetryDeadline: ContinuousClock.Instant?
     private var isExpectedDisconnect = false
 
     init(
@@ -350,6 +356,7 @@ final class ConversationStore {
             guard loadGeneration == configurationLoadGeneration else { return false }
             if activeProfileID != profile.id {
                 homeLifecycleGeneration &+= 1
+                cancelHomeConnectRetry()
                 openHomeClaimsGeneration &+= 1
                 canManageOpenHomeClaims = false
                 openHomeClaimList = nil
@@ -516,6 +523,11 @@ final class ConversationStore {
     }
 
     func connect() async {
+        cancelHomeConnectRetry()
+        await performConnect()
+    }
+
+    private func performConnect() async {
         guard isLifecycleActive, !homeOperationsSuppressed else { return }
         while isClosingOpenHomeClaims || homeClaimLifecycleMutationInProgress {
             await withCheckedContinuation { homeClaimMutationWaiters.append($0) }
@@ -764,26 +776,94 @@ final class ConversationStore {
             if reopeningPairedClaim, homeRecovery == nil,
                failure.safeCode == .staleConversation,
                isCurrentHomeOperation(operationGeneration, profileID: claim.profileID) {
-                let canReplace: Bool
-                if claim.claimRef == nil {
-                    canReplace = true
-                    homeClaim = nil
-                    pendingHomeClaimsByProfile.removeValue(forKey: claim.profileID)
-                } else {
-                    canReplace = await releasePairedHomeClaim(
-                        claim,
-                        reason: .staleOpen,
-                        openedBinding: nil
-                    )
-                }
-                if canReplace,
-                   isCurrentHomeOperation(operationGeneration, profileID: claim.profileID) {
-                    await connectHome(operationGeneration: operationGeneration)
-                }
+                await replaceEndedHomeClaim(claim, operationGeneration: operationGeneration)
             }
         case .disconnected(let failure):
             applyHomeConnectionFailure(failure, unavailable: false)
+            scheduleHomeConnectRetry(after: failure, operationGeneration: operationGeneration)
         }
+    }
+
+    /// Home refused the held claim as ended and no turn is unresolved: release
+    /// it where Home can confirm, then make one fresh claim.
+    private func replaceEndedHomeClaim(
+        _ claim: HomeConversationClaim,
+        operationGeneration: UInt64
+    ) async {
+        guard await releaseEndedHomeClaim(claim),
+              isCurrentHomeOperation(operationGeneration, profileID: claim.profileID) else { return }
+        await connectHome(operationGeneration: operationGeneration)
+    }
+
+    private func releaseEndedHomeClaim(_ claim: HomeConversationClaim) async -> Bool {
+        guard claim.claimRef != nil else {
+            homeClaim = nil
+            pendingHomeClaimsByProfile.removeValue(forKey: claim.profileID)
+            return true
+        }
+        return await releasePairedHomeClaim(claim, reason: .staleOpen, openedBinding: nil)
+    }
+
+    /// The held claim that a `stale_conversation` reconnect refusal ended, when
+    /// it may be replaced: a paired claim with no unresolved turn to protect.
+    private func endedHomeClaim(
+        after failure: HomeBridgeFailure,
+        binding: HomeConversationBinding
+    ) -> HomeConversationClaim? {
+        guard homeClaimsPerConnect, homeRecovery == nil,
+              failure.safeCode == .staleConversation,
+              let claim = homeClaim,
+              claim.profileID == binding.profileID,
+              claim.conversationHandle == binding.conversationHandle else { return nil }
+        return claim
+    }
+
+    private static func isRetryableTransportFailure(_ failure: HomeBridgeFailure) -> Bool {
+        guard case .home(let code, let phase) = failure, phase != .lifecycle else { return false }
+        return code == .transportUnavailable || code == .transportTimeout
+    }
+
+    /// Schedules the next connect on the reconnect policy's ladder. Each retry
+    /// only reopens the held claim or reconnects its conversation; it never
+    /// resubmits a prompt.
+    private func scheduleHomeConnectRetry(
+        after failure: HomeBridgeFailure,
+        operationGeneration: UInt64
+    ) {
+        guard Self.isRetryableTransportFailure(failure),
+              homeConnectRetryTask == nil,
+              let profileID = activeProfileID,
+              isCurrentHomeOperation(operationGeneration, profileID: profileID) else { return }
+        let start = homeClock.now()
+        let deadline = homeConnectRetryDeadline
+            ?? start.advanced(by: homeOperationDeadlines.reconnectOverall)
+        let attempt = homeConnectRetryAttempt + 1
+        guard start < deadline,
+              let delay = reconnectPolicy.delayNanoseconds(forAttempt: attempt) else { return }
+        homeConnectRetryDeadline = deadline
+        homeConnectRetryAttempt = attempt
+        connectionState = .reconnecting(attempt: attempt, of: reconnectPolicy.maxAttempts)
+        let wakeAt = min(start.advanced(by: .nanoseconds(Int64(delay))), deadline)
+        homeConnectRetryTask = Task { [weak self] in
+            guard let self else { return }
+            do {
+                try await self.homeClock.sleep(until: wakeAt)
+            } catch { return }
+            guard !Task.isCancelled,
+                  self.isCurrentHomeOperation(operationGeneration, profileID: profileID) else { return }
+            self.homeConnectRetryTask = nil
+            await self.performConnect()
+        }
+    }
+
+    private func cancelHomeConnectRetry() {
+        if homeConnectRetryTask != nil, case .reconnecting = connectionState {
+            connectionState = .disconnected
+        }
+        homeConnectRetryTask?.cancel()
+        homeConnectRetryTask = nil
+        homeConnectRetryAttempt = 0
+        homeConnectRetryDeadline = nil
     }
 
     private func reconnectHome(
@@ -860,8 +940,14 @@ final class ConversationStore {
             await persistConversation()
         case .unavailable(let failure):
             applyHomeConnectionFailure(failure, unavailable: true)
+            if let claim = endedHomeClaim(after: failure, binding: binding),
+               isCurrentHomeOperation(operationGeneration, profileID: claim.profileID) {
+                homeConversationBinding = nil
+                await replaceEndedHomeClaim(claim, operationGeneration: operationGeneration)
+            }
         case .disconnected(let failure):
             applyHomeConnectionFailure(failure, unavailable: false)
+            scheduleHomeConnectRetry(after: failure, operationGeneration: operationGeneration)
         }
     }
 
@@ -885,6 +971,8 @@ final class ConversationStore {
         )
         sessionStartedAt = now()
         connectionState = .connected
+        homeConnectRetryAttempt = 0
+        homeConnectRetryDeadline = nil
         transientError = nil
         startHomeEventPump(client: client)
     }
@@ -1526,6 +1614,7 @@ final class ConversationStore {
         defer { finishHomeClaimLifecycleMutation() }
         reconnectTask?.cancel()
         reconnectTask = nil
+        cancelHomeConnectRetry()
         await waitForHomeConnectOperation()
         await waitForOpenClaimMutation()
 
@@ -2435,6 +2524,7 @@ final class ConversationStore {
         openHomeClaimsGeneration &+= 1
         reconnectTask?.cancel()
         reconnectTask = nil
+        cancelHomeConnectRetry()
         homeEventTask?.cancel()
         homeEventTask = nil
         homeControlTimeoutTask?.cancel()
@@ -2563,6 +2653,7 @@ final class ConversationStore {
         defer { finishHomeClaimLifecycleMutation() }
         reconnectTask?.cancel()
         reconnectTask = nil
+        cancelHomeConnectRetry()
         await waitForHomeConnectOperation()
         await waitForOpenClaimMutation()
 
@@ -2786,6 +2877,13 @@ final class ConversationStore {
                 return
             case .unavailable(let failure):
                 applyHomeConnectionFailure(failure, unavailable: true)
+                if let claim = endedHomeClaim(after: failure, binding: binding),
+                   isLifecycleActive, !homeOperationsSuppressed, !Task.isCancelled {
+                    homeConversationBinding = nil
+                    if await releaseEndedHomeClaim(claim), !Task.isCancelled {
+                        await performConnect()
+                    }
+                }
                 return
             case .disconnected(let failure):
                 if attempt == reconnectPolicy.maxAttempts {

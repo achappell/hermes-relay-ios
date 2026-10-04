@@ -68,7 +68,53 @@ final class AppleLifecycleTests: XCTestCase {
     }
 
     @MainActor
-    private func makeHomeFixture() async throws -> HomeFixture {
+    func testInterleavedInactiveAndActiveLeaveTheStoreActiveAndReconnect() async throws {
+        // Scene phases arrive as separate Tasks. An active that lands while
+        // the inactive teardown is still running must not be dropped or undone.
+        let fixture = try await makeHomeFixture(persistence: SlowLifecyclePersistence())
+        let voice = VoiceSessionCoordinator(
+            store: fixture.store,
+            input: LifecycleSpeechInput(),
+            output: LifecycleAudioOutput()
+        )
+        let coordinator = AppleLifecycleCoordinator(
+            store: fixture.store,
+            voice: voice,
+            homeClientFactory: fixture.factory,
+            clock: ContinuousHomeMonotonicClock()
+        )
+        _ = await coordinator.handle(.relaunch)
+        XCTAssertTrue(fixture.store.connectionState.isConnected)
+
+        let inactive = Task { await coordinator.handle(.inactive) }
+        let active = Task { await coordinator.handle(.active) }
+        _ = await inactive.value
+        _ = await active.value
+
+        XCTAssertTrue(fixture.store.isLifecycleActive, "The newer active must win")
+        XCTAssertNotNil(
+            fixture.store.currentHomeClientForLifecycle(),
+            "The active surface keeps or reopens its Home bridge"
+        )
+        XCTAssertNotNil(coordinator.activeHomeClient)
+
+        // An active that arrives mid-teardown waits for it, then reactivates.
+        let openCountBefore = await fixture.client.openCount
+        let midInactive = Task { await coordinator.handle(.inactive) }
+        try await Task.sleep(for: .milliseconds(10))
+        let midActive = Task { await coordinator.handle(.active) }
+        _ = await midInactive.value
+        _ = await midActive.value
+
+        XCTAssertTrue(fixture.store.isLifecycleActive, "A stale teardown must not undo the newer active")
+        let openCountAfter = await fixture.client.openCount
+        XCTAssertEqual(openCountAfter, openCountBefore + 1, "The newer active reopens after the teardown")
+    }
+
+    @MainActor
+    private func makeHomeFixture(
+        persistence: (any ConversationPersistence)? = nil
+    ) async throws -> HomeFixture {
         let profileID = UUID(uuidString: "AAAAAAAA-BBBB-CCCC-DDDD-EEEEEEEEEEEE")!
         let profile = try RelayProfile(
             id: profileID,
@@ -105,6 +151,7 @@ final class AppleLifecycleTests: XCTestCase {
         let factory = FakeHomeBridgeSessionClientFactory(client: client)
         let store = ConversationStore(
             configurationStore: configurationStore,
+            persistence: persistence,
             homeClientFactory: factory,
             homeClaimProvider: StaticHomeConversationClaimProvider(claim: claim)
         )
@@ -121,6 +168,17 @@ private struct HomeFixture {
     let store: ConversationStore
     let client: FakeHomeBridgeSessionClient
     let factory: FakeHomeBridgeSessionClientFactory
+}
+
+/// Saving takes real time, so lifecycle work suspends mid-teardown.
+private actor SlowLifecyclePersistence: ConversationPersistence {
+    func load() async throws -> PersistedConversation {
+        PersistedConversation(messages: [], draft: "")
+    }
+
+    func save(_ conversation: PersistedConversation) async throws {
+        try await Task.sleep(for: .milliseconds(50))
+    }
 }
 
 private actor LifecycleSpeechInput: SpeechInput {

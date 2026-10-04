@@ -28,6 +28,11 @@ final class AppleLifecycleCoordinator {
     private var generation: UInt64 = 0
     private var isActive = true
     private var deactivationPending = false
+    // Scene phases arrive as separate Tasks. Each request waits for the one
+    // before it, and only the newest request runs, so a teardown that is
+    // still finishing can never drop or undo a newer activation.
+    private var latestRequest: UInt64 = 0
+    private var pendingWork: Task<Void, Never>?
 
     init(
         store: ConversationStore,
@@ -43,6 +48,19 @@ final class AppleLifecycleCoordinator {
     }
 
     func handle(_ input: AppleLifecycleInput) async -> AppleLifecycleOutcome {
+        latestRequest &+= 1
+        let request = latestRequest
+        let previous = pendingWork
+        let work = Task { @MainActor [weak self] () -> AppleLifecycleOutcome in
+            await previous?.value
+            guard let self, request == self.latestRequest else { return .completed }
+            return await self.process(input)
+        }
+        pendingWork = Task { _ = await work.value }
+        return await work.value
+    }
+
+    private func process(_ input: AppleLifecycleInput) async -> AppleLifecycleOutcome {
         switch input {
         case .active:
             if isActive, !deactivationPending, store.connectionState.isConnected {

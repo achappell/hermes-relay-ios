@@ -165,6 +165,17 @@ stories:
     depends_on:
       - home:HOME-NW-17
       - home:HOME-NW-18
+  - id: IOS-HOME-04
+    title: Reconnect to Home after a long background
+    kind: local
+    spec: _bmad-output/implementation-artifacts/spec-ios-home-04-foreground-reconnect.md
+    tracker_key: ios-home-04
+    product_epic: 1
+    owner: hermes-relay-ios
+    release_scope: migration
+    depends_on:
+      - ios:IOS-HOME-03
+      - home:HOME-NW-18
   - id: IOS-STD-01
     title: Offer explicit Standard-only setup on iOS and macOS
     kind: course-correction
