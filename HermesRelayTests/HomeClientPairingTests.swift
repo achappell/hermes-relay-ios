@@ -1295,6 +1295,33 @@ final class HomeClientPairingTests: XCTestCase {
         XCTAssertEqual(submitted, ["maybe sent"])
     }
 
+    @MainActor
+    func testASubmitOnADeadTransportReconnectsWithoutResending() async throws {
+        // Pilot 2026-10-04: talking over a dead transport left the app
+        // Disconnected until the user reconnected by hand.
+        let fixture = try await Self.makeFixture()
+        _ = try await Self.pair(fixture)
+        let store = fixture.makeStore(homeClock: InstantPairingTestClock())
+        await store.loadConfiguredClient()
+        await store.connect()
+        let firstClient = try XCTUnwrap(fixture.echo.clients.last)
+        let openedHandle = await firstClient.lastOpenedHandle()
+        let handle = try XCTUnwrap(openedHandle)
+        await firstClient.setNextSubmission(.uncertain(.home(code: .transportUnavailable, phase: .submission)))
+        await fixture.service.resetCalls()
+
+        let completed = await store.sendTurn(text: "are you there")
+
+        XCTAssertFalse(completed)
+        try await Self.waitUntil { store.connectionState == .connected }
+        XCTAssertEqual(fixture.echo.clients.last?.openedHandlesSnapshot, [handle], "The held claim is reopened")
+        let calls = await fixture.service.calls
+        XCTAssertEqual(calls, [], "No fresh claim replaces the held one")
+        let submitted = await fixture.echo.allSubmittedTexts()
+        XCTAssertEqual(submitted, ["are you there"], "The uncertain prompt is never resent")
+        XCTAssertEqual(store.unresolvedTurnTextForDisplay, "are you there", "The user still decides")
+    }
+
     func testInterruptedRenewalWithoutANewerCredentialRetriesTheSavedRequest() async throws {
         let fixture = try await Self.makeFixture()
         _ = try await Self.pair(fixture)

@@ -187,6 +187,17 @@ stories:
     depends_on:
       - ios:IOS-HOME-04
       - home:HOME-NW-18
+  - id: IOS-HOME-06
+    title: Treat a backgrounded Home transport as disconnected
+    kind: local
+    spec: _bmad-output/implementation-artifacts/spec-ios-home-06-backgrounded-transport-disconnected.md
+    tracker_key: ios-home-06
+    product_epic: 1
+    owner: hermes-relay-ios
+    release_scope: migration
+    depends_on:
+      - ios:IOS-HOME-04
+      - home:HOME-NW-18
   - id: IOS-STD-01
     title: Offer explicit Standard-only setup on iOS and macOS
     kind: course-correction

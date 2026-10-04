@@ -138,7 +138,9 @@ final class ConversationStore {
     /// metadata is the proof that `hello_ack` was accepted.
     var verifiedTurnBinding: HermesTurnBinding? {
         guard connectionState.isConnected, !homeOperationsSuppressed else { return nil }
-        if let homeConversationBinding, transportMode == .home {
+        if transportMode == .home {
+            // A Home turn needs the live transport, not just a cached state.
+            guard let homeConversationBinding, homeClient != nil else { return nil }
             return HermesTurnBinding(
                 profileID: activeProfileID,
                 homeConversation: homeConversationBinding,
@@ -2345,6 +2347,8 @@ final class ConversationStore {
             mode: .home
         )
         await persistConversation()
+        // The prompt stays unconfirmed for the user; only the transport is retried.
+        scheduleHomeConnectRetry(after: failure, operationGeneration: homeLifecycleGeneration)
     }
 
     /// Playback owns the last part of a Home turn. The control terminal is
@@ -2465,6 +2469,14 @@ final class ConversationStore {
         homeClient
     }
 
+    /// True only while a connected state is backed by a live transport. A
+    /// cached `.connected` alone does not prove the socket survived.
+    var hasLiveTransport: Bool {
+        guard connectionState.isConnected else { return false }
+        guard transportMode == .home else { return true }
+        return homeClient != nil && homeConversationBinding != nil
+    }
+
     func takeHomeClientForLifecycle() -> (any HomeBridgeSessionClient)? {
         canContinueWithoutResendingHomeTurn = false
         homeReconnectConfirmsNoUnresolvedTurn = false
@@ -2484,6 +2496,18 @@ final class ConversationStore {
         homeClient = nil
         homeConversationBinding = nil
         homeTurnBinding = nil
+        switch connectionState {
+        case .failed:
+            // Keep a failure the user must see; only a live state is stale.
+            break
+        default:
+            guard transportMode == .home else { break }
+            // The caller closes this transport: never keep showing Connected.
+            homeBridgeState = .disconnected(.home(code: .transportUnavailable, phase: .lifecycle))
+            connectionState = .disconnected
+            sessionMetadata = nil
+            sessionStartedAt = nil
+        }
         return activeClient
     }
 

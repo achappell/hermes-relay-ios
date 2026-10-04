@@ -63,7 +63,7 @@ final class AppleLifecycleCoordinator {
     private func process(_ input: AppleLifecycleInput) async -> AppleLifecycleOutcome {
         switch input {
         case .active:
-            if isActive, !deactivationPending, store.connectionState.isConnected {
+            if isActive, !deactivationPending, store.hasLiveTransport {
                 return .completed
             }
             return await activate()

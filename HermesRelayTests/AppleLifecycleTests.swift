@@ -112,8 +112,77 @@ final class AppleLifecycleTests: XCTestCase {
     }
 
     @MainActor
+    func testBackgroundLeavesTheStoreDisconnectedAndForegroundReopensTheClaim() async throws {
+        // Pilot 2026-10-04: after a background the HUD still said Connected
+        // over a closed transport, and talking failed.
+        let factory = FreshHomeClientFactory()
+        let fixture = try await makeHomeFixture(factory: factory)
+        let coordinator = makeCoordinator(fixture.store, factory: factory)
+        _ = await coordinator.handle(.relaunch)
+        XCTAssertTrue(fixture.store.connectionState.isConnected)
+
+        _ = await coordinator.handle(.inactive)
+        _ = await coordinator.handle(.background)
+
+        XCTAssertEqual(fixture.store.connectionState, .disconnected)
+        XCTAssertNotEqual(
+            ConversationDoorwayState(connectionState: fixture.store.connectionState, profileName: "Test Apple"),
+            .connected
+        )
+        XCTAssertNil(fixture.store.verifiedTurnBinding, "Tap-to-talk cannot start over a closed transport")
+
+        _ = await coordinator.handle(.inactive)
+        _ = await coordinator.handle(.active)
+
+        XCTAssertTrue(fixture.store.connectionState.isConnected)
+        XCTAssertEqual(factory.clients.count, 2, "Foreground opens a new transport")
+        let reopened = await factory.clients.last?.openCount
+        XCTAssertEqual(reopened, 1)
+        XCTAssertNotNil(fixture.store.verifiedTurnBinding)
+    }
+
+    @MainActor
+    func testActiveWithAStaleConnectedStateButNoLiveTransportReconnects() async throws {
+        let factory = FreshHomeClientFactory()
+        let fixture = try await makeHomeFixture(factory: factory)
+        let coordinator = makeCoordinator(fixture.store, factory: factory)
+        _ = await coordinator.handle(.relaunch)
+        XCTAssertTrue(fixture.store.connectionState.isConnected)
+
+        // The transport is gone without a completed lifecycle teardown.
+        let lost = fixture.store.takeHomeClientForLifecycle()
+        await lost?.close()
+        XCTAssertNil(fixture.store.verifiedTurnBinding)
+
+        _ = await coordinator.handle(.active)
+
+        XCTAssertTrue(fixture.store.connectionState.isConnected)
+        XCTAssertNotNil(fixture.store.currentHomeClientForLifecycle())
+        XCTAssertEqual(factory.clients.count, 2)
+        XCTAssertNotNil(fixture.store.verifiedTurnBinding)
+    }
+
+    @MainActor
+    private func makeCoordinator(
+        _ store: ConversationStore,
+        factory: any HomeBridgeSessionClientFactory
+    ) -> AppleLifecycleCoordinator {
+        AppleLifecycleCoordinator(
+            store: store,
+            voice: VoiceSessionCoordinator(
+                store: store,
+                input: LifecycleSpeechInput(),
+                output: LifecycleAudioOutput()
+            ),
+            homeClientFactory: factory,
+            clock: ContinuousHomeMonotonicClock()
+        )
+    }
+
+    @MainActor
     private func makeHomeFixture(
-        persistence: (any ConversationPersistence)? = nil
+        persistence: (any ConversationPersistence)? = nil,
+        factory freshFactory: FreshHomeClientFactory? = nil
     ) async throws -> HomeFixture {
         let profileID = UUID(uuidString: "AAAAAAAA-BBBB-CCCC-DDDD-EEEEEEEEEEEE")!
         let profile = try RelayProfile(
@@ -149,10 +218,11 @@ final class AppleLifecycleTests: XCTestCase {
         let claim = HomeDemoFixtures.claim(for: profileID)
         let client = FakeHomeBridgeSessionClient(claim: claim)
         let factory = FakeHomeBridgeSessionClientFactory(client: client)
+        freshFactory?.claim = claim
         let store = ConversationStore(
             configurationStore: configurationStore,
             persistence: persistence,
-            homeClientFactory: factory,
+            homeClientFactory: freshFactory ?? factory,
             homeClaimProvider: StaticHomeConversationClaimProvider(claim: claim)
         )
         return HomeFixture(
@@ -168,6 +238,25 @@ private struct HomeFixture {
     let store: ConversationStore
     let client: FakeHomeBridgeSessionClient
     let factory: FakeHomeBridgeSessionClientFactory
+}
+
+/// Makes a new transport per connection, as the live factory does.
+private final class FreshHomeClientFactory: HomeBridgeSessionClientFactory, @unchecked Sendable {
+    private let lock = NSLock()
+    private var made: [FakeHomeBridgeSessionClient] = []
+    var claim: HomeConversationClaim?
+
+    var clients: [FakeHomeBridgeSessionClient] {
+        lock.lock(); defer { lock.unlock() }
+        return made
+    }
+
+    func make(profileID: UUID, mode: AppleTransportMode) -> any HomeBridgeSessionClient {
+        lock.lock(); defer { lock.unlock() }
+        let client = FakeHomeBridgeSessionClient(claim: claim ?? HomeDemoFixtures.claim(for: profileID))
+        made.append(client)
+        return client
+    }
 }
 
 /// Saving takes real time, so lifecycle work suspends mid-teardown.
