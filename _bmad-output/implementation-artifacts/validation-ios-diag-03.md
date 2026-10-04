@@ -1,6 +1,6 @@
 # IOS-DIAG-03 validation — 2026-10-04
 
-Status: review. Local implementation verified on macOS and on the iOS 27.2 Simulator. The Settings smoke step and device acceptance with a HOME-NW-06 Home remain pending.
+Status: review. Local implementation verified on macOS and on the iOS 27.2 Simulator, and the Settings section was rendered on the simulator but not tapped. Device acceptance with a HOME-NW-06 Home remains pending.
 
 ## Automated evidence
 
@@ -16,10 +16,19 @@ Toolchain: installed Xcode 27.2 beta 2 (`DEVELOPER_DIR=/Applications/Xcode-27.2.
 - New coverage: decoder strictness (ten malformed ready envelopes, malformed submit echo), upgrade header exactly once, capability-gated negotiation (five partial/malformed capability sets), reconnect to legacy and to a new opted-in socket, unique request IDs, `request_started` recorded before the frame write, correlated accepted/rejected responses, legacy frame unchanged, schema-2 report shape, legacy schema-1 report, packing bounds/determinism/drops/referenced origins, origin null rules.
 - Diff reviewed: no credentials, recordings, generated build files or unrelated edits.
 
+## Settings smoke — rendered, not tapped (iPhone 18 Pro / iOS 27.2 Simulator)
+
+This Xcode 27.2 beta has no Simulator.app, so the app could not be navigated by hand. App install and launch with `simctl` worked; the app reached its main screen.
+
+In its place, a throwaway hosted XCTest ran once and was then deleted without being committed. It ran `AutomaticDiagnosticsSettings` in a `Form` inside a `UIHostingController` window in the test host app, so the view's `.task` ran. It used the existing `AutomaticDiagnosticsTests` fixture, which provides one synthetic paired Home (`home.example`) and a temporary reporter store.
+
+Observed in the PNG snapshots:
+- Paired, off: the toggle "Send connection reports to home.example" renders off, and the footer shows the new sentence, "...with random connection and request identifiers so Home can match them to its own records. No messages, audio, or passwords..."
+- Driving the single `UISwitch` in the hierarchy (`setOn` + `.valueChanged`) ran the view's binding. The stored setting became enabled (`reporter.settings().first?.enabled == true`), and the snapshot shows the toggle on with "No reports waiting to send."
+- Flipping back stored disabled again. That snapshot is byte-identical to the first one.
+
+`ImageRenderer` cannot draw the UIKit-backed `Form`: it produced the "unsupported view" placeholder. Because it also never runs `.task`, the live hosted snapshot was used. The macOS render was skipped.
+
 ## Remaining acceptance
 
-- Settings smoke. On iPhone 18 Pro / iOS 27.2, `simctl install` and `simctl launch com.achappell.HermesRelay -HomeBridgeFake` both worked, and the app reached its main screen (Debug Home; Home bridge unavailable, authorization_unavailable). The Settings screen and its toggle could not be reached:
-  - This Xcode 27.2 beta install has no Simulator.app, and `simctl` cannot tap, so the headless simulator could not be navigated.
-  - On a fresh simulator the reporting toggle only appears once a Home is paired, which needs a synthetic pairing.
-  - The disclosure sentence is checked in source only (`AutomaticDiagnosticsSettings.swift` footer).
 - Device acceptance per the Home hand-off §3 against a HOME-NW-06 Home: ready carries `conn-…`, submit carries `req-…`, response returns `corr-…`; induce a failure, close the carrying socket before checking `/pair` (associations become `linked` only at socket finalize, D1); a duplicate token shows `ambiguous`; a legacy Home shows no decode failures, header errors or reconnect mismatches.
