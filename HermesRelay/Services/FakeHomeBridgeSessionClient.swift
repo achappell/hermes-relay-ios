@@ -473,6 +473,11 @@ actor FakeHomeBridgeSessionClient: HomeBridgeSessionClient {
         continuation.finish()
     }
 
+    /// Simulates the socket dropping under an open conversation.
+    func failEvents() {
+        continuation.finish(throwing: URLError(.networkConnectionLost))
+    }
+
     func close(binding requestedBinding: HomeConversationBinding) async -> HomeConversationCloseOutcome {
         guard !closed, let binding, binding == requestedBinding else {
             return .unavailable(.home(code: .conversationMismatch, phase: .lifecycle))

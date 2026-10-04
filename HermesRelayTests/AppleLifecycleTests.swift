@@ -310,3 +310,8 @@ private final class LifecycleSecureValueStore: SecureValueStore, @unchecked Send
     func write(_ value: Data, service: String, account: String) throws {}
     func delete(service: String, account: String) throws {}
 }
+
+extension LifecycleAudioOutput {
+    func pause() async {}
+    func resume() async {}
+}

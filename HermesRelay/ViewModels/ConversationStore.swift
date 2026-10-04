@@ -2511,6 +2511,18 @@ final class ConversationStore {
         return activeClient
     }
 
+    /// Persists local state for a non-active phase that keeps voice work
+    /// running (IOS-HOME-07). Unlike `lifecycleWillDeactivate`, it leaves the
+    /// transport, deadlines and retry ladder live; the full deactivation still
+    /// runs when the retained work ends.
+    func lifecycleSnapshot() async -> Bool {
+        guard await persistConversation() else {
+            transientError = "The local conversation could not be saved. Try again before leaving."
+            return false
+        }
+        return true
+    }
+
     /// Persist the exact local state that crosses a lifecycle boundary. This
     /// method deliberately does not close a socket; the lifecycle owner does
     /// that only after the snapshot and native teardown succeed.

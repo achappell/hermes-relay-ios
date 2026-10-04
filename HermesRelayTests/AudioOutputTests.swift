@@ -104,6 +104,28 @@ final class AudioOutputTests: XCTestCase {
         }
     }
 
+    func testPlaybackWrappersForwardPauseAndResumeToTheLiveOutput() async throws {
+        // IOS-HOME-07: a route loss or interruption pauses the real player
+        // through every production wrapper.
+        let liveOutput = RecordingAudioOutput()
+        let recovering = RecoveringAudioOutput(liveOutput: liveOutput)
+        let output = HomeAwareAudioOutput(wrapped: recovering, isHomeMode: { true })
+        let reporting = AudioActivityReportingOutput(wrapped: output, reporter: NoopAudioActivityReporter())
+        let format = AudioFormat(sampleRate: 24_000, channels: 1, sampleWidth: 2)
+        try await reporting.start(format: format)
+
+        await reporting.pause()
+        await reporting.resume()
+
+        let operations = await liveOutput.operations()
+        XCTAssertEqual(Array(operations.suffix(3)), [.start(format), .pause, .resume])
+    }
+
+    func testBackgroundVoiceIsNonMixableAndForegroundDucksOthers() {
+        XCTAssertEqual(AudioSessionMixing.forBackgroundVoice(true), .nonMixable)
+        XCTAssertEqual(AudioSessionMixing.forBackgroundVoice(false), .duckOthers)
+    }
+
     func testRecoveringOutputWritesBufferedPCMWhenLiveOutputFails() async throws {
         let liveOutput = RecordingAudioOutput(appendError: .outputFailed)
         let output = RecoveringAudioOutput(liveOutput: liveOutput)
@@ -395,6 +417,8 @@ private actor RecordingAudioOutput: AudioOutput {
         case append
         case finish
         case stop
+        case pause
+        case resume
     }
 
     private let appendError: AudioOutputError?
@@ -431,6 +455,8 @@ private actor RecordingAudioOutput: AudioOutput {
     }
 
     func playbackPosition() async -> TimeInterval? { nil }
+    func pause() async { recordedOperations.append(.pause) }
+    func resume() async { recordedOperations.append(.resume) }
 
     func recordedChunks() -> [Data] { chunks }
     func operations() -> [Operation] { recordedOperations }
@@ -491,4 +517,9 @@ private actor RecordingAudioActivityReporter: AudioActivityReporter {
     func events() -> [AudioActivityEvent] {
         recordedEvents
     }
+}
+
+extension FinishFailingAudioOutput {
+    func pause() async {}
+    func resume() async {}
 }

@@ -198,6 +198,19 @@ stories:
     depends_on:
       - ios:IOS-HOME-04
       - home:HOME-NW-18
+  - id: IOS-HOME-07
+    title: Keep Home voice conversations running in the background
+    kind: local
+    spec: _bmad-output/implementation-artifacts/spec-ios-home-07-background-voice.md
+    validation: _bmad-output/implementation-artifacts/validation-ios-home-07.md
+    tracker_key: ios-home-07
+    product_epic: 1
+    owner: hermes-relay-ios
+    release_scope: migration
+    depends_on:
+      - ios:IOS-HOME-04
+      - ios:IOS-HOME-05
+      - ios:IOS-HOME-06
   - id: IOS-STD-01
     title: Offer explicit Standard-only setup on iOS and macOS
     kind: course-correction

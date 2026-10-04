@@ -56,21 +56,114 @@ enum HandsFreeAudioRouteSafety: Equatable, Sendable {
     case unknown
 }
 
+/// How the voice session shares audio with other apps (IOS-HOME-07). In the
+/// foreground Hermes ducks other audio; while backgrounded voice work runs it
+/// is non-mixable, which Now Playing and background capture both require.
+enum AudioSessionMixing: Equatable, Sendable {
+    case duckOthers
+    case nonMixable
+
+    static func forBackgroundVoice(_ active: Bool) -> AudioSessionMixing {
+        active ? .nonMixable : .duckOthers
+    }
+}
+
+/// Switches the shared audio session between foreground and backgrounded
+/// voice work. Platform-neutral so the coordinator can be tested on macOS.
+protocol BackgroundAudioSessionPolicy: Sendable {
+    func setBackgroundVoiceActive(_ active: Bool) async
+}
+
+struct NoopBackgroundAudioSessionPolicy: BackgroundAudioSessionPolicy {
+    func setBackgroundVoiceActive(_ active: Bool) async {}
+}
+
+/// Audio-session notifications that affect a live voice turn.
+enum AudioSessionEvent: Equatable, Sendable {
+    case interruptionBegan
+    case interruptionEnded(shouldResume: Bool)
+    /// The previous output route disappeared (headphones or AirPods removed).
+    case oldDeviceUnavailable
+    /// A new output route appeared (headphones or AirPods reconnected).
+    case newDeviceAvailable
+}
+
+protocol AudioSessionEventSource: Sendable {
+    func events() -> AsyncStream<AudioSessionEvent>
+}
+
+/// Observes `AVAudioSession` interruption and route-change notifications on
+/// iOS. macOS has no shared audio session, so the stream stays empty there.
+struct SystemAudioSessionEventSource: AudioSessionEventSource {
+    func events() -> AsyncStream<AudioSessionEvent> {
+        let (stream, continuation) = AsyncStream<AudioSessionEvent>.makeStream()
+        #if os(iOS)
+        let center = NotificationCenter.default
+        let session = AVAudioSession.sharedInstance()
+        let interruption = center.addObserver(
+            forName: AVAudioSession.interruptionNotification,
+            object: session,
+            queue: nil
+        ) { notification in
+            guard let rawType = notification.userInfo?[AVAudioSessionInterruptionTypeKey] as? UInt,
+                  let type = AVAudioSession.InterruptionType(rawValue: rawType) else { return }
+            switch type {
+            case .began:
+                continuation.yield(.interruptionBegan)
+            case .ended:
+                let rawOptions = notification.userInfo?[AVAudioSessionInterruptionOptionKey] as? UInt ?? 0
+                let options = AVAudioSession.InterruptionOptions(rawValue: rawOptions)
+                continuation.yield(.interruptionEnded(shouldResume: options.contains(.shouldResume)))
+            @unknown default:
+                break
+            }
+        }
+        let routeChange = center.addObserver(
+            forName: AVAudioSession.routeChangeNotification,
+            object: session,
+            queue: nil
+        ) { notification in
+            guard let rawReason = notification.userInfo?[AVAudioSessionRouteChangeReasonKey] as? UInt else { return }
+            switch AVAudioSession.RouteChangeReason(rawValue: rawReason) {
+            case .oldDeviceUnavailable:
+                continuation.yield(.oldDeviceUnavailable)
+            case .newDeviceAvailable:
+                continuation.yield(.newDeviceAvailable)
+            default:
+                break
+            }
+        }
+        let tokens = NotificationTokens([interruption, routeChange])
+        continuation.onTermination = { _ in
+            for token in tokens.tokens {
+                NotificationCenter.default.removeObserver(token)
+            }
+        }
+        #endif
+        return stream
+    }
+}
+
+private final class NotificationTokens: @unchecked Sendable {
+    let tokens: [NSObjectProtocol]
+
+    init(_ tokens: [NSObjectProtocol]) {
+        self.tokens = tokens
+    }
+}
+
 /// Keeps the microphone alive while hands-free mode listens during playback.
 /// The two platform adapters share this lease so one of them cannot deactivate
 /// the audio session out from under the other.
-actor AppleAudioSessionCoordinator {
+actor AppleAudioSessionCoordinator: BackgroundAudioSessionPolicy {
     private var inputActive = false
     private var outputActive = false
+    private var mixing: AudioSessionMixing = .duckOthers
 
     func activateInput() throws {
         #if os(iOS)
         let session = AVAudioSession.sharedInstance()
-        try session.setCategory(
-            .playAndRecord,
-            mode: .measurement,
-            options: [.defaultToSpeaker, .allowBluetoothHFP, .allowBluetoothA2DP, .duckOthers]
-        )
+        try session.setCategory(.playAndRecord, mode: .measurement, options: Self.categoryOptions(for: mixing))
         try session.setActive(true, options: .notifyOthersOnDeactivation)
         #endif
         inputActive = true
@@ -79,15 +172,45 @@ actor AppleAudioSessionCoordinator {
     func activateOutput() throws {
         #if os(iOS)
         let session = AVAudioSession.sharedInstance()
-        try session.setCategory(
-            .playAndRecord,
-            mode: .spokenAudio,
-            options: [.defaultToSpeaker, .allowBluetoothHFP, .allowBluetoothA2DP, .duckOthers]
-        )
+        try session.setCategory(.playAndRecord, mode: .spokenAudio, options: Self.categoryOptions(for: mixing))
         try session.setActive(true)
         #endif
         outputActive = true
     }
+
+    /// Re-applies the category in place when the session is already live, so
+    /// running playback or capture keeps going with the new mixing rule.
+    func setBackgroundVoiceActive(_ active: Bool) {
+        let newMixing = AudioSessionMixing.forBackgroundVoice(active)
+        guard newMixing != mixing else { return }
+        #if os(iOS)
+        if inputActive || outputActive {
+            // Commit the rule only once the live session accepted it.
+            do {
+                try AVAudioSession.sharedInstance().setCategory(
+                    .playAndRecord,
+                    mode: inputActive ? .measurement : .spokenAudio,
+                    options: Self.categoryOptions(for: newMixing)
+                )
+            } catch {
+                return
+            }
+        }
+        #endif
+        mixing = newMixing
+    }
+
+    #if os(iOS)
+    private static func categoryOptions(for mixing: AudioSessionMixing) -> AVAudioSession.CategoryOptions {
+        var options: AVAudioSession.CategoryOptions = [
+            .defaultToSpeaker, .allowBluetoothHFP, .allowBluetoothA2DP,
+        ]
+        if mixing == .duckOthers {
+            options.insert(.duckOthers)
+        }
+        return options
+    }
+    #endif
 
     func deactivateInput() {
         inputActive = false

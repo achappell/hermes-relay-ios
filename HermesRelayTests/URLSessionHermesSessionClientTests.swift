@@ -915,3 +915,8 @@ private extension String {
         return try XCTUnwrap(JSONSerialization.jsonObject(with: data) as? [String: Any])
     }
 }
+
+extension CloseTestAudioOutput {
+    func pause() async {}
+    func resume() async {}
+}

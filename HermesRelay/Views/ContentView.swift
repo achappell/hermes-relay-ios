@@ -98,7 +98,10 @@ struct ContentView: View {
                     isHomeMode: { @MainActor [weak store] in store?.isHomeMode ?? false }
                 ),
                 diagnostics: diagnostics,
-                handsFreeInput: handsFreeInput
+                handsFreeInput: handsFreeInput,
+                clock: homeClock,
+                audioSessionPolicy: audioSessionCoordinator,
+                nowPlaying: NowPlayingController()
             )
             _voiceCoordinator = State(initialValue: newVoiceCoordinator)
             resolvedVoiceCoordinator = newVoiceCoordinator

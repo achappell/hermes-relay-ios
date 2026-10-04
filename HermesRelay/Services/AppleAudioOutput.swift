@@ -12,6 +12,12 @@ actor AppleAudioOutput: AudioOutput {
     private var scheduledAudioBytes = 0
     private var isAcceptingAudio = false
     private var playbackStarted = false
+    /// Survives `stop()`/`start(format:)`: a pause requested before the next
+    /// stream starts must hold it. Only `resume()` clears it.
+    private var isPaused = false
+    /// Set when a resume could not restart the engine; the pending drain
+    /// then reports a playback failure instead of success.
+    private var resumeFailed = false
 
     init(
         diagnostics: any AudioPlaybackDiagnostics = NoopAudioPlaybackDiagnostics(),
@@ -25,6 +31,7 @@ actor AppleAudioOutput: AudioOutput {
     func start(format: AudioFormat) async throws {
         try PCMFormatValidator.validate(format)
         await stopResources()
+        resumeFailed = false
 
         guard let avFormat = AVAudioFormat(
             commonFormat: .pcmFormatInt16,
@@ -93,6 +100,10 @@ actor AppleAudioOutput: AudioOutput {
         pcmFrameAccumulator = nil
         isAcceptingAudio = false
         await playbackDrain.waitForCompletion()
+        if resumeFailed {
+            resumeFailed = false
+            throw AudioOutputError.outputFailed
+        }
         if scheduledAudioBytes > 0 {
             await diagnostics.record(.playbackCompleted(bytes: scheduledAudioBytes))
         }
@@ -100,6 +111,40 @@ actor AppleAudioOutput: AudioOutput {
 
     func stop() async {
         await stopResources()
+    }
+
+    func pause() async {
+        guard !isPaused else { return }
+        isPaused = true
+        if playbackStarted {
+            playerNode.pause()
+        }
+    }
+
+    /// After an interruption the system has stopped the engine; restart it
+    /// on the reactivated session before the player continues.
+    func resume() async {
+        guard isPaused else { return }
+        isPaused = false
+        guard audioFormat != nil else { return }
+        #if os(iOS)
+        try? await audioSessionCoordinator.activateOutput()
+        #endif
+        if !engine.isRunning {
+            try? engine.start()
+        }
+        // Playing a node on a stopped engine raises an exception; report a
+        // playback failure through the pending drain instead.
+        guard engine.isRunning else {
+            resumeFailed = true
+            await stopResources()
+            return
+        }
+        if playbackStarted {
+            playerNode.play()
+        } else if scheduledAudioBytes > 0 {
+            startPlaybackIfNeeded()
+        }
     }
 
     func playbackPosition() async -> TimeInterval? {
@@ -153,7 +198,7 @@ actor AppleAudioOutput: AudioOutput {
     }
 
     private func startPlaybackIfNeeded() {
-        guard !playbackStarted else { return }
+        guard !playbackStarted, !isPaused else { return }
         playerNode.play()
         playbackStarted = true
     }
