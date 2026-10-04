@@ -1108,6 +1108,7 @@ final class VoiceSessionCoordinator {
         guard generation == responseGeneration, !Task.isCancelled else { return }
         if !completed, !isFailed, state != .interrupted {
             state = .failed(store.transientError ?? "The voice turn could not be completed.")
+            updateNowPlayingPlaybackState()
         } else if completed, !isFailed, state != .interrupted {
             await finishPlaybackAndEndResponse(generation: generation)
         } else if completed, store.isHomeMode {
@@ -1142,6 +1143,7 @@ final class VoiceSessionCoordinator {
             startPlaybackPositionObservation(generation: generation)
             await diagnostics.record(.streamStarted(format: format))
             state = .buffering
+            updateNowPlayingPlaybackState()
             do {
                 try await output.start(format: format)
                 guard isCurrentResponse(generation) else { return }
@@ -1160,6 +1162,7 @@ final class VoiceSessionCoordinator {
                 }
                 if readiness == .ready {
                     state = .speaking
+                    updateNowPlayingPlaybackState()
                 }
             } catch {
                 await handlePlaybackFailure(generation: generation)
@@ -1195,6 +1198,7 @@ final class VoiceSessionCoordinator {
             audioFileBuffer.removeAll(keepingCapacity: true)
             audioFileStreamActive = true
             state = .buffering
+            updateNowPlayingPlaybackState()
         case .audioFileChunk(let fileData):
             guard !playbackFailed, audioFileStreamActive else { return }
             audioFileBuffer.append(fileData)
@@ -1220,6 +1224,7 @@ final class VoiceSessionCoordinator {
                 if readiness == .ready {
                     startPlaybackPositionObservation(generation: generation)
                     state = .speaking
+                    updateNowPlayingPlaybackState()
                 }
                 try await output.finish()
                 guard isCurrentResponse(generation) else { return }
@@ -1253,6 +1258,7 @@ final class VoiceSessionCoordinator {
             await output.stop()
             guard isCurrentResponse(generation, allowingPlaybackFailure: true) else { return }
             state = .failed(message)
+            updateNowPlayingPlaybackState()
         case .audioAbort(_, let reason):
             guard !state.isTerminal else { return }
             if store.isHomeMode, Self.isHomeAudioFailure(reason) {
@@ -1265,6 +1271,7 @@ final class VoiceSessionCoordinator {
             await stopInterruptedPlayback(generation: generation)
             guard generation == responseGeneration, !Task.isCancelled else { return }
             state = .interrupted
+            updateNowPlayingPlaybackState()
         case .speechTiming(let timing):
             guard !state.isTerminal else { return }
             await diagnostics.record(
@@ -1302,6 +1309,7 @@ final class VoiceSessionCoordinator {
             await output.stop()
             guard isCurrentResponse(generation, allowingPlaybackFailure: true) else { return }
             state = .failed(reason)
+            updateNowPlayingPlaybackState()
         case .messageStart, .textDelta, .textReplace, .unknown:
             break
         }
@@ -1318,6 +1326,7 @@ final class VoiceSessionCoordinator {
         playbackFailed = false
         resetSpeechTiming()
         state = .interrupted
+        updateNowPlayingPlaybackState()
     }
 
     private func submitDraft(generation: UInt64) async {
@@ -1331,6 +1340,7 @@ final class VoiceSessionCoordinator {
         guard generation == responseGeneration, !Task.isCancelled else { return }
         if !completed, !isFailed, state != .interrupted {
             state = .failed(store.transientError ?? "The text turn could not be completed.")
+            updateNowPlayingPlaybackState()
             audioFileBuffer.removeAll(keepingCapacity: false)
         } else if completed, !isFailed, state != .interrupted {
             await finishPlaybackAndEndResponse(generation: generation)
@@ -1392,6 +1402,7 @@ final class VoiceSessionCoordinator {
         await output.stop()
         guard isCurrentResponse(generation, allowingPlaybackFailure: true) else { return }
         state = .failed("Audio playback failed. The response text is still available.")
+        updateNowPlayingPlaybackState()
         store.settleActiveAssistantPresentation()
     }
 
@@ -1443,6 +1454,7 @@ final class VoiceSessionCoordinator {
         guard !isFailed, state != .interrupted else { return }
         stopPlaybackPositionObservation()
         state = .complete
+        updateNowPlayingPlaybackState()
         store.settleActiveAssistantPresentation()
     }
 
@@ -1562,7 +1574,7 @@ extension VoiceSessionCoordinator {
             }
         case .newDeviceAvailable:
             if replyPauseReason == .routeLoss {
-                await resumeReplyOutput()
+                await resumeReplyOutput(allowingRouteLoss: true)
             }
         }
     }
@@ -1585,21 +1597,26 @@ extension VoiceSessionCoordinator {
     }
 
     private var isReplyOutputPlaying: Bool {
-        responseTask != nil && !isReplyOutputPaused
+        state == .speaking && !isReplyOutputPaused
+    }
+
+    private func updateNowPlayingPlaybackState() {
+        nowPlaying?.update(isPlaying: isReplyOutputPlaying)
     }
 
     private func pauseReplyOutput(_ reason: ReplyPauseReason) async {
         guard responseTask != nil, !isReplyOutputPaused else { return }
         replyPauseReason = reason
         await output.pause()
-        nowPlaying?.update(isPlaying: false)
+        updateNowPlayingPlaybackState()
     }
 
-    private func resumeReplyOutput() async {
+    private func resumeReplyOutput(allowingRouteLoss: Bool = false) async {
         guard responseTask != nil, isReplyOutputPaused else { return }
+        guard allowingRouteLoss || replyPauseReason != .routeLoss else { return }
         replyPauseReason = nil
         await output.resume()
-        nowPlaying?.update(isPlaying: true)
+        updateNowPlayingPlaybackState()
     }
 
     /// Drops any held pause when a reply ends or a new one starts. The

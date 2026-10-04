@@ -2556,6 +2556,7 @@ final class VoiceSessionCoordinatorTests: XCTestCase {
         XCTAssertEqual(closeCount, 0)
         var operations = await output.operations()
         XCTAssertFalse(operations.contains(.stop), "Locking must not cut the reply off")
+        XCTAssertEqual(harness.nowPlaying.shownPlaying, [true], "The card reflects active playback")
         XCTAssertEqual(harness.nowPlaying.shownTitles, ["Hermes conversation"])
         var policy = await harness.policy.values()
         XCTAssertEqual(policy, [true], "Backgrounded voice work is non-mixable")
@@ -2575,6 +2576,60 @@ final class VoiceSessionCoordinatorTests: XCTestCase {
         XCTAssertEqual(submitted, ["Read me the news"], "No replay")
         operations = await output.operations()
         XCTAssertTrue(operations.contains(.finish))
+    }
+
+    @MainActor
+    func testNowPlayingStaysStoppedDuringGenerationAndStartsWhenAudioPlays() async throws {
+        let output = CoordinatorAudioOutput(waitsForFinish: true, stopReleasesFinish: true)
+        let harness = try await makeBackgroundVoiceHarness(output: output)
+        defer { harness.cleanUp() }
+        harness.store.draft = "Read me the news"
+        let voice = harness.voice
+        let responseTask = Task { @MainActor in await voice.sendDraft() }
+        await waitForHomeVoiceSubmission(harness.client, atLeast: 1)
+
+        _ = await harness.lifecycle.handle(.background)
+        XCTAssertEqual(harness.nowPlaying.shownPlaying, [false], "Text generation is not audio playback")
+
+        let scope = HomeEventScope(
+            conversationHandle: harness.fixture.claim.conversationHandle,
+            turnID: "turn-1",
+            correlationID: "correlation-1"
+        )
+        await harness.client.emit(.audioStart(
+            scope,
+            HomeAudioFormat(sampleRate: 24_000, channels: 1, sampleWidth: 2)
+        ))
+        await harness.client.emit(.binaryPCM(scope, Data([0, 1, 2, 3])))
+        await pollUntil { harness.voice.state == .speaking }
+        XCTAssertEqual(harness.nowPlaying.playingUpdates.last, true, "The card updates when output starts")
+
+        harness.nowPlaying.send(.stop)
+        await pollUntil { harness.store.connectionState == .disconnected }
+        await responseTask.value
+    }
+
+    @MainActor
+    func testNowPlayingShowsStoppedWhenReplyFinishesButHandsFreeKeepsRetention() async throws {
+        let output = CoordinatorAudioOutput(waitsForFinish: true, stopReleasesFinish: true)
+        let handsFree = CoordinatorHandsFreeInput()
+        let harness = try await makeBackgroundVoiceHarness(output: output, handsFreeInput: handsFree)
+        defer { harness.cleanUp() }
+        await harness.voice.toggleHandsFree()
+        let responseTask = try await startPlayingHomeReply(harness, prompt: "Read me the news")
+        _ = await harness.lifecycle.handle(.background)
+        XCTAssertEqual(harness.nowPlaying.shownPlaying, [true])
+
+        await output.allowFinish()
+        await responseTask.value
+        await pollUntil { harness.voice.state == .complete && harness.voice.backgroundRetention == .voiceSession }
+
+        XCTAssertTrue(harness.lifecycle.isRetainingBackgroundWork)
+        XCTAssertTrue(harness.nowPlaying.isShowing, "Hands-free keeps the card visible")
+        XCTAssertEqual(harness.nowPlaying.playingUpdates.last, false, "A completed reply is no longer playing")
+
+        harness.nowPlaying.send(.stop)
+        await pollUntil { harness.store.connectionState == .disconnected }
     }
 
     @MainActor
@@ -2840,7 +2895,7 @@ final class VoiceSessionCoordinatorTests: XCTestCase {
         await pollUntil { harness.voice.isReplyOutputPaused }
         harness.nowPlaying.send(.play)
         await pollUntil { !harness.voice.isReplyOutputPaused }
-        XCTAssertEqual(harness.nowPlaying.playingUpdates, [false, true])
+        XCTAssertEqual(harness.nowPlaying.playingUpdates, [false, true, false, true])
 
         harness.nowPlaying.send(.stop)
         await pollUntil { harness.store.connectionState == .disconnected }
@@ -2992,25 +3047,30 @@ final class VoiceSessionCoordinatorTests: XCTestCase {
     }
 
     @MainActor
-    func testInterruptionEndDoesNotResumeARouteLossPause() async throws {
+    func testRouteLossBlocksInterruptionAndNowPlayingResumeUntilRouteReturns() async throws {
         let output = CoordinatorAudioOutput(waitsForFinish: true, stopReleasesFinish: true)
         let harness = try await makeBackgroundVoiceHarness(output: output)
         defer { harness.cleanUp() }
         let responseTask = try await startPlayingHomeReply(harness, prompt: "Read me the news")
+        _ = await harness.lifecycle.handle(.background)
 
         harness.events.send(.oldDeviceUnavailable)
         await pollUntil { harness.voice.replyPauseReason == .routeLoss }
         harness.events.send(.interruptionEnded(shouldResume: true))
+        harness.nowPlaying.send(.play)
+        harness.nowPlaying.send(.togglePlayPause)
         try await Task.sleep(for: .milliseconds(30))
 
-        XCTAssertEqual(harness.voice.replyPauseReason, .routeLoss, "Never resume onto the speaker")
+        XCTAssertEqual(harness.voice.replyPauseReason, .routeLoss, "Only route availability releases this pause")
         var operations = await output.operations()
-        XCTAssertFalse(operations.contains(.resume))
+        XCTAssertFalse(operations.contains(.resume), "Lock-screen commands never route audio to the speaker")
+        XCTAssertEqual(harness.nowPlaying.playingUpdates.last, false)
 
         harness.events.send(.newDeviceAvailable)
         await pollUntil { !harness.voice.isReplyOutputPaused }
         operations = await output.operations()
-        XCTAssertTrue(operations.contains(.resume), "Reconnected headphones resume the reply")
+        XCTAssertTrue(operations.contains(.resume), "A new route resumes the reply")
+        XCTAssertEqual(harness.nowPlaying.playingUpdates.last, true)
 
         await harness.voice.stopForLifecycle()
         await responseTask.value

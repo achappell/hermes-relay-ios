@@ -10,6 +10,13 @@ Baseline: `feeb475fc113e88ab0a0e496fe557b6e39c06fbe` (`fix/ios-home-foreground-r
 - **Test-first baseline check:** copied the new voice/output test files into a detached worktree at `feeb475` and ran `xcodebuild build-for-testing`. It failed as expected because the new APIs/types (`NowPlayingPresenting`, `BackgroundAudioSessionPolicy`, `AudioSessionEventSource`, `AudioOutput.pause/resume`, `AudioSessionMixing`) do not exist on baseline. This confirms the tests are red against baseline at compile time, not that an existing behavior assertion ran and failed.
 - **Pre-existing flaky baseline test:** `ConversationStoreReconnectTests.testAutomaticHomeReconnectCanReleaseConfirmedInactiveRecovery` failed in 2 of 4 isolated baseline runs before that loop was stopped; both failed assertions showed `reconnecting(attempt: 1, of: 5)` instead of connected. The full final suite passed.
 
+## Follow-up: route loss and Now Playing state
+
+- **macOS XCTest:** `DEVELOPER_DIR=/Applications/Xcode-27.2.0-Beta.2.app/Contents/Developer xcodebuild test -project "Hermes Relay.xcodeproj" -scheme HermesRelay -destination 'platform=macOS,arch=arm64' -derivedDataPath /tmp/ios-bg-dd CODE_SIGNING_ALLOWED=NO -parallel-testing-enabled NO` — passed, 593 tests, 0 failures. The three new coordinator regressions also passed independently.
+- Two preceding default-parallel full-suite runs hit the known flaky `ConversationStoreReconnectTests.testAutomaticHomeReconnectCanReleaseConfirmedInactiveRecovery`: `XCTAssertEqual failed: ("reconnecting(attempt: 1, of: 5)") is not equal to ("connected")` at line 198 and `XCTAssertTrue failed` at line 199. Its isolated rerun passed; the serialized full suite passed.
+- **iOS Simulator build:** `DEVELOPER_DIR=/Applications/Xcode-27.2.0-Beta.2.app/Contents/Developer xcodebuild build -project "Hermes Relay.xcodeproj" -scheme HermesRelay -destination 'generic/platform=iOS Simulator' -derivedDataPath /tmp/ios-bg-sim-dd CODE_SIGNING_ALLOWED=NO` — passed. The asset catalog warned that the 60x60@2x iPhone icon, 76x76@2x and 83.5x83.5@2x iPad icons, and 1024x1024 App Store icon are missing.
+- **Signed generic iOS device build:** `DEVELOPER_DIR=/Applications/Xcode-27.2.0-Beta.2.app/Contents/Developer xcodebuild build -project "Hermes Relay.xcodeproj" -scheme HermesRelay -destination 'generic/platform=iOS' -derivedDataPath /tmp/ios-bg-device-dd CODE_SIGN_STYLE=Automatic CODE_SIGNING_ALLOWED=YES` — passed with the existing Apple Development identity and local provisioning profile `e65ff3bc-f036-4bb8-8465-7a057c1e2036`; no provisioning or entitlement errors. No install or launch was attempted, and no account changes were made.
+
 ## Device-only checks for Amanda
 
 On a physical iPhone, Release build:
