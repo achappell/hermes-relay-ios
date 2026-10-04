@@ -35,6 +35,19 @@ protocol HomeClientService: Sendable {
         _ request: HomeClientClaimRequest
     ) async throws -> HomeClientClaimGrant
 
+    /// This Device's active Home claims (`GET /api/v1/client-claims`).
+    func listOpenClaims(
+        home: HomeClientBaseURL,
+        credential: Data
+    ) async throws -> HomeClientActiveClaimList
+
+    /// Closes only the explicit refs supplied (`POST /api/v1/client-claims/close`).
+    func closeClaims(
+        home: HomeClientBaseURL,
+        credential: Data,
+        claimRefs: [String]
+    ) async throws -> [HomeClientClaimCloseResult]
+
     /// The grant's Profile sessions, newest first (`POST /api/v1/client-sessions/list`).
     func listSessions(
         home: HomeClientBaseURL,
@@ -156,6 +169,41 @@ struct URLSessionHomeClientService: HomeClientService, CustomStringConvertible {
             throw HomeClientServiceError.invalidResponse
         }
         return grant
+    }
+
+    func listOpenClaims(
+        home: HomeClientBaseURL,
+        credential: Data
+    ) async throws -> HomeClientActiveClaimList {
+        let request = try makeRequest(
+            home.apiURL("/api/v1/client-claims"),
+            method: "GET",
+            body: Optional<HomeClientClaimRequest>.none,
+            credential: credential
+        )
+        return try await send(request, as: HomeClientActiveClaimList.self)
+    }
+
+    func closeClaims(
+        home: HomeClientBaseURL,
+        credential: Data,
+        claimRefs: [String]
+    ) async throws -> [HomeClientClaimCloseResult] {
+        guard let body = HomeClientClaimsCloseRequest(claimRefs: claimRefs) else {
+            throw HomeClientServiceError.invalidResponse
+        }
+        let request = try makeRequest(
+            home.apiURL("/api/v1/client-claims/close"),
+            method: "POST",
+            body: body,
+            credential: credential
+        )
+        let results = try await send(request, as: HomeClientClaimsCloseResponse.self).results
+        guard results.count == claimRefs.count,
+              Set(results.map(\.claimRef)) == Set(claimRefs) else {
+            throw HomeClientServiceError.invalidResponse
+        }
+        return results
     }
 
     func listSessions(
@@ -303,6 +351,8 @@ actor FakeHomeClientService: HomeClientService {
         case pendingGrants
         case holders
         case decide(grantID: String, action: HomeProfileGrantAction)
+        case listOpenClaims
+        case closeClaims(count: Int)
     }
 
     /// Grants waiting for this device's decision, and every holder, as Home lists them.
@@ -319,6 +369,14 @@ actor FakeHomeClientService: HomeClientService {
     /// The Profile's sessions, newest first, as the list route returns them.
     var sessions: [HomeClientSessionSummary] = []
     var listError: HomeClientServiceError?
+    var openClaims = HomeClientActiveClaimList(maxClaims: 8, claims: [])
+    var openClaimsError: HomeClientServiceError?
+    var closeClaimsError: HomeClientServiceError?
+    private(set) var closeClaimRequests: [[String]] = []
+    private var claimReferencesEnabled = false
+
+    private var shouldHoldNextClaim = false
+    private var heldClaim: CheckedContinuation<Void, Never>?
     /// Session choices of every claim, in order.
     private(set) var sessionChoices: [HomeClientSessionChoice] = []
     /// Denials for a resume of a given session reference.
@@ -354,6 +412,7 @@ actor FakeHomeClientService: HomeClientService {
     func resetCalls() {
         calls.removeAll()
         sessionChoices.removeAll()
+        closeClaimRequests.removeAll()
     }
 
     func setConsumeResults(_ results: [Result<HomeCredentialMaterial, HomeClientServiceError>]) {
@@ -378,6 +437,33 @@ actor FakeHomeClientService: HomeClientService {
 
     func setSessions(_ sessions: [HomeClientSessionSummary]) {
         self.sessions = sessions
+    }
+
+    func setOpenClaims(_ list: HomeClientActiveClaimList) {
+        openClaims = list
+    }
+
+    func setOpenClaimsError(_ error: HomeClientServiceError?) {
+        openClaimsError = error
+    }
+
+    func setCloseClaimsError(_ error: HomeClientServiceError?) {
+        closeClaimsError = error
+    }
+
+    func setClaimReferencesEnabled(_ enabled: Bool) {
+        claimReferencesEnabled = enabled
+    }
+
+    func holdNextClaim() {
+        shouldHoldNextClaim = true
+    }
+
+    var isHoldingClaim: Bool { heldClaim != nil }
+
+    func releaseHeldClaim() {
+        heldClaim?.resume()
+        heldClaim = nil
     }
 
     func setListError(_ error: HomeClientServiceError?) {
@@ -464,6 +550,10 @@ actor FakeHomeClientService: HomeClientService {
         calls.append(.claim(grantID: request.grantID, revision: request.configurationRevision))
         credentialsSeen.append(credential)
         sessionChoices.append(request.session)
+        if shouldHoldNextClaim {
+            shouldHoldNextClaim = false
+            await withCheckedContinuation { heldClaim = $0 }
+        }
         claimCounter += 1
         if let denial = deniedGrants[request.grantID] {
             throw HomeClientServiceError.denied(denial)
@@ -502,8 +592,40 @@ actor FakeHomeClientService: HomeClientService {
             claimID: request.claimID,
             configurationRevision: request.configurationRevision,
             conversationHandle: handle,
+            claimRef: claimReferencesEnabled ? "fake-claim-ref-\(claimCounter)" : nil,
             session: session
         )
+    }
+
+    func listOpenClaims(
+        home: HomeClientBaseURL,
+        credential: Data
+    ) async throws -> HomeClientActiveClaimList {
+        calls.append(.listOpenClaims)
+        credentialsSeen.append(credential)
+        if let openClaimsError { throw openClaimsError }
+        return openClaims
+    }
+
+    func closeClaims(
+        home: HomeClientBaseURL,
+        credential: Data,
+        claimRefs: [String]
+    ) async throws -> [HomeClientClaimCloseResult] {
+        calls.append(.closeClaims(count: claimRefs.count))
+        closeClaimRequests.append(claimRefs)
+        credentialsSeen.append(credential)
+        if let closeClaimsError { throw closeClaimsError }
+        var remaining = openClaims.claims
+        let results = claimRefs.map { claimRef -> HomeClientClaimCloseResult in
+            if let index = remaining.firstIndex(where: { $0.claimRef == claimRef }) {
+                remaining.remove(at: index)
+                return HomeClientClaimCloseResult(claimRef: claimRef, result: .closed)
+            }
+            return HomeClientClaimCloseResult(claimRef: claimRef, result: .notOpen)
+        }
+        openClaims = HomeClientActiveClaimList(maxClaims: openClaims.maxClaims, claims: remaining)
+        return results
     }
 
     func listSessions(

@@ -410,13 +410,17 @@ struct HomeConversationBinding: Equatable, Sendable {
     }
 }
 
-struct HomeConversationClaim: Equatable, Sendable {
+struct HomeConversationClaim: Equatable, Sendable, CustomStringConvertible,
+    CustomDebugStringConvertible, CustomReflectable {
     let profileID: UUID
     let conversationHandle: String
     let approvedRoute: HomeApprovedRoute
     /// True only for a paired client's first `ready`. Home names its route
     /// identity then; the client pins it and later claims require that route.
     let routePinPending: Bool
+    /// Optional HOME-NW-18 reference for explicit close of unopened claims.
+    /// Memory-only and deliberately excluded from conversation identity.
+    let claimRef: String?
     /// The Hermes session a paired client claim is bound to, as Home
     /// reported it. Nil for operator-provisioned handles. Memory only.
     let claimedSession: HomeClaimedSession?
@@ -426,13 +430,23 @@ struct HomeConversationClaim: Equatable, Sendable {
         conversationHandle: String,
         approvedRoute: HomeApprovedRoute,
         routePinPending: Bool = false,
+        claimRef: String? = nil,
         claimedSession: HomeClaimedSession? = nil
     ) {
         self.profileID = profileID
         self.conversationHandle = conversationHandle
         self.approvedRoute = approvedRoute
         self.routePinPending = routePinPending
+        self.claimRef = claimRef
         self.claimedSession = claimedSession
+    }
+
+    var description: String {
+        "HomeConversationClaim(routePinPending: \(routePinPending), hasClaimRef: \(claimRef != nil))"
+    }
+    var debugDescription: String { description }
+    var customMirror: Mirror {
+        Mirror(self, children: ["routePinPending": routePinPending, "hasClaimRef": claimRef != nil])
     }
 
     /// Whether a `ready` naming `route` satisfies this claim. An unpinned
@@ -454,6 +468,7 @@ struct HomeConversationClaim: Equatable, Sendable {
                 householdBinding: approvedRoute.householdBinding
             ),
             routePinPending: false,
+            claimRef: claimRef,
             claimedSession: claimedSession
         )
     }

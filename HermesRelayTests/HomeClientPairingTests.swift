@@ -110,7 +110,8 @@ final class HomeClientPairingTests: XCTestCase {
         )
 
         await transport.enqueue(200, json([
-            "schema": 1, "claim_id": "client-1", "decision": "granted", "configuration_revision": 13,
+            "schema": 1, "claim_id": "client-1", "claim_ref": "cref-3q2_7wK",
+            "decision": "granted", "configuration_revision": 13,
             "conversation_handle": "opaque-handle-1", "session": ["mode": "new"],
         ]))
         let grant = try await service.claimConversation(
@@ -119,6 +120,9 @@ final class HomeClientPairingTests: XCTestCase {
             HomeClientClaimRequest(claimID: "client-1", deviceID: "id-7", configurationRevision: 13, grantID: "grant-a")
         )
         XCTAssertEqual(grant.conversationHandle, "opaque-handle-1")
+        XCTAssertEqual(grant.claimRef, "cref-3q2_7wK")
+        XCTAssertFalse(String(describing: grant).contains("cref-3q2_7wK"))
+        XCTAssertFalse(String(reflecting: grant).contains("cref-3q2_7wK"))
         XCTAssertFalse(String(describing: grant).contains("opaque-handle-1"))
         XCTAssertFalse(String(describing: material).contains(Self.credential))
 
@@ -153,6 +157,87 @@ final class HomeClientPairingTests: XCTestCase {
         for key in ["room_id", "wake_mapping_id", "evidence", "profile_id"] {
             XCTAssertNil(requests[3].body?[key], key)
         }
+    }
+
+    func testHomeNW18ListsClaimsAndClosesOnlyExplicitRefs() async throws {
+        let transport = ScriptedHomeTransport()
+        let service = URLSessionHomeClientService(transport: transport)
+        let home = try HomeClientBaseURL(Self.home)
+        let credential = Data(Self.credential.utf8)
+        await transport.enqueue(200, json([
+            "schema": 1,
+            "max_claims": 1,
+            "claims": [
+                [
+                    "claim_ref": "cref-opened",
+                    "grant_id": "grant-a",
+                    "profile_label": "Jensen",
+                    "session_ref": "sref-1",
+                    "created_at": 100.0,
+                    "opened_at": 110.0,
+                    "state": "idle",
+                ],
+                [
+                    "claim_ref": "cref-connecting",
+                    "grant_id": "grant-b",
+                    "profile_label": "Kitchen",
+                    "session_ref": NSNull(),
+                    "created_at": 120.0,
+                    "opened_at": NSNull(),
+                    "state": "waiting_to_reconnect",
+                ],
+            ],
+        ]))
+        await transport.enqueue(200, json([
+            "schema": 1,
+            "results": [
+                ["claim_ref": "cref-opened", "result": "closed"],
+                ["claim_ref": "cref-connecting", "result": "not_open"],
+            ],
+        ]))
+
+        let list = try await service.listOpenClaims(home: home, credential: credential)
+        let results = try await service.closeClaims(
+            home: home,
+            credential: credential,
+            claimRefs: ["cref-opened", "cref-connecting"]
+        )
+
+        XCTAssertEqual(list.maxClaims, 1)
+        XCTAssertEqual(list.claims.map(\.state), [.idle, .waitingToReconnect])
+        XCTAssertEqual(results.map(\.result), [.closed, .notOpen])
+        XCTAssertFalse(String(describing: list).contains("cref-opened"))
+        XCTAssertFalse(String(reflecting: results).contains("cref-connecting"))
+        let requests = await transport.requests
+        XCTAssertEqual(requests.map(\.path), [
+            "/api/v1/client-claims",
+            "/api/v1/client-claims/close",
+        ])
+        XCTAssertNil(requests[0].body)
+        XCTAssertEqual(requests[1].body, [
+            "schema": 1,
+            "claim_refs": ["cref-opened", "cref-connecting"],
+        ] as NSDictionary)
+        XCTAssertEqual(requests.map(\.authorization), [
+            "Device \(Self.credential)",
+            "Device \(Self.credential)",
+        ])
+    }
+
+    func testClientClaimGrantAcceptsLegacyResponseWithoutClaimRef() throws {
+        let response = try JSONSerialization.data(withJSONObject: [
+            "schema": 1,
+            "claim_id": "client-legacy",
+            "decision": "granted",
+            "configuration_revision": 13,
+            "conversation_handle": "opaque-legacy-handle",
+            "session": ["mode": "new"],
+        ])
+
+        let grant = try JSONDecoder().decode(HomeClientClaimGrant.self, from: response)
+
+        XCTAssertNil(grant.claimRef)
+        XCTAssertFalse(String(describing: grant).contains("opaque-legacy-handle"))
     }
 
     func testTypedDenialsAndUnknownFieldsAreRejected() async throws {
@@ -664,6 +749,263 @@ final class HomeClientPairingTests: XCTestCase {
         await store.clearSelectedProfile()
         closes = await fixture.echo.totalConversationCloses()
         XCTAssertEqual(closes, 2)
+    }
+
+    @MainActor
+    func testOpenClaimManagementRefreshesFailedCloseAndHidesLegacy404() async throws {
+        let fixture = try await Self.makeFixture()
+        await fixture.service.setClaimReferencesEnabled(true)
+        _ = try await Self.pair(fixture)
+        let store = fixture.makeStore()
+        await store.loadConfiguredClient()
+        await store.connect()
+        let currentRef = try XCTUnwrap(store.currentHomeClaimRef)
+        let now = Date(timeIntervalSince1970: 1_800_000_000)
+        let list = HomeClientActiveClaimList(
+            maxClaims: 1,
+            claims: [
+                HomeClientActiveClaim(
+                    claimRef: currentRef,
+                    grantID: "grant-a",
+                    profileLabel: "Amanda",
+                    sessionRef: "debug-current-session",
+                    createdAt: now,
+                    openedAt: now,
+                    state: .idle
+                ),
+                HomeClientActiveClaim(
+                    claimRef: "other-open-claim",
+                    grantID: "grant-a",
+                    profileLabel: "Other device",
+                    sessionRef: nil,
+                    createdAt: now.addingTimeInterval(-60),
+                    openedAt: nil,
+                    state: .waitingToReconnect
+                ),
+            ]
+        )
+        await fixture.service.setOpenClaims(list)
+        await fixture.service.setListError(.transportUnavailable)
+
+        await store.loadOpenHomeClaims()
+
+        XCTAssertTrue(store.supportsOpenHomeClaims)
+        XCTAssertEqual(store.openHomeClaimList?.maxClaims, 1)
+        XCTAssertEqual(store.openHomeClaimList?.claims.count, 2)
+        await fixture.service.setCloseClaimsError(.transportUnavailable)
+        await store.closeAllOtherOpenHomeClaims()
+
+        let closeRequests = await fixture.service.closeClaimRequests
+        XCTAssertEqual(closeRequests, [["other-open-claim"]])
+        XCTAssertEqual(store.openHomeClaimList?.claims.count, 2, "A failed close re-lists without hiding the claim")
+        XCTAssertNotNil(store.openHomeClaimsError)
+
+        await fixture.service.setOpenClaimsError(.denied(.notFound))
+        await store.loadOpenHomeClaims()
+
+        XCTAssertFalse(store.canManageOpenHomeClaims)
+        XCTAssertNil(store.openHomeClaimList)
+        XCTAssertFalse(store.supportsOpenHomeClaims)
+    }
+
+    @MainActor
+    func testLateNilOpenClaimsResponsePreservesTheNewProfileList() async throws {
+        let fixture = try await Self.makeFixture()
+        _ = try await Self.pair(fixture)
+        let profileA = try await Self.profileID(fixture, grant: "grant-a")
+        let profileB = try await Self.profileID(fixture, grant: "grant-b")
+        try await fixture.configuration.selectPairedHome(for: profileA)
+        try await fixture.configuration.selectProfile(id: profileA)
+        let provider = DelayedHomeClaimProvider(
+            claimsByProfile: [
+                profileA: [Self.activeClaimsList(ref: "profile-a-claim", label: "Amanda")],
+                profileB: [Self.activeClaimsList(ref: "profile-b-claim", label: "Kitchen", grantID: "grant-b")],
+            ],
+            holdFirstOpenClaims: true
+        )
+        let store = fixture.makeStore(claimProvider: provider)
+        let initialProfileLoaded = await store.loadConfiguredClient()
+        XCTAssertTrue(initialProfileLoaded)
+
+        let staleLoad = Task { await store.loadOpenHomeClaims() }
+        await provider.waitForHeldOpenClaims()
+        try await fixture.configuration.selectPairedHome(for: profileB)
+        try await fixture.configuration.selectProfile(id: profileB)
+        let newProfileLoaded = await store.loadConfiguredClient()
+        XCTAssertTrue(newProfileLoaded)
+        await store.loadOpenHomeClaims()
+        XCTAssertEqual(store.openHomeClaimList?.claims.map(\.claimRef), ["profile-b-claim"])
+
+        await provider.releaseHeldOpenClaims(with: nil)
+        await staleLoad.value
+
+        XCTAssertTrue(store.canManageOpenHomeClaims)
+        XCTAssertEqual(store.openHomeClaimList?.claims.map(\.claimRef), ["profile-b-claim"])
+    }
+
+    @MainActor
+    func testLateNilCloseResponsePreservesTheNewProfileList() async throws {
+        let fixture = try await Self.makeFixture()
+        _ = try await Self.pair(fixture)
+        let profileA = try await Self.profileID(fixture, grant: "grant-a")
+        let profileB = try await Self.profileID(fixture, grant: "grant-b")
+        try await fixture.configuration.selectPairedHome(for: profileA)
+        try await fixture.configuration.selectProfile(id: profileA)
+        let provider = DelayedHomeClaimProvider(
+            claimsByProfile: [
+                profileA: [Self.activeClaimsList(ref: "profile-a-claim", label: "Amanda")],
+                profileB: [Self.activeClaimsList(ref: "profile-b-claim", label: "Kitchen", grantID: "grant-b")],
+            ],
+            holdFirstCloseClaims: true
+        )
+        let store = fixture.makeStore(claimProvider: provider)
+        let initialProfileLoaded = await store.loadConfiguredClient()
+        XCTAssertTrue(initialProfileLoaded)
+        await store.loadOpenHomeClaims()
+        XCTAssertEqual(store.openHomeClaimList?.claims.map(\.claimRef), ["profile-a-claim"])
+
+        let staleClose = Task { await store.closeAllOtherOpenHomeClaims() }
+        await provider.waitForHeldCloseClaims()
+        try await fixture.configuration.selectPairedHome(for: profileB)
+        try await fixture.configuration.selectProfile(id: profileB)
+        let newProfileLoaded = await store.loadConfiguredClient()
+        XCTAssertTrue(newProfileLoaded)
+        await store.loadOpenHomeClaims()
+        XCTAssertEqual(store.openHomeClaimList?.claims.map(\.claimRef), ["profile-b-claim"])
+
+        await provider.releaseHeldCloseClaims(with: nil)
+        await staleClose.value
+
+        XCTAssertTrue(store.canManageOpenHomeClaims)
+        XCTAssertEqual(store.openHomeClaimList?.claims.map(\.claimRef), ["profile-b-claim"])
+    }
+
+    @MainActor
+    func testLateTitleSupportResponseCannotOverwriteTheCurrentListTitles() async throws {
+        let fixture = try await Self.makeFixture()
+        _ = try await Self.pair(fixture)
+        let profileID = try await Self.profileID(fixture, grant: "grant-a")
+        try await fixture.configuration.selectPairedHome(for: profileID)
+        try await fixture.configuration.selectProfile(id: profileID)
+        let provider = DelayedHomeClaimProvider(
+            claimsByProfile: [
+                profileID: [
+                    Self.activeClaimsList(ref: "old-list-claim", label: "Amanda"),
+                    Self.activeClaimsList(ref: "current-list-claim", label: "Amanda"),
+                ],
+            ],
+            titlesByClaimRef: [
+                "old-list-claim": "Old conversation",
+                "current-list-claim": "Current conversation",
+            ],
+            holdFirstTitleSupport: true
+        )
+        let store = fixture.makeStore(claimProvider: provider)
+        let profileLoaded = await store.loadConfiguredClient()
+        XCTAssertTrue(profileLoaded)
+
+        await store.loadOpenHomeClaims()
+        await provider.waitForHeldTitleSupport()
+        XCTAssertEqual(store.openHomeClaimList?.claims.map(\.claimRef), ["old-list-claim"])
+
+        await store.loadOpenHomeClaims()
+        XCTAssertEqual(store.openHomeClaimList?.claims.map(\.claimRef), ["current-list-claim"])
+        await provider.waitForTitleCalls(2)
+        for _ in 0..<100 where store.openHomeClaimTitles["current-list-claim"] == nil {
+            await Task.yield()
+        }
+        XCTAssertEqual(
+            store.openHomeClaimTitles,
+            ["current-list-claim": "Current conversation"]
+        )
+
+        await provider.releaseHeldTitleSupport()
+        await provider.waitForHeldTitleSupportReturn()
+        for _ in 0..<100 { await Task.yield() }
+
+        XCTAssertEqual(
+            store.openHomeClaimTitles,
+            ["current-list-claim": "Current conversation"]
+        )
+    }
+
+    @MainActor
+    func testConcurrentConnectsJoinAndDisconnectClosesTheLateClaimOnce() async throws {
+        let fixture = try await Self.makeFixture()
+        await fixture.service.setClaimReferencesEnabled(true)
+        _ = try await Self.pair(fixture)
+        let store = fixture.makeStore()
+        await store.loadConfiguredClient()
+        await fixture.service.resetCalls()
+        await fixture.service.holdNextClaim()
+
+        let firstConnect = Task { await store.connect() }
+        var claimIsHeld = false
+        for _ in 0..<500 {
+            claimIsHeld = await fixture.service.isHoldingClaim
+            if claimIsHeld { break }
+            try await Task.sleep(for: .milliseconds(2))
+        }
+        XCTAssertTrue(claimIsHeld)
+        let joinedConnects = (0..<5).map { _ in Task { await store.connect() } }
+        try await Task.sleep(for: .milliseconds(10))
+        let disconnect = Task { await store.disconnect() }
+        try await Task.sleep(for: .milliseconds(5))
+        await fixture.service.releaseHeldClaim()
+
+        await firstConnect.value
+        for task in joinedConnects { await task.value }
+        await disconnect.value
+
+        let calls = await fixture.service.calls
+        let claimCalls = calls.filter {
+            if case .claim = $0 { return true }
+            return false
+        }
+        let closeRequests = await fixture.service.closeClaimRequests
+        XCTAssertEqual(claimCalls.count, 1)
+        XCTAssertEqual(closeRequests.count, 1)
+        XCTAssertEqual(closeRequests.first?.count, 1, "Only the late claim's explicit ref is submitted")
+        XCTAssertNil(store.currentHomeClaimRef)
+        XCTAssertEqual(store.connectionState, .disconnected)
+    }
+
+    @MainActor
+    func testLostClaimResponseIsNotAutomaticallyRetried() async throws {
+        let fixture = try await Self.makeFixture()
+        _ = try await Self.pair(fixture)
+        let retryClock = PairingTestMonotonicClock()
+        let store = fixture.makeStore(homeClock: retryClock)
+        await store.loadConfiguredClient()
+        await fixture.service.resetCalls()
+        await fixture.service.setClaimReferencesEnabled(true)
+        await fixture.service.setClaimResults([
+            .failure(.transportUnavailable),
+            .success("handle-after-expiry"),
+        ])
+
+        await store.connect()
+        await store.connect()
+
+        var calls = await fixture.service.calls
+        var claimCalls = calls.filter {
+            if case .claim = $0 { return true }
+            return false
+        }
+        XCTAssertEqual(claimCalls.count, 1)
+        XCTAssertNil(store.currentHomeClaimRef)
+
+        retryClock.advance(by: .seconds(91))
+        await store.connect()
+
+        calls = await fixture.service.calls
+        claimCalls = calls.filter {
+            if case .claim = $0 { return true }
+            return false
+        }
+        XCTAssertEqual(claimCalls.count, 2)
+        XCTAssertNotNil(store.currentHomeClaimRef)
+        XCTAssertTrue(store.connectionState.isConnected)
     }
 
     @MainActor
@@ -1822,6 +2164,28 @@ final class HomeClientPairingTests: XCTestCase {
         return try XCTUnwrap(pairing.profileID(for: grant))
     }
 
+    private static func activeClaimsList(
+        ref: String,
+        label: String,
+        grantID: String = "grant-a"
+    ) -> HomeClientActiveClaimList {
+        let openedAt = Date(timeIntervalSince1970: 1_800_000_000)
+        return HomeClientActiveClaimList(
+            maxClaims: 8,
+            claims: [
+                HomeClientActiveClaim(
+                    claimRef: ref,
+                    grantID: grantID,
+                    profileLabel: label,
+                    sessionRef: nil,
+                    createdAt: openedAt,
+                    openedAt: openedAt,
+                    state: .idle
+                ),
+            ]
+        )
+    }
+
     private static func grants(jensen: HomeClientGrantStatus = .pendingOwner) -> [HomeClientGrant] {
         [
             HomeClientGrant(grantID: "grant-a", label: "Amanda", status: .active, available: true),
@@ -1944,8 +2308,13 @@ private struct PairingFixture: Sendable {
     let echo: EchoHomeBridgeClientFactory
 
     @MainActor
-    func makeStore() -> ConversationStore {
+    func makeStore(
+        claimProvider: (any HomeConversationClaimProvider)? = nil,
+        homeClock: any HomeMonotonicClock = ContinuousHomeMonotonicClock()
+    ) -> ConversationStore {
         let directory = directory
+        let resolvedClaimProvider: any HomeConversationClaimProvider =
+            claimProvider ?? AppHomeConversationClaimProvider(pairedClaims: claims)
         return ConversationStore(
             configurationStore: configuration,
             makePersistence: { profileID in
@@ -1954,12 +2323,161 @@ private struct PairingFixture: Sendable {
                 )
             },
             homeClientFactory: echo,
-            homeClaimProvider: AppHomeConversationClaimProvider(pairedClaims: claims)
+            homeClaimProvider: resolvedClaimProvider,
+            homeClock: homeClock
         )
     }
 }
 
 // MARK: - Test doubles
+
+private actor DelayedHomeClaimProvider: HomeConversationClaimProvider {
+    private let claimsByProfile: [UUID: [HomeClientActiveClaimList]]
+    private let titlesByClaimRef: [String: String]
+    private let holdFirstOpenClaims: Bool
+    private let holdFirstCloseClaims: Bool
+    private let holdFirstTitleSupport: Bool
+
+    private var openCalls = 0
+    private var openCallsByProfile: [UUID: Int] = [:]
+    private var openClaimsContinuation: CheckedContinuation<HomeClientActiveClaimList?, Never>?
+    private var openClaimsHoldWaiters: [CheckedContinuation<Void, Never>] = []
+    private var closeCalls = 0
+    private var closeClaimsContinuation: CheckedContinuation<[HomeClientClaimCloseResult]?, Never>?
+    private var closeClaimsHoldWaiters: [CheckedContinuation<Void, Never>] = []
+    private var titleCalls = 0
+    private var titleCallWaiters: [(Int, CheckedContinuation<Void, Never>)] = []
+    private var titleSupportRequested = false
+    private var didHoldTitleSupport = false
+    private var titleSupportContinuation: CheckedContinuation<Bool, Never>?
+    private var titleSupportHoldWaiters: [CheckedContinuation<Void, Never>] = []
+    private var titleSupportReturnCount = 0
+    private var titleSupportReturnWaiters: [(Int, CheckedContinuation<Void, Never>)] = []
+
+    init(
+        claimsByProfile: [UUID: [HomeClientActiveClaimList]],
+        titlesByClaimRef: [String: String] = [:],
+        holdFirstOpenClaims: Bool = false,
+        holdFirstCloseClaims: Bool = false,
+        holdFirstTitleSupport: Bool = false
+    ) {
+        self.claimsByProfile = claimsByProfile
+        self.titlesByClaimRef = titlesByClaimRef
+        self.holdFirstOpenClaims = holdFirstOpenClaims
+        self.holdFirstCloseClaims = holdFirstCloseClaims
+        self.holdFirstTitleSupport = holdFirstTitleSupport
+    }
+
+    func conversationClaim(for profileID: UUID) async throws -> HomeConversationClaim? { nil }
+    func claimsPerConnect(for profileID: UUID) async -> Bool { true }
+
+    func supportsClaimManagement(for profileID: UUID) async -> Bool {
+        guard holdFirstTitleSupport, titleSupportRequested, !didHoldTitleSupport else { return true }
+        didHoldTitleSupport = true
+        let supported = await withCheckedContinuation { continuation in
+            titleSupportContinuation = continuation
+            let waiters = titleSupportHoldWaiters
+            titleSupportHoldWaiters.removeAll()
+            waiters.forEach { $0.resume() }
+        }
+        titleSupportReturnCount += 1
+        let ready = titleSupportReturnWaiters.filter { $0.0 <= titleSupportReturnCount }
+        titleSupportReturnWaiters.removeAll { $0.0 <= titleSupportReturnCount }
+        ready.forEach { $0.1.resume() }
+        return supported
+    }
+
+    func openClaims(for profileID: UUID) async throws -> HomeClientActiveClaimList? {
+        openCalls += 1
+        let profileCall = openCallsByProfile[profileID, default: 0]
+        openCallsByProfile[profileID] = profileCall + 1
+        let availableLists = claimsByProfile[profileID] ?? []
+        let list = availableLists.isEmpty
+            ? nil
+            : availableLists[min(profileCall, availableLists.count - 1)]
+        guard holdFirstOpenClaims, openCalls == 1 else { return list }
+        return await withCheckedContinuation { continuation in
+            openClaimsContinuation = continuation
+            let waiters = openClaimsHoldWaiters
+            openClaimsHoldWaiters.removeAll()
+            waiters.forEach { $0.resume() }
+        }
+    }
+
+    func closeClaims(
+        for profileID: UUID,
+        claimRefs: [String]
+    ) async throws -> [HomeClientClaimCloseResult]? {
+        closeCalls += 1
+        guard holdFirstCloseClaims, closeCalls == 1 else { return [] }
+        return await withCheckedContinuation { continuation in
+            closeClaimsContinuation = continuation
+            let waiters = closeClaimsHoldWaiters
+            closeClaimsHoldWaiters.removeAll()
+            waiters.forEach { $0.resume() }
+        }
+    }
+
+    func claimTitles(
+        for profileID: UUID,
+        claims: [HomeClientActiveClaim]
+    ) async -> [String: String] {
+        titleCalls += 1
+        if holdFirstTitleSupport, !didHoldTitleSupport {
+            titleSupportRequested = true
+        }
+        let ready = titleCallWaiters.filter { $0.0 <= titleCalls }
+        titleCallWaiters.removeAll { $0.0 <= titleCalls }
+        ready.forEach { $0.1.resume() }
+        var titles: [String: String] = [:]
+        for claim in claims {
+            if let title = titlesByClaimRef[claim.claimRef] {
+                titles[claim.claimRef] = title
+            }
+        }
+        return titles
+    }
+
+    func waitForHeldOpenClaims() async {
+        guard openClaimsContinuation == nil else { return }
+        await withCheckedContinuation { openClaimsHoldWaiters.append($0) }
+    }
+
+    func releaseHeldOpenClaims(with result: HomeClientActiveClaimList?) {
+        openClaimsContinuation?.resume(returning: result)
+        openClaimsContinuation = nil
+    }
+
+    func waitForHeldCloseClaims() async {
+        guard closeClaimsContinuation == nil else { return }
+        await withCheckedContinuation { closeClaimsHoldWaiters.append($0) }
+    }
+
+    func releaseHeldCloseClaims(with result: [HomeClientClaimCloseResult]?) {
+        closeClaimsContinuation?.resume(returning: result)
+        closeClaimsContinuation = nil
+    }
+
+    func waitForHeldTitleSupport() async {
+        guard titleSupportContinuation == nil else { return }
+        await withCheckedContinuation { titleSupportHoldWaiters.append($0) }
+    }
+
+    func releaseHeldTitleSupport() {
+        titleSupportContinuation?.resume(returning: true)
+        titleSupportContinuation = nil
+    }
+
+    func waitForTitleCalls(_ count: Int) async {
+        guard titleCalls < count else { return }
+        await withCheckedContinuation { titleCallWaiters.append((count, $0)) }
+    }
+
+    func waitForHeldTitleSupportReturn() async {
+        guard titleSupportReturnCount == 0 else { return }
+        await withCheckedContinuation { titleSupportReturnWaiters.append((1, $0)) }
+    }
+}
 
 private final class PairingTestDirectories: @unchecked Sendable {
     static let shared = PairingTestDirectories()
@@ -1998,6 +2516,30 @@ private final class PairingTestClock: @unchecked Sendable {
     func advance(by interval: TimeInterval) {
         lock.lock(); defer { lock.unlock() }
         current = current.addingTimeInterval(interval)
+    }
+}
+
+private final class PairingTestMonotonicClock: HomeMonotonicClock, @unchecked Sendable {
+    private let clock = ContinuousClock()
+    private let lock = NSLock()
+    private var offset: Duration = .zero
+
+    func now() -> ContinuousClock.Instant {
+        lock.lock()
+        defer { lock.unlock() }
+        return clock.now.advanced(by: offset)
+    }
+
+    func sleep(until instant: ContinuousClock.Instant) async throws {
+        let remaining = now().duration(to: instant)
+        guard remaining > .zero else { return }
+        try await clock.sleep(for: remaining)
+    }
+
+    func advance(by duration: Duration) {
+        lock.lock()
+        defer { lock.unlock() }
+        offset += duration
     }
 }
 

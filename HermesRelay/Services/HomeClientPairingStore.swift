@@ -365,6 +365,13 @@ actor HomeClientClaimCoordinator {
         (try? await pairings.pairing(forProfile: profileID)) != nil
     }
 
+    func supportsClaimManagement(profileID: UUID) async -> Bool {
+        guard let pairing = try? await pairings.pairing(forProfile: profileID) else { return false }
+        return pairing.claimManagementSupported
+            && pairing.credentialUsable
+            && pairing.credentialExpiresAt > now()
+    }
+
     /// Nil when the profile is not paired, so callers fall through to the
     /// operator-provisioned claim.
     func claim(
@@ -399,11 +406,15 @@ actor HomeClientClaimCoordinator {
                     let grant = try await withCredential(pairing) { [service] credential in
                         try await service.claimConversation(home: home, credential: credential, request)
                     }
+                    _ = try? await pairings.update(pairingID: pairing.id) {
+                        $0.claimManagementSupported = grant.claimRef != nil
+                    }
                     return HomeConversationClaim(
                         profileID: profileID,
                         conversationHandle: grant.conversationHandle,
                         approvedRoute: pairing.approvedRoute,
                         routePinPending: pairing.pinnedRouteID == nil,
+                        claimRef: grant.claimRef,
                         claimedSession: grant.session
                     )
                 } catch HomeClientServiceError.denied(.staleConfiguration) where !refreshedAfterStale {
@@ -434,6 +445,93 @@ actor HomeClientClaimCoordinator {
         } catch {
             throw await connectError(error, pairing: pairing)
         }
+    }
+
+    /// Home's device-wide active claims. Nil means HOME-NW-18 was not detected
+    /// from a successful claim response, or Home returned its legacy 404.
+    func openClaims(for profileID: UUID) async throws -> HomeClientActiveClaimList? {
+        guard let pairing = try? await pairings.pairing(forProfile: profileID),
+              pairing.claimManagementSupported else {
+            return nil
+        }
+        do {
+            guard pairing.credentialUsable, pairing.credentialExpiresAt > now() else {
+                throw HomeClientConnectError.pairAgain(home: pairing.home.displayName)
+            }
+            let home = pairing.home
+            return try await withCredential(pairing) { [service] credential in
+                try await service.listOpenClaims(home: home, credential: credential)
+            }
+        } catch HomeClientServiceError.denied(.notFound) {
+            _ = try? await pairings.update(pairingID: pairing.id) { $0.claimManagementSupported = false }
+            return nil
+        } catch {
+            throw await connectError(error, pairing: pairing)
+        }
+    }
+
+    /// Closes explicit refs only. Nil signals that the server does not
+    /// implement HOME-NW-18; errors leave callers to re-list before retrying.
+    func closeClaims(
+        for profileID: UUID,
+        claimRefs: [String]
+    ) async throws -> [HomeClientClaimCloseResult]? {
+        guard let pairing = try? await pairings.pairing(forProfile: profileID),
+              pairing.claimManagementSupported else {
+            return nil
+        }
+        do {
+            guard pairing.credentialUsable, pairing.credentialExpiresAt > now() else {
+                throw HomeClientConnectError.pairAgain(home: pairing.home.displayName)
+            }
+            let home = pairing.home
+            return try await withCredential(pairing) { [service] credential in
+                try await service.closeClaims(home: home, credential: credential, claimRefs: claimRefs)
+            }
+        } catch HomeClientServiceError.denied(.notFound) {
+            _ = try? await pairings.update(pairingID: pairing.id) { $0.claimManagementSupported = false }
+            return nil
+        } catch {
+            throw await connectError(error, pairing: pairing)
+        }
+    }
+
+    /// Title lookup is deliberately best-effort; cleanup never depends on it.
+    func claimTitles(
+        for profileID: UUID,
+        claims: [HomeClientActiveClaim]
+    ) async -> [String: String] {
+        guard let pairing = try? await pairings.pairing(forProfile: profileID),
+              pairing.claimManagementSupported,
+              pairing.credentialUsable,
+              pairing.credentialExpiresAt > now() else {
+            return [:]
+        }
+        let validGrants = Set(pairing.grants.filter { $0.available && $0.status == .active }.map(\.grantID))
+        let grouped = Dictionary(grouping: claims.filter {
+            $0.sessionRef != nil && validGrants.contains($0.grantID)
+        }, by: \.grantID)
+        var titles: [String: String] = [:]
+        for (grantID, grantClaims) in grouped {
+            do {
+                let home = pairing.home
+                let request = HomeClientSessionListRequest(grantID: grantID, limit: 50)
+                let sessions = try await withCredential(pairing) { [service] credential in
+                    try await service.listSessions(home: home, credential: credential, request)
+                }
+                for claim in grantClaims {
+                    guard let sessionRef = claim.sessionRef,
+                          let session = sessions.first(where: { $0.sessionRef == sessionRef }) else {
+                        continue
+                    }
+                    let title = session.title.trimmingCharacters(in: .whitespacesAndNewlines)
+                    if !title.isEmpty { titles[claim.claimRef] = title }
+                }
+            } catch {
+                _ = await connectError(error, pairing: pairing)
+            }
+        }
+        return titles
     }
 
     /// The session reference a claim of this profile is bound to; nil until

@@ -59,6 +59,29 @@ final class ConversationStore {
     /// uncertain turn; the user must choose to start a new one.
     private(set) var canStartNewHomeConversation = false
 
+    /// A response received after its owner operation ended is retained only
+    /// in memory until it can be closed or reused; it is never recreated.
+    private var pendingHomeClaimsByProfile: [UUID: HomeConversationClaim] = [:]
+    private var ambiguousClaimCreationRetryAfter: [UUID: ContinuousClock.Instant] = [:]
+    private static let ambiguousClaimRetryDelay: Duration = .seconds(90)
+    #if DEBUG
+    private var debugHomeClaimsEnabled = false
+    private static let debugHomeProfileID = UUID()
+    #endif
+    private var homeLifecycleGeneration: UInt64 = 0
+    private var configurationLoadGeneration: UInt64 = 0
+    private var homeConnectOperationInProgress = false
+    private var homeConnectWaiters: [CheckedContinuation<Void, Never>] = []
+    private var openHomeClaimsGeneration: UInt64 = 0
+    private var homeClaimMutationWaiters: [CheckedContinuation<Void, Never>] = []
+    private var homeClaimLifecycleMutationInProgress = false
+    private(set) var openHomeClaimList: HomeClientActiveClaimList?
+    private(set) var openHomeClaimTitles: [String: String] = [:]
+    private(set) var openHomeClaimsError: String?
+    private(set) var canManageOpenHomeClaims = false
+    private(set) var shouldOfferManageOpenHomeClaims = false
+    private(set) var isClosingOpenHomeClaims = false
+
     static let newHomeConversationDividerText = "New conversation"
     static let resumedLatestHomeSessionDividerText = "Continued the latest conversation"
 
@@ -189,6 +212,12 @@ final class ConversationStore {
         if let claimProvider { homeClaimProvider = claimProvider }
     }
 
+    func configureDebugHomeClaims(enabled: Bool) {
+        #if DEBUG
+        debugHomeClaimsEnabled = enabled
+        #endif
+    }
+
     func loadPersistedConversation() async {
         guard let persistence else { return }
 
@@ -270,14 +299,72 @@ final class ConversationStore {
     @discardableResult
     func loadConfiguredClient() async -> Bool {
         guard let configurationStore else { return false }
+        configurationLoadGeneration &+= 1
+        let loadGeneration = configurationLoadGeneration
 
         do {
             guard let profile = try await configurationStore.loadProfile() else {
+                guard loadGeneration == configurationLoadGeneration else { return false }
+                #if DEBUG
+                if debugHomeClaimsEnabled {
+                    let profileID = Self.debugHomeProfileID
+                    if activeProfileID != profileID {
+                        homeLifecycleGeneration &+= 1
+                        openHomeClaimsGeneration &+= 1
+                        activeProfileID = profileID
+                        activeProfileDisplayName = "Debug Home"
+                        let claim = HomeDemoFixtures.claim(for: profileID)
+                        homeClaim = claim
+                        pendingHomeClaimsByProfile[profileID] = claim
+                        homeSession = HomeCurrentSession(
+                            sessionRef: "debug-session-current",
+                            title: "Current debug conversation"
+                        )
+                        homeClient = nil
+                        openHomeClaimList = nil
+                        openHomeClaimTitles = [:]
+                        openHomeClaimsError = nil
+                    }
+                    transportMode = .home
+                    homeClaimsPerConnect = true
+                    canManageOpenHomeClaims = true
+                    shouldOfferManageOpenHomeClaims = false
+                    homeOperationsSuppressed = !isLifecycleActive
+                    transientError = nil
+                    return true
+                }
+                #endif
+                if activeProfileID != nil {
+                    homeLifecycleGeneration &+= 1
+                    openHomeClaimsGeneration &+= 1
+                }
                 activeProfileID = nil
                 activeProfileDisplayName = nil
+                canManageOpenHomeClaims = false
+                openHomeClaimList = nil
+                openHomeClaimTitles = [:]
+                shouldOfferManageOpenHomeClaims = false
                 transientError = "Configure a Hermes relay profile before connecting."
                 return false
             }
+            guard loadGeneration == configurationLoadGeneration else { return false }
+            if activeProfileID != profile.id {
+                homeLifecycleGeneration &+= 1
+                openHomeClaimsGeneration &+= 1
+                canManageOpenHomeClaims = false
+                openHomeClaimList = nil
+                openHomeClaimTitles = [:]
+                openHomeClaimsError = nil
+                shouldOfferManageOpenHomeClaims = false
+                if let previousClaim = homeClaim, previousClaim.profileID != profile.id {
+                    pendingHomeClaimsByProfile[previousClaim.profileID] = previousClaim
+                    homeClaim = nil
+                }
+                homeSession = nil
+                nextHomeSessionChoice = .mostRecent
+                pendingHomeSessionTitle = nil
+            }
+            let profileGeneration = homeLifecycleGeneration
             activeProfileID = profile.id
             activeProfileDisplayName = profile.displayName
             if let makePersistence {
@@ -285,36 +372,44 @@ final class ConversationStore {
             }
 
             transportMode = try await configurationStore.transportMode(for: profile.id)
-            // Computed before assigning: clearing the flag across this await
-            // would let a concurrent save write a live paired handle.
+            guard loadGeneration == configurationLoadGeneration,
+                  profileGeneration == homeLifecycleGeneration,
+                  activeProfileID == profile.id else {
+                return false
+            }
             let claimsPerConnect = transportMode == .home
                 ? await homeClaimProvider?.claimsPerConnect(for: profile.id) == true
                 : false
+            guard loadGeneration == configurationLoadGeneration,
+                  profileGeneration == homeLifecycleGeneration,
+                  activeProfileID == profile.id else {
+                return false
+            }
+            let supportsClaimManagement = transportMode == .home
+                ? await homeClaimProvider?.supportsClaimManagement(for: profile.id) == true
+                : false
+            guard loadGeneration == configurationLoadGeneration,
+                  profileGeneration == homeLifecycleGeneration,
+                  activeProfileID == profile.id else {
+                return false
+            }
             homeClaimsPerConnect = claimsPerConnect
-            // The profile ID is a random local UUID; its prefix tells
-            // profiles apart in a shared journal without naming anyone.
+            canManageOpenHomeClaims = supportsClaimManagement
             DiagnosticsJournal.shared.record(
                 "profile loaded id=\(profile.id.uuidString.prefix(8)) mode=\(transportMode.rawValue) claims_per_connect=\(claimsPerConnect)"
             )
             if transportMode == .home {
-                homeOperationsSuppressed = false
+                homeOperationsSuppressed = !isLifecycleActive
                 homeConversationBinding = nil
                 if homeRecovery == nil {
                     homeTurnBinding = nil
                     homeTurnDeliveryState = .idle
                 }
                 if claimsPerConnect {
-                    // A client claim is single-use and expires shortly after
-                    // issue, so it is made in connect, not here. A claim kept
-                    // in memory from this profile may still be within Home's
-                    // reconnect grace.
-                    homeClaimsPerConnect = true
-                    if homeClaim?.profileID != profile.id {
-                        homeClaim = nil
-                        homeSession = nil
-                        nextHomeSessionChoice = .mostRecent
-                        pendingHomeSessionTitle = nil
-                    }
+                    // A single-use claim is created only when Connect runs.
+                    homeClaim = homeClaim?.profileID == profile.id
+                        ? homeClaim
+                        : pendingHomeClaimsByProfile.removeValue(forKey: profile.id)
                     homeRouteState = HomeRouteState(
                         status: .unattempted,
                         identity: homeClaim?.approvedRoute.identity,
@@ -341,7 +436,13 @@ final class ConversationStore {
                     transientError = "Home pairing is unavailable for this Hermes Profile."
                     return false
                 }
+                guard loadGeneration == configurationLoadGeneration,
+                      profileGeneration == homeLifecycleGeneration,
+                      activeProfileID == profile.id else {
+                    return false
+                }
                 homeClaim = claim
+                canManageOpenHomeClaims = false
                 homeRouteState = HomeRouteState(
                     status: .unattempted,
                     identity: claim.approvedRoute.identity,
@@ -360,7 +461,13 @@ final class ConversationStore {
             }
 
             guard let token = try await configurationStore.loadToken() else {
+                guard loadGeneration == configurationLoadGeneration else { return false }
                 transientError = "Add a Hermes relay token before connecting."
+                return false
+            }
+            guard loadGeneration == configurationLoadGeneration,
+                  profileGeneration == homeLifecycleGeneration,
+                  activeProfileID == profile.id else {
                 return false
             }
             client = URLSessionHermesSessionClient(
@@ -373,12 +480,15 @@ final class ConversationStore {
             )
             homeClient = nil
             homeClaim = nil
+            homeClaimsPerConnect = false
+            canManageOpenHomeClaims = false
             homeConversationBinding = nil
             homeTurnBinding = nil
             homeBridgeState = .unconfigured
             transientError = nil
             return true
         } catch {
+            guard loadGeneration == configurationLoadGeneration else { return false }
             transientError = error.localizedDescription
             return false
         }
@@ -406,49 +516,156 @@ final class ConversationStore {
     }
 
     func connect() async {
-        guard isLifecycleActive, !homeOperationsSuppressed,
-              connectionState != .connecting else { return }
-
-        if transportMode == .home {
-            await connectHome()
+        guard isLifecycleActive, !homeOperationsSuppressed else { return }
+        while isClosingOpenHomeClaims || homeClaimLifecycleMutationInProgress {
+            await withCheckedContinuation { homeClaimMutationWaiters.append($0) }
+            guard isLifecycleActive, !homeOperationsSuppressed else { return }
+        }
+        if homeConnectOperationInProgress {
+            await withCheckedContinuation { homeConnectWaiters.append($0) }
             return
         }
 
-        connectionState = .connecting
-        do {
-            let metadata = try await client.connect()
-            sessionMetadata = metadata
-            sessionStartedAt = now()
-            connectionState = .connected
-            transientError = nil
-        } catch {
-            let message = error.localizedDescription
-            sessionMetadata = nil
-            sessionStartedAt = nil
-            connectionState = .failed(message)
-            transientError = message
+        homeConnectOperationInProgress = true
+        defer { finishHomeConnectOperation() }
+        let generation = homeLifecycleGeneration
+        if transportMode == .home {
+            await connectHome(operationGeneration: generation)
+        } else {
+            connectionState = .connecting
+            do {
+                let metadata = try await client.connect()
+                guard generation == homeLifecycleGeneration,
+                      isLifecycleActive, !homeOperationsSuppressed else { return }
+                sessionMetadata = metadata
+                sessionStartedAt = now()
+                connectionState = .connected
+                transientError = nil
+            } catch {
+                guard generation == homeLifecycleGeneration,
+                      isLifecycleActive, !homeOperationsSuppressed else { return }
+                let message = error.localizedDescription
+                sessionMetadata = nil
+                sessionStartedAt = nil
+                connectionState = .failed(message)
+                transientError = message
+            }
         }
     }
 
-    private func connectHome() async {
-        guard !homeOperationsSuppressed else { return }
+    private func waitForHomeConnectOperation() async {
+        guard homeConnectOperationInProgress else { return }
+        await withCheckedContinuation { homeConnectWaiters.append($0) }
+    }
+
+    private func waitForOpenClaimMutation() async {
+        guard isClosingOpenHomeClaims else { return }
+        await withCheckedContinuation { homeClaimMutationWaiters.append($0) }
+    }
+
+    private func finishOpenClaimMutation() {
+        isClosingOpenHomeClaims = false
+        let waiters = homeClaimMutationWaiters
+        homeClaimMutationWaiters.removeAll()
+        waiters.forEach { $0.resume() }
+    }
+
+    private func finishHomeClaimLifecycleMutation() {
+        homeClaimLifecycleMutationInProgress = false
+        let waiters = homeClaimMutationWaiters
+        homeClaimMutationWaiters.removeAll()
+        waiters.forEach { $0.resume() }
+    }
+
+    private func finishHomeConnectOperation() {
+        homeConnectOperationInProgress = false
+        let waiters = homeConnectWaiters
+        homeConnectWaiters.removeAll()
+        waiters.forEach { $0.resume() }
+    }
+
+    private enum HomeClaimReleaseReason: String {
+        case disconnect
+        case startNew
+        case switchConversation
+        case lifecycle
+        case staleOpen
+        case userClose
+    }
+
+    private func isCurrentHomeOperation(_ generation: UInt64, profileID: UUID?) -> Bool {
+        generation == homeLifecycleGeneration
+            && isLifecycleActive
+            && !homeOperationsSuppressed
+            && (profileID == nil || profileID == activeProfileID)
+    }
+
+    @discardableResult
+    private func releasePairedHomeClaim(
+        _ claim: HomeConversationClaim,
+        reason: HomeClaimReleaseReason,
+        openedBinding: HomeConversationBinding?,
+        bridgeClient: (any HomeBridgeSessionClient)? = nil
+    ) async -> Bool {
+        var released = false
+        if let openedBinding, let bridgeClient,
+           await bridgeClient.close(binding: openedBinding) == .closed {
+            DiagnosticsJournal.shared.record("home claim released reason=\(reason.rawValue)")
+            released = true
+        }
+        if !released, let claimRef = claim.claimRef, let homeClaimProvider {
+            do {
+                if let results = try await homeClaimProvider.closeClaims(
+                    for: claim.profileID,
+                    claimRefs: [claimRef]
+                ), let result = results.first(where: { $0.claimRef == claimRef }),
+                   result.result == .closed || result.result == .notOpen {
+                    if result.result == .closed {
+                        DiagnosticsJournal.shared.record("home claim released reason=\(reason.rawValue)")
+                    }
+                    released = true
+                }
+            } catch {
+                // Keep the in-memory claim so another connect cannot duplicate it.
+            }
+        }
+        if released {
+            pendingHomeClaimsByProfile.removeValue(forKey: claim.profileID)
+            if homeClaim?.profileID == claim.profileID,
+               homeClaim?.conversationHandle == claim.conversationHandle {
+                homeClaim = nil
+            }
+            if homeConversationBinding?.profileID == claim.profileID,
+               homeConversationBinding?.conversationHandle == claim.conversationHandle {
+                homeConversationBinding = nil
+            }
+            return true
+        }
+        pendingHomeClaimsByProfile[claim.profileID] = claim
+        if activeProfileID == claim.profileID { homeClaim = claim }
+        return false
+    }
+
+    private func connectHome(operationGeneration: UInt64) async {
+        guard isCurrentHomeOperation(operationGeneration, profileID: activeProfileID) else { return }
         canContinueWithoutResendingHomeTurn = false
         homeReconnectConfirmsNoUnresolvedTurn = false
-        // A paired claim still held in memory (the app only left the
-        // foreground) is reopened first, which keeps the conversation when
-        // Home's reconnect grace has not expired.
         let reopeningPairedClaim = homeClaimsPerConnect && homeClaim != nil
         if homeClaimsPerConnect, homeClaim == nil {
-            guard await makePairedHomeClaim() else { return }
+            guard await makePairedHomeClaim(operationGeneration: operationGeneration) else { return }
         }
-        guard let claim = homeClaim, let homeClient else {
-            let failure = HomeBridgeFailure.home(
-                code: .authorizationUnavailable,
-                phase: .open
-            )
-            homeBridgeState = .unavailable(failure)
-            connectionState = .failed(failure.safeReason)
-            transientError = "Home pairing is unavailable for this Hermes Profile."
+        guard isCurrentHomeOperation(operationGeneration, profileID: activeProfileID),
+              let claim = homeClaim,
+              let homeClient else {
+            if isCurrentHomeOperation(operationGeneration, profileID: activeProfileID) {
+                let failure = HomeBridgeFailure.home(
+                    code: .authorizationUnavailable,
+                    phase: .open
+                )
+                homeBridgeState = .unavailable(failure)
+                connectionState = .failed(failure.safeReason)
+                transientError = "Home pairing is unavailable for this Hermes Profile."
+            }
             return
         }
 
@@ -470,7 +687,21 @@ final class ConversationStore {
         connectionState = .connecting
         let outcome = await homeClient.open(claim: claim)
         HomeConnectionTrace.open(outcome)
-        guard !homeOperationsSuppressed else { return }
+        guard isCurrentHomeOperation(operationGeneration, profileID: claim.profileID) else {
+            let binding: HomeConversationBinding?
+            if case .ready(let readyBinding, _) = outcome {
+                binding = readyBinding
+            } else {
+                binding = nil
+            }
+            _ = await releasePairedHomeClaim(
+                claim,
+                reason: .disconnect,
+                openedBinding: binding,
+                bridgeClient: homeClient
+            )
+            return
+        }
 
         switch outcome {
         case .ready(let binding, let capabilities):
@@ -478,13 +709,17 @@ final class ConversationStore {
                 HomeConnectionTrace.localMismatch(
                     site: "open_ready_vs_claim fields=\(homeBindingMismatchFields(binding, claim: claim))"
                 )
+                _ = await releasePairedHomeClaim(
+                    claim,
+                    reason: .staleOpen,
+                    openedBinding: binding,
+                    bridgeClient: homeClient
+                )
                 let failure = HomeBridgeFailure.home(code: .conversationMismatch, phase: .open)
                 applyHomeConnectionFailure(failure, unavailable: true)
                 return
             }
             if claim.routePinPending {
-                // The bridge recorded the route Home named; later opens of
-                // this claim require exactly that route.
                 homeClaim = claim.pinned(to: binding.route)
             }
             homeConversationBinding = binding
@@ -493,7 +728,8 @@ final class ConversationStore {
                 await reconnectHome(
                     using: binding,
                     restoredTurn: homeTurnBinding,
-                    client: homeClient
+                    client: homeClient,
+                    operationGeneration: operationGeneration
                 )
                 return
             }
@@ -520,15 +756,30 @@ final class ConversationStore {
             await reconnectHome(
                 using: binding,
                 restoredTurn: homeTurnBinding,
-                client: homeClient
+                client: homeClient,
+                operationGeneration: operationGeneration
             )
         case .unavailable(let failure):
             applyHomeConnectionFailure(failure, unavailable: true)
-            if reopeningPairedClaim, homeClaim == nil, homeRecovery == nil,
-               !homeOperationsSuppressed {
-                // The held claim ended with no turn in flight; this connect
-                // makes its one fresh claim instead.
-                await connectHome()
+            if reopeningPairedClaim, homeRecovery == nil,
+               failure.safeCode == .staleConversation,
+               isCurrentHomeOperation(operationGeneration, profileID: claim.profileID) {
+                let canReplace: Bool
+                if claim.claimRef == nil {
+                    canReplace = true
+                    homeClaim = nil
+                    pendingHomeClaimsByProfile.removeValue(forKey: claim.profileID)
+                } else {
+                    canReplace = await releasePairedHomeClaim(
+                        claim,
+                        reason: .staleOpen,
+                        openedBinding: nil
+                    )
+                }
+                if canReplace,
+                   isCurrentHomeOperation(operationGeneration, profileID: claim.profileID) {
+                    await connectHome(operationGeneration: operationGeneration)
+                }
             }
         case .disconnected(let failure):
             applyHomeConnectionFailure(failure, unavailable: false)
@@ -538,11 +789,23 @@ final class ConversationStore {
     private func reconnectHome(
         using binding: HomeConversationBinding,
         restoredTurn: HomeTurnBinding?,
-        client: any HomeBridgeSessionClient
+        client: any HomeBridgeSessionClient,
+        operationGeneration: UInt64
     ) async {
         canContinueWithoutResendingHomeTurn = false
         homeReconnectConfirmsNoUnresolvedTurn = false
         let reconnectOutcome = await client.reconnect(binding: binding)
+        guard isCurrentHomeOperation(operationGeneration, profileID: binding.profileID) else {
+            if let claim = homeClaim, claim.profileID == binding.profileID {
+                _ = await releasePairedHomeClaim(
+                    claim,
+                    reason: .disconnect,
+                    openedBinding: binding,
+                    bridgeClient: client
+                )
+            }
+            return
+        }
         HomeConnectionTrace.reconnect(reconnectOutcome)
         switch reconnectOutcome {
         case .ready(
@@ -734,39 +997,51 @@ final class ConversationStore {
         activityText = nil
         transientError = failure.safeReason
         if homeClaimsPerConnect, unavailable, failure != .reconnectRequired {
-            // Home refused this claim; it cannot be reopened. The next
-            // connect makes a fresh one, and an uncertain turn is never
-            // replayed into it.
-            homeClaim = nil
+            // Keep the claim reference in memory until Home confirms release;
+            // dropping it here would let the next Connect create a duplicate.
             pendingHomeDividerText = nil
-            if homeRecovery != nil {
-                presentHomeContinuityLost()
-            }
+            canStartNewHomeConversation = homeRecovery != nil || homeClaim != nil
+            if homeRecovery != nil { presentHomeContinuityLost() }
         }
     }
 
     // MARK: - Paired personal clients
 
-    /// One fresh `session: new` claim per connect. Returns false after
-    /// presenting a specific disconnected state; there is no retry loop.
-    private func makePairedHomeClaim() async -> Bool {
+    /// One fresh claim per connect; stale responses are released or retained
+    /// in memory so they can never trigger a parallel creation.
+    private func makePairedHomeClaim(operationGeneration: UInt64) async -> Bool {
         guard homeRecovery == nil else {
-            // The uncertain turn's claim is gone (its handle is never
-            // persisted). A new claim would be a different conversation.
             presentHomeContinuityLost()
             return false
         }
         guard let profileID = activeProfileID, let homeClaimProvider else {
-            applyPairedClaimFailure(message: "Home pairing is unavailable for this Hermes Profile.",
-                                    failure: .home(code: .authorizationUnavailable, phase: .authorization))
+            applyPairedClaimFailure(
+                message: "Home pairing is unavailable for this Hermes Profile.",
+                failure: .home(code: .authorizationUnavailable, phase: .authorization)
+            )
             return false
         }
+        if let pending = pendingHomeClaimsByProfile.removeValue(forKey: profileID) {
+            homeClaim = pending
+            recordClaimedHomeSession(pending, choice: .mostRecent, chosenTitle: nil)
+            return true
+        }
+        if let retryAfter = ambiguousClaimCreationRetryAfter[profileID] {
+            guard homeClock.now() >= retryAfter else {
+                applyPairedClaimFailure(
+                    message: "Home may have created a conversation but its response was lost. Wait for that claim to expire on Home before connecting again.",
+                    failure: .home(code: .transportUnavailable, phase: .authorization)
+                )
+                return false
+            }
+            ambiguousClaimCreationRetryAfter.removeValue(forKey: profileID)
+        }
+
         homeBridgeState = .connecting
         connectionState = .connecting
         transientError = nil
         var sessionChoice = nextHomeSessionChoice
         let chosenTitle = pendingHomeSessionTitle
-        // One choice per claim: later connects continue the latest session.
         nextHomeSessionChoice = .mostRecent
         pendingHomeSessionTitle = nil
         do {
@@ -779,9 +1054,9 @@ final class ConversationStore {
             } catch HomeClientConnectError.denied(let denial)
                 where sessionChoice == .mostRecent
                     && (denial == .sessionBusy || denial == .sessionUnavailable) {
-                // The latest session is held elsewhere (another device, a
-                // scheduled job, or this device's own lingering claim). The
-                // default must never lock the user out: start a new one.
+                guard isCurrentHomeOperation(operationGeneration, profileID: profileID) else {
+                    return false
+                }
                 sessionChoice = .new
                 provided = try await homeClaimProvider.conversationClaim(
                     for: profileID,
@@ -789,15 +1064,27 @@ final class ConversationStore {
                 )
             }
             guard let claim = provided else {
-                applyPairedClaimFailure(message: "Home pairing is unavailable for this Hermes Profile.",
-                                        failure: .home(code: .authorizationUnavailable, phase: .authorization))
+                if isCurrentHomeOperation(operationGeneration, profileID: profileID) {
+                    applyPairedClaimFailure(
+                        message: "Home pairing is unavailable for this Hermes Profile.",
+                        failure: .home(code: .authorizationUnavailable, phase: .authorization)
+                    )
+                }
                 return false
             }
-            guard !homeOperationsSuppressed, activeProfileID == profileID else {
-                abandonPairedClaimAttempt()
+            DiagnosticsJournal.shared.record("home claim created")
+            guard isCurrentHomeOperation(operationGeneration, profileID: profileID) else {
+                _ = await releasePairedHomeClaim(
+                    claim,
+                    reason: .disconnect,
+                    openedBinding: nil
+                )
                 return false
             }
             homeClaim = claim
+            canManageOpenHomeClaims = claim.claimRef != nil
+            shouldOfferManageOpenHomeClaims = false
+            ambiguousClaimCreationRetryAfter.removeValue(forKey: profileID)
             recordClaimedHomeSession(claim, choice: sessionChoice, chosenTitle: chosenTitle)
             canStartNewHomeConversation = false
             if homeClient == nil {
@@ -811,17 +1098,41 @@ final class ConversationStore {
             )
             return true
         } catch {
-            guard !homeOperationsSuppressed else {
+            guard isCurrentHomeOperation(operationGeneration, profileID: profileID) else {
+                if Self.isAmbiguousClaimCreation(error) {
+                    ambiguousClaimCreationRetryAfter[profileID] =
+                        homeClock.now().advanced(by: Self.ambiguousClaimRetryDelay)
+                }
                 abandonPairedClaimAttempt()
                 return false
             }
+            if Self.isAmbiguousClaimCreation(error) {
+                ambiguousClaimCreationRetryAfter[profileID] =
+                    homeClock.now().advanced(by: Self.ambiguousClaimRetryDelay)
+            }
             let connectError = error as? HomeClientConnectError
+            if let connectError, case .denied(.claimLimit) = connectError {
+                let supported = await homeClaimProvider.supportsClaimManagement(for: profileID)
+                guard isCurrentHomeOperation(operationGeneration, profileID: profileID) else { return false }
+                canManageOpenHomeClaims = supported
+                shouldOfferManageOpenHomeClaims = supported
+            }
             applyPairedClaimFailure(
                 message: connectError?.errorDescription
                     ?? "Home did not grant a conversation. Connect again.",
                 failure: connectError?.failure
                     ?? .home(code: .authorizationUnavailable, phase: .authorization)
             )
+            return false
+        }
+    }
+
+    private static func isAmbiguousClaimCreation(_ error: Error) -> Bool {
+        guard let error = error as? HomeClientConnectError else { return true }
+        switch error {
+        case .homeUnreachable, .invalidResponse:
+            return true
+        case .pairAgain, .denied, .credentialUnavailable:
             return false
         }
     }
@@ -893,16 +1204,22 @@ final class ConversationStore {
     /// messages stay; nothing is resent to Hermes.
     @discardableResult
     func startNewHomeConversation() async -> Bool {
-        guard isHomeMode, homeClaimsPerConnect, canStartNewHomeConversation, !isSending else {
+        guard isHomeMode, homeClaimsPerConnect, canStartNewHomeConversation,
+              !isSending, !homeConnectOperationInProgress else {
             return false
         }
         let promptToKeep = unconfirmedTurnText
         canStartNewHomeConversation = false
+        await disconnect()
+        guard homeClaim == nil else {
+            transientError = "Home could not confirm that the previous conversation closed. Try again before starting a new one."
+            canStartNewHomeConversation = true
+            return false
+        }
         homeRecovery = nil
         homeTurnBinding = nil
         homeTurnDeliveryState = .idle
         unconfirmedTurnText = nil
-        homeClaim = nil
         homeConversationBinding = nil
         homeJoinTimeout = nil
         activeTurnGeneration = nil
@@ -946,6 +1263,11 @@ final class ConversationStore {
         isHomeMode && homeClaimsPerConnect && homeSession != nil
     }
 
+    var currentHomeClaimRef: String? { homeClaim?.claimRef }
+    var supportsOpenHomeClaims: Bool {
+        isHomeMode && homeClaimsPerConnect && canManageOpenHomeClaims
+    }
+
     /// Why the session cannot be switched right now, or nil.
     var homeSessionSwitchBlockedReason: String? {
         if isSending || activeTurnText != nil {
@@ -969,27 +1291,159 @@ final class ConversationStore {
         return binding.capabilities.commands.contains("title")
     }
 
-    /// The Profile's sessions, newest first. Also learns the current
-    /// session's reference and title when they are not yet known.
+    /// The Profile's sessions, newest first. A late response cannot update a
+    /// different Profile or claim.
     func loadHomeSessions() async throws -> [HomeClientSessionSummary] {
-        guard supportsHomeSessions, let profileID = activeProfileID, let homeClaimProvider else {
+        guard supportsHomeSessions,
+              let profileID = activeProfileID,
+              let homeClaimProvider else {
             return []
         }
-        if homeSession?.sessionRef == nil, let handle = homeClaim?.conversationHandle,
+        let generation = homeLifecycleGeneration
+        let claimHandle = homeClaim?.conversationHandle
+        if homeSession?.sessionRef == nil, let claimHandle,
            let sessionRef = try? await homeClaimProvider.clientSessionRef(
                for: profileID,
-               conversationHandle: handle
+               conversationHandle: claimHandle
            ),
-           activeProfileID == profileID, homeClaim?.conversationHandle == handle {
+           isCurrentHomeOperation(generation, profileID: profileID),
+           homeClaim?.conversationHandle == claimHandle {
             homeSession?.sessionRef = sessionRef
         }
         let sessions = try await homeClaimProvider.clientSessions(for: profileID) ?? []
-        guard activeProfileID == profileID else { return [] }
+        guard isCurrentHomeOperation(generation, profileID: profileID) else { return [] }
         if let sessionRef = homeSession?.sessionRef,
            let current = sessions.first(where: { $0.sessionRef == sessionRef }) {
             homeSession?.title = current.title.isEmpty ? nil : current.title
         }
         return sessions
+    }
+
+    /// Loads the device-wide list immediately; title enrichment is detached
+    /// and best-effort so it never delays claim cleanup.
+    func loadOpenHomeClaims() async {
+        guard isHomeMode,
+              let profileID = activeProfileID,
+              let homeClaimProvider else {
+            canManageOpenHomeClaims = false
+            openHomeClaimList = nil
+            openHomeClaimTitles = [:]
+            return
+        }
+        let lifecycleGeneration = homeLifecycleGeneration
+        openHomeClaimsGeneration &+= 1
+        let listGeneration = openHomeClaimsGeneration
+        openHomeClaimsError = nil
+        do {
+            let supported = await homeClaimProvider.supportsClaimManagement(for: profileID)
+            guard isCurrentHomeOperation(lifecycleGeneration, profileID: profileID),
+                  openHomeClaimsGeneration == listGeneration else { return }
+            guard supported else {
+                canManageOpenHomeClaims = false
+                openHomeClaimList = nil
+                openHomeClaimTitles = [:]
+                return
+            }
+            canManageOpenHomeClaims = true
+            let listResult = try await homeClaimProvider.openClaims(for: profileID)
+            guard isCurrentHomeOperation(lifecycleGeneration, profileID: profileID),
+                  openHomeClaimsGeneration == listGeneration else { return }
+            guard let list = listResult else {
+                canManageOpenHomeClaims = false
+                openHomeClaimList = nil
+                openHomeClaimTitles = [:]
+                return
+            }
+            openHomeClaimList = list
+            openHomeClaimTitles = [:]
+            Task { @MainActor [weak self] in
+                let titles = await homeClaimProvider.claimTitles(for: profileID, claims: list.claims)
+                let stillSupported = await homeClaimProvider.supportsClaimManagement(for: profileID)
+                guard let self,
+                      self.isCurrentHomeOperation(lifecycleGeneration, profileID: profileID),
+                      self.openHomeClaimsGeneration == listGeneration,
+                      stillSupported else {
+                    return
+                }
+                self.openHomeClaimTitles = titles
+            }
+        } catch {
+            guard isCurrentHomeOperation(lifecycleGeneration, profileID: profileID),
+                  openHomeClaimsGeneration == listGeneration else { return }
+            let stillSupported = await homeClaimProvider.supportsClaimManagement(for: profileID)
+            guard isCurrentHomeOperation(lifecycleGeneration, profileID: profileID),
+                  openHomeClaimsGeneration == listGeneration else { return }
+            canManageOpenHomeClaims = stillSupported
+            guard stillSupported else {
+                openHomeClaimList = nil
+                openHomeClaimTitles = [:]
+                openHomeClaimsError = nil
+                return
+            }
+            openHomeClaimsError = "Home could not load open conversations. Try again."
+        }
+    }
+
+    func closeOpenHomeClaim(_ claimRef: String) async {
+        guard let profileID = activeProfileID,
+              openHomeClaimList?.claims.contains(where: { $0.claimRef == claimRef }) == true,
+              claimRef != homeClaim?.claimRef else {
+            return
+        }
+        await closeOpenHomeClaims([claimRef], profileID: profileID)
+    }
+
+    func closeAllOtherOpenHomeClaims() async {
+        guard let profileID = activeProfileID, let list = openHomeClaimList else { return }
+        let currentClaimRef = homeClaim?.claimRef
+        let refs = list.claims.map(\.claimRef).filter { $0 != currentClaimRef }
+        await closeOpenHomeClaims(refs, profileID: profileID)
+    }
+
+    private func closeOpenHomeClaims(_ requestedRefs: [String], profileID: UUID) async {
+        guard !requestedRefs.isEmpty,
+              !isClosingOpenHomeClaims,
+              !homeClaimLifecycleMutationInProgress,
+              canManageOpenHomeClaims,
+              let homeClaimProvider else {
+            return
+        }
+        let lifecycleGeneration = homeLifecycleGeneration
+        isClosingOpenHomeClaims = true
+        openHomeClaimsGeneration &+= 1
+        defer { finishOpenClaimMutation() }
+
+        var offset = 0
+        while offset < requestedRefs.count {
+            guard isCurrentHomeOperation(lifecycleGeneration, profileID: profileID) else { return }
+            let end = min(offset + 64, requestedRefs.count)
+            let currentClaimRef = homeClaim?.claimRef
+            let batch = requestedRefs[offset..<end].filter { $0 != currentClaimRef }
+            offset = end
+            guard !batch.isEmpty else { continue }
+            do {
+                let closeResult = try await homeClaimProvider.closeClaims(
+                    for: profileID,
+                    claimRefs: batch
+                )
+                guard isCurrentHomeOperation(lifecycleGeneration, profileID: profileID) else { return }
+                guard let results = closeResult else {
+                    canManageOpenHomeClaims = false
+                    openHomeClaimList = nil
+                    openHomeClaimTitles = [:]
+                    return
+                }
+                for result in results where result.result == .closed {
+                    DiagnosticsJournal.shared.record("home claim released reason=userClose")
+                }
+            } catch {
+                await loadOpenHomeClaims()
+                guard isCurrentHomeOperation(lifecycleGeneration, profileID: profileID) else { return }
+                openHomeClaimsError = "Home did not confirm the close. The list was refreshed; close again only if the conversation is still open."
+                return
+            }
+        }
+        await loadOpenHomeClaims()
     }
 
     /// Closes the current claim and continues in a new Hermes session.
@@ -1028,8 +1482,8 @@ final class ConversationStore {
         }
     }
 
-    /// One claim, one session: switching closes the current claim and makes
-    /// a new one naming the session, as a CLI reconnects. Nothing is resent.
+    /// One claim, one session: release the current claim before making a new
+    /// one. Nothing is resent.
     private func switchHomeSession(
         to choice: HomeClientSessionChoice,
         title: String?
@@ -1040,13 +1494,14 @@ final class ConversationStore {
             return false
         }
         await disconnect()
+        guard homeClaim == nil else {
+            transientError = "Home could not confirm that the previous conversation closed. Try again before switching."
+            return false
+        }
         nextHomeSessionChoice = choice
         pendingHomeSessionTitle = title
         await connect()
         if connectionState.isConnected { return true }
-        // The chosen session was refused after the old claim closed.
-        // Continue the latest session once rather than leave the user
-        // disconnected, and say so.
         guard case .resume = choice else { return false }
         let refusal = transientError
         await connect()
@@ -1058,19 +1513,29 @@ final class ConversationStore {
         return false
     }
 
-    /// Explicit Disconnect. A paired claim is closed on Home with
-    /// `conversation.close`; the next Connect starts a new conversation.
+    /// Disconnect releases the claim before dropping its handle. An unopened
+    /// claim uses HOME-NW-18; an opened claim prefers `conversation.close`.
     func disconnect() async {
         guard !isSending else {
             transientError = "Stop the current turn before disconnecting."
             return
         }
+        homeLifecycleGeneration &+= 1
+        openHomeClaimsGeneration &+= 1
+        homeClaimLifecycleMutationInProgress = true
+        defer { finishHomeClaimLifecycleMutation() }
         reconnectTask?.cancel()
         reconnectTask = nil
+        await waitForHomeConnectOperation()
+        await waitForOpenClaimMutation()
+
         if transportMode == .home {
-            await closePairedHomeConversation()
+            let released = await closePairedHomeConversation(reason: .disconnect)
             await closeHomeClient()
             homeBridgeState = .disconnected(.home(code: .transportUnavailable, phase: .lifecycle))
+            if !released {
+                transientError = "Home could not confirm that the conversation closed. Reconnect before starting another."
+            }
         } else {
             isExpectedDisconnect = true
             await client.disconnect()
@@ -1083,16 +1548,22 @@ final class ConversationStore {
         didAttemptAutomaticConnection = true
     }
 
-    private func closePairedHomeConversation() async {
-        guard homeClaimsPerConnect else { return }
-        // Also while connecting or reconnecting: otherwise the claim stays
-        // open on Home through its reconnect grace.
-        if let binding = homeConversationBinding,
-           let homeClient {
-            _ = await homeClient.close(binding: binding)
-        }
-        homeClaim = nil
-        pendingHomeDividerText = nil
+    @discardableResult
+    private func closePairedHomeConversation(
+        reason: HomeClaimReleaseReason = .disconnect
+    ) async -> Bool {
+        guard homeClaimsPerConnect, let claim = homeClaim else { return true }
+        let binding = homeConversationBinding?.profileID == claim.profileID
+            ? homeConversationBinding
+            : nil
+        let released = await releasePairedHomeClaim(
+            claim,
+            reason: reason,
+            openedBinding: binding,
+            bridgeClient: homeClient
+        )
+        if released { pendingHomeDividerText = nil }
+        return released
     }
 
     /// Marks where the conversation continues in a different Hermes session.
@@ -1960,6 +2431,8 @@ final class ConversationStore {
 
         isLifecycleActive = false
         homeOperationsSuppressed = true
+        homeLifecycleGeneration &+= 1
+        openHomeClaimsGeneration &+= 1
         reconnectTask?.cancel()
         reconnectTask = nil
         homeEventTask?.cancel()
@@ -1976,10 +2449,16 @@ final class ConversationStore {
         homeAudioTerminal = true
         homeAudioTerminalProcessing = false
         homeTurnResult = false
+        await waitForHomeConnectOperation()
+        await waitForOpenClaimMutation()
         return true
     }
 
     func setLifecycleActive(_ active: Bool) {
+        if isLifecycleActive != active {
+            homeLifecycleGeneration &+= 1
+            openHomeClaimsGeneration &+= 1
+        }
         isLifecycleActive = active
         homeOperationsSuppressed = !active
         if active {
@@ -2076,16 +2555,24 @@ final class ConversationStore {
     }
 
     private func resetForProfileChange(clearPersistence: Bool) async {
-        // A deliberate teardown, not an outage — without this the reconnect
-        // ladder from IOS-25 would race the profile mutation.
+        homeLifecycleGeneration &+= 1
+        configurationLoadGeneration &+= 1
+        openHomeClaimsGeneration &+= 1
+        homeOperationsSuppressed = true
+        homeClaimLifecycleMutationInProgress = true
+        defer { finishHomeClaimLifecycleMutation() }
         reconnectTask?.cancel()
         reconnectTask = nil
+        await waitForHomeConnectOperation()
+        await waitForOpenClaimMutation()
+
         isExpectedDisconnect = true
         await client.disconnect()
         isExpectedDisconnect = false
-        // A profile switch or removal ends a paired claim on Home rather
-        // than leaving it open for the reconnect grace.
-        await closePairedHomeConversation()
+        let released = await closePairedHomeConversation(reason: .switchConversation)
+        if !released, let claim = homeClaim {
+            pendingHomeClaimsByProfile[claim.profileID] = claim
+        }
         await closeHomeClient()
         homeClaim = nil
         homeClaimsPerConnect = false
@@ -2093,16 +2580,17 @@ final class ConversationStore {
         nextHomeSessionChoice = .mostRecent
         pendingHomeSessionTitle = nil
         canStartNewHomeConversation = false
+        canManageOpenHomeClaims = false
+        shouldOfferManageOpenHomeClaims = false
+        openHomeClaimList = nil
+        openHomeClaimTitles = [:]
+        openHomeClaimsError = nil
 
         connectionState = .disconnected
         sessionMetadata = nil
         sessionStartedAt = nil
         activityText = nil
 
-        // Clear before loading. The previous account's transcript must never
-        // be on screen while the new profile's conversation is read. A
-        // deleted profile also drops its persistence handle so a late turn
-        // completion cannot recreate the removed conversation file.
         messages = []
         draft = ""
         unconfirmedTurnText = nil
@@ -2129,7 +2617,7 @@ final class ConversationStore {
         homeTurnDeliveryState = .idle
         homeAudioState = .notRequested
         homeBridgeState = .unconfigured
-        homeOperationsSuppressed = false
+        homeOperationsSuppressed = !isLifecycleActive
         if clearPersistence {
             persistence = nil
         }
