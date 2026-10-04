@@ -113,9 +113,15 @@ struct HomeWireCapabilities: Codable, Equatable, Sendable {
     let timing: HomeTimingCapability
     let interrupt: Bool?
     let audio: Bool?
+    /// Diagnostics negotiation only (HOME-NW-06). Never part of the conversation capabilities
+    /// compared on reconnect; a malformed value decodes as absent rather than failing ready.
+    let diagnosticsCorrelationV1: Bool?
+    let clientDiagnosticReportSchemas: [Int]?
 
     private enum CodingKeys: String, CodingKey, CaseIterable {
         case commands, heartbeat, timing, interrupt, audio
+        case diagnosticsCorrelationV1 = "diagnostics_correlation_v1"
+        case clientDiagnosticReportSchemas = "client_diagnostic_report_schemas"
     }
 
     init(
@@ -123,13 +129,17 @@ struct HomeWireCapabilities: Codable, Equatable, Sendable {
         heartbeat: Bool,
         timing: HomeTimingCapability,
         interrupt: Bool? = nil,
-        audio: Bool? = nil
+        audio: Bool? = nil,
+        diagnosticsCorrelationV1: Bool? = nil,
+        clientDiagnosticReportSchemas: [Int]? = nil
     ) {
         self.commands = commands
         self.heartbeat = heartbeat
         self.timing = timing
         self.interrupt = interrupt
         self.audio = audio
+        self.diagnosticsCorrelationV1 = diagnosticsCorrelationV1
+        self.clientDiagnosticReportSchemas = clientDiagnosticReportSchemas
     }
 
     init(from decoder: Decoder) throws {
@@ -141,6 +151,14 @@ struct HomeWireCapabilities: Codable, Equatable, Sendable {
         timing = try container.decode(HomeTimingCapability.self, forKey: .timing)
         interrupt = try container.decodeIfPresent(Bool.self, forKey: .interrupt)
         audio = try container.decodeIfPresent(Bool.self, forKey: .audio)
+        diagnosticsCorrelationV1 = (try? container.decodeIfPresent(Bool.self, forKey: .diagnosticsCorrelationV1)) ?? nil
+        let schemas = (try? container.decodeIfPresent([Int].self, forKey: .clientDiagnosticReportSchemas)) ?? nil
+        clientDiagnosticReportSchemas = schemas.flatMap { $0.count <= 16 ? $0 : nil }
+    }
+
+    /// True only when Home offers request correlation and accepts schema-2 reports.
+    var offersDiagnosticsCorrelation: Bool {
+        diagnosticsCorrelationV1 == true && clientDiagnosticReportSchemas?.contains(2) == true
     }
 }
 
@@ -296,19 +314,40 @@ enum HomeBridgeDiagnosticEventKind: String, Equatable, Sendable {
     case binaryPCM
 }
 
+/// Random, content-free identifiers joining one client request to Home's record of it.
+struct HomeRequestCorrelation: Equatable, Sendable {
+    let homeConnectionID: String
+    let requestID: String
+    var correlationID: String?
+}
+
+enum HomeResponseKind: String, Equatable, Sendable {
+    case accepted
+    case rejection
+}
+
 enum HomeBridgeDiagnostic: Equatable, Sendable {
-    case requestStarted(method: HomeBridgeDiagnosticMethod)
+    /// Recorded before the request frame is written, so a lost response keeps its join.
+    case requestStarted(method: HomeBridgeDiagnosticMethod, correlation: HomeRequestCorrelation? = nil)
     case requestCompleted(
         method: HomeBridgeDiagnosticMethod,
         durationMilliseconds: Int,
-        correlationPresent: Bool
+        correlationPresent: Bool,
+        correlation: HomeRequestCorrelation? = nil
     )
     case requestFailed(
         method: HomeBridgeDiagnosticMethod,
         code: HomeFailureCode,
         uncertain: Bool,
-        durationMilliseconds: Int
+        durationMilliseconds: Int,
+        correlation: HomeRequestCorrelation? = nil
     )
+    /// A response frame carrying matching Home diagnostics arrived (negotiated sockets only).
+    case responseReceived(method: HomeBridgeDiagnosticMethod, correlation: HomeRequestCorrelation, kind: HomeResponseKind)
+    /// The client's final reading of that correlated response.
+    case requestResolved(method: HomeBridgeDiagnosticMethod, correlation: HomeRequestCorrelation, kind: HomeResponseKind)
+    /// Report schemas the connected Home advertised on its latest ready; empty for legacy Home.
+    case reportSchemasAdvertised([Int])
     case eventReceived(kind: HomeBridgeDiagnosticEventKind)
     case transportLost
 }
@@ -1406,23 +1445,67 @@ indirect enum HomeJSONValue: Codable, Equatable, Sendable {
     }
 }
 
+/// Top-level `prompt.submit` diagnostics metadata (HOME-NW-06). Diagnostic only: never auth,
+/// dedupe or retry state.
+struct HomeRequestDiagnostics: Codable, Equatable, Sendable {
+    let version: Int
+    let requestID: String
+
+    private enum CodingKeys: String, CodingKey {
+        case version
+        case requestID = "request_id"
+    }
+
+    init(requestID: String) {
+        version = 1
+        self.requestID = requestID
+    }
+}
+
+/// `prefix-` + 32 lowercase hex identifiers shared with Home diagnostics.
+enum HomeDiagnosticIdentifier {
+    static func make(_ prefix: String) -> String {
+        var generator = SystemRandomNumberGenerator()
+        let high = generator.next() as UInt64
+        let low = generator.next() as UInt64
+        return prefix + "-" + hex(high) + hex(low)
+    }
+
+    static func isValid(_ value: Any?, prefix: String) -> Bool {
+        guard let value = value as? String,
+              value.utf8.count == prefix.utf8.count + 33,
+              value.hasPrefix(prefix + "-") else { return false }
+        return value.utf8.dropFirst(prefix.utf8.count + 1).allSatisfy {
+            ($0 >= 0x30 && $0 <= 0x39) || ($0 >= 0x61 && $0 <= 0x66)
+        }
+    }
+
+    private static func hex(_ value: UInt64) -> String {
+        let digits = String(value, radix: 16)
+        return String(repeating: "0", count: 16 - digits.count) + digits
+    }
+}
+
 struct HomeJSONRPCRequest: Codable, Equatable, Sendable {
     let jsonrpc: String
     let schema: Int
     let id: String
     let method: String
     let params: [String: HomeJSONValue]
+    /// Absent unless the socket negotiated diagnostics; legacy frames stay byte-identical.
+    let diagnostics: HomeRequestDiagnostics?
 
     private enum CodingKeys: String, CodingKey, CaseIterable {
-        case jsonrpc, schema, id, method, params
+        case jsonrpc, schema, id, method, params, diagnostics
     }
 
-    init(id: String, method: String, params: [String: HomeJSONValue]) {
+    init(id: String, method: String, params: [String: HomeJSONValue], diagnostics: HomeRequestDiagnostics? = nil) {
         self.jsonrpc = "2.0"
         self.schema = 1
         self.id = id
         self.method = method
         self.params = params
+        self.diagnostics = diagnostics
     }
 
     init(from decoder: Decoder) throws {
@@ -1437,6 +1520,7 @@ struct HomeJSONRPCRequest: Codable, Equatable, Sendable {
         id = try values.decode(String.self, forKey: .id)
         method = try values.decode(String.self, forKey: .method)
         params = try values.decode([String: HomeJSONValue].self, forKey: .params)
+        diagnostics = try values.decodeIfPresent(HomeRequestDiagnostics.self, forKey: .diagnostics)
         guard !id.isEmpty, !method.isEmpty else { throw HomeWireDecodingError.invalidShape }
     }
 }

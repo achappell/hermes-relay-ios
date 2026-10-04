@@ -43,7 +43,7 @@ struct AutomaticDiagnosticsSettings: View {
         } header: {
             Text("Automatic connection reports")
         } footer: {
-            Text("Sends connection errors, timing, app version, and device model to your Home. No messages, audio, or passwords. Reports survive quitting and retry while the app is open. Unsent reports and Home copies expire after seven days. Turning this off deletes unsent reports; copies already sent expire on Home.")
+            Text("Sends connection errors, timing, app version, and device model to your Home, with random connection and request identifiers so Home can match them to its own records. No messages, audio, or passwords. Reports survive quitting and retry while the app is open. Unsent reports and Home copies expire after seven days. Turning this off deletes unsent reports; copies already sent expire on Home.")
         }
         .task {
             while !Task.isCancelled {
