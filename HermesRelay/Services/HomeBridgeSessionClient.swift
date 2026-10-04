@@ -114,16 +114,19 @@ struct OSLogHomeBridgeDiagnostics: HomeBridgeDiagnostics, Sendable {
 
     func record(_ event: HomeBridgeDiagnostic) async {
         switch event {
-        case .requestStarted(let method):
+        case .requestStarted(let method, _):
             logger.info("home bridge request started method=\(method.rawValue, privacy: .public)")
-        case .requestCompleted(let method, let durationMilliseconds, let correlationPresent):
+        case .requestCompleted(let method, let durationMilliseconds, let correlationPresent, _):
             logger.info(
                 "home bridge request completed method=\(method.rawValue, privacy: .public) duration_ms=\(durationMilliseconds, privacy: .public) correlation_present=\(correlationPresent, privacy: .public)"
             )
-        case .requestFailed(let method, let code, let uncertain, let durationMilliseconds):
+        case .requestFailed(let method, let code, let uncertain, let durationMilliseconds, _):
             logger.error(
                 "home bridge request failed method=\(method.rawValue, privacy: .public) code=\(code.rawValue, privacy: .public) uncertain=\(uncertain, privacy: .public) duration_ms=\(durationMilliseconds, privacy: .public)"
             )
+        case .responseReceived, .requestResolved, .reportSchemasAdvertised:
+            // Correlation identifiers belong only in opted-in reports, never the unified log.
+            break
         case .eventReceived(let kind):
             logger.info("home bridge event received kind=\(kind.rawValue, privacy: .public)")
         case .transportLost:
@@ -239,6 +242,9 @@ actor URLSessionHomeBridgeSessionClient: HomeBridgeSessionClient {
     private var audioGeneration: UInt64?
     private var audioTerminalReceived = false
     private var closed = false
+    /// Home's per-socket diagnostics ID from this socket's own ready. Non-nil only when Home
+    /// offered correlation and schema-2 reports; cleared whenever the socket goes away.
+    private var homeConnectionID: String?
 
     init(
         dependencies: HomeBridgeClientDependencies,
@@ -396,6 +402,8 @@ actor URLSessionHomeBridgeSessionClient: HomeBridgeSessionClient {
             guard ready.reason == nil else {
                 return .unavailable(mapOpenReason(ready.reason!))
             }
+            adoptDiagnostics(response, capabilities: wireCapabilities)
+            await diagnostics.record(.reportSchemasAdvertised(wireCapabilities.clientDiagnosticReportSchemas ?? []))
             bridgeReady = true
             return .ready(binding: binding, capabilities: capabilities)
         } catch is HomeWireDecodingError {
@@ -495,6 +503,10 @@ actor URLSessionHomeBridgeSessionClient: HomeBridgeSessionClient {
                 capabilities = recoveredCapabilities
                 currentBinding = recoveredBinding
                 reconnectCapabilitiesUnverified = false
+                adoptDiagnostics(response, capabilities: result.wireCapabilities)
+                if let wire = result.wireCapabilities {
+                    await diagnostics.record(.reportSchemasAdvertised(wire.clientDiagnosticReportSchemas ?? []))
+                }
                 bridgeReady = true
                 return .ready(
                     binding: recoveredBinding,
@@ -538,14 +550,19 @@ actor URLSessionHomeBridgeSessionClient: HomeBridgeSessionClient {
         }
         let requestID = HomePendingRequestID()
         let startedAt = dependencies.clock.now()
-        await diagnostics.record(.requestStarted(method: .promptSubmit))
+        // A fresh token per request on a negotiated socket only; recorded before the frame
+        // is written so a lost response still carries the join.
+        var correlation = homeConnectionID.map {
+            HomeRequestCorrelation(homeConnectionID: $0, requestID: HomeDiagnosticIdentifier.make("req"))
+        }
+        await diagnostics.record(.requestStarted(method: .promptSubmit, correlation: correlation))
         do {
             let response = try await withHomeDeadline(
                 requestID: requestID,
                 timeout: deadlines.promptAcceptance,
                 clock: dependencies.clock,
                 cancelPending: { [weak self] id in await self?.cancelPending(requestID: id) },
-                operation: { [weak self] in
+                operation: { [weak self, correlation] in
                     guard let self else { throw HomeBridgeTransportError.disconnected }
                     return try await self.request(
                         id: requestID,
@@ -553,18 +570,47 @@ actor URLSessionHomeBridgeSessionClient: HomeBridgeSessionClient {
                         params: [
                             "conversation_handle": .string(binding.conversationHandle),
                             "text": .string(text),
-                        ]
+                        ],
+                        diagnostics: correlation.map { HomeRequestDiagnostics(requestID: $0.requestID) }
                     )
                 }
             )
-            let result = try decodeSubmission(response, binding: binding)
+            var responseCorrelated = false
+            if var matched = correlation,
+               case .submit(let echoedRequest, let correlationID) = response.diagnostics,
+               echoedRequest == matched.requestID {
+                matched.correlationID = correlationID
+                correlation = matched
+                responseCorrelated = true
+                await diagnostics.record(.responseReceived(
+                    method: .promptSubmit,
+                    correlation: matched,
+                    kind: response.errorCode == nil ? .accepted : .rejection
+                ))
+            }
+            let result: HomeSubmissionWireResult
+            do {
+                result = try decodeSubmission(response, binding: binding)
+            } catch {
+                if responseCorrelated, let correlation {
+                    await diagnostics.record(.requestResolved(method: .promptSubmit, correlation: correlation, kind: .rejection))
+                }
+                throw SubmissionFailure(underlying: error, correlation: correlation)
+            }
             // Home passes Standard's acceptance through as either label.
             guard result.status == "accepted" || result.status == "submitted" else {
+                if responseCorrelated, let correlation {
+                    await diagnostics.record(.requestResolved(method: .promptSubmit, correlation: correlation, kind: .rejection))
+                }
                 await recordSubmissionFailure(
                     .home(code: .requestRejected, phase: .submission),
-                    startedAt: startedAt
+                    startedAt: startedAt,
+                    correlation: correlation
                 )
                 return .rejected(.home(code: .requestRejected, phase: .submission))
+            }
+            if responseCorrelated, let correlation {
+                await diagnostics.record(.requestResolved(method: .promptSubmit, correlation: correlation, kind: .accepted))
             }
             let turn = HomeTurnBinding(
                 conversationHandle: binding.conversationHandle,
@@ -580,30 +626,40 @@ actor URLSessionHomeBridgeSessionClient: HomeBridgeSessionClient {
             await diagnostics.record(.requestCompleted(
                 method: .promptSubmit,
                 durationMilliseconds: elapsedMilliseconds(since: startedAt),
-                correlationPresent: turn.correlationID != nil
+                correlationPresent: turn.correlationID != nil,
+                correlation: correlation
             ))
             return .accepted(turn)
-        } catch is HomeDeadlineError {
-            await recordSubmissionFailure(
-                .home(code: .transportTimeout, phase: .submission),
-                startedAt: startedAt
-            )
-            return .uncertain(.home(code: .transportTimeout, phase: .submission))
-        } catch is CancellationError {
-            await recordSubmissionFailure(
-                .home(code: .transportTimeout, phase: .submission),
-                startedAt: startedAt
-            )
-            return .uncertain(.home(code: .transportTimeout, phase: .submission))
-        } catch is HomeWireDecodingError {
-            await recordSubmissionFailure(
-                .home(code: .protocolError, phase: .submission),
-                startedAt: startedAt
-            )
-            return .rejected(.home(code: .protocolError, phase: .submission))
+        } catch let failure as SubmissionFailure {
+            return await submissionOutcome(for: failure.underlying, startedAt: startedAt, correlation: failure.correlation)
         } catch {
+            return await submissionOutcome(for: error, startedAt: startedAt, correlation: correlation)
+        }
+    }
+
+    /// Carries the correlation learned from a response whose body then failed to decode.
+    private struct SubmissionFailure: Error {
+        let underlying: Error
+        let correlation: HomeRequestCorrelation?
+    }
+
+    private func submissionOutcome(
+        for error: Error,
+        startedAt: ContinuousClock.Instant,
+        correlation: HomeRequestCorrelation?
+    ) async -> HomePromptSubmissionOutcome {
+        switch error {
+        case is HomeDeadlineError, is CancellationError:
+            let failure = HomeBridgeFailure.home(code: .transportTimeout, phase: .submission)
+            await recordSubmissionFailure(failure, startedAt: startedAt, correlation: correlation)
+            return .uncertain(failure)
+        case is HomeWireDecodingError:
+            let failure = HomeBridgeFailure.home(code: .protocolError, phase: .submission)
+            await recordSubmissionFailure(failure, startedAt: startedAt, correlation: correlation)
+            return .rejected(failure)
+        default:
             let failure = failure(for: error, phase: .submission)
-            await recordSubmissionFailure(failure, startedAt: startedAt)
+            await recordSubmissionFailure(failure, startedAt: startedAt, correlation: correlation)
             if failure.classification == .uncertain {
                 return .uncertain(failure)
             }
@@ -613,14 +669,22 @@ actor URLSessionHomeBridgeSessionClient: HomeBridgeSessionClient {
 
     private func recordSubmissionFailure(
         _ failure: HomeBridgeFailure,
-        startedAt: ContinuousClock.Instant
+        startedAt: ContinuousClock.Instant,
+        correlation: HomeRequestCorrelation?
     ) async {
         await diagnostics.record(.requestFailed(
             method: .promptSubmit,
             code: failure.safeCode ?? .transportUnavailable,
             uncertain: failure.classification == .uncertain,
-            durationMilliseconds: elapsedMilliseconds(since: startedAt)
+            durationMilliseconds: elapsedMilliseconds(since: startedAt),
+            correlation: correlation
         ))
+    }
+
+    /// Negotiated only when Home offered correlation, accepts schema-2 reports, and this
+    /// socket's ready carried a valid `home_connection_id`.
+    private func adoptDiagnostics(_ response: HomeWireResponse, capabilities wire: HomeWireCapabilities?) {
+        homeConnectionID = wire?.offersDiagnosticsCorrelation == true ? response.diagnostics?.homeConnectionID : nil
     }
 
     private func elapsedMilliseconds(since startedAt: ContinuousClock.Instant) -> Int {
@@ -878,6 +942,7 @@ actor URLSessionHomeBridgeSessionClient: HomeBridgeSessionClient {
         currentBinding = nil
         reconnectCapabilitiesUnverified = false
         bridgeReady = false
+        homeConnectionID = nil
         audioAccumulator = nil
         activeAudioScope = nil
         pendingAudioScope = nil
@@ -912,16 +977,20 @@ actor URLSessionHomeBridgeSessionClient: HomeBridgeSessionClient {
         readerTask = nil
         socket = nil
         bridgeReady = false
+        homeConnectionID = nil
         await connection?.close()
     }
 
     private func installSocket(route: HomeApprovedRoute, profileID: UUID) async throws {
         guard socket == nil else { return }
+        homeConnectionID = nil
         let holder = HomeConnectionHolder()
         try await dependencies.credentialStore.withPrivateDeviceCredential(for: profileID) { [socketFactory = dependencies.socketFactory] credential in
             var request = URLRequest(url: route.endpoint)
             request.httpMethod = "GET"
             request.setValue("Device \(String(decoding: credential, as: UTF8.self))", forHTTPHeaderField: "Authorization")
+            // Feature negotiation only (HOME-NW-06); Home ignores it unless present exactly once.
+            request.setValue("1", forHTTPHeaderField: "X-Hermes-Diagnostics-Version")
             holder.connection = try await socketFactory.open(urlRequest: request)
         }
         guard let connection = holder.connection else { throw HomeBridgeTransportError.disconnected }
@@ -936,12 +1005,13 @@ actor URLSessionHomeBridgeSessionClient: HomeBridgeSessionClient {
     private func request(
         id: HomePendingRequestID,
         method: String,
-        params: [String: HomeJSONValue]
+        params: [String: HomeJSONValue],
+        diagnostics requestDiagnostics: HomeRequestDiagnostics? = nil
     ) async throws -> HomeWireResponse {
         guard Self.allowedMethods.contains(method), let socket else {
             throw HomeBridgeTransportError.disconnected
         }
-        let request = HomeJSONRPCRequest(id: id.rawValue, method: method, params: params)
+        let request = HomeJSONRPCRequest(id: id.rawValue, method: method, params: params, diagnostics: requestDiagnostics)
         let data = try JSONEncoder().encode(request)
         let text = String(decoding: data, as: UTF8.self)
         return try await withTaskCancellationHandler {
@@ -1003,7 +1073,7 @@ actor URLSessionHomeBridgeSessionClient: HomeBridgeSessionClient {
             throw HomeWireDecodingError.unsupportedSchema
         }
         if let id = object["id"] as? String {
-            try requireKeys(object, allowed: ["jsonrpc", "schema", "id", "result", "error"])
+            try requireKeys(object, allowed: ["jsonrpc", "schema", "id", "result", "error", "diagnostics"])
             let response = try decodeResponse(object)
             resolvePending(id: HomePendingRequestID(rawValue: id), response: response)
             return
@@ -1446,6 +1516,7 @@ actor URLSessionHomeBridgeSessionClient: HomeBridgeSessionClient {
         guard lostGeneration == generation, !closed else { return }
         socket = nil
         bridgeReady = false
+        homeConnectionID = nil
         if let activeAudioScope {
             pendingAudioScope = activeAudioScope
         }
@@ -1467,6 +1538,37 @@ private struct HomeWireResponse: @unchecked Sendable {
     let id: String
     let result: [String: Any]
     let errorCode: String?
+    var diagnostics: HomeResponseDiagnostics? = nil
+}
+
+/// Home's per-response diagnostics (HOME-NW-06). Anything outside these two exact shapes is
+/// dropped: diagnostics never fail the RPC they ride on.
+private enum HomeResponseDiagnostics: Equatable {
+    case ready(homeConnectionID: String)
+    case submit(requestID: String, correlationID: String)
+
+    init?(_ value: Any?) {
+        guard let object = value as? [String: Any], intValue(object["version"]) == 1 else { return nil }
+        switch Set(object.keys) {
+        case ["version", "home_connection_id"]:
+            guard HomeDiagnosticIdentifier.isValid(object["home_connection_id"], prefix: "conn"),
+                  let id = object["home_connection_id"] as? String else { return nil }
+            self = .ready(homeConnectionID: id)
+        case ["version", "request_id", "correlation_id"]:
+            guard HomeDiagnosticIdentifier.isValid(object["request_id"], prefix: "req"),
+                  HomeDiagnosticIdentifier.isValid(object["correlation_id"], prefix: "corr"),
+                  let request = object["request_id"] as? String,
+                  let correlation = object["correlation_id"] as? String else { return nil }
+            self = .submit(requestID: request, correlationID: correlation)
+        default:
+            return nil
+        }
+    }
+
+    var homeConnectionID: String? {
+        if case .ready(let id) = self { return id }
+        return nil
+    }
 }
 
 private func decodeResponse(_ object: [String: Any]) throws -> HomeWireResponse {
@@ -1493,7 +1595,8 @@ private func decodeResponse(_ object: [String: Any]) throws -> HomeWireResponse 
         // The numeric JSON-RPC code is transport metadata. Home's stable
         // failure vocabulary is carried by error.data.code; an error without
         // that safe code is still an error, but maps to protocol_error.
-        errorCode: hasError ? (stableCode ?? HomeFailureCode.protocolError.rawValue) : nil
+        errorCode: hasError ? (stableCode ?? HomeFailureCode.protocolError.rawValue) : nil,
+        diagnostics: HomeResponseDiagnostics(object["diagnostics"])
     )
 }
 
@@ -1515,6 +1618,8 @@ private struct HomeReconnectWireResult {
     let unresolvedTurnID: String?
     let resumeCursor: String?
     let capabilities: HomeBridgeCapabilities?
+    /// Carries the diagnostics negotiation keys, which never enter `capabilitiesMatch`.
+    let wireCapabilities: HomeWireCapabilities?
     let confirmsNoUnresolvedTurn: Bool
     /// False when the live adapter's ready reply names a different route than the binding.
     let routeMatches: Bool
@@ -1540,6 +1645,7 @@ private func decodeReconnect(
         throw HomeWireDecodingError.invalidShape
     }
     var recoveredCapabilities: HomeBridgeCapabilities?
+    var recoveredWireCapabilities: HomeWireCapabilities?
     var routeMatches = true
     var capabilitiesMatch = true
     if let routeValue = response.result["route"] {
@@ -1554,6 +1660,9 @@ private func decodeReconnect(
         let decodedCapabilities = HomeBridgeCapabilities(wireCapabilities)
         routeMatches = route.routeClass == binding.route.routeClass && route.id == binding.route.id
         recoveredCapabilities = decodedCapabilities
+        recoveredWireCapabilities = wireCapabilities
+        // `HomeBridgeCapabilities` omits the diagnostics keys, so a Home that gains or drops
+        // diagnostics negotiation is never a conversation mismatch.
         if routeMatches && capabilitiesAreEstablished && decodedCapabilities != binding.capabilities {
             capabilitiesMatch = false
         }
@@ -1575,6 +1684,7 @@ private func decodeReconnect(
         unresolvedTurnID: unresolvedTurnID.turnID,
         resumeCursor: unresolvedTurnID.resumeCursor,
         capabilities: recoveredCapabilities,
+        wireCapabilities: recoveredWireCapabilities,
         confirmsNoUnresolvedTurn: confirmsNoUnresolvedTurn,
         routeMatches: routeMatches,
         capabilitiesMatch: capabilitiesMatch

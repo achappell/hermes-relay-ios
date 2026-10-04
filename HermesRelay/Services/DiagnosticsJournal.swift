@@ -243,13 +243,13 @@ extension HomeBridgeDiagnostic {
     /// would flood the journal during audio.
     var journalLine: String? {
         switch self {
-        case .requestStarted(let method):
+        case .requestStarted(let method, _):
             "home bridge request started method=\(method.rawValue)"
-        case .requestCompleted(let method, let durationMilliseconds, let correlationPresent):
+        case .requestCompleted(let method, let durationMilliseconds, let correlationPresent, _):
             "home bridge request completed method=\(method.rawValue) duration_ms=\(durationMilliseconds) correlation_present=\(correlationPresent)"
-        case .requestFailed(let method, let code, let uncertain, let durationMilliseconds):
+        case .requestFailed(let method, let code, let uncertain, let durationMilliseconds, _):
             "home bridge request failed method=\(method.rawValue) code=\(code.rawValue) uncertain=\(uncertain) duration_ms=\(durationMilliseconds)"
-        case .eventReceived:
+        case .eventReceived, .responseReceived, .requestResolved, .reportSchemasAdvertised:
             nil
         case .transportLost:
             "home bridge transport lost"

@@ -344,6 +344,18 @@ stories:
     release_scope: migration
     depends_on: []
     acceptance_overlay: _bmad-output/implementation-artifacts/course-correction-2026-09-23.md
+  - id: IOS-DIAG-03
+    title: Receive and send Home connection-failure diagnostics handshake and request envelopes
+    kind: local
+    spec: _bmad-output/implementation-artifacts/spec-ios-diag-03.md
+    validation: _bmad-output/implementation-artifacts/validation-ios-diag-03.md
+    github_issue: https://github.com/achappell/hermes-relay-ios/issues/118
+    tracker_key: ios-diag-03
+    product_epic: 6
+    owner: hermes-relay-ios
+    release_scope: later
+    depends_on:
+      - home:HOME-NW-06
   - id: IOS-UX-F5
     title: Make the voice orb the talk control
     kind: local
