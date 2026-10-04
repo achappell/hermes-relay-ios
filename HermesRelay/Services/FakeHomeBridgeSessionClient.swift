@@ -51,9 +51,47 @@ struct AppHomeConversationClaimProvider: HomeConversationClaimProvider {
         return try await pairedClaims.sessionRef(for: profileID, conversationHandle: conversationHandle)
     }
 
+    func supportsClaimManagement(for profileID: UUID) async -> Bool {
+        #if DEBUG
+        if fakeEnabled { return true }
+        #endif
+        guard let pairedClaims else { return false }
+        return await pairedClaims.supportsClaimManagement(profileID: profileID)
+    }
+
+    func openClaims(for profileID: UUID) async throws -> HomeClientActiveClaimList? {
+        #if DEBUG
+        if fakeEnabled { return await HomeDemoFixtures.claimManagement.list() }
+        #endif
+        guard let pairedClaims else { return nil }
+        return try await pairedClaims.openClaims(for: profileID)
+    }
+
+    func closeClaims(
+        for profileID: UUID,
+        claimRefs: [String]
+    ) async throws -> [HomeClientClaimCloseResult]? {
+        #if DEBUG
+        if fakeEnabled { return await HomeDemoFixtures.claimManagement.close(claimRefs: claimRefs) }
+        #endif
+        guard let pairedClaims else { return nil }
+        return try await pairedClaims.closeClaims(for: profileID, claimRefs: claimRefs)
+    }
+
+    func claimTitles(
+        for profileID: UUID,
+        claims: [HomeClientActiveClaim]
+    ) async -> [String: String] {
+        #if DEBUG
+        if fakeEnabled { return await HomeDemoFixtures.claimManagement.titles(for: claims) }
+        #endif
+        guard let pairedClaims else { return [:] }
+        return await pairedClaims.claimTitles(for: profileID, claims: claims)
+    }
+
     func claimsPerConnect(for profileID: UUID) async -> Bool {
         #if DEBUG
-        if fakeEnabled { return false }
+        if fakeEnabled { return true }
         #endif
         guard let pairedClaims else { return false }
         return await pairedClaims.isPaired(profileID: profileID)
@@ -104,7 +142,66 @@ struct AppHomeBridgeSessionClientFactory: HomeBridgeSessionClientFactory {
     }
 }
 
+actor FakeHomeClaimManagement {
+    private let listValue: HomeClientActiveClaimList
+    private let titlesByClaimRef: [String: String] = [
+        "debug-current-claim": "Current debug conversation",
+        "debug-other-claim": "Another debug conversation",
+    ]
+    private var claims: [HomeClientActiveClaim]
+
+    init() {
+        let now = Date()
+        claims = [
+            HomeClientActiveClaim(
+                claimRef: "debug-current-claim",
+                grantID: "debug-grant",
+                profileLabel: "Debug Profile",
+                sessionRef: "debug-session-current",
+                createdAt: now.addingTimeInterval(-300),
+                openedAt: now.addingTimeInterval(-290),
+                state: .idle
+            ),
+            HomeClientActiveClaim(
+                claimRef: "debug-other-claim",
+                grantID: "debug-grant",
+                profileLabel: "Debug Profile",
+                sessionRef: "debug-session-other",
+                createdAt: now.addingTimeInterval(-600),
+                openedAt: now.addingTimeInterval(-590),
+                state: .waitingToReconnect
+            ),
+        ]
+        listValue = HomeClientActiveClaimList(maxClaims: 8, claims: claims)
+    }
+
+    func list() -> HomeClientActiveClaimList {
+        HomeClientActiveClaimList(maxClaims: listValue.maxClaims, claims: claims)
+    }
+
+    func titles(for claims: [HomeClientActiveClaim]) -> [String: String] {
+        Dictionary(
+            uniqueKeysWithValues: claims.compactMap { claim in
+                titlesByClaimRef[claim.claimRef].map { (claim.claimRef, $0) }
+            }
+        )
+    }
+
+    func close(claimRefs: [String]) -> [HomeClientClaimCloseResult] {
+        let results = claimRefs.map { claimRef -> HomeClientClaimCloseResult in
+            if let index = claims.firstIndex(where: { $0.claimRef == claimRef }) {
+                claims.remove(at: index)
+                return HomeClientClaimCloseResult(claimRef: claimRef, result: .closed)
+            }
+            return HomeClientClaimCloseResult(claimRef: claimRef, result: .notOpen)
+        }
+        return results
+    }
+}
+
 enum HomeDemoFixtures {
+    static let claimManagement = FakeHomeClaimManagement()
+
     static func claim(for profileID: UUID) -> HomeConversationClaim {
         HomeConversationClaim(
             profileID: profileID,
@@ -113,7 +210,9 @@ enum HomeDemoFixtures {
                 endpoint: URL(string: "wss://home.debug.invalid/api/v1/bridge/ws")!,
                 identity: HomeRouteIdentity(routeClass: .home, id: "debug-home"),
                 householdBinding: "debug-household"
-            )
+            ),
+            claimRef: "debug-current-claim",
+            claimedSession: HomeClaimedSession(resumed: true, sessionRef: "debug-session-current")
         )
     }
 }

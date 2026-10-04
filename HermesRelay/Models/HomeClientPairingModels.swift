@@ -631,6 +631,221 @@ struct HomeClientSessionList: Decodable, Equatable, Sendable {
     }
 }
 
+enum HomeClientActiveClaimState: String, Decodable, Equatable, Sendable {
+    case connecting
+    case idle
+    case replying
+    case waitingToReconnect = "waiting_to_reconnect"
+
+    var displayName: String {
+        switch self {
+        case .connecting: "Connecting"
+        case .idle: "Idle"
+        case .replying: "Replying"
+        case .waitingToReconnect: "Waiting to reconnect"
+        }
+    }
+}
+
+/// An active claim listed by Home. Claim and session references stay in
+/// memory and are omitted from descriptions and mirrors.
+struct HomeClientActiveClaim: Decodable, Equatable, Sendable, Identifiable,
+    CustomStringConvertible, CustomDebugStringConvertible, CustomReflectable {
+    let claimRef: String
+    let grantID: String
+    let profileLabel: String?
+    let sessionRef: String?
+    let createdAt: Date
+    let openedAt: Date?
+    let state: HomeClientActiveClaimState
+
+    var id: String { claimRef }
+
+    private enum CodingKeys: String, CodingKey, CaseIterable {
+        case claimRef = "claim_ref"
+        case grantID = "grant_id"
+        case profileLabel = "profile_label"
+        case sessionRef = "session_ref"
+        case createdAt = "created_at"
+        case openedAt = "opened_at"
+        case state
+    }
+
+    init(
+        claimRef: String,
+        grantID: String,
+        profileLabel: String?,
+        sessionRef: String?,
+        createdAt: Date,
+        openedAt: Date?,
+        state: HomeClientActiveClaimState
+    ) {
+        self.claimRef = claimRef
+        self.grantID = grantID
+        self.profileLabel = profileLabel
+        self.sessionRef = sessionRef
+        self.createdAt = createdAt
+        self.openedAt = openedAt
+        self.state = state
+    }
+
+    init(from decoder: Decoder) throws {
+        try HomeClientStrictKeys.require(decoder, allowed: CodingKeys.allCases)
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        claimRef = try HomeClientStrictKeys.identifier(values.decode(String.self, forKey: .claimRef))
+        grantID = try HomeClientStrictKeys.identifier(values.decode(String.self, forKey: .grantID))
+        profileLabel = try values.decodeIfPresent(String.self, forKey: .profileLabel)
+        sessionRef = try values.decodeIfPresent(String.self, forKey: .sessionRef)
+        if let sessionRef, sessionRef.isEmpty { throw HomeWireDecodingError.invalidShape }
+        state = try values.decode(HomeClientActiveClaimState.self, forKey: .state)
+
+        let created = try values.decode(Double.self, forKey: .createdAt)
+        guard created.isFinite, created >= 0 else { throw HomeWireDecodingError.invalidShape }
+        createdAt = Date(timeIntervalSince1970: created)
+
+        if let opened = try values.decodeIfPresent(Double.self, forKey: .openedAt) {
+            guard opened.isFinite, opened >= 0 else { throw HomeWireDecodingError.invalidShape }
+            openedAt = Date(timeIntervalSince1970: opened)
+        } else {
+            openedAt = nil
+        }
+    }
+
+    var description: String {
+        "HomeClientActiveClaim(state: \(state.rawValue), opened: \(openedAt != nil))"
+    }
+    var debugDescription: String { description }
+    var customMirror: Mirror {
+        Mirror(self, children: ["state": state.rawValue, "opened": openedAt != nil, "hasSession": sessionRef != nil])
+    }
+}
+
+/// The active client claims for the authenticated Device.
+struct HomeClientActiveClaimList: Decodable, Equatable, Sendable,
+    CustomStringConvertible, CustomDebugStringConvertible, CustomReflectable {
+    let maxClaims: Int
+    let claims: [HomeClientActiveClaim]
+
+    private enum CodingKeys: String, CodingKey, CaseIterable {
+        case schema, maxClaims = "max_claims", claims
+    }
+
+    init(maxClaims: Int, claims: [HomeClientActiveClaim]) {
+        self.maxClaims = maxClaims
+        self.claims = claims
+    }
+
+    init(from decoder: Decoder) throws {
+        try HomeClientStrictKeys.require(decoder, allowed: CodingKeys.allCases)
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        guard try values.decode(Int.self, forKey: .schema) == 1 else {
+            throw HomeWireDecodingError.unsupportedSchema
+        }
+        maxClaims = try values.decode(Int.self, forKey: .maxClaims)
+        claims = try values.decode([HomeClientActiveClaim].self, forKey: .claims)
+        guard maxClaims > 0,
+              Set(claims.map(\.claimRef)).count == claims.count else {
+            throw HomeWireDecodingError.invalidShape
+        }
+    }
+
+    var description: String { "HomeClientActiveClaimList(count: \(claims.count), max: \(maxClaims))" }
+    var debugDescription: String { description }
+    var customMirror: Mirror {
+        Mirror(self, children: ["count": claims.count, "maxClaims": maxClaims])
+    }
+}
+
+/// `POST /api/v1/client-claims/close` request. The route requires explicit,
+/// unique refs and accepts no more than 64 at once.
+struct HomeClientClaimsCloseRequest: Encodable, Equatable, Sendable,
+    CustomStringConvertible, CustomDebugStringConvertible, CustomReflectable {
+    let claimRefs: [String]
+
+    private enum CodingKeys: String, CodingKey {
+        case schema
+        case claimRefs = "claim_refs"
+    }
+
+    init?(claimRefs: [String]) {
+        guard (1...64).contains(claimRefs.count),
+              claimRefs.allSatisfy({ !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }),
+              Set(claimRefs).count == claimRefs.count else {
+            return nil
+        }
+        self.claimRefs = claimRefs
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var values = encoder.container(keyedBy: CodingKeys.self)
+        try values.encode(1, forKey: .schema)
+        try values.encode(claimRefs, forKey: .claimRefs)
+    }
+    var description: String { "HomeClientClaimsCloseRequest(count: \(claimRefs.count))" }
+    var debugDescription: String { description }
+    var customMirror: Mirror { Mirror(self, children: ["count": claimRefs.count]) }
+}
+
+enum HomeClientClaimCloseResultKind: String, Decodable, Equatable, Sendable {
+    case closed
+    case notOpen = "not_open"
+}
+
+/// One result for an explicit close request. The opaque ref is never logged.
+struct HomeClientClaimCloseResult: Decodable, Equatable, Sendable,
+    CustomStringConvertible, CustomDebugStringConvertible, CustomReflectable {
+    let claimRef: String
+    let result: HomeClientClaimCloseResultKind
+
+    private enum CodingKeys: String, CodingKey, CaseIterable {
+        case claimRef = "claim_ref"
+        case result
+    }
+
+    init(claimRef: String, result: HomeClientClaimCloseResultKind) {
+        self.claimRef = claimRef
+        self.result = result
+    }
+
+    init(from decoder: Decoder) throws {
+        try HomeClientStrictKeys.require(decoder, allowed: CodingKeys.allCases)
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        claimRef = try HomeClientStrictKeys.identifier(values.decode(String.self, forKey: .claimRef))
+        result = try values.decode(HomeClientClaimCloseResultKind.self, forKey: .result)
+    }
+
+    var description: String { "HomeClientClaimCloseResult(\(result.rawValue))" }
+    var debugDescription: String { description }
+    var customMirror: Mirror { Mirror(self, children: ["result": result.rawValue]) }
+}
+
+struct HomeClientClaimsCloseResponse: Decodable, Equatable, Sendable,
+    CustomStringConvertible, CustomDebugStringConvertible, CustomReflectable {
+    let results: [HomeClientClaimCloseResult]
+
+    private enum CodingKeys: String, CodingKey, CaseIterable { case schema, results }
+
+    init(results: [HomeClientClaimCloseResult]) {
+        self.results = results
+    }
+
+    init(from decoder: Decoder) throws {
+        try HomeClientStrictKeys.require(decoder, allowed: CodingKeys.allCases)
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        guard try values.decode(Int.self, forKey: .schema) == 1 else {
+            throw HomeWireDecodingError.unsupportedSchema
+        }
+        results = try values.decode([HomeClientClaimCloseResult].self, forKey: .results)
+        guard Set(results.map(\.claimRef)).count == results.count else {
+            throw HomeWireDecodingError.invalidShape
+        }
+    }
+    var description: String { "HomeClientClaimsCloseResponse(count: \(results.count))" }
+    var debugDescription: String { description }
+    var customMirror: Mirror { Mirror(self, children: ["count": results.count]) }
+}
+
+
 // MARK: - Profile grants (owner administration)
 
 /// One device's grant to a Profile this device holds, as Home lists it for
@@ -846,13 +1061,14 @@ struct HomeClientClaimRequest: Encodable, Equatable, Sendable {
     }
 }
 
-/// A granted claim. The opaque handle and session reference are kept in
-/// memory only.
+/// A granted claim. Its handle, claim ref, and session reference are kept in
+/// memory only and are never included in descriptions or diagnostics.
 struct HomeClientClaimGrant: Decodable, Equatable, Sendable, CustomStringConvertible,
     CustomDebugStringConvertible, CustomReflectable {
     let claimID: String
     let configurationRevision: Int
     let conversationHandle: String
+    let claimRef: String?
     let session: HomeClaimedSession
 
     private enum CodingKeys: String, CodingKey, CaseIterable {
@@ -861,6 +1077,7 @@ struct HomeClientClaimGrant: Decodable, Equatable, Sendable, CustomStringConvert
         case decision
         case configurationRevision = "configuration_revision"
         case conversationHandle = "conversation_handle"
+        case claimRef = "claim_ref"
         case session
     }
 
@@ -889,11 +1106,13 @@ struct HomeClientClaimGrant: Decodable, Equatable, Sendable, CustomStringConvert
         claimID: String,
         configurationRevision: Int,
         conversationHandle: String,
+        claimRef: String? = nil,
         session: HomeClaimedSession = HomeClaimedSession(resumed: false, sessionRef: nil)
     ) {
         self.claimID = claimID
         self.configurationRevision = configurationRevision
         self.conversationHandle = conversationHandle
+        self.claimRef = claimRef
         self.session = session
     }
 
@@ -909,8 +1128,12 @@ struct HomeClientClaimGrant: Decodable, Equatable, Sendable, CustomStringConvert
         claimID = try values.decode(String.self, forKey: .claimID)
         configurationRevision = try values.decode(Int.self, forKey: .configurationRevision)
         conversationHandle = try values.decode(String.self, forKey: .conversationHandle)
+        claimRef = try values.decodeIfPresent(String.self, forKey: .claimRef)
         session = try values.decode(Session.self, forKey: .session).value
         guard !conversationHandle.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            throw HomeWireDecodingError.invalidShape
+        }
+        if let claimRef, claimRef.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
             throw HomeWireDecodingError.invalidShape
         }
     }
@@ -984,6 +1207,9 @@ struct HomeClientPairing: Codable, Equatable, Sendable, Identifiable {
     var generation: Int
     var credentialExpiresAt: Date
     var credentialUsable: Bool
+    /// Safe feature detection learned from a successful response's claim_ref.
+    /// The ref itself remains memory-only and is never written to this record.
+    var claimManagementSupported: Bool
     var grants: [HomeClientGrant]
     var profiles: [HomeClientPairedProfile]
     var pinnedRouteID: String?
@@ -996,7 +1222,7 @@ struct HomeClientPairing: Codable, Equatable, Sendable, Identifiable {
 
     private enum CodingKeys: String, CodingKey {
         case schemaVersion, id, home, endpointID, deviceID, generation
-        case credentialExpiresAt, credentialUsable, grants, profiles
+        case credentialExpiresAt, credentialUsable, claimManagementSupported, grants, profiles
         case pinnedRouteID, pendingRenewalRequestID, unboundGrantIDs
     }
 
@@ -1010,6 +1236,7 @@ struct HomeClientPairing: Codable, Equatable, Sendable, Identifiable {
         generation = try values.decode(Int.self, forKey: .generation)
         credentialExpiresAt = try values.decode(Date.self, forKey: .credentialExpiresAt)
         credentialUsable = try values.decode(Bool.self, forKey: .credentialUsable)
+        claimManagementSupported = try values.decodeIfPresent(Bool.self, forKey: .claimManagementSupported) ?? false
         grants = try values.decode([HomeClientGrant].self, forKey: .grants)
         profiles = try values.decode([HomeClientPairedProfile].self, forKey: .profiles)
         pinnedRouteID = try values.decodeIfPresent(String.self, forKey: .pinnedRouteID)
@@ -1025,6 +1252,7 @@ struct HomeClientPairing: Codable, Equatable, Sendable, Identifiable {
         generation: Int,
         credentialExpiresAt: Date,
         credentialUsable: Bool = true,
+        claimManagementSupported: Bool = false,
         grants: [HomeClientGrant] = [],
         profiles: [HomeClientPairedProfile] = [],
         pinnedRouteID: String? = nil,
@@ -1040,6 +1268,7 @@ struct HomeClientPairing: Codable, Equatable, Sendable, Identifiable {
         self.generation = generation
         self.credentialExpiresAt = credentialExpiresAt
         self.credentialUsable = credentialUsable
+        self.claimManagementSupported = claimManagementSupported
         self.grants = grants
         self.profiles = profiles
         self.pinnedRouteID = pinnedRouteID

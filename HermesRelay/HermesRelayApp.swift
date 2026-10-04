@@ -101,20 +101,22 @@ struct HermesRelayIOSApp: App {
         )
         // One conversation per relay profile. The store swaps to the selected
         // profile's file when the client is configured.
-        _store = State(
-            initialValue: ConversationStore(
-                configurationStore: configuration,
-                makePersistence: { profileID in
-                    JSONConversationPersistence(
-                        fileURL: ConversationPersistenceFile.url(
-                            in: appDirectory, for: profileID
-                        )
+        let conversationStore = ConversationStore(
+            configurationStore: configuration,
+            makePersistence: { profileID in
+                JSONConversationPersistence(
+                    fileURL: ConversationPersistenceFile.url(
+                        in: appDirectory, for: profileID
                     )
-                },
-                homeClientFactory: homeClientFactory,
-                homeClaimProvider: homeClaimProvider
-            )
+                )
+            },
+            homeClientFactory: homeClientFactory,
+            homeClaimProvider: homeClaimProvider
         )
+        #if DEBUG
+        conversationStore.configureDebugHomeClaims(enabled: homeFakeEnabled)
+        #endif
+        _store = State(initialValue: conversationStore)
         self.appDirectory = appDirectory
         self.configuration = configuration
         // Device discovery stays behind the typed seam until Hermes and the

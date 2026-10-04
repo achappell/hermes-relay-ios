@@ -18,6 +18,18 @@ protocol HomeConversationClaimProvider: Sendable {
     /// The session reference a claim is bound to; nil until a new session's
     /// first accepted turn, or when unsupported.
     func clientSessionRef(for profileID: UUID, conversationHandle: String) async throws -> String?
+
+    /// True only after a successful claim response disclosed the HOME-NW-18 ref.
+    func supportsClaimManagement(for profileID: UUID) async -> Bool
+    func openClaims(for profileID: UUID) async throws -> HomeClientActiveClaimList?
+    func closeClaims(
+        for profileID: UUID,
+        claimRefs: [String]
+    ) async throws -> [HomeClientClaimCloseResult]?
+    func claimTitles(
+        for profileID: UUID,
+        claims: [HomeClientActiveClaim]
+    ) async -> [String: String]
 }
 
 extension HomeConversationClaimProvider {
@@ -35,6 +47,19 @@ extension HomeConversationClaimProvider {
     func clientSessions(for profileID: UUID) async throws -> [HomeClientSessionSummary]? { nil }
 
     func clientSessionRef(for profileID: UUID, conversationHandle: String) async throws -> String? { nil }
+    func supportsClaimManagement(for profileID: UUID) async -> Bool { false }
+
+    func openClaims(for profileID: UUID) async throws -> HomeClientActiveClaimList? { nil }
+
+    func closeClaims(
+        for profileID: UUID,
+        claimRefs: [String]
+    ) async throws -> [HomeClientClaimCloseResult]? { nil }
+
+    func claimTitles(
+        for profileID: UUID,
+        claims: [HomeClientActiveClaim]
+    ) async -> [String: String] { [:] }
 }
 
 struct StaticHomeConversationClaimProvider: HomeConversationClaimProvider {

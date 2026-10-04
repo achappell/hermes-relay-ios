@@ -11,6 +11,7 @@ struct ContentView: View {
     @State private var showingConfiguration = false
     @State private var showingHistory = false
     @State private var showingHomeSessions = false
+    @State private var scrollToOpenHomeClaimsOnPresent = false
     @State private var promptHistory = PromptHistory()
     @State private var hudModel: AmbientHUDModel
     @State private var pairingLinkRequest: HomePairingLinkRequest?
@@ -288,7 +289,11 @@ struct ContentView: View {
             TranscriptHistoryView(messages: store.messages)
         }
         .sheet(isPresented: $showingHomeSessions) {
-            HomeSessionsView(store: store)
+            HomeSessionsView(
+                store: store,
+                scrollToOpenClaims: scrollToOpenHomeClaimsOnPresent
+            )
+            .onDisappear { scrollToOpenHomeClaimsOnPresent = false }
         }
         .onChange(of: store.activeProfileID) {
             // Recent prompts belong to the Profile they were typed in.
@@ -364,7 +369,12 @@ struct ContentView: View {
             pendingHomePromptKind: store.pendingHomePrompt?.prompt.kind,
             homeCommandEventCount: store.homeCommandEvents.count,
             homeSessionTitle: store.homeSession?.title,
-            onShowSessions: store.supportsHomeSessions ? { showingHomeSessions = true } : nil
+            onShowSessions: (store.supportsHomeSessions || store.canManageOpenHomeClaims)
+                ? {
+                    scrollToOpenHomeClaimsOnPresent = store.shouldOfferManageOpenHomeClaims
+                    showingHomeSessions = true
+                }
+                : nil
         )
     }
 
@@ -425,6 +435,18 @@ struct ContentView: View {
                 }
                 .relayGlassButtonStyle()
                 .accessibilityIdentifier("home-start-new-conversation")
+            }
+
+            if store.canManageOpenHomeClaims {
+                Button {
+                    scrollToOpenHomeClaimsOnPresent = true
+                    showingHomeSessions = true
+                } label: {
+                    Label("Manage open conversations", systemImage: "rectangle.stack.badge.person.crop")
+                }
+                .relayGlassButtonStyle()
+                .disabled(store.isClosingOpenHomeClaims)
+                .accessibilityIdentifier("home-manage-open-conversations")
             }
 
             if let transientError = store.transientError {
