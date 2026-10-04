@@ -824,6 +824,11 @@ struct RelayConfigurationView: View {
                     Text("Connection events only: no messages, voice, or passwords. Send it to whoever is helping you.")
                 }
             }
+            #if os(macOS)
+            // The automatic macOS Form is an intrinsically sized column layout,
+            // not a scrolling settings surface.
+            .formStyle(.grouped)
+            #endif
             .navigationTitle("Configure Relay")
             #if os(iOS)
             .navigationBarTitleDisplayMode(.inline)
@@ -890,6 +895,9 @@ struct RelayConfigurationView: View {
                 await listModel.load()
             }
         }
+        #if os(macOS)
+        .frame(minWidth: 480, idealWidth: 640, minHeight: 320, idealHeight: 560)
+        #endif
     }
 
     @ViewBuilder
