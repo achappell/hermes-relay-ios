@@ -1447,6 +1447,136 @@ final class VoiceSessionCoordinatorTests: XCTestCase {
     }
 
     @MainActor
+    func testHomeSlowTextReplyStillPlaysAudioThatStartsAfterTheTurnCompletes() async throws {
+        let fixture = try await makeHomeVoiceReviewFixture(
+            audioDeadlines: HomeTurnAudioDeadlines(
+                audioStart: .milliseconds(200),
+                controlTerminal: .seconds(30),
+                audioTerminal: .seconds(5),
+                playbackDrain: .seconds(5)
+            )
+        )
+        defer { try? FileManager.default.removeItem(at: fixture.profileURL.deletingLastPathComponent()) }
+        let configured = await fixture.store.loadConfiguredClient()
+        XCTAssertTrue(configured)
+        await fixture.store.connect()
+        let output = CoordinatorAudioOutput()
+        let coordinator = VoiceSessionCoordinator(
+            store: fixture.store,
+            input: CoordinatorSpeechInput(),
+            output: output
+        )
+        fixture.store.draft = "Think about it for a while"
+        let responseTask = Task { @MainActor in
+            await coordinator.sendDraft()
+        }
+        await waitForHomeVoiceSubmission(fixture.client, atLeast: 1)
+        let scope = HomeEventScope(
+            conversationHandle: fixture.claim.conversationHandle,
+            turnID: "turn-1",
+            correlationID: "correlation-1"
+        )
+        try await Task.sleep(for: .milliseconds(600))
+        await fixture.client.emit(.standard(HomeStandardEvent(
+            type: .messageComplete,
+            scope: scope,
+            payload: .final(
+                rendered: nil,
+                text: "Here is my answer",
+                status: "complete",
+                reasoning: nil,
+                failureReason: nil
+            )
+        )))
+        await fixture.client.emit(.standard(HomeStandardEvent(
+            type: .turnComplete,
+            scope: scope,
+            payload: .terminal(kind: .terminal)
+        )))
+        await fixture.client.emit(.audioStart(
+            scope,
+            HomeAudioFormat(sampleRate: 24_000, channels: 1, sampleWidth: 2)
+        ))
+        await fixture.client.emit(.binaryPCM(scope, Data([0, 1, 2, 3])))
+        await fixture.client.emit(.audioTerminal(scope, .end))
+        await responseTask.value
+
+        XCTAssertNotEqual(
+            coordinator.state,
+            .failed("Audio playback failed. The response text is still available.")
+        )
+        let operations = await output.operations()
+        XCTAssertTrue(operations.contains(.append), "Home audio was not delivered: \(operations)")
+    }
+
+    @MainActor
+    func testHomeAudioThatNeverStartsAfterTheTurnCompletesStillFails() async throws {
+        let fixture = try await makeHomeVoiceReviewFixture(
+            audioDeadlines: HomeTurnAudioDeadlines(
+                audioStart: .milliseconds(200),
+                controlTerminal: .seconds(30),
+                audioTerminal: .seconds(5),
+                playbackDrain: .seconds(5)
+            )
+        )
+        defer { try? FileManager.default.removeItem(at: fixture.profileURL.deletingLastPathComponent()) }
+        let configured = await fixture.store.loadConfiguredClient()
+        XCTAssertTrue(configured)
+        await fixture.store.connect()
+        let output = CoordinatorAudioOutput()
+        let coordinator = VoiceSessionCoordinator(
+            store: fixture.store,
+            input: CoordinatorSpeechInput(),
+            output: output
+        )
+        fixture.store.draft = "Say something"
+        let responseTask = Task { @MainActor in
+            await coordinator.sendDraft()
+        }
+        await waitForHomeVoiceSubmission(fixture.client, atLeast: 1)
+        let scope = HomeEventScope(
+            conversationHandle: fixture.claim.conversationHandle,
+            turnID: "turn-1",
+            correlationID: "correlation-1"
+        )
+        try await Task.sleep(for: .milliseconds(600))
+        XCTAssertNotEqual(
+            coordinator.state,
+            .failed("Audio playback failed. The response text is still available.")
+        )
+        await fixture.client.emit(.standard(HomeStandardEvent(
+            type: .messageComplete,
+            scope: scope,
+            payload: .final(
+                rendered: nil,
+                text: "Here is my answer",
+                status: "complete",
+                reasoning: nil,
+                failureReason: nil
+            )
+        )))
+        await fixture.client.emit(.standard(HomeStandardEvent(
+            type: .turnComplete,
+            scope: scope,
+            payload: .terminal(kind: .terminal)
+        )))
+        let completionTime = ContinuousClock.now
+        await responseTask.value
+
+        XCTAssertGreaterThanOrEqual(
+            ContinuousClock.now - completionTime,
+            .milliseconds(150),
+            "The no-audio failure should be delayed until the post-completion deadline"
+        )
+        XCTAssertEqual(
+            coordinator.state,
+            .failed("Audio playback failed. The response text is still available.")
+        )
+        let operations = await output.operations()
+        XCTAssertFalse(operations.contains(.append))
+    }
+
+    @MainActor
     func testHomePlaybackDrainFailureReleasesTurnForNextRequest() async throws {
         let fixture = try await makeHomeVoiceReviewFixture()
         defer { try? FileManager.default.removeItem(at: fixture.profileURL.deletingLastPathComponent()) }

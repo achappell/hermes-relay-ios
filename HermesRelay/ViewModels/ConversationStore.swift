@@ -1823,7 +1823,13 @@ final class ConversationStore {
     private func finishHomeControlTurn(success: Bool) {
         guard let turn = homeTurnBinding else { return }
         homeControlTerminal = true
-        if !success {
+        if success {
+            // Standard synthesizes reply audio only once the text completes,
+            // so the audio-start deadline runs from here, not from acceptance.
+            if !homeAudioRequested, !homeAudioTerminal, !homeAudioTerminalProcessing {
+                scheduleHomeAudioStartDeadline(for: turn)
+            }
+        } else {
             homeAudioTerminal = true
             resumeHomeAudioTerminalWaiter()
         }
@@ -2194,7 +2200,6 @@ final class ConversationStore {
             messages.append(TranscriptMessage(role: .user, text: text))
             await persistConversation()
             scheduleHomeControlDeadline(for: turn)
-            scheduleHomeAudioStartDeadline(for: turn)
             let completed = await waitForHomeTurnCompletion(turn: turn)
             if completed, eventHandler != nil {
                 await waitForHomeAudioTerminal(turn: turn)

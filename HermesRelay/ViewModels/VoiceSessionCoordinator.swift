@@ -1160,9 +1160,11 @@ final class VoiceSessionCoordinator {
             if !isFailed, !audioStreamActive, !audioFileStreamActive {
                 if audioDeliveryStarted {
                     endResponse()
-                } else {
+                } else if !store.isHomeMode {
                     await handlePlaybackFailure(generation: generation)
                 }
+                // Home sends reply audio after the text turn completes; its
+                // audio terminal or audio-start deadline settles playback.
             }
         case .error(let message):
             guard !playbackFailed, !state.isTerminal else { return }
