@@ -34,7 +34,14 @@ Observed in the PNG snapshots:
 
 - Induce a failure: `testSocketLossDuringNegotiatedPromptSubmitRecordsUncertainCorrelation` closes the diagnostics-negotiated fake socket while `prompt.submit` is pending, then checks the uncertain transport outcome and schema-2 `connection_lost`/`request_failed` events, including `pending_state: unknown`.
 
+## Legacy and device evidence (2026-10-04)
+
+- `testLegacyHomeSubmitFrameIsUnchangedAndCarriesNoDiagnostics` (`HomeBridgeSessionClientTests`) and `testLegacyHomeReportStaysSchemaOneWithoutSchemaTwoEvents` (`AutomaticDiagnosticsTests`) provide local-fixture legacy wire/report coverage (a fake socket for the submit frame and a reporter fixture for schema 1). They are not live runs against an old Home device.
+- Home [PR #73](https://github.com/achappell/hermes-relay-home/pull/73) includes the loopback test `test_duplicate_diagnostic_request_token_is_ambiguous_without_suppressing_prompts`, which verifies the repeated token becomes `ambiguous` without suppressing either prompt. This is Home server loopback evidence, not a phone/Standard or old-Home device run.
+- User-observed device report (2026-10-04): schema 2 contained 7 `request_started`/`request_completed` events, 1 `client_response_received`, and 1 `client_request_resolved`; the Home server store showed `linked=1` after close. The observation included no raw IDs, and none are reproduced here.
+- `/pair` presentation and exact ID-to-log comparison were not verified.
+
 ## Remaining acceptance
 
 - Device acceptance per the Home hand-off §3 against a HOME-NW-06 Home: ready carries `conn-…`, submit carries `req-…`, response returns `corr-…`; close the carrying socket before checking `/pair` (associations become `linked` only at socket finalize, D1); a duplicate token shows `ambiguous`; a legacy Home shows no decode failures, header errors or reconnect mismatches.
-- Known limit: real network/Standard drop timing during a pending request is not exercised on device (owner accepted).
+- Known, accepted limit: real phone/Standard loss timing during a pending submit has not been tested on device.
