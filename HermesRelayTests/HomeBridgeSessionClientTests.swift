@@ -2096,12 +2096,13 @@ private actor TestHomeSocket: WebSocketConnection {
     private var nextReconnectUnresolvedTurn: (turnID: String, resumeCursor: String?)?
     private var omitNextReconnectTurnState = false
     private var resultOverrides: [String: String] = [:]
+    private var nextReplylessMethod: String?
+    private var sentMethodWaiters: [String: [CheckedContinuation<Void, Never>]] = [:]
     /// When set, the socket behaves like an opted-in HOME-NW-06 Home with this connection ID.
     private var diagnosticsConnectionID: String?
     private var nextEnvelopeDiagnostics: (method: String, value: Any)?
     private var diagnosticsObserver: RecordingHomeBridgeDiagnostics?
     private(set) var diagnosticsAtSend: [(method: String, events: [HomeBridgeDiagnostic])] = []
-
     init(claim: HomeConversationClaim) {
         self.claim = claim
     }
@@ -2117,7 +2118,14 @@ private actor TestHomeSocket: WebSocketConnection {
         )
         let id = try XCTUnwrap(object["id"] as? String)
         let method = try XCTUnwrap(object["method"] as? String)
+        for waiter in sentMethodWaiters.removeValue(forKey: method) ?? [] {
+            waiter.resume()
+        }
         let params = object["params"] as? [String: Any] ?? [:]
+        if nextReplylessMethod == method {
+            nextReplylessMethod = nil
+            return
+        }
         if let nextError, nextError.method == method {
             self.nextError = nil
             var error: [String: Any] = ["message": "ignored"]
@@ -2382,12 +2390,48 @@ private actor TestHomeSocket: WebSocketConnection {
         resultOverrides[method] = json
     }
 
+    func withholdNextReply(for method: String) {
+        nextReplylessMethod = method
+    }
+
+    func waitForSentMethod(_ expected: String) async {
+        if let methods = try? sentMethods(), methods.contains(expected) { return }
+        await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+            sentMethodWaiters[expected, default: []].append(continuation)
+        }
+    }
     func closeCount() -> Int { closes }
 }
 
 private enum TestHomeSocketError: Error {
     case closed
     case unexpectedMethod
+}
+private actor TestClientDiagnosticReportSink {
+    private(set) var reports: [ClientDiagnosticReport] = []
+
+    func send(_ report: ClientDiagnosticReport) {
+        reports.append(report)
+    }
+}
+
+private final class TestAutomaticDiagnosticsClock: @unchecked Sendable {
+    private let lock = NSLock()
+    private var date: Date
+
+    init(_ date: Date) { self.date = date }
+
+    func now() -> Date {
+        lock.lock()
+        defer { lock.unlock() }
+        return date
+    }
+
+    func advance(by interval: TimeInterval) {
+        lock.lock()
+        defer { lock.unlock() }
+        date = date.addingTimeInterval(interval)
+    }
 }
 
 // MARK: - HOME-NW-06 diagnostics correlation (IOS-DIAG-03)
@@ -2496,6 +2540,84 @@ extension HomeBridgeSessionClientTests {
             return correlation == linked
         })
         XCTAssertFalse(String(describing: recorded).contains("private prompt"))
+        await fixture.client.close()
+    }
+
+    func testSocketLossDuringNegotiatedPromptSubmitRecordsUncertainCorrelation() async throws {
+        let fixture = try await makeFixture()
+        await fixture.socket.enableHomeDiagnostics(connectionID: homeConnectionA)
+        guard case .ready(let binding, _) = await fixture.client.open(claim: fixture.claim) else {
+            return XCTFail("opted-in Home must open")
+        }
+
+        await fixture.socket.withholdNextReply(for: "prompt.submit")
+        let submission = Task {
+            await fixture.client.submitPrompt("hello", binding: binding)
+        }
+        await fixture.socket.waitForSentMethod("prompt.submit")
+        let submit = try await lastSent(fixture.socket)
+        let requestID = try XCTUnwrap((submit["diagnostics"] as? [String: Any])?["request_id"] as? String)
+        XCTAssertTrue(isRequestID(requestID))
+
+        await fixture.socket.close()
+        let outcome = await submission.value
+        XCTAssertEqual(outcome, .uncertain(.home(code: .transportUnavailable, phase: .submission)))
+
+        let recorded = await fixture.diagnostics.events()
+        let correlation = HomeRequestCorrelation(homeConnectionID: homeConnectionA, requestID: requestID)
+        XCTAssertTrue(recorded.contains(.transportLost))
+        XCTAssertTrue(recorded.contains(.requestStarted(method: .promptSubmit, correlation: correlation)))
+        XCTAssertTrue(recorded.contains { event in
+            guard case .requestFailed(.promptSubmit, .transportUnavailable, true, _, let failedCorrelation?) = event else {
+                return false
+            }
+            return failedCorrelation == correlation && failedCorrelation.correlationID == nil
+        })
+        XCTAssertFalse(recorded.contains { if case .responseReceived = $0 { return true }; return false })
+
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let now = TestAutomaticDiagnosticsClock(Date(timeIntervalSince1970: 1_790_000_000))
+        let pairing = HomeClientPairing(
+            id: UUID(),
+            home: try HomeClientBaseURL("https://home.example"),
+            endpointID: UUID(),
+            deviceID: "test-device",
+            generation: 1,
+            credentialExpiresAt: now.now().addingTimeInterval(30 * 86400),
+            profiles: [.init(profileID: fixture.claim.profileID, grantID: "grant")]
+        )
+        let sink = TestClientDiagnosticReportSink()
+        let reporter = AutomaticDiagnosticsReporter(
+            fileURL: directory.appendingPathComponent("reports.json"),
+            pairings: { [pairing] in [pairing] },
+            upload: { [sink] _, report in await sink.send(report) },
+            now: { now.now() }
+        )
+        try await reporter.setEnabled(true, pairingID: pairing.id)
+        for event in recorded {
+            if case .requestFailed = event { now.advance(by: 61) }
+            await reporter.record(event, profileID: fixture.claim.profileID)
+        }
+        await reporter.flush()
+        await reporter.flush()
+        let reports = await sink.reports
+        let packed = try XCTUnwrap(reports.first { report in
+            report.schema == 2
+                && report.events.contains { $0.name == .connectionLost }
+                && report.events.contains { $0.name == .requestFailed }
+        })
+        let json = try XCTUnwrap(JSONSerialization.jsonObject(with: packed.body()) as? [String: Any])
+        let events = try XCTUnwrap(json["events"] as? [[String: Any]])
+        let loss = try XCTUnwrap(events.first { $0["name"] as? String == "connection_lost" })
+        let failure = try XCTUnwrap(events.first { $0["name"] as? String == "request_failed" })
+        XCTAssertEqual(json["schema"] as? Int, 2)
+        XCTAssertEqual(loss["name"] as? String, "connection_lost")
+        XCTAssertEqual(failure["home_connection_id"] as? String, homeConnectionA)
+        XCTAssertEqual(failure["request_id"] as? String, requestID)
+        XCTAssertNil(failure["correlation_id"])
+        XCTAssertEqual(failure["uncertain"] as? Bool, true)
+        XCTAssertEqual(failure["pending_state"] as? String, "unknown")
         await fixture.client.close()
     }
 
