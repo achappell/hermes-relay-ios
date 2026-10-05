@@ -90,12 +90,14 @@ final class HomeBridgeSessionClientTests: XCTestCase {
         _ = try await events.next()
 
         let recorded = await fixture.diagnostics.events()
-        XCTAssertEqual(recorded.first, .requestStarted(method: .promptSubmit))
+        XCTAssertEqual(recorded.first, .reportSchemasAdvertised([]))
+        XCTAssertEqual(recorded.dropFirst().first, .requestStarted(method: .promptSubmit))
         XCTAssertTrue(recorded.contains { event in
             guard case .requestCompleted(
                 .promptSubmit,
                 let durationMilliseconds,
-                true
+                true,
+                nil
             ) = event else { return false }
             return durationMilliseconds >= 0
         })
@@ -129,7 +131,8 @@ final class HomeBridgeSessionClientTests: XCTestCase {
                 .promptSubmit,
                 .requestRejected,
                 false,
-                let durationMilliseconds
+                let durationMilliseconds,
+                nil
             ) = event else { return false }
             return durationMilliseconds >= 0
         })
@@ -2140,6 +2143,11 @@ private actor TestHomeSocket: WebSocketConnection {
     private var nextReconnectUnresolvedTurn: (turnID: String, resumeCursor: String?)?
     private var omitNextReconnectTurnState = false
     private var resultOverrides: [String: String] = [:]
+    /// When set, the socket behaves like an opted-in HOME-NW-06 Home with this connection ID.
+    private var diagnosticsConnectionID: String?
+    private var nextEnvelopeDiagnostics: (method: String, value: Any)?
+    private var diagnosticsObserver: RecordingHomeBridgeDiagnostics?
+    private(set) var diagnosticsAtSend: [(method: String, events: [HomeBridgeDiagnostic])] = []
 
     init(claim: HomeConversationClaim) {
         self.claim = claim
@@ -2147,6 +2155,10 @@ private actor TestHomeSocket: WebSocketConnection {
 
     func send(text: String) async throws {
         sent.append(text)
+        if let diagnosticsObserver,
+           let method = (try? JSONSerialization.jsonObject(with: Data(text.utf8)) as? [String: Any])?["method"] as? String {
+            diagnosticsAtSend.append((method, await diagnosticsObserver.events()))
+        }
         let object = try XCTUnwrap(
             JSONSerialization.jsonObject(with: Data(text.utf8)) as? [String: Any]
         )
@@ -2170,17 +2182,18 @@ private actor TestHomeSocket: WebSocketConnection {
                     "delivery": "known",
                 ]
             }
-            let response: [String: Any] = [
+            var response: [String: Any] = [
                 "jsonrpc": "2.0",
                 "schema": 1,
                 "id": id,
                 "error": error,
             ]
+            decorate(&response, method: method, request: object)
             enqueue(.text(String(decoding: try JSONSerialization.data(withJSONObject: response), as: UTF8.self)))
             return
         }
         if let override = resultOverrides.removeValue(forKey: method) {
-            let response: [String: Any] = [
+            var response: [String: Any] = [
                 "jsonrpc": "2.0",
                 "schema": 1,
                 "id": id,
@@ -2188,6 +2201,7 @@ private actor TestHomeSocket: WebSocketConnection {
                     JSONSerialization.jsonObject(with: Data(override.utf8)) as? [String: Any]
                 ),
             ]
+            decorate(&response, method: method, request: object)
             enqueue(.text(String(decoding: try JSONSerialization.data(withJSONObject: response), as: UTF8.self)))
             return
         }
@@ -2289,14 +2303,61 @@ private actor TestHomeSocket: WebSocketConnection {
         default:
             throw TestHomeSocketError.unexpectedMethod
         }
-        let response: [String: Any] = [
+        var response: [String: Any] = [
             "jsonrpc": "2.0",
             "schema": 1,
             "id": id,
             "result": result,
         ]
+        decorate(&response, method: method, request: object)
         enqueue(.text(String(decoding: try JSONSerialization.data(withJSONObject: response), as: UTF8.self)))
     }
+
+    /// Mirrors Home's `endpoint.py` injection for opted-in sockets.
+    private func decorate(_ response: inout [String: Any], method: String, request: [String: Any]) {
+        defer {
+            if let override = nextEnvelopeDiagnostics, override.method == method {
+                nextEnvelopeDiagnostics = nil
+                response["diagnostics"] = override.value
+            }
+        }
+        guard let connectionID = diagnosticsConnectionID else { return }
+        if method == "conversation.open" || method == "conversation.reconnect",
+           var result = response["result"] as? [String: Any],
+           result["status"] as? String == "ready" {
+            if var capabilities = result["capabilities"] as? [String: Any],
+               capabilities["diagnostics_correlation_v1"] == nil,
+               capabilities["client_diagnostic_report_schemas"] == nil {
+                capabilities["diagnostics_correlation_v1"] = true
+                capabilities["client_diagnostic_report_schemas"] = [1, 2]
+                result["capabilities"] = capabilities
+                response["result"] = result
+            }
+            response["diagnostics"] = ["version": 1, "home_connection_id": connectionID]
+        } else if method == "prompt.submit",
+                  let metadata = request["diagnostics"] as? [String: Any],
+                  let requestID = metadata["request_id"] as? String {
+            response["diagnostics"] = [
+                "version": 1,
+                "request_id": requestID,
+                "correlation_id": "corr-" + String(repeating: "c", count: 32),
+            ]
+        }
+    }
+
+    func enableHomeDiagnostics(connectionID: String) {
+        diagnosticsConnectionID = connectionID
+    }
+
+    func setNextEnvelopeDiagnostics(for method: String, _ json: String) throws {
+        nextEnvelopeDiagnostics = (method, try JSONSerialization.jsonObject(with: Data(json.utf8), options: .fragmentsAllowed))
+    }
+
+    func observeDiagnostics(_ recorder: RecordingHomeBridgeDiagnostics) {
+        diagnosticsObserver = recorder
+    }
+
+    func sentTexts() -> [String] { sent }
 
     func receive() async throws -> WebSocketFrame {
         if !frames.isEmpty { return frames.removeFirst() }
@@ -2374,4 +2435,248 @@ private actor TestHomeSocket: WebSocketConnection {
 private enum TestHomeSocketError: Error {
     case closed
     case unexpectedMethod
+}
+
+// MARK: - HOME-NW-06 diagnostics correlation (IOS-DIAG-03)
+
+private let homeConnectionA = "conn-" + String(repeating: "a", count: 32)
+private let homeConnectionB = "conn-" + String(repeating: "b", count: 32)
+
+private func sentObjects(_ socket: TestHomeSocket) async throws -> [[String: Any]] {
+    try await socket.sentTexts().map {
+        try XCTUnwrap(JSONSerialization.jsonObject(with: Data($0.utf8)) as? [String: Any])
+    }
+}
+
+private func lastSent(_ socket: TestHomeSocket) async throws -> [String: Any] {
+    let objects = try await sentObjects(socket)
+    return try XCTUnwrap(objects.last)
+}
+
+private func isRequestID(_ value: Any?) -> Bool {
+    HomeDiagnosticIdentifier.isValid(value, prefix: "req")
+}
+
+extension HomeBridgeSessionClientTests {
+    func testDiagnosticsHeaderIsSentExactlyOnceOnTheUpgrade() async throws {
+        let fixture = try await makeFixture()
+        guard case .ready = await fixture.client.open(claim: fixture.claim) else {
+            return XCTFail("open must succeed")
+        }
+        let recorded = await fixture.requests.first()
+        let request = try XCTUnwrap(recorded)
+        let matching = (request.allHTTPHeaderFields ?? [:]).filter {
+            $0.key.caseInsensitiveCompare("X-Hermes-Diagnostics-Version") == .orderedSame
+        }
+        XCTAssertEqual(matching.count, 1)
+        XCTAssertEqual(matching.values.first, "1")
+        await fixture.client.close()
+    }
+
+    func testLegacyHomeSubmitFrameIsUnchangedAndCarriesNoDiagnostics() async throws {
+        let fixture = try await makeFixture()
+        guard case .ready(let binding, _) = await fixture.client.open(claim: fixture.claim),
+              case .accepted = await fixture.client.submitPrompt("hello", binding: binding) else {
+            return XCTFail("legacy Home must open and accept")
+        }
+        let texts = await fixture.socket.sentTexts()
+        let lastText = try XCTUnwrap(texts.last)
+        let submit = try await lastSent(fixture.socket)
+        XCTAssertEqual(Set(submit.keys), ["jsonrpc", "schema", "id", "method", "params"])
+        // Same encoder, same fields as before diagnostics existed. (JSONEncoder key order is not
+        // stable across runs, so compare the decoded frame and the round-tripped request.)
+        let legacy = HomeJSONRPCRequest(
+            id: try XCTUnwrap(submit["id"] as? String),
+            method: "prompt.submit",
+            params: ["conversation_handle": .string(binding.conversationHandle), "text": .string("hello")]
+        )
+        let legacyObject = try XCTUnwrap(JSONSerialization.jsonObject(with: JSONEncoder().encode(legacy)) as? NSDictionary)
+        XCTAssertEqual(submit as NSDictionary, legacyObject)
+        XCTAssertEqual(try JSONDecoder().decode(HomeJSONRPCRequest.self, from: Data(lastText.utf8)), legacy)
+        let recorded = await fixture.diagnostics.events()
+        XCTAssertTrue(recorded.contains(.requestStarted(method: .promptSubmit, correlation: nil)))
+        XCTAssertFalse(recorded.contains { if case .responseReceived = $0 { return true }; return false })
+        await fixture.client.close()
+    }
+
+    func testNegotiatedSubmitStampsFreshRequestIDsRecordedBeforeSend() async throws {
+        let fixture = try await makeFixture()
+        await fixture.socket.enableHomeDiagnostics(connectionID: homeConnectionA)
+        await fixture.socket.observeDiagnostics(fixture.diagnostics)
+        guard case .ready(let binding, _) = await fixture.client.open(claim: fixture.claim) else {
+            return XCTFail("opted-in Home must open")
+        }
+        for _ in 0..<2 {
+            guard case .accepted = await fixture.client.submitPrompt("private prompt", binding: binding) else {
+                return XCTFail("negotiated submit must be accepted")
+            }
+        }
+        let submits = try await sentObjects(fixture.socket).filter { $0["method"] as? String == "prompt.submit" }
+        XCTAssertEqual(submits.count, 2)
+        var requestIDs: [String] = []
+        for submit in submits {
+            let metadata = try XCTUnwrap(submit["diagnostics"] as? [String: Any])
+            XCTAssertEqual(Set(metadata.keys), ["version", "request_id"])
+            XCTAssertEqual(metadata["version"] as? Int, 1)
+            XCTAssertTrue(isRequestID(metadata["request_id"]))
+            XCTAssertNil((submit["params"] as? [String: Any])?["diagnostics"])
+            requestIDs.append(try XCTUnwrap(metadata["request_id"] as? String))
+        }
+        XCTAssertEqual(Set(requestIDs).count, 2, "a token is never reused on a socket")
+
+        let atSend = await fixture.socket.diagnosticsAtSend.filter { $0.method == "prompt.submit" }
+        for (index, snapshot) in atSend.enumerated() {
+            XCTAssertTrue(snapshot.events.contains(.requestStarted(
+                method: .promptSubmit,
+                correlation: HomeRequestCorrelation(homeConnectionID: homeConnectionA, requestID: requestIDs[index])
+            )), "request_started must be recorded before the frame is written")
+        }
+
+        let corr = "corr-" + String(repeating: "c", count: 32)
+        let linked = HomeRequestCorrelation(homeConnectionID: homeConnectionA, requestID: requestIDs[0], correlationID: corr)
+        let recorded = await fixture.diagnostics.events()
+        XCTAssertTrue(recorded.contains(.reportSchemasAdvertised([1, 2])))
+        XCTAssertTrue(recorded.contains(.responseReceived(method: .promptSubmit, correlation: linked, kind: .accepted)))
+        XCTAssertTrue(recorded.contains(.requestResolved(method: .promptSubmit, correlation: linked, kind: .accepted)))
+        XCTAssertTrue(recorded.contains { event in
+            guard case .requestCompleted(.promptSubmit, _, _, let correlation) = event else { return false }
+            return correlation == linked
+        })
+        XCTAssertFalse(String(describing: recorded).contains("private prompt"))
+        await fixture.client.close()
+    }
+
+    func testNegotiatedSubmitErrorStillCorrelatesAsRejection() async throws {
+        let fixture = try await makeFixture()
+        await fixture.socket.enableHomeDiagnostics(connectionID: homeConnectionA)
+        guard case .ready(let binding, _) = await fixture.client.open(claim: fixture.claim) else {
+            return XCTFail("opted-in Home must open")
+        }
+        await fixture.socket.setNextError(for: "prompt.submit", jsonRPCCode: -32_000, homeCode: "request_rejected")
+        let outcome = await fixture.client.submitPrompt("hello", binding: binding)
+        XCTAssertEqual(outcome, .rejected(.home(code: .requestRejected, phase: .submission)))
+        let recorded = await fixture.diagnostics.events()
+        XCTAssertTrue(recorded.contains { if case .responseReceived(_, _, .rejection) = $0 { return true }; return false })
+        XCTAssertTrue(recorded.contains { if case .requestResolved(_, _, .rejection) = $0 { return true }; return false })
+        XCTAssertTrue(recorded.contains { event in
+            guard case .requestFailed(_, .requestRejected, _, _, let correlation?) = event else { return false }
+            return correlation.correlationID != nil && correlation.homeConnectionID == homeConnectionA
+        })
+        await fixture.client.close()
+    }
+
+    func testMalformedResponseDiagnosticsAreDroppedWithoutFailingTheRPC() async throws {
+        let a32 = String(repeating: "a", count: 32)
+        let malformed = [
+            #"{"version":true,"home_connection_id":"conn-\#(a32)"}"#,
+            #"{"version":2,"home_connection_id":"conn-\#(a32)"}"#,
+            #"{"version":"1","home_connection_id":"conn-\#(a32)"}"#,
+            #"{"version":1,"home_connection_id":"conn-\#(a32)","extra":1}"#,
+            #"{"version":1,"home_connection_id":"conn-\#(String(repeating: "A", count: 32))"}"#,
+            #"{"version":1,"home_connection_id":"conn-abc"}"#,
+            #"{"version":1}"#,
+            #"{"version":1,"request_id":"req-\#(a32)"}"#,
+            #""conn-\#(a32)""#,
+            "null",
+        ]
+        for value in malformed {
+            let fixture = try await makeFixture()
+            await fixture.socket.enableHomeDiagnostics(connectionID: homeConnectionA)
+            try await fixture.socket.setNextEnvelopeDiagnostics(for: "conversation.open", value)
+            guard case .ready(let binding, _) = await fixture.client.open(claim: fixture.claim) else {
+                XCTFail("malformed diagnostics must not fail ready: \(value)")
+                continue
+            }
+            guard case .accepted = await fixture.client.submitPrompt("hello", binding: binding) else {
+                XCTFail("submit must still work: \(value)")
+                continue
+            }
+            let submit = try await lastSent(fixture.socket)
+            XCTAssertNil(submit["diagnostics"], "no valid home_connection_id means not negotiated: \(value)")
+            await fixture.client.close()
+        }
+
+        // A malformed submit echo is dropped; the prompt is still accepted.
+        let fixture = try await makeFixture()
+        await fixture.socket.enableHomeDiagnostics(connectionID: homeConnectionA)
+        guard case .ready(let binding, _) = await fixture.client.open(claim: fixture.claim) else {
+            return XCTFail("open must succeed")
+        }
+        try await fixture.socket.setNextEnvelopeDiagnostics(
+            for: "prompt.submit",
+            #"{"version":1,"request_id":"req-\#(String(repeating: "1", count: 32))","correlation_id":"corr-x"}"#
+        )
+        guard case .accepted = await fixture.client.submitPrompt("hello", binding: binding) else {
+            return XCTFail("malformed submit diagnostics must not fail the RPC")
+        }
+        let recorded = await fixture.diagnostics.events()
+        XCTAssertFalse(recorded.contains { if case .responseReceived = $0 { return true }; return false })
+        await fixture.client.close()
+    }
+
+    func testDiagnosticsNegotiateOnlyWithBothCapabilitiesAndValidID() async throws {
+        let capabilitySets = [
+            #""diagnostics_correlation_v1":true,"client_diagnostic_report_schemas":[1]"#,
+            #""diagnostics_correlation_v1":false,"client_diagnostic_report_schemas":[1,2]"#,
+            #""client_diagnostic_report_schemas":[1,2]"#,
+            #""diagnostics_correlation_v1":"yes","client_diagnostic_report_schemas":[1,2]"#,
+            #""diagnostics_correlation_v1":true,"client_diagnostic_report_schemas":"2""#,
+        ]
+        for extra in capabilitySets {
+            let fixture = try await makeFixture()
+            await fixture.socket.enableHomeDiagnostics(connectionID: homeConnectionA)
+            await fixture.socket.setNextResultJSON(for: "conversation.open", """
+            {"schema":1,"status":"ready","conversation_handle":"opaque-home-conversation",\
+            "route":{"class":"home","id":"home-a"},\
+            "capabilities":{"commands":[],"timing":"absent","interrupt":true,\(extra)},\
+            "unresolved_turn":false}
+            """)
+            guard case .ready(let binding, _) = await fixture.client.open(claim: fixture.claim),
+                  case .accepted = await fixture.client.submitPrompt("hello", binding: binding) else {
+                XCTFail("capabilities \(extra) must still open and submit")
+                continue
+            }
+            let submit = try await lastSent(fixture.socket)
+            XCTAssertNil(submit["diagnostics"], "not negotiated with \(extra)")
+            await fixture.client.close()
+        }
+    }
+
+    func testReconnectIgnoresDiagnosticsCapabilitiesAndUsesEachSocketsOwnID() async throws {
+        for secondSocketID in [nil, homeConnectionB] {
+            let fixture = try await makeFixture()
+            await fixture.socket.enableHomeDiagnostics(connectionID: homeConnectionA)
+            if let secondSocketID { await fixture.secondSocket.enableHomeDiagnostics(connectionID: secondSocketID) }
+            let stream = await fixture.client.events()
+            var events = stream.makeAsyncIterator()
+            guard case .ready(let binding, _) = await fixture.client.open(claim: fixture.claim) else {
+                return XCTFail("opted-in Home must open")
+            }
+            await fixture.socket.close()
+            do {
+                _ = try await events.next()
+                XCTFail("the socket loss must end the event stream")
+            } catch {}
+
+            guard case .ready(let recovered, _, _) = await fixture.client.reconnect(binding: binding) else {
+                return XCTFail("a diagnostics capability change must never be a reconnect mismatch")
+            }
+            XCTAssertEqual(recovered.capabilities, binding.capabilities)
+            guard case .accepted = await fixture.client.submitPrompt("hello", binding: recovered) else {
+                return XCTFail("submit after reconnect must be accepted")
+            }
+            let submit = try await lastSent(fixture.secondSocket)
+            if let secondSocketID {
+                XCTAssertTrue(isRequestID((submit["diagnostics"] as? [String: Any])?["request_id"]))
+                let recorded = await fixture.diagnostics.events()
+                XCTAssertTrue(recorded.contains { event in
+                    guard case .requestStarted(_, let correlation?) = event else { return false }
+                    return correlation.homeConnectionID == secondSocketID
+                }, "a new socket must use the ID from its own ready")
+            } else {
+                XCTAssertNil(submit["diagnostics"], "the old socket's ID is cleared on loss")
+            }
+            await fixture.client.close()
+        }
+    }
 }

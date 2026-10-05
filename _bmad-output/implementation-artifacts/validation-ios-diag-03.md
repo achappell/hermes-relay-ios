@@ -1,0 +1,34 @@
+# IOS-DIAG-03 validation — 2026-10-04
+
+Status: review. Local implementation verified on macOS and on the iOS 27.2 Simulator, and the Settings section was rendered on the simulator but not tapped. Device acceptance with a HOME-NW-06 Home remains pending.
+
+## Automated evidence
+
+Toolchain: installed Xcode 27.2 beta 2 (`DEVELOPER_DIR=/Applications/Xcode-27.2.0-Beta.2.app/Contents/Developer`); the Xcode 26.6 baseline is not installed.
+
+- Focused XCTest (macOS): `xcodebuild -project "Hermes Relay.xcodeproj" -scheme HermesRelay -destination 'platform=macOS,arch=arm64' CODE_SIGNING_ALLOWED=NO "-only-testing:Hermes RelayTests/AutomaticDiagnosticsTests" "-only-testing:Hermes RelayTests/DiagnosticsJournalTests" "-only-testing:Hermes RelayTests/HomeBridgeSessionClientTests" test` — 82 passed (13 automatic diagnostics, 6 journal, 63 HomeBridge session).
+- Full suite (macOS): same command without `-only-testing` — 573 passed.
+- iOS Simulator build: `xcodebuild -project "Hermes Relay.xcodeproj" -scheme HermesRelay -sdk iphonesimulator -destination 'generic/platform=iOS Simulator' CODE_SIGNING_ALLOWED=NO build-for-testing` — app and tests build.
+- iOS Simulator runtime installed with `xcodebuild -downloadPlatform iOS`: iOS 27.2 (24B5089g), arm64. Device: iPhone 18 Pro (EB0B6151-6DAA-4935-BF0A-3881622F97F1).
+- Focused XCTest (iOS Simulator): `xcodebuild -project "Hermes Relay.xcodeproj" -scheme HermesRelay -destination 'platform=iOS Simulator,name=iPhone 18 Pro' CODE_SIGNING_ALLOWED=NO "-only-testing:Hermes RelayTests/AutomaticDiagnosticsTests" "-only-testing:Hermes RelayTests/DiagnosticsJournalTests" "-only-testing:Hermes RelayTests/HomeBridgeSessionClientTests" test` — 82 passed (13/6/63). No iOS-only failures.
+- Full suite (iOS Simulator): same command without `-only-testing` — 574 passed, 0 failed, 0 skipped (from the xcresult summary).
+- macOS build: `xcodebuild -project "Hermes Relay.xcodeproj" -scheme HermesRelay -destination 'platform=macOS,arch=arm64' CODE_SIGNING_ALLOWED=NO build` — succeeded.
+- New coverage: decoder strictness (ten malformed ready envelopes, malformed submit echo), upgrade header exactly once, capability-gated negotiation (five partial/malformed capability sets), reconnect to legacy and to a new opted-in socket, unique request IDs, `request_started` recorded before the frame write, correlated accepted/rejected responses, legacy frame unchanged, schema-2 report shape, legacy schema-1 report, packing bounds/determinism/drops/referenced origins, origin null rules.
+- Diff reviewed: no credentials, recordings, generated build files or unrelated edits.
+
+## Settings smoke — rendered, not tapped (iPhone 18 Pro / iOS 27.2 Simulator)
+
+This Xcode 27.2 beta has no Simulator.app, so the app could not be navigated by hand. App install and launch with `simctl` worked; the app reached its main screen.
+
+In its place, a throwaway hosted XCTest ran once and was then deleted without being committed. It ran `AutomaticDiagnosticsSettings` in a `Form` inside a `UIHostingController` window in the test host app, so the view's `.task` ran. It used the existing `AutomaticDiagnosticsTests` fixture, which provides one synthetic paired Home (`home.example`) and a temporary reporter store.
+
+Observed in the PNG snapshots:
+- Paired, off: the toggle "Send connection reports to home.example" renders off, and the footer shows the new sentence, "...with random connection and request identifiers so Home can match them to its own records. No messages, audio, or passwords..."
+- Driving the single `UISwitch` in the hierarchy (`setOn` + `.valueChanged`) ran the view's binding. The stored setting became enabled (`reporter.settings().first?.enabled == true`), and the snapshot shows the toggle on with "No reports waiting to send."
+- Flipping back stored disabled again. That snapshot is byte-identical to the first one.
+
+`ImageRenderer` cannot draw the UIKit-backed `Form`: it produced the "unsupported view" placeholder. Because it also never runs `.task`, the live hosted snapshot was used. The macOS render was skipped.
+
+## Remaining acceptance
+
+- Device acceptance per the Home hand-off §3 against a HOME-NW-06 Home: ready carries `conn-…`, submit carries `req-…`, response returns `corr-…`; induce a failure, close the carrying socket before checking `/pair` (associations become `linked` only at socket finalize, D1); a duplicate token shows `ambiguous`; a legacy Home shows no decode failures, header errors or reconnect mismatches.

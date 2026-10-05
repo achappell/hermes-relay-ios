@@ -182,6 +182,119 @@ final class AutomaticDiagnosticsTests: XCTestCase {
         XCTAssertTrue(events.allSatisfy { Set($0.keys).isSubset(of: ["time", "name", "launch_id", "code", "duration_ms", "phase", "uncertain"]) })
         XCTAssertEqual(reports.first?.events.last?.code, "hermes_unavailable")
     }
+
+    func testSchemaTwoReportCarriesCorrelationIdentityAndReferencedOrigins() async throws {
+        let fixture = try Fixture()
+        defer { fixture.remove() }
+        let reporter = fixture.reporter()
+        try await reporter.setEnabled(true, pairingID: fixture.pairing.id)
+        await reporter.record(.reportSchemasAdvertised([1, 2]), profileID: fixture.profileID)
+        let correlation = HomeRequestCorrelation(homeConnectionID: "conn-" + String(repeating: "a", count: 32),
+                                                 requestID: "req-" + String(repeating: "b", count: 32))
+        var linked = correlation
+        linked.correlationID = "corr-" + String(repeating: "c", count: 32)
+        await reporter.record(.requestStarted(method: .promptSubmit, correlation: correlation), profileID: fixture.profileID)
+        await reporter.record(.responseReceived(method: .promptSubmit, correlation: linked, kind: .rejection), profileID: fixture.profileID)
+        await reporter.record(.requestFailed(method: .promptSubmit, code: .requestRejected, uncertain: false,
+                                             durationMilliseconds: 5, correlation: linked), profileID: fixture.profileID)
+        await reporter.flush()
+        let sent = await fixture.sink.reports
+        let report = try XCTUnwrap(sent.first)
+        XCTAssertEqual(report.schema, 2)
+        let body = try report.body()
+        XCTAssertLessThanOrEqual(body.count, ClientDiagnosticReport.maxBodyBytes)
+        let json = try XCTUnwrap(JSONSerialization.jsonObject(with: body) as? [String: Any])
+        XCTAssertEqual(Set(json.keys), ["schema", "report_id", "created_at", "app_version", "build", "platform", "os_version", "model", "events", "origins"])
+        let events = try XCTUnwrap(json["events"] as? [[String: Any]])
+        let allowed: Set<String> = ["time", "name", "launch_id", "code", "duration_ms", "phase", "uncertain", "event_id", "sequence",
+                                    "connection_id", "home_connection_id", "request_id", "correlation_id", "correlation_state",
+                                    "leg", "pending_state", "response_kind", "sent_close_code", "received_close_code", "observed_status_code"]
+        XCTAssertTrue(events.allSatisfy { Set($0.keys).isSubset(of: allowed) })
+        XCTAssertTrue(events.allSatisfy { HomeDiagnosticIdentifier.isValid($0["event_id"], prefix: "evt") })
+        let sequences = events.compactMap { $0["sequence"] as? Int }
+        XCTAssertEqual(sequences, sequences.sorted())
+        XCTAssertEqual(Set(sequences).count, sequences.count)
+        let started = try XCTUnwrap(events.first { $0["name"] as? String == "request_started" })
+        XCTAssertEqual(started["home_connection_id"] as? String, correlation.homeConnectionID)
+        XCTAssertEqual(started["request_id"] as? String, correlation.requestID)
+        XCTAssertEqual(started["leg"] as? String, "client_home")
+        XCTAssertEqual(started["phase"] as? String, "submission")
+        XCTAssertEqual(started["correlation_state"] as? String, "local_only")
+        XCTAssertNil(started["response_kind"])
+        let received = try XCTUnwrap(events.first { $0["name"] as? String == "client_response_received" })
+        XCTAssertEqual(received["correlation_id"] as? String, linked.correlationID)
+        XCTAssertEqual(received["response_kind"] as? String, "rejection")
+        let origins = try XCTUnwrap(json["origins"] as? [[String: Any]])
+        XCTAssertEqual(Set(origins.compactMap { $0["launch_id"] as? String }), Set(events.compactMap { $0["launch_id"] as? String }))
+        XCTAssertTrue(origins.allSatisfy {
+            Set($0.keys) == ["launch_id", "app_version", "build_number", "os_version", "source_revision", "artifact_sha256", "provenance_status"]
+        })
+    }
+
+    func testLegacyHomeReportStaysSchemaOneWithoutSchemaTwoEvents() async throws {
+        let fixture = try Fixture()
+        defer { fixture.remove() }
+        let reporter = fixture.reporter()
+        try await reporter.setEnabled(true, pairingID: fixture.pairing.id)
+        await reporter.record(.reportSchemasAdvertised([]), profileID: fixture.profileID)
+        let correlation = HomeRequestCorrelation(homeConnectionID: "conn-" + String(repeating: "a", count: 32),
+                                                 requestID: "req-" + String(repeating: "b", count: 32),
+                                                 correlationID: "corr-" + String(repeating: "c", count: 32))
+        await reporter.record(.responseReceived(method: .promptSubmit, correlation: correlation, kind: .accepted), profileID: fixture.profileID)
+        await reporter.record(.transportLost, profileID: fixture.profileID)
+        await reporter.flush()
+        let sent = await fixture.sink.reports
+        let report = try XCTUnwrap(sent.first)
+        XCTAssertEqual(report.schema, 1)
+        let json = try XCTUnwrap(JSONSerialization.jsonObject(with: try report.body()) as? [String: Any])
+        XCTAssertNil(json["origins"])
+        let events = try XCTUnwrap(json["events"] as? [[String: Any]])
+        XCTAssertTrue(events.allSatisfy { Set($0.keys).isSubset(of: ["time", "name", "launch_id", "code", "duration_ms", "phase", "uncertain"]) })
+        XCTAssertFalse(events.contains { $0["name"] as? String == "client_response_received" })
+    }
+
+    func testPackingIsBoundedDeterministicAndCarriesOnlyReferencedOrigins() throws {
+        let date = Date(timeIntervalSince1970: 1_790_000_000)
+        let first = UUID(), second = UUID()
+        let events = (0..<250).map { index in
+            ClientDiagnosticEvent(time: date.timeIntervalSince1970 + Double(index), name: .requestStarted,
+                                  launchID: index < 120 ? first : second, phase: "submission",
+                                  eventID: "evt-" + String(format: "%032lx", index), sequence: index)
+        }
+        let origins = [first: ClientDiagnosticOrigin(launchID: first, appVersion: "1.2", buildNumber: "7", osVersion: "26.5"),
+                       second: ClientDiagnosticOrigin.unavailable(launchID: second)]
+        func ids() -> () -> UUID {
+            var counter: UInt8 = 0
+            return { counter += 1; return UUID(uuid: (counter, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0)) }
+        }
+        let packed = ClientDiagnosticReport.pack(events: events, schema: 2, origins: origins, now: date, makeID: ids())
+        XCTAssertEqual(packed.reports.map(\.events.count), [100, 100, 50])
+        XCTAssertEqual(packed.dropped, 0)
+        XCTAssertEqual(packed.reports.flatMap(\.events), events)
+        XCTAssertEqual(packed.reports.map { $0.origins?.map(\.launchID) ?? [] }, [[first], [first, second], [second]])
+        let again = ClientDiagnosticReport.pack(events: events, schema: 2, origins: origins, now: date, makeID: ids())
+        XCTAssertEqual(try packed.reports.map { try $0.body() }, try again.reports.map { try $0.body() })
+
+        let tight = ClientDiagnosticReport.pack(events: events, schema: 2, origins: origins, now: date, maxBytes: 4_000, makeID: ids())
+        XCTAssertGreaterThan(tight.reports.count, 3)
+        XCTAssertTrue(try tight.reports.allSatisfy { try $0.body().count <= 4_000 })
+        XCTAssertEqual(tight.reports.flatMap(\.events), events)
+
+        let tooSmall = ClientDiagnosticReport.pack(events: Array(events.prefix(3)), schema: 2, origins: origins, now: date, maxBytes: 200, makeID: ids())
+        XCTAssertEqual(tooSmall.reports.count, 0)
+        XCTAssertEqual(tooSmall.dropped, 3)
+    }
+
+    func testOriginNullsVersionsOnlyWhenUnavailable() throws {
+        let known = ClientDiagnosticOrigin(launchID: UUID(), appVersion: "1.0", buildNumber: "3", osVersion: "26.5.1")
+        XCTAssertEqual(known.provenanceStatus, "unverified")
+        let partial = ClientDiagnosticOrigin(launchID: UUID(), appVersion: "1.0-beta", buildNumber: "3", osVersion: "26.5")
+        XCTAssertEqual(partial.provenanceStatus, "unavailable")
+        let json = try XCTUnwrap(JSONSerialization.jsonObject(with: JSONEncoder().encode(partial)) as? [String: Any])
+        XCTAssertTrue(json["app_version"] is NSNull)
+        XCTAssertTrue(json["source_revision"] is NSNull)
+        XCTAssertTrue(json["artifact_sha256"] is NSNull)
+    }
 }
 
 private actor ReportSink {
