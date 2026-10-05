@@ -2815,9 +2815,11 @@ final class VoiceSessionCoordinatorTests: XCTestCase {
 
         let inactive = await harness.lifecycle.handle(.inactive)
         let background = await harness.lifecycle.handle(.background)
+        let disappearance = await harness.lifecycle.handleWindowDisappeared(isSceneActive: false)
 
         XCTAssertEqual(inactive, .completed)
         XCTAssertEqual(background, .completed)
+        XCTAssertEqual(disappearance, .completed)
         XCTAssertTrue(harness.lifecycle.isRetainingBackgroundWork)
         XCTAssertTrue(harness.store.connectionState.isConnected, "The transport stays up mid-reply")
         var closeCount = await harness.client.closeCount
@@ -2844,6 +2846,71 @@ final class VoiceSessionCoordinatorTests: XCTestCase {
         XCTAssertEqual(submitted, ["Read me the news"], "No replay")
         operations = await output.operations()
         XCTAssertTrue(operations.contains(.finish))
+    }
+
+    @MainActor
+    func testInactiveWindowDisappearanceBeforeBackgroundKeepsPlayingReplyAlive() async throws {
+        let output = CoordinatorAudioOutput(waitsForFinish: true, stopReleasesFinish: true)
+        let harness = try await makeBackgroundVoiceHarness(output: output)
+        defer { harness.cleanUp() }
+        let responseTask = try await startPlayingHomeReply(harness, prompt: "Read me the news")
+
+        let inactive = await harness.lifecycle.handle(.inactive)
+        let disappearance = await harness.lifecycle.handleWindowDisappeared(isSceneActive: false)
+
+        XCTAssertEqual(inactive, .completed)
+        XCTAssertEqual(disappearance, .completed)
+        XCTAssertTrue(harness.store.connectionState.isConnected)
+        let closeCountBeforeBackground = await harness.client.closeCount
+        XCTAssertEqual(closeCountBeforeBackground, 0)
+        var operations = await output.operations()
+        XCTAssertFalse(operations.contains(.stop), "Inactive view disappearance must not stop the reply")
+
+        let background = await harness.lifecycle.handle(.background)
+        XCTAssertEqual(background, .completed)
+        XCTAssertTrue(harness.lifecycle.isRetainingBackgroundWork)
+        XCTAssertTrue(harness.store.connectionState.isConnected)
+        let closeCount = await harness.client.closeCount
+        XCTAssertEqual(closeCount, 0)
+        operations = await output.operations()
+        XCTAssertFalse(operations.contains(.stop), "Backgrounding keeps the reply alive")
+
+        await output.allowFinish()
+        await responseTask.value
+        await pollUntil { harness.store.connectionState == .disconnected }
+    }
+
+    @MainActor
+    func testActiveWindowDisappearanceStillTearsDownPlayingReply() async throws {
+        let output = CoordinatorAudioOutput(waitsForFinish: true, stopReleasesFinish: true)
+        let harness = try await makeBackgroundVoiceHarness(output: output)
+        defer { harness.cleanUp() }
+        let responseTask = try await startPlayingHomeReply(harness, prompt: "Read me the news")
+
+        let result = await harness.lifecycle.handleWindowDisappeared(isSceneActive: true)
+        await responseTask.value
+
+        XCTAssertEqual(result, .completed)
+        XCTAssertFalse(harness.store.isLifecycleActive)
+        XCTAssertEqual(harness.store.connectionState, .disconnected)
+        let closeCount = await harness.client.closeCount
+        XCTAssertEqual(closeCount, 1)
+        let operations = await output.operations()
+        XCTAssertTrue(operations.contains(.stop), "Closing an active window still stops playback")
+    }
+
+    @MainActor
+    func testWindowDisappearanceRemainsUnconditionalWithoutBackgroundRetention() async throws {
+        let harness = try await makeBackgroundVoiceHarness(backgroundRetentionEnabled: false)
+        defer { harness.cleanUp() }
+
+        let result = await harness.lifecycle.handleWindowDisappeared(isSceneActive: false)
+
+        XCTAssertEqual(result, .completed)
+        XCTAssertFalse(harness.store.isLifecycleActive)
+        XCTAssertEqual(harness.store.connectionState, .disconnected)
+        let closeCount = await harness.client.closeCount
+        XCTAssertEqual(closeCount, 1)
     }
 
     @MainActor
@@ -3014,8 +3081,10 @@ final class VoiceSessionCoordinatorTests: XCTestCase {
         defer { harness.cleanUp() }
 
         _ = await harness.lifecycle.handle(.inactive)
+        let disappearance = await harness.lifecycle.handleWindowDisappeared(isSceneActive: false)
         let result = await harness.lifecycle.handle(.background)
 
+        XCTAssertEqual(disappearance, .completed)
         XCTAssertEqual(result, .completed)
         XCTAssertFalse(harness.lifecycle.isRetainingBackgroundWork)
         XCTAssertEqual(harness.store.connectionState, .disconnected)
@@ -3358,7 +3427,8 @@ final class VoiceSessionCoordinatorTests: XCTestCase {
         handsFreeInput: CoordinatorHandsFreeInput? = nil,
         clock: any HomeMonotonicClock = ContinuousHomeMonotonicClock(),
         persistence: (any ConversationPersistence)? = nil,
-        audioDeadlines: HomeTurnAudioDeadlines = .default
+        audioDeadlines: HomeTurnAudioDeadlines = .default,
+        backgroundRetentionEnabled: Bool = true
     ) async throws -> BackgroundVoiceHarness {
         let fixture = try await makeHomeVoiceReviewFixture(
             audioDeadlines: audioDeadlines,
@@ -3386,7 +3456,7 @@ final class VoiceSessionCoordinatorTests: XCTestCase {
             voice: voice,
             homeClientFactory: FakeHomeBridgeSessionClientFactory(client: fixture.client),
             clock: clock,
-            backgroundRetentionEnabled: true
+            backgroundRetentionEnabled: backgroundRetentionEnabled
         )
         return BackgroundVoiceHarness(
             fixture: fixture,

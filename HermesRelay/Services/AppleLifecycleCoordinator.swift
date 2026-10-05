@@ -66,6 +66,15 @@ final class AppleLifecycleCoordinator {
         #endif
     }
 
+    func handleWindowDisappeared(isSceneActive: Bool) async -> AppleLifecycleOutcome {
+        guard !backgroundRetentionEnabled || isSceneActive else {
+            // Inactive/background phase callbacks own iOS teardown. Do not let
+            // a disappearing view supersede phase work already in the queue.
+            return .completed
+        }
+        return await handle(.windowDisappeared)
+    }
+
     func handle(_ input: AppleLifecycleInput) async -> AppleLifecycleOutcome {
         latestRequest &+= 1
         let request = latestRequest

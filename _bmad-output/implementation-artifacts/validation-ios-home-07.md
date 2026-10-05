@@ -79,3 +79,25 @@ On a physical iPhone: check 1 uses the installed Development build `0.6.0` (`1`)
 10. Review Home/server logs for no duplicate submission or replay after interruption, timeout, or reconnect.
 
 Physical-device verification and App Store Review notes for Guideline 2.5.4 remain open release gates.
+
+## Follow-up: reply teardown during iOS background transition
+
+### Incident evidence (reported, CDT)
+
+- An output-capable `AVAudioEngine` started at 20:24:05.226. The app entered background at 20:24:11.736 and logged suspension at 20:24:11.738.
+- The device log reported `AVAudioSession` deactivation (`Source: App`) at 20:24:11.746, before engine stop/pause at 20:24:11.755. A RemoteIO interruption followed at 20:24:12.515; the RunningBoard MediaPlayback assertion was invalidated at 20:24:17.514. `UIBackgroundModes` includes `audio`.
+- These events establish the sequence, not the initiating code path or whether audio samples played. No incident-linked Home audio events or server turn records establish whether PCM reached the device, playback completed, or Home aborted the response; this report makes no claim either way.
+
+### Source assessment (cause unconfirmed)
+
+- Before this fix, `ContentView.onDisappear` always submitted `.windowDisappeared`. The lifecycle coordinator routes that event to full `deactivate()`, which stops voice work and closes the Home client even when iOS background retention would otherwise keep an active reply. This is a source-level teardown bypass consistent with an app-originated session deactivation, but there is no trace confirming that `onDisappear` ran in the incident.
+- Source review found no normal path where `responseTask` clears while scheduled reply buffers remain outstanding: the response awaits output finish, and `AppleAudioOutput.finish()` waits for `AudioPlaybackDrain`. Retention can still become `.none` after playback drains while an engine/session lease remains open. The incident-time retention state is unknown, so that path is not ruled out.
+- The audio-category policy was intentionally left unchanged. Category switching remains a secondary, unconfirmed event; the reported `Source: App` record is a session deactivation, not evidence that a category change caused it.
+
+### Fix and verification
+
+- `ContentView.onDisappear` now supplies whether `scenePhase == .active` to the lifecycle coordinator. On iOS, inactive/background disappearance returns without enqueueing `.windowDisappeared`, so it cannot supersede phase work; `.inactive`/`.background` callbacks own that policy. Active-scene window closure still tears down, and macOS/retention-disabled behavior remains unconditional.
+- Regression coverage includes `.background` followed by disappearance while a Home reply is playing, `.inactive` → disappearance → `.background` with a playing reply, active-scene close teardown, retention-disabled unconditional teardown, and idle background teardown.
+- **Serialized macOS XCTest:** `DEVELOPER_DIR=/Applications/Xcode-27.2.0-Beta.2.app/Contents/Developer xcodebuild test -project "Hermes Relay.xcodeproj" -scheme HermesRelay -destination 'platform=macOS,arch=arm64' -derivedDataPath /tmp/ios-bg-dd CODE_SIGNING_ALLOWED=NO -parallel-testing-enabled NO` — passed, 615 tests, 0 failures.
+- **Signed generic iOS device build:** `DEVELOPER_DIR=/Applications/Xcode-27.2.0-Beta.2.app/Contents/Developer xcodebuild build -project "Hermes Relay.xcodeproj" -scheme HermesRelay -destination 'generic/platform=iOS' -derivedDataPath /tmp/ios-bg-device-dd CODE_SIGN_STYLE=Automatic CODE_SIGNING_ALLOWED=YES` — passed with the existing Apple Development identity and local provisioning profile. No install, launch, or Home traffic occurred.
+- A physical-device retest is required to determine whether this source-level fix changes observed playback; this fix alone does not establish whether playback or server-side turn completion previously failed.

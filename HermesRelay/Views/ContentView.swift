@@ -248,7 +248,11 @@ struct ContentView: View {
             }
             .onDisappear {
                 hudModel.stop()
-                Task { _ = await lifecycleCoordinator.handle(.windowDisappeared) }
+                Task {
+                    _ = await lifecycleCoordinator.handleWindowDisappeared(
+                        isSceneActive: scenePhase == .active
+                    )
+                }
             }
             .onChange(of: scenePhase) { _, newPhase in
                 let input: AppleLifecycleInput
