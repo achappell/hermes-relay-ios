@@ -56,14 +56,15 @@ Amanda reported no response after the install. Read-only evidence, in CDT:
 
 On a physical iPhone, Release build:
 
-1. Lock the screen during a generated reply; verify the entire reply plays, then Home disconnects/parks the claim.
-2. Open Control Center during playback and during hands-free capture; verify `.inactive` alone does not stop either.
-3. With hands-free armed in the foreground, lock the phone and speak a follow-up within 60 seconds; verify the new turn is submitted exactly once.
-4. Leave hands-free idle in the background for 60 seconds; verify capture stops and the orange microphone indicator clears.
-5. Use lock-screen Now Playing Pause/Play and Stop; verify Pause/Play control output, Stop ends the session and clears the card.
-6. Play a podcast, then start background voice work; verify the podcast is interrupted and resumes after Hermes releases the session.
-7. Take a phone call during reply playback; verify mic session ends and unfinished reply resumes only when the interruption ends with `.shouldResume` and transport/timeout conditions still hold.
-8. Remove AirPods mid-reply; verify output pauses rather than switching to the speaker; reconnect them and verify the reply resumes.
-9. Review Home/server logs for no duplicate submission or replay after interruption, timeout, or reconnect.
+1. On the installed fixed build `0.6.0` (`1`), submit one benign Home turn and keep the app connected in the foreground for up to 120 seconds. If the turn runs longer than 30 seconds, verify that the response text and audio arrive exactly once, with no second submission or replay. A turn that completes in under 30 seconds does not exercise the fixed timeout. You do not need to share the prompt text, and no app contents need to be read.
+2. Lock the screen during a generated reply; verify the entire reply plays, then Home disconnects/parks the claim.
+3. Open Control Center during playback and during hands-free capture; verify `.inactive` alone does not stop either.
+4. With hands-free armed in the foreground, lock the phone and speak a follow-up within 60 seconds; verify the new turn is submitted exactly once.
+5. Leave hands-free idle in the background for 60 seconds; verify capture stops and the orange microphone indicator clears.
+6. Use lock-screen Now Playing Pause/Play and Stop; verify Pause/Play control output, Stop ends the session and clears the card.
+7. Play a podcast, then start background voice work; verify the podcast is interrupted and resumes after Hermes releases the session.
+8. Take a phone call during reply playback; verify mic session ends and unfinished reply resumes only when the interruption ends with `.shouldResume` and transport/timeout conditions still hold.
+9. Remove AirPods mid-reply; verify output pauses rather than switching to the speaker; reconnect them and verify the reply resumes.
+10. Review Home/server logs for no duplicate submission or replay after interruption, timeout, or reconnect.
 
 Physical-device verification and App Store Review notes for Guideline 2.5.4 remain open release gates.
