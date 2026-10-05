@@ -904,10 +904,12 @@ struct RelayConfigurationView: View {
     }
 
     /// Marketing version and build number from the built app's Info.plist.
-    private static var appVersionLabel: String {
-        let header = DiagnosticsHeader.current()
-        return "\(header.appVersion) (\(header.build))"
-    }
+    private static let appVersionLabel: String = {
+        let info = Bundle.main.infoDictionary ?? [:]
+        let version = info["CFBundleShortVersionString"] as? String ?? "unknown"
+        let build = info["CFBundleVersion"] as? String ?? "unknown"
+        return "\(version) (\(build))"
+    }()
 
     @ViewBuilder
     private func validationMessage(for field: RelayConfigurationField) -> some View {
