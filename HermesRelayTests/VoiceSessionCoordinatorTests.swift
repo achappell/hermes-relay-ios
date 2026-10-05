@@ -1509,6 +1509,105 @@ final class VoiceSessionCoordinatorTests: XCTestCase {
         XCTAssertTrue(operations.contains(.append), "Home audio was not delivered: \(operations)")
     }
 
+    /// Device incident 2026-10-04: Standard took about 63 s to finish an
+    /// accepted Home turn, but the phone abandoned it at the 30 s control
+    /// deadline and reconnected. Home keeps an in-flight client claim for its
+    /// 120 s reconnect grace, so the reply must still be delivered.
+    @MainActor
+    func testAcceptedHomeTurnThatFinishesAfterSixtyThreeSecondsDeliversWithoutReplay() async throws {
+        let clock = ManualBackgroundClock()
+        let fixture = try await makeHomeVoiceReviewFixture(homeClock: clock)
+        defer { try? FileManager.default.removeItem(at: fixture.profileURL.deletingLastPathComponent()) }
+        let configured = await fixture.store.loadConfiguredClient()
+        XCTAssertTrue(configured)
+        await fixture.store.connect()
+        let output = CoordinatorAudioOutput()
+        let coordinator = VoiceSessionCoordinator(
+            store: fixture.store,
+            input: CoordinatorSpeechInput(),
+            output: output
+        )
+        fixture.store.draft = "Check the house and tell me"
+        let responseTask = Task { @MainActor in
+            await coordinator.sendDraft()
+        }
+        await waitForHomeVoiceSubmission(fixture.client, atLeast: 1)
+        await pollUntil { clock.sleeperCount >= 1 }
+
+        clock.advance(by: .seconds(63))
+        try await Task.sleep(for: .milliseconds(50))
+        XCTAssertNil(fixture.store.homeJoinTimeout, "A slow accepted turn is not abandoned at 63 s")
+
+        let scope = HomeEventScope(
+            conversationHandle: fixture.claim.conversationHandle,
+            turnID: "turn-1",
+            correlationID: "correlation-1"
+        )
+        await fixture.client.emit(.standard(HomeStandardEvent(
+            type: .messageComplete,
+            scope: scope,
+            payload: .final(
+                rendered: nil,
+                text: "Everything looks fine",
+                status: "complete",
+                reasoning: nil,
+                failureReason: nil
+            )
+        )))
+        await fixture.client.emit(.standard(HomeStandardEvent(
+            type: .turnComplete,
+            scope: scope,
+            payload: .terminal(kind: .terminal)
+        )))
+        await fixture.client.emit(.audioStart(
+            scope,
+            HomeAudioFormat(sampleRate: 24_000, channels: 1, sampleWidth: 2)
+        ))
+        await fixture.client.emit(.binaryPCM(scope, Data([0, 1, 2, 3])))
+        await fixture.client.emit(.audioTerminal(scope, .end))
+        await responseTask.value
+
+        XCTAssertEqual(coordinator.state, .complete)
+        XCTAssertNil(fixture.store.homeJoinTimeout)
+        let submitted = await fixture.client.submittedTexts
+        XCTAssertEqual(submitted.count, 1, "The slow turn is never replayed")
+        let operations = await output.operations()
+        XCTAssertTrue(operations.contains(.append), "Home audio was not delivered: \(operations)")
+    }
+
+    @MainActor
+    func testAcceptedHomeTurnWithNoTerminalStillFailsAtTheControlDeadline() async throws {
+        let clock = ManualBackgroundClock()
+        let fixture = try await makeHomeVoiceReviewFixture(homeClock: clock)
+        defer { try? FileManager.default.removeItem(at: fixture.profileURL.deletingLastPathComponent()) }
+        let configured = await fixture.store.loadConfiguredClient()
+        XCTAssertTrue(configured)
+        await fixture.store.connect()
+        let coordinator = VoiceSessionCoordinator(
+            store: fixture.store,
+            input: CoordinatorSpeechInput(),
+            output: CoordinatorAudioOutput()
+        )
+        fixture.store.draft = "This turn never finishes"
+        let responseTask = Task { @MainActor in
+            await coordinator.sendDraft()
+        }
+        await waitForHomeVoiceSubmission(fixture.client, atLeast: 1)
+        await pollUntil { clock.sleeperCount >= 1 }
+
+        clock.advance(by: .seconds(119))
+        try await Task.sleep(for: .milliseconds(50))
+        XCTAssertNil(fixture.store.homeJoinTimeout)
+
+        clock.advance(by: .seconds(1))
+        await pollUntil { fixture.store.homeJoinTimeout == .controlTerminalMissing }
+        await responseTask.value
+
+        XCTAssertEqual(fixture.store.homeJoinTimeout, .controlTerminalMissing)
+        let submitted = await fixture.client.submittedTexts
+        XCTAssertEqual(submitted.count, 1, "A stuck turn fails without being replayed")
+    }
+
     @MainActor
     func testHomeAudioThatNeverStartsAfterTheTurnCompletesStillFails() async throws {
         let fixture = try await makeHomeVoiceReviewFixture(
@@ -3195,7 +3294,8 @@ final class VoiceSessionCoordinatorTests: XCTestCase {
     @MainActor
     private func makeHomeVoiceReviewFixture(
         audioDeadlines: HomeTurnAudioDeadlines = .default,
-        persistence: (any ConversationPersistence)? = nil
+        persistence: (any ConversationPersistence)? = nil,
+        homeClock: any HomeMonotonicClock = ContinuousHomeMonotonicClock()
     ) async throws -> HomeVoiceReviewFixture {
         let profileID = UUID(uuidString: "EEEEEEEE-FFFF-0000-1111-222222222222")!
         let profile = try RelayProfile(
@@ -3235,6 +3335,7 @@ final class VoiceSessionCoordinatorTests: XCTestCase {
             persistence: persistence,
             homeClientFactory: FakeHomeBridgeSessionClientFactory(client: client),
             homeClaimProvider: StaticHomeConversationClaimProvider(claim: claim),
+            homeClock: homeClock,
             homeTurnAudioDeadlines: audioDeadlines
         )
         return HomeVoiceReviewFixture(

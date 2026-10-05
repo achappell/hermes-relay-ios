@@ -1053,9 +1053,13 @@ struct HomeTurnAudioDeadlines: Equatable, Sendable {
     let audioTerminal: Duration
     let playbackDrain: Duration
 
+    /// `controlTerminal` runs from turn acceptance. A Standard turn that runs
+    /// tools can take longer than 30 s (one took about 63 s on device), and
+    /// Home keeps an in-flight client claim for its 120 s reconnect grace, so
+    /// the client waits as long as Home would before treating the turn as stuck.
     static let `default` = HomeTurnAudioDeadlines(
         audioStart: .seconds(5),
-        controlTerminal: .seconds(30),
+        controlTerminal: .seconds(120),
         audioTerminal: .seconds(30),
         playbackDrain: .seconds(5)
     )

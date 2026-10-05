@@ -25,6 +25,26 @@ Baseline: `feeb475fc113e88ab0a0e496fe557b6e39c06fbe` (`fix/ios-home-foreground-r
 - `HermesRelay/HermesRelayApp.swift` resolves `FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)` (falling back to `temporaryDirectory` only if unavailable), appends `HermesRelayIOS`, and uses that root for the persisted profile, Home configuration and pairing records, diagnostics reports, and per-profile conversations. With the Application Support path, these files are within `Library` and preservation is expected under the documented update contract. Actual settings and saved state remain unverified until Amanda opens the app.
 - No physical behavior checks were run during installation. The nine checks below and App Store Review notes for Guideline 2.5.4 remain open release gates.
 
+## Device incident: accepted Home turn received no response (2026-10-04)
+
+Amanda reported no response after the install. Read-only evidence, in CDT:
+
+- **iPhone unified log (observed):** the app launched at 19:31:49, the Home configuration requests returned HTTP 200, and the bridge WebSocket upgraded (HTTP 101) at 19:31:51. Capture ran from 19:32:32 to 19:32:38. The client cancelled that WebSocket at 19:33:10.224, about 32 s after submission. The next reconnect upgraded and then failed with `Socket is not connected`; a later reconnect became ready. No reply audio-session activation or playback appeared.
+- **Privacy-safe device journal (observed; event names only):** `home bridge request completed method=prompt.submit` at 19:32:38.356, `home connect open result=unavailable reconnect_required` at 19:33:10.855, and `home connect reconnect result=ready unresolved_turn=true` at 19:33:10.915. The journal has no explicit timeout event; the `controlTerminalMissing` path does not write to it.
+- **Home diagnostics (observed):** `request_observed` and `upstream_submit_outcome outcome=accepted` at 19:32:38.6. The connection closed at 19:33:10.56, the reconnect at 19:33:11 was `rejection_generated`, and the next connection became ready.
+- **Standard (observed):** prompt accepted at 19:32:38.261. Turn finished at 19:33:40.98 with `status=complete duration=62.7s`. At 19:33:19, Standard also logged an approval request that was not sent because the attached client predates server-to-client requests; a terminal tool then returned `BLOCKED`. That is a separate capability gap. It is not established as the reason audio was absent, and this fix does not address it.
+- **Inference (strong, unconfirmed):** the client's 30 s `HomeTurnAudioDeadlines.controlTerminal`, measured from acceptance, fired before Standard finished. The app then marked the submission uncertain and reconnected, so the 62.7 s reply was not delivered. The 19:33:10 close, about 31.6 s after `prompt.submit` completed, matches that timer; no app-level log records the timer firing.
+
+### Fix: control-terminal deadline 30 s to 120 s
+
+- `HermesRelay/Models/HomeBridgeModels.swift`: `HomeTurnAudioDeadlines.default.controlTerminal` changes from 30 s to 120 s. The value matches Home's `DEFAULT_CLIENT_RECONNECT_GRACE_SECONDS` (120 s), the period Home keeps an in-flight client claim after the client disconnects, so the phone no longer abandons a turn Home still treats as live. A turn with no control terminal still fails through the existing `controlTerminalMissing` path, without replay. This supersedes the 30 s value in the IOS-HOME-05 and 0-I-4 specs.
+- Red/green regressions use a fake clock and fake Home client, with no live Home:
+  - `testAcceptedHomeTurnThatFinishesAfterSixtyThreeSecondsDeliversWithoutReplay`: before the fix, it failed with `controlTerminalMissing`, coordinator state `failed("transport_timeout")`, and no audio delivered. After the fix, it passes: the reply completes and plays after 63 s with exactly one submission.
+  - `testAcceptedHomeTurnWithNoTerminalStillFailsAtTheControlDeadline`: before the fix, it failed because the timeout fired before 119 s. After the fix, it passes: there is no timeout at 119 s, `controlTerminalMissing` occurs at 120 s, and there is one submission.
+- **macOS XCTest:** `DEVELOPER_DIR=/Applications/Xcode-27.2.0-Beta.2.app/Contents/Developer xcodebuild test -project "Hermes Relay.xcodeproj" -scheme HermesRelay -destination 'platform=macOS,arch=arm64' -derivedDataPath /tmp/ios-bg-dd CODE_SIGNING_ALLOWED=NO -parallel-testing-enabled NO` passed with 595 tests and 0 failures.
+- **Signed generic iOS device build:** the same command as above passed with the existing Apple Development identity and team provisioning profile. The fixed build was not installed or launched, and no Home traffic was generated.
+- **Still open:** confirming on device that a slow turn now delivers, including whether the fixed build removes the no-response symptom, requires an approved physical test.
+
 
 ## Device-only checks for Amanda
 
