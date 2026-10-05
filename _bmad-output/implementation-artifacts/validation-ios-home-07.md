@@ -54,7 +54,7 @@ Amanda reported no response after the install. Read-only evidence, in CDT:
 
 ## Device-only checks for Amanda
 
-On a physical iPhone. Check 1 uses the installed Development build `0.6.0` (`1`); checks 2–10 require a Release build:
+On a physical iPhone: check 1 uses the installed Development build `0.6.0` (`1`); checks 2–10 require a Release build.
 
 1. On the installed fixed build `0.6.0` (`1`), submit one benign Home turn and keep the app connected in the foreground for up to 120 seconds. If the turn runs longer than 30 seconds, verify that the response text and audio arrive exactly once, with no second submission or replay. A turn that completes in under 30 seconds does not exercise the fixed timeout. You do not need to share the prompt text, and no app contents need to be read.
 2. Lock the screen during a generated reply; verify the entire reply plays, then Home disconnects/parks the claim.
