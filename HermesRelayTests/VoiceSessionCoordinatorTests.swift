@@ -3181,6 +3181,30 @@ final class VoiceSessionCoordinatorTests: XCTestCase {
     }
 
     @MainActor
+    func testBackgroundOutputEngineFailureEndsTheReplyInsteadOfStayingSpeaking() async throws {
+        let output = CoordinatorAudioOutput(waitsForFinish: true, stopReleasesFinish: true)
+        let harness = try await makeBackgroundVoiceHarness(output: output)
+        defer { harness.cleanUp() }
+        let responseTask = try await startPlayingHomeReply(harness, prompt: "Read me the news")
+        _ = await harness.lifecycle.handle(.background)
+        XCTAssertTrue(harness.lifecycle.isRetainingBackgroundWork)
+        await output.waitUntilFinishRequested()
+
+        // The engine stopped in the background and could not be restarted.
+        await output.failPendingFinish(.outputFailed)
+        await responseTask.value
+        _ = await harness.lifecycle.handle(.active)
+
+        XCTAssertNotEqual(harness.voice.state, .speaking)
+        guard case .failed = harness.voice.state else {
+            return XCTFail("Expected a playback failure, got \(harness.voice.state)")
+        }
+        XCTAssertEqual(harness.voice.backgroundRetention, .none, "No reply is left in flight")
+        let submitted = await harness.client.submittedTexts
+        XCTAssertEqual(submitted, ["Read me the news"], "No replay")
+    }
+
+    @MainActor
     func testRouteLossPausesReplyOutput() async throws {
         let output = CoordinatorAudioOutput(waitsForFinish: true, stopReleasesFinish: true)
         let harness = try await makeBackgroundVoiceHarness(output: output)
@@ -4313,6 +4337,9 @@ private actor CoordinatorAudioOutput: AudioOutput {
     private var appendRequested = false
     private var appendRequestWaiters: [CheckedContinuation<Void, Never>] = []
     private var finishWaiter: CheckedContinuation<Void, Never>?
+    /// Thrown by a finish that was waiting, as when the platform output's
+    /// engine could not be restarted mid-drain.
+    private var pendingFinishFailure: AudioOutputError?
     private var recordedOperations: [Operation] = []
 
     init(
@@ -4358,6 +4385,7 @@ private actor CoordinatorAudioOutput: AudioOutput {
         await withCheckedContinuation { continuation in
             finishWaiter = continuation
         }
+        if let pendingFinishFailure { throw pendingFinishFailure }
     }
 
     func stop() async {
@@ -4391,6 +4419,12 @@ private actor CoordinatorAudioOutput: AudioOutput {
     }
 
     func allowFinish() {
+        finishWaiter?.resume()
+        finishWaiter = nil
+    }
+
+    func failPendingFinish(_ error: AudioOutputError) {
+        pendingFinishFailure = error
         finishWaiter?.resume()
         finishWaiter = nil
     }

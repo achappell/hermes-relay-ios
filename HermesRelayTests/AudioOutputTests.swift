@@ -126,6 +126,42 @@ final class AudioOutputTests: XCTestCase {
         XCTAssertEqual(AudioSessionMixing.forBackgroundVoice(false), .duckOthers)
     }
 
+    func testEngineConfigurationChangeRestartsStoppedPlayback() async throws {
+        let control = SimulatedEngineControl(reportsStoppedOnce: true)
+        let journal = DiagnosticsJournal(fileURL: nil)
+        let output = AppleAudioOutput(engineControl: control.control, journal: journal)
+        let format = AudioFormat(sampleRate: 24_000, channels: 1, sampleWidth: 2)
+        try await output.start(format: format)
+        _ = try await output.append(Data(count: 2_400)) // 50 ms of silence
+
+        await output.handleEngineConfigurationChange()
+        try await output.finish()
+
+        XCTAssertEqual(control.startCount, 1, "The stopped engine is restarted once")
+        XCTAssertEqual(journal.snapshot().map(\.event), ["audio output engine stopped restart=ok"])
+    }
+
+    func testFailedEngineRestartFailsThePendingFinishInsteadOfHanging() async throws {
+        let control = SimulatedEngineControl(reportsStoppedOnce: true, startFails: true)
+        let journal = DiagnosticsJournal(fileURL: nil)
+        let output = AppleAudioOutput(engineControl: control.control, journal: journal)
+        let format = AudioFormat(sampleRate: 24_000, channels: 1, sampleWidth: 2)
+        try await output.start(format: format)
+        _ = try await output.append(Data(count: 480_000)) // 10 s, still draining
+        let finish = Task { try await output.finish() }
+        try await Task.sleep(for: .milliseconds(100))
+
+        await output.handleEngineConfigurationChange()
+
+        do {
+            try await finish.value
+            XCTFail("finish() must report the failed restart")
+        } catch {
+            XCTAssertEqual(error as? AudioOutputError, .outputFailed)
+        }
+        XCTAssertEqual(journal.snapshot().map(\.event), ["audio output engine stopped restart=failed"])
+    }
+
     func testRecoveringOutputWritesBufferedPCMWhenLiveOutputFails() async throws {
         let liveOutput = RecordingAudioOutput(appendError: .outputFailed)
         let output = RecoveringAudioOutput(liveOutput: liveOutput)
@@ -522,4 +558,39 @@ private actor RecordingAudioActivityReporter: AudioActivityReporter {
 extension FinishFailingAudioOutput {
     func pause() async {}
     func resume() async {}
+}
+
+/// Reports the engine as stopped (as after a system configuration change) and
+/// counts restarts. A successful restart starts the real engine.
+private final class SimulatedEngineControl: @unchecked Sendable {
+    private let lock = NSLock()
+    private var reportsStopped: Bool
+    private let startFails: Bool
+    private var starts = 0
+
+    init(reportsStoppedOnce: Bool, startFails: Bool = false) {
+        reportsStopped = reportsStoppedOnce
+        self.startFails = startFails
+    }
+
+    var startCount: Int { lock.withLock { starts } }
+
+    var control: AudioOutputEngineControl {
+        AudioOutputEngineControl(
+            isRunning: { [self] engine in
+                lock.withLock {
+                    if reportsStopped {
+                        reportsStopped = false
+                        return false
+                    }
+                    return engine.isRunning
+                }
+            },
+            start: { [self] engine in
+                lock.withLock { starts += 1 }
+                if startFails { throw AudioOutputError.outputFailed }
+                try engine.start()
+            }
+        )
+    }
 }

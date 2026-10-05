@@ -1,6 +1,18 @@
 import AVFAudio
 import Foundation
 
+/// How the output checks and restarts its engine. Tests replace it to
+/// simulate a system-stopped engine without audio hardware.
+struct AudioOutputEngineControl: Sendable {
+    var isRunning: @Sendable (AVAudioEngine) -> Bool
+    var start: @Sendable (AVAudioEngine) throws -> Void
+
+    static let system = AudioOutputEngineControl(
+        isRunning: { $0.isRunning },
+        start: { try $0.start() }
+    )
+}
+
 actor AppleAudioOutput: AudioOutput {
     private let engine = AVAudioEngine()
     private let playerNode = AVAudioPlayerNode()
@@ -18,13 +30,20 @@ actor AppleAudioOutput: AudioOutput {
     /// Set when a resume could not restart the engine; the pending drain
     /// then reports a playback failure instead of success.
     private var resumeFailed = false
+    private let engineControl: AudioOutputEngineControl
+    private let journal: DiagnosticsJournal
+    private var configurationObserver: AudioEngineConfigurationObserver?
 
     init(
         diagnostics: any AudioPlaybackDiagnostics = NoopAudioPlaybackDiagnostics(),
-        audioSessionCoordinator: AppleAudioSessionCoordinator = AppleAudioSessionCoordinator()
+        audioSessionCoordinator: AppleAudioSessionCoordinator = AppleAudioSessionCoordinator(),
+        engineControl: AudioOutputEngineControl = .system,
+        journal: DiagnosticsJournal = .shared
     ) {
         self.diagnostics = diagnostics
         self.audioSessionCoordinator = audioSessionCoordinator
+        self.engineControl = engineControl
+        self.journal = journal
         engine.attach(playerNode)
     }
 
@@ -55,6 +74,7 @@ actor AppleAudioOutput: AudioOutput {
                 bytesPerFrame: format.channels * format.sampleWidth
             )
             isAcceptingAudio = true
+            installConfigurationObserver()
         } catch {
             await stopResources()
             throw AudioOutputError.outputFailed
@@ -147,6 +167,47 @@ actor AppleAudioOutput: AudioOutput {
         }
     }
 
+    /// iOS stops the engine when the session's I/O is reconfigured, for
+    /// example when backgrounding re-applies the session category. Without a
+    /// restart, scheduled buffers never play and `finish()` waits forever.
+    func handleEngineConfigurationChange() async {
+        guard audioFormat != nil, !isPaused, isAcceptingAudio || playbackStarted else {
+            return
+        }
+        guard !engineControl.isRunning(engine) else { return }
+        #if os(iOS)
+        try? await audioSessionCoordinator.activateOutput()
+        #endif
+        do {
+            try engineControl.start(engine)
+        } catch {
+            journal.record("audio output engine stopped restart=failed")
+            resumeFailed = true
+            await stopResources()
+            return
+        }
+        journal.record("audio output engine stopped restart=ok")
+        if playbackStarted {
+            playerNode.play()
+        } else if scheduledAudioBytes > 0 {
+            startPlaybackIfNeeded()
+        }
+    }
+
+    private func installConfigurationObserver() {
+        guard configurationObserver == nil else { return }
+        let observer = NotificationCenter.default.addObserver(
+            forName: .AVAudioEngineConfigurationChange,
+            object: engine,
+            queue: nil
+        ) { [weak self] _ in
+            Task {
+                await self?.handleEngineConfigurationChange()
+            }
+        }
+        configurationObserver = AudioEngineConfigurationObserver(observer)
+    }
+
     func playbackPosition() async -> TimeInterval? {
         guard playbackStarted,
               let renderTime = playerNode.lastRenderTime,
@@ -204,6 +265,10 @@ actor AppleAudioOutput: AudioOutput {
     }
 
     private func stopResources() async {
+        if let configurationObserver {
+            NotificationCenter.default.removeObserver(configurationObserver.token)
+            self.configurationObserver = nil
+        }
         isAcceptingAudio = false
         pcmFrameAccumulator = nil
         scheduledAudioBytes = 0
@@ -215,5 +280,11 @@ actor AppleAudioOutput: AudioOutput {
         audioFormat = nil
 
         await audioSessionCoordinator.deactivateOutput()
+    }
+
+    deinit {
+        if let configurationObserver {
+            NotificationCenter.default.removeObserver(configurationObserver.token)
+        }
     }
 }
