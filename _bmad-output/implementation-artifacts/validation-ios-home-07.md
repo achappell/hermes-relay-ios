@@ -45,6 +45,12 @@ Amanda reported no response after the install. Read-only evidence, in CDT:
 - **Signed generic iOS device build:** the same command as above passed with the existing Apple Development identity and team provisioning profile. The fixed build was not installed or launched, and no Home traffic was generated.
 - **Still open:** confirming on device that a slow turn now delivers, including whether the fixed build removes the no-response symptom, requires an approved physical test.
 
+### Fixed build install-only handoff
+
+- **Artifact provenance:** the signed device artifact (`/tmp/ios-bg-device-dd/.../Hermes Relay.app`) was signed at 19:46:15 CDT by team `37CAHGRH45`, bundle `com.achappell.HermesRelay`, version `0.6.0` (build `1`). The only app-target source changed by commit `185418a6a9e65534ec2edbd50b27fd76693e6afa`, `HermesRelay/Models/HomeBridgeModels.swift`, was last modified at 19:45:08, before signing. No app source or project file was modified after the artifact was built, and the working tree was clean at that commit. The artifact therefore contains the fix's app sources; it was not rebuilt.
+- `devicectl device install app` succeeded on Amanda's paired iPhone 17 Pro Max. A read-only `devicectl device info apps` check then reported Hermes Relay `com.achappell.HermesRelay` `0.6.0` (`1`) installed as a developer app with an accessible data container.
+- The app was not launched or opened. App contents were not inspected, and no Home traffic was generated. The fix now awaits Amanda's retest of a slow Home turn. The device checks below and App Store Review notes for Guideline 2.5.4 remain open.
+
 
 ## Device-only checks for Amanda
 
