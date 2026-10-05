@@ -4,10 +4,107 @@ import SwiftUI
 import UIKit
 #endif
 
+/// The long-lived voice and lifecycle objects behind `ContentView`.
+///
+/// SwiftUI re-runs `ContentView.init` whenever the app body re-evaluates
+/// (every scene phase change does, because `HermesRelayApp` reads
+/// `scenePhase`). `@State` keeps only the first value it was given, so a stack
+/// built in `init` leaves a fresh, never-used voice coordinator behind each
+/// time, and a lifecycle coordinator held as a plain `let` ends up bound to
+/// that orphan. On the 2026-10-05 device runs this made every `.background`
+/// read "no reply in flight" from an unused coordinator, tear the shared
+/// Home client and audio session down, and leave the real playback engine
+/// running unattended. The stack is therefore built exactly once.
+@MainActor
+final class ContentViewRuntime {
+    let activityStore: AudioActivityStore
+    let voiceCoordinator: VoiceSessionCoordinator
+    let lifecycleCoordinator: AppleLifecycleCoordinator
+
+    init(
+        store: ConversationStore,
+        voiceCoordinator providedVoiceCoordinator: VoiceSessionCoordinator? = nil,
+        activityStore providedActivityStore: AudioActivityStore? = nil,
+        homeClientFactory: any HomeBridgeSessionClientFactory,
+        homeClock: any HomeMonotonicClock,
+        backgroundRetentionEnabled: Bool = AppleLifecycleCoordinator.platformSupportsBackgroundRetention,
+        journal: DiagnosticsJournal = .shared
+    ) {
+        let activityStore = providedActivityStore ?? AudioActivityStore()
+        self.activityStore = activityStore
+        let voice: VoiceSessionCoordinator
+        if let providedVoiceCoordinator {
+            voice = providedVoiceCoordinator
+        } else {
+            let diagnostics = AudioPlaybackDiagnosticsFactory.make()
+            let audioSessionCoordinator = AppleAudioSessionCoordinator()
+            let speechInput = AppleSpeechInput(
+                activityReporter: activityStore,
+                audioSessionCoordinator: audioSessionCoordinator
+            )
+            #if os(iOS)
+            let handsFreeInput: (any HandsFreeInput)? = SpeechBackedHandsFreeInput(
+                speechInput: speechInput,
+                activityStore: activityStore
+            )
+            #else
+            let handsFreeInput: (any HandsFreeInput)? = nil
+            #endif
+            let recoveringOutput = RecoveringAudioOutput(
+                liveOutput: AudioActivityReportingOutput(
+                    wrapped: AppleAudioOutput(
+                        diagnostics: diagnostics,
+                        audioSessionCoordinator: audioSessionCoordinator
+                    ),
+                    reporter: activityStore
+                )
+            )
+            voice = VoiceSessionCoordinator(
+                store: store,
+                input: speechInput,
+                output: HomeAwareAudioOutput(
+                    wrapped: recoveringOutput,
+                    isHomeMode: { @MainActor [weak store] in store?.isHomeMode ?? false }
+                ),
+                diagnostics: diagnostics,
+                handsFreeInput: handsFreeInput,
+                clock: homeClock,
+                audioSessionPolicy: audioSessionCoordinator,
+                nowPlaying: NowPlayingController()
+            )
+        }
+        self.voiceCoordinator = voice
+        self.lifecycleCoordinator = AppleLifecycleCoordinator(
+            store: store,
+            voice: voice,
+            homeClientFactory: homeClientFactory,
+            clock: homeClock,
+            backgroundRetentionEnabled: backgroundRetentionEnabled,
+            journal: journal
+        )
+        journal.record("runtime created")
+    }
+}
+
+/// Holds the runtime across `ContentView` re-initialisations. `@State` keeps
+/// this cheap box, and the runtime is built on first use by whichever copy of
+/// the view asks first.
+@MainActor
+final class ContentViewRuntimeBox {
+    private var runtime: ContentViewRuntime?
+
+    func resolve(_ make: @MainActor () -> ContentViewRuntime) -> ContentViewRuntime {
+        if let runtime { return runtime }
+        let made = make()
+        runtime = made
+        return made
+    }
+}
+
 @MainActor
 struct ContentView: View {
     @State private var store: ConversationStore
-    @State private var voiceCoordinator: VoiceSessionCoordinator
+    @State private var runtimeBox = ContentViewRuntimeBox()
     @State private var showingConfiguration = false
     @State private var showingHistory = false
     @State private var showingHomeSessions = false
@@ -24,8 +121,7 @@ struct ContentView: View {
     private let deviceSetupDraftStore: any DeviceSetupDraftStore
     private let deviceConfigurationStore: any DeviceConfigurationStore
     private let homeServiceClient: (any HomeServiceClient)?
-    private let activityStore: AudioActivityStore
-    private let lifecycleCoordinator: AppleLifecycleCoordinator
+    private let runtimeFactory: @MainActor () -> ContentViewRuntime
     private let homeClientFactory: any HomeBridgeSessionClientFactory
     private let homeLiveConfigurationStore: (any HomeLiveConfigurationStore)?
     private let homeCredentialStore: (any HomeCredentialProvisioningStore)?
@@ -59,52 +155,15 @@ struct ContentView: View {
     ) {
         _store = State(initialValue: store)
         store.configureHomeClientFactory(homeClientFactory, claimProvider: homeClaimProvider)
-        let activityStore = providedActivityStore ?? AudioActivityStore()
-        self.activityStore = activityStore
         _hudModel = State(initialValue: AmbientHUDModel())
-        let resolvedVoiceCoordinator: VoiceSessionCoordinator
-        if let voiceCoordinator {
-            _voiceCoordinator = State(initialValue: voiceCoordinator)
-            resolvedVoiceCoordinator = voiceCoordinator
-        } else {
-            let diagnostics = AudioPlaybackDiagnosticsFactory.make()
-            let audioSessionCoordinator = AppleAudioSessionCoordinator()
-            let speechInput = AppleSpeechInput(
-                activityReporter: activityStore,
-                audioSessionCoordinator: audioSessionCoordinator
-            )
-            #if os(iOS)
-            let handsFreeInput: (any HandsFreeInput)? = SpeechBackedHandsFreeInput(
-                speechInput: speechInput,
-                activityStore: activityStore
-            )
-            #else
-            let handsFreeInput: (any HandsFreeInput)? = nil
-            #endif
-            let recoveringOutput = RecoveringAudioOutput(
-                liveOutput: AudioActivityReportingOutput(
-                    wrapped: AppleAudioOutput(
-                        diagnostics: diagnostics,
-                        audioSessionCoordinator: audioSessionCoordinator
-                    ),
-                    reporter: activityStore
-                )
-            )
-            let newVoiceCoordinator = VoiceSessionCoordinator(
+        runtimeFactory = {
+            ContentViewRuntime(
                 store: store,
-                input: speechInput,
-                output: HomeAwareAudioOutput(
-                    wrapped: recoveringOutput,
-                    isHomeMode: { @MainActor [weak store] in store?.isHomeMode ?? false }
-                ),
-                diagnostics: diagnostics,
-                handsFreeInput: handsFreeInput,
-                clock: homeClock,
-                audioSessionPolicy: audioSessionCoordinator,
-                nowPlaying: NowPlayingController()
+                voiceCoordinator: voiceCoordinator,
+                activityStore: providedActivityStore,
+                homeClientFactory: homeClientFactory,
+                homeClock: homeClock
             )
-            _voiceCoordinator = State(initialValue: newVoiceCoordinator)
-            resolvedVoiceCoordinator = newVoiceCoordinator
         }
         self.configurationStore = configurationStore
         self.conversationDirectory = conversationDirectory
@@ -119,13 +178,12 @@ struct ContentView: View {
         self.homeAdminCredentialStore = homeAdminCredentialStore
         self.homePairingCoordinator = homePairingCoordinator
         self.pairingInbox = pairingInbox
-        self.lifecycleCoordinator = AppleLifecycleCoordinator(
-            store: store,
-            voice: resolvedVoiceCoordinator,
-            homeClientFactory: homeClientFactory,
-            clock: homeClock
-        )
     }
+
+    private var runtime: ContentViewRuntime { runtimeBox.resolve(runtimeFactory) }
+    private var voiceCoordinator: VoiceSessionCoordinator { runtime.voiceCoordinator }
+    private var activityStore: AudioActivityStore { runtime.activityStore }
+    private var lifecycleCoordinator: AppleLifecycleCoordinator { runtime.lifecycleCoordinator }
 
     private var canSend: Bool {
         store.connectionState.isConnected

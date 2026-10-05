@@ -2261,6 +2261,9 @@ final class ConversationStore {
             if completed, eventHandler != nil {
                 await waitForHomeAudioTerminal(turn: turn)
             }
+            DiagnosticsJournal.shared.record(
+                "store Home sendTurn returning completed=\(completed) audio_terminal=\(homeAudioTerminal) audio_requested=\(homeAudioRequested)"
+            )
             homeEventHandler = nil
             activeTurnText = nil
             if !completed {

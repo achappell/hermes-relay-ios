@@ -77,6 +77,23 @@ enum VoiceBackgroundRetention: Equatable, Sendable {
     case voiceSession
 }
 
+extension VoiceState {
+    /// A state name that never carries a failure message.
+    var journalName: String {
+        switch self {
+        case .idle: "idle"
+        case .listening: "listening"
+        case .transcribing: "transcribing"
+        case .thinking: "thinking"
+        case .speaking: "speaking"
+        case .buffering: "buffering"
+        case .complete: "complete"
+        case .interrupted: "interrupted"
+        case .failed: "failed"
+        }
+    }
+}
+
 extension VoiceBackgroundRetention {
     var journalName: String {
         switch self {
@@ -730,10 +747,12 @@ final class VoiceSessionCoordinator {
             await self.submitVoiceTurn(text, binding: binding, generation: generation)
         }
         responseTask = task
+        journal.record("voice response started path=voice")
         await task.value
         if responseTask != nil {
             responseTask = nil
         }
+        journalResponseEnded(path: "voice")
     }
 
     private func requestInputFinish() {
@@ -1038,6 +1057,7 @@ final class VoiceSessionCoordinator {
         }
         await responseTask?.value
         responseTask = nil
+        journalResponseEnded(path: "draft")
     }
 
     /// Resend a turn the relay never confirmed. It goes through the same
@@ -1068,6 +1088,15 @@ final class VoiceSessionCoordinator {
         }
         await responseTask?.value
         responseTask = nil
+        journalResponseEnded(path: "resend")
+    }
+
+    /// Names why the reply stopped counting as in flight: the state it ended
+    /// in and whether its audio stream was still open. Content-free.
+    private func journalResponseEnded(path: String) {
+        journal.record(
+            "voice response ended path=\(path) state=\(state.journalName) audio_stream=\(audioStreamActive) paused=\(isReplyOutputPaused) backgrounded=\(isBackgrounded)"
+        )
     }
 
     private nonisolated func consumeRecognition(

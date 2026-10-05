@@ -3271,6 +3271,186 @@ final class VoiceSessionCoordinatorTests: XCTestCase {
     }
 
     @MainActor
+    func testControlTurnCompletingWhileAudioStreamsKeepsReplyRetentionAndTheSocket() async throws {
+        let output = CoordinatorAudioOutput(waitsForFinish: true, stopReleasesFinish: true)
+        let harness = try await makeBackgroundVoiceHarness(output: output)
+        defer { harness.cleanUp() }
+        harness.store.draft = "Read me the news"
+        let voice = harness.voice
+        let responseTask = Task { @MainActor in await voice.sendDraft() }
+        await waitForHomeVoiceSubmission(harness.client, atLeast: 1)
+        let scope = HomeEventScope(
+            conversationHandle: harness.fixture.claim.conversationHandle,
+            turnID: "turn-1",
+            correlationID: "correlation-1"
+        )
+        await harness.client.emit(.audioStart(
+            scope,
+            HomeAudioFormat(sampleRate: 24_000, channels: 1, sampleWidth: 2)
+        ))
+        await harness.client.emit(.binaryPCM(scope, Data([0, 1, 2, 3])))
+        // Home finishes the text turn while its reply audio is still streaming.
+        await harness.client.emit(.standard(HomeStandardEvent(
+            type: .messageComplete,
+            scope: scope,
+            payload: .final(
+                rendered: nil,
+                text: "Here is the answer",
+                status: "complete",
+                reasoning: nil,
+                failureReason: nil
+            )
+        )))
+        await harness.client.emit(.standard(HomeStandardEvent(
+            type: .turnComplete,
+            scope: scope,
+            payload: .terminal(kind: .terminal)
+        )))
+        await pollUntil { harness.voice.state == .speaking }
+        try await Task.sleep(for: .milliseconds(100))
+        XCTAssertEqual(harness.voice.backgroundRetention, .reply, "Audio is still streaming and playing")
+
+        _ = await harness.lifecycle.handle(.inactive)
+        _ = await harness.lifecycle.handle(.background)
+        try await Task.sleep(for: .milliseconds(100))
+
+        XCTAssertTrue(harness.lifecycle.isRetainingBackgroundWork)
+        XCTAssertTrue(harness.store.connectionState.isConnected)
+        let closeCount = await harness.client.closeCount
+        XCTAssertEqual(closeCount, 0)
+        let events = harness.journal.snapshot().map(\.event)
+        XCTAssertTrue(events.contains("voice background enter retention=reply"))
+        XCTAssertFalse(events.contains { $0.hasPrefix("lifecycle deactivate") })
+
+        // The audio terminal and the playback drain end the reply.
+        await harness.client.emit(.audioTerminal(scope, .end))
+        await output.waitUntilFinishRequested()
+        XCTAssertEqual(harness.voice.backgroundRetention, .reply, "Draining playback is still the reply")
+        await output.allowFinish()
+        await responseTask.value
+        await pollUntil { harness.store.connectionState == .disconnected }
+        let finalEvents = harness.journal.snapshot().map(\.event)
+        XCTAssertTrue(finalEvents.contains("voice background retention ended reason=workFinished"))
+    }
+
+    // MARK: ContentView runtime (2026-10-05 build 17 retest)
+
+    @MainActor
+    func testViewReinitialisationReusesOneRuntimeBoundToTheVoiceCoordinatorInUse() async throws {
+        let harness = try await makeBackgroundVoiceHarness()
+        defer { harness.cleanUp() }
+        var builds = 0
+        let make: @MainActor () -> ContentViewRuntime = {
+            builds += 1
+            return ContentViewRuntime(
+                store: harness.store,
+                voiceCoordinator: harness.voice,
+                homeClientFactory: FakeHomeBridgeSessionClientFactory(client: harness.client),
+                homeClock: ContinuousHomeMonotonicClock(),
+                backgroundRetentionEnabled: true,
+                journal: harness.journal
+            )
+        }
+        let box = ContentViewRuntimeBox()
+
+        // Every scene phase change re-runs ContentView.init and asks again.
+        let first = box.resolve(make)
+        let second = box.resolve(make)
+        let third = box.resolve(make)
+
+        XCTAssertEqual(builds, 1, "One voice and lifecycle stack for the life of the view")
+        XCTAssertTrue(first === second && second === third)
+        XCTAssertTrue(first.voiceCoordinator === harness.voice)
+    }
+
+    @MainActor
+    func testRuntimeLifecycleKeepsAReplyWhoseControlTurnCompletedBeforeItsAudioEnded() async throws {
+        let output = CoordinatorAudioOutput(waitsForFinish: true, stopReleasesFinish: true)
+        let harness = try await makeBackgroundVoiceHarness(output: output)
+        defer { harness.cleanUp() }
+        let box = ContentViewRuntimeBox()
+        let make: @MainActor () -> ContentViewRuntime = {
+            ContentViewRuntime(
+                store: harness.store,
+                voiceCoordinator: harness.voice,
+                homeClientFactory: FakeHomeBridgeSessionClientFactory(client: harness.client),
+                homeClock: ContinuousHomeMonotonicClock(),
+                backgroundRetentionEnabled: true,
+                journal: harness.journal
+            )
+        }
+        harness.store.draft = "Read me the news"
+        let voice = harness.voice
+        let responseTask = Task { @MainActor in await voice.sendDraft() }
+        await waitForHomeVoiceSubmission(harness.client, atLeast: 1)
+        let scope = HomeEventScope(
+            conversationHandle: harness.fixture.claim.conversationHandle,
+            turnID: "turn-1",
+            correlationID: "correlation-1"
+        )
+        await harness.client.emit(.audioStart(
+            scope,
+            HomeAudioFormat(sampleRate: 24_000, channels: 1, sampleWidth: 2)
+        ))
+        await harness.client.emit(.binaryPCM(scope, Data([0, 1, 2, 3])))
+        await harness.client.emit(.standard(HomeStandardEvent(
+            type: .turnComplete,
+            scope: scope,
+            payload: .terminal(kind: .terminal)
+        )))
+        await pollUntil { harness.voice.state == .speaking }
+
+        // The phase handlers a re-initialised view would use: same runtime.
+        _ = await box.resolve(make).lifecycleCoordinator.handle(.inactive)
+        _ = await box.resolve(make).lifecycleCoordinator.handle(.background)
+        try await Task.sleep(for: .milliseconds(100))
+
+        XCTAssertTrue(box.resolve(make).lifecycleCoordinator.isRetainingBackgroundWork)
+        let closeCount = await harness.client.closeCount
+        XCTAssertEqual(closeCount, 0, "The socket stays up while the audio terminal is pending")
+        let events = harness.journal.snapshot().map(\.event)
+        XCTAssertTrue(events.contains("voice background enter retention=reply"))
+        XCTAssertFalse(events.contains { $0.hasPrefix("lifecycle deactivate") })
+
+        await harness.client.emit(.audioTerminal(scope, .end))
+        await output.waitUntilFinishRequested()
+        XCTAssertEqual(harness.voice.backgroundRetention, .reply, "Draining playback is still the reply")
+        await output.allowFinish()
+        await responseTask.value
+        await pollUntil { harness.store.connectionState == .disconnected }
+
+        let finalEvents = harness.journal.snapshot().map(\.event)
+        XCTAssertTrue(finalEvents.contains("voice background retention ended reason=workFinished"))
+        XCTAssertTrue(finalEvents.contains { $0.hasPrefix("voice response ended path=draft state=") })
+        let closes = await harness.client.closeCount
+        XCTAssertEqual(closes, 1)
+    }
+
+    @MainActor
+    func testRuntimeLifecycleStillTearsDownWhenNothingIsInFlight() async throws {
+        let harness = try await makeBackgroundVoiceHarness()
+        defer { harness.cleanUp() }
+        let runtime = ContentViewRuntime(
+            store: harness.store,
+            voiceCoordinator: harness.voice,
+            homeClientFactory: FakeHomeBridgeSessionClientFactory(client: harness.client),
+            homeClock: ContinuousHomeMonotonicClock(),
+            backgroundRetentionEnabled: true,
+            journal: harness.journal
+        )
+
+        _ = await runtime.lifecycleCoordinator.handle(.inactive)
+        _ = await runtime.lifecycleCoordinator.handle(.background)
+
+        XCTAssertFalse(runtime.lifecycleCoordinator.isRetainingBackgroundWork)
+        XCTAssertEqual(harness.store.connectionState, .disconnected)
+        let closeCount = await harness.client.closeCount
+        XCTAssertEqual(closeCount, 1, "Nothing in flight: background tears down as before")
+        let events = harness.journal.snapshot().map(\.event)
+        XCTAssertTrue(events.contains("lifecycle deactivate trigger=backgroundWithoutRetention reply=none"))
+    }
+
+    @MainActor
     func testBackgroundOutputEngineFailureEndsTheReplyInsteadOfStayingSpeaking() async throws {
         let output = CoordinatorAudioOutput(waitsForFinish: true, stopReleasesFinish: true)
         let harness = try await makeBackgroundVoiceHarness(output: output)
