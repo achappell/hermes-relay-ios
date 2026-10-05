@@ -241,21 +241,24 @@ struct ContentView: View {
 
     var body: some View {
         NavigationStack {
-            // At rest the HUD is pinned to the visible height, so it
-            // compresses the transcript above the bottom bar as it always has.
-            // Beside the keyboard it cannot fit on any iPhone, so while the
-            // composer is focused it may grow and scroll: the composer stays
-            // above the keyboard, and the interactive dismiss has a scroll
-            // view to act on. The scroll view is always present — swapping
-            // it in on focus counted as a scroll and dismissed the keyboard.
+            // The HUD fills the visible height between the top bar and the
+            // bottom bar, compressing its orb and spacers to fit. It is never
+            // pinned to that height: when even the compressed content is
+            // taller (large Dynamic Type, a long Home status block, a wrapped
+            // Profile name, the keyboard) the scroll view scrolls instead of
+            // a fixed frame spilling the overflow symmetrically under the
+            // Disconnect toolbar button and behind the bottom bar. The bottom
+            // bar is a safe-area inset, so the last content scrolls fully
+            // clear of it. The scroll view is always present — swapping it in
+            // on focus counted as a scroll and dismissed the keyboard — and
+            // it bounces only when its content overflows.
             GeometryReader { proxy in
                 let isComposing = focusedField == .composer
                 ScrollView {
-                    ambientHUD
-                        .frame(height: isComposing ? nil : proxy.size.height)
-                        .frame(minHeight: proxy.size.height)
+                    ViewportFillLayout(viewportHeight: proxy.size.height) {
+                        ambientHUD
+                    }
                 }
-                .scrollDisabled(!isComposing)
                 .scrollBounceBehavior(.basedOnSize)
                 // As in Messages: tapping the conversation while typing puts
                 // the keyboard away (swiping down and sending also do).
