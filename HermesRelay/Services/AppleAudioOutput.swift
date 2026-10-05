@@ -40,6 +40,12 @@ actor AppleAudioOutput: AudioOutput {
     private var audioFormat: AVAudioFormat?
     private var pcmFrameAccumulator: PCMFrameAccumulator?
     private var scheduledAudioBytes = 0
+    /// Bytes of scheduled audio the renderer has finished (`.dataPlayedBack`).
+    /// The queued lead is scheduled minus completed. The node's own timeline
+    /// keeps running through an underrun, so position-based lead reads zero
+    /// for as long as the stream has been silent in total.
+    private var completedAudioBytes = 0
+    private var streamGeneration = 0
     private var isAcceptingAudio = false
     private var playbackStarted = false
     /// Survives `stop()`/`start(format:)`: a pause requested before the next
@@ -270,9 +276,11 @@ actor AppleAudioOutput: AudioOutput {
 
     /// Seconds of scheduled audio the renderer has not reached yet.
     func playbackLead() async -> TimeInterval? {
-        guard let scheduled = scheduledSeconds else { return nil }
-        let played = playbackStarted ? (await playbackPosition() ?? 0) : 0
-        return max(0, scheduled - played)
+        guard let audioFormat, audioFormat.sampleRate > 0 else { return nil }
+        let bytesPerFrame = Int(audioFormat.streamDescription.pointee.mBytesPerFrame)
+        guard bytesPerFrame > 0, scheduledAudioBytes > 0 else { return nil }
+        let queuedBytes = max(0, scheduledAudioBytes - completedAudioBytes)
+        return Double(queuedBytes / bytesPerFrame) / audioFormat.sampleRate
     }
 
     private var scheduledSeconds: TimeInterval? {
@@ -280,6 +288,14 @@ actor AppleAudioOutput: AudioOutput {
         let bytesPerFrame = Int(audioFormat.streamDescription.pointee.mBytesPerFrame)
         guard bytesPerFrame > 0, scheduledAudioBytes > 0 else { return nil }
         return Double(scheduledAudioBytes / bytesPerFrame) / audioFormat.sampleRate
+    }
+
+    private func bufferPlayed(bytes: Int, generation: Int) async {
+        // A stopped stream's buffers complete after the reset; ignore them.
+        if generation == streamGeneration {
+            completedAudioBytes += bytes
+        }
+        await playbackDrain.bufferDidComplete()
     }
 
     private func schedule(
@@ -310,12 +326,14 @@ actor AppleAudioOutput: AudioOutput {
         }
         await playbackDrain.scheduleBuffer()
         scheduledAudioBytes += pcm.count
+        let generation = streamGeneration
+        let byteCount = pcm.count
         playerNode.scheduleBuffer(
             buffer,
             completionCallbackType: .dataPlayedBack
         ) { [weak self] _ in
             Task {
-                await self?.playbackDrain.bufferDidComplete()
+                await self?.bufferPlayed(bytes: byteCount, generation: generation)
             }
         }
         releaseCushionIfReady()
@@ -381,6 +399,8 @@ actor AppleAudioOutput: AudioOutput {
         isAcceptingAudio = false
         pcmFrameAccumulator = nil
         scheduledAudioBytes = 0
+        completedAudioBytes = 0
+        streamGeneration += 1
         await playbackDrain.reset()
         playbackStarted = false
         playerNode.stop()

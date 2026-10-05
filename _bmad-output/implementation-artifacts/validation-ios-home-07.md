@@ -266,3 +266,32 @@ audio output lead_ms=588 t_ms=5000 state=speaking playing=true
 ### Capturing a real log archive (not available from this machine today)
 
 `idevicesyslog` needs the phone on usbmuxd: plug the phone in with a USB cable, unlock it, tap Trust if asked, then `idevice_id -l` must print the UDID. Repro: start a long reply, background it, return. Then from the Mac: `idevicesyslog archive /tmp/hermes-bg.tar --start-time $(( $(date +%s) - 300 ))`, extract and rename to `.logarchive`, or with admin rights `sudo log collect --device-udid <UDID> --last 5m --output /tmp/hermes-bg.logarchive`. Look for `AURemoteIO`/`AVAudioEngine` start-stop lines, IO buffer duration changes and the `mediaremoted` activity around `app phase=background`.
+
+## Follow-up: one-second pause at background entry on build 19 (2026-10-05)
+
+### Evidence (device journal, build `0.6.0` (19), UTC)
+
+- 21:36:38.611 Home audio started; 21:36:38.822 `audio output cushion started lead_ms=379 reason=threshold`. The agent finished the text at 21:36:44.5 while audio was still streaming, and the reply was long (no `voice response ended` by 21:37:10).
+- 21:36:47.82 `inactive`; 21:36:48.40 `background`; 21:36:48.658 `voice background enter retention=reply` and `audio session mixing wanted=nonMixable deferred live=true`. No `voice audio session event`, route change, configuration-change notification, `restart=` or `category applied` in the whole window; every sample reports `playing=true`. Cause (c), a player/engine/session pause, is ruled out.
+- The lead sampler runs on the main actor on 250 ms deadlines. Its samples fired on time at t=0 (48.658), 250 (48.919) and 500 ms (49.171). The t=750 ms sample, due at 49.408, was delivered at **50.357**, and the next four (t=1000…1750) landed within 61 ms of each other (50.357–50.418) before regular ticks resumed. The main actor was therefore blocked for about 0.95 s starting at exactly background entry + 750 ms, the instant the deferred `nowPlaying.show` was scheduled to run. That block is also the audible pause: the Home PCM pump shares that actor.
+- The lead values themselves are not usable as evidence of 3.5 s of silence: `lead_ms=0` for t=0…3500 and a recovery to 422 ms at t=4500. `playbackLead()` subtracted the player node's timeline position from the scheduled total, and the node's timeline keeps advancing through silence, so after any underrun it reads zero until new audio outgrows the accumulated silence.
+
+### Cause
+
+(a) feed starvation from a main-actor stall, and the stall is the Now Playing registration (`MPRemoteCommandCenter` targets plus `MPNowPlayingInfoCenter`) running on the main actor. Build 18 ran it at background entry (stutter); build 19's 750 ms deferral only moved the same ~1 s block to 750 ms later and the 300 ms cushion could not cover it. (b) an OS-side render pause is not supported (lead aside, nothing else in the journal changed); (d) the deferral is not the cause, only a displaced trigger. The block's duration is inferred from the sampler timestamps; the new `nowplaying registered took_ms=` journal line measures it directly.
+
+### Fix
+
+- `NowPlayingController` now performs all MediaPlayer work (`prewarm`, `register`, `setPlaying`, `unregister`) on a private serial `DispatchQueue` (`NowPlayingRegistering` seam; `MediaPlayerRegistrar` is the iOS implementation). The main-actor callers return immediately. The registrar is pre-warmed at controller creation (launch), and remote-command callbacks still hop to the main actor. Journal: `nowplaying registered took_ms=N thread=background`.
+- `AppleAudioOutput.playbackLead()` now reports queued audio (scheduled minus completed via `.dataPlayedBack`, per stream generation), which recovers correctly after an underrun.
+- The 750 ms deferral, the Now Playing dedupe and the 300 ms cushion from the previous change are kept.
+
+### Regression coverage
+
+- `AudioOutputTests` (+2): `testNowPlayingRegistrationNeverBlocksTheCallerAndRunsOffTheMainThread` (a 300 ms registrar; the show/update/clear calls return in <100 ms and run in order off the main thread) and `testLeadCountsQueuedAudioNotTheNodeTimelineSoItRecoversAfterAnUnderrun`.
+- **macOS XCTest (serialized):** 647 tests (645 + 2). Focused `VoiceSessionCoordinatorTests` 118, `AppleLifecycleTests` 5, `AudioOutputTests` 39: 0 failures. Six full-suite runs: 2 clean; the others failed only the known flaky `ConversationStoreReconnectTests.testAutomaticHomeReconnectCanReleaseConfirmedInactiveRecovery` (1 run) and `VoiceSessionCoordinatorTests.testBackgroundOutputEngineFailureEndsTheReplyInsteadOfStayingSpeaking` (3 runs), both flaky at the earlier baseline.
+- **iOS Simulator build:** succeeded. Not installed; no Home traffic.
+
+### Retest
+
+Repeat the long-reply, background-for-10-seconds test. Healthy journal: `nowplaying registered took_ms=…` (a background-thread time that may well be near 1000), `audio output lead_ms=…` samples whose `t_ms` lines are about 250 ms apart in wall-clock time with no 1 s hole, and lead values that do not sit at 0 for seconds unless the reply really was silent. If a pause remains with evenly spaced samples and a non-zero lead, the pause is not a main-actor stall and a USB log capture is required (`idevice_id -l` must list the phone, then `idevicesyslog archive /tmp/hermes-bg.tar --start-time $(( $(date +%s) - 300 ))`).

@@ -447,6 +447,59 @@ final class AudioOutputTests: XCTestCase {
         await output.stop()
     }
 
+    func testLeadCountsQueuedAudioNotTheNodeTimelineSoItRecoversAfterAnUnderrun() async throws {
+        let journal = DiagnosticsJournal(fileURL: nil)
+        let output = AppleAudioOutput(
+            audioSessionCoordinator: AppleAudioSessionCoordinator(
+                driver: RecordingAudioSessionDriver(),
+                journal: DiagnosticsJournal(fileURL: nil)
+            ),
+            journal: journal,
+            cushion: .none
+        )
+        try await output.start(format: cushionFormat)
+        _ = try await output.append(Data(count: 2_400)) // 50 ms, played out below
+        var drained = false
+        for _ in 0..<200 where !drained {
+            try await Task.sleep(for: .milliseconds(10))
+            drained = (await output.playbackLead()).map { $0 < 0.001 } ?? false
+        }
+        XCTAssertTrue(drained, "The first chunk finished playing")
+        try await Task.sleep(for: .milliseconds(300)) // an underrun
+
+        _ = try await output.append(hundredMilliseconds)
+        let lead = await output.playbackLead()
+
+        // A position-based lead stayed at zero here until the new audio
+        // outgrew the silence; the queued-audio lead sees the whole chunk.
+        XCTAssertEqual(try XCTUnwrap(lead), 0.1, accuracy: 0.03)
+        await output.stop()
+    }
+
+    @MainActor
+    func testNowPlayingRegistrationNeverBlocksTheCallerAndRunsOffTheMainThread() async throws {
+        let registrar = SlowRecordingRegistrar(registerDelay: 0.3)
+        let journal = DiagnosticsJournal(fileURL: nil)
+        let controller = NowPlayingController(registrar: registrar, journal: journal)
+
+        let began = ContinuousClock.now
+        controller.show(title: "Hermes conversation", isPlaying: true) { _ in }
+        controller.update(isPlaying: false)
+        controller.clear()
+        let callerTime = began.duration(to: .now)
+
+        XCTAssertLessThan(callerTime, .milliseconds(100), "The main actor never waits for MediaPlayer")
+        for _ in 0..<300 where registrar.calls.count < 4 {
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        XCTAssertEqual(
+            registrar.calls,
+            ["prewarm", "register Hermes conversation true", "setPlaying Hermes conversation false", "unregister"]
+        )
+        XCTAssertTrue(registrar.allCallsOffTheMainThread)
+        XCTAssertTrue(journal.snapshot().map(\.event).contains { $0.hasPrefix("nowplaying registered took_ms=") })
+    }
+
     func testRecoveringOutputWritesBufferedPCMWhenLiveOutputFails() async throws {
         let liveOutput = RecordingAudioOutput(appendError: .outputFailed)
         let output = RecoveringAudioOutput(liveOutput: liveOutput)
@@ -878,6 +931,42 @@ private final class SimulatedEngineControl: @unchecked Sendable {
             }
         )
     }
+}
+
+/// Records MediaPlayer calls and makes `register` slow, like the real one.
+private final class SlowRecordingRegistrar: NowPlayingRegistering, @unchecked Sendable {
+    private let lock = NSLock()
+    private var recorded: [String] = []
+    private var offMain = true
+    private let registerDelay: TimeInterval
+
+    init(registerDelay: TimeInterval) {
+        self.registerDelay = registerDelay
+    }
+
+    var calls: [String] { lock.withLock { recorded } }
+    var allCallsOffTheMainThread: Bool { lock.withLock { offMain } }
+
+    private func record(_ call: String) {
+        lock.withLock {
+            recorded.append(call)
+            if Thread.isMainThread { offMain = false }
+        }
+    }
+
+    func prewarm() { record("prewarm") }
+
+    func register(
+        title: String,
+        isPlaying: Bool,
+        onCommand: @escaping @Sendable (NowPlayingCommand) -> Void
+    ) {
+        Thread.sleep(forTimeInterval: registerDelay)
+        record("register \(title) \(isPlaying)")
+    }
+
+    func setPlaying(title: String, isPlaying: Bool) { record("setPlaying \(title) \(isPlaying)") }
+    func unregister() { record("unregister") }
 }
 
 /// Reports the engine stopped until a restart was requested, so a burst of
