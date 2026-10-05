@@ -344,6 +344,7 @@
 				A10000000000000000000050 /* Sources */,
 				A10000000000000000000051 /* Frameworks */,
 				A10000000000000000000053 /* Resources */,
+				B5A100000000000000000001 /* Stamp Build Number */,
 			);
 			buildRules = (
 			);
@@ -426,6 +427,31 @@
 			runOnlyForDeploymentPostprocessing = 0;
 		};
 /* End PBXResourcesBuildPhase section */
+
+/* Begin PBXShellScriptBuildPhase section */
+		B5A100000000000000000001 /* Stamp Build Number */ = {
+			isa = PBXShellScriptBuildPhase;
+			alwaysOutOfDate = 1;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			inputPaths = (
+				"$(PROJECT_DIR)/scripts/stamp-ios-build-number.sh",
+				"$(PROJECT_FILE_PATH)/project.pbxproj",
+				"$(TARGET_BUILD_DIR)/$(INFOPLIST_PATH)",
+			);
+			name = "Stamp Build Number";
+			outputPaths = (
+				"$(HERMES_BUILD_NUMBER_DIR)/ios-build-number",
+				"$(HERMES_BUILD_NUMBER_DIR)/ios-build-number.lock",
+				"$(HERMES_BUILD_NUMBER_DIR)/ios-build-number.tmp",
+				"$(TARGET_BUILD_DIR)/$(INFOPLIST_PATH)",
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+			shellPath = /bin/sh;
+			shellScript = "\"${PROJECT_DIR}/scripts/stamp-ios-build-number.sh\"\n";
+		};
+/* End PBXShellScriptBuildPhase section */
 
 /* Begin PBXSourcesBuildPhase section */
 		A10000000000000000000050 /* Sources */ = {
@@ -623,8 +649,9 @@
 				CODE_SIGN_ENTITLEMENTS = HermesRelay/HermesRelay.entitlements;
 				"CODE_SIGN_IDENTITY[sdk=macosx*]" = "Apple Development";
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 1;
+				CURRENT_PROJECT_VERSION = 3;
 				DEVELOPMENT_TEAM = 37CAHGRH45;
+				HERMES_BUILD_NUMBER_DIR = "$(HOME)/Library/Application Support/HermesRelay";
 				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
 				ENABLE_APP_SANDBOX = YES;
 				ENABLE_HARDENED_RUNTIME = YES;
@@ -669,8 +696,9 @@
 				CODE_SIGN_ENTITLEMENTS = HermesRelay/HermesRelay.entitlements;
 				"CODE_SIGN_IDENTITY[sdk=macosx*]" = "Apple Development";
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 1;
+				CURRENT_PROJECT_VERSION = 3;
 				DEVELOPMENT_TEAM = 37CAHGRH45;
+				HERMES_BUILD_NUMBER_DIR = "$(HOME)/Library/Application Support/HermesRelay";
 				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
 				ENABLE_APP_SANDBOX = YES;
 				ENABLE_HARDENED_RUNTIME = YES;
