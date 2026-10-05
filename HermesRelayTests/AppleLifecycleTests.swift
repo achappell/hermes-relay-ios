@@ -39,7 +39,12 @@ final class AppleLifecycleTests: XCTestCase {
             store: fixture.store,
             voice: voice,
             homeClientFactory: fixture.factory,
-            clock: ContinuousHomeMonotonicClock()
+            clock: ContinuousHomeMonotonicClock(),
+            // These tests pin the teardown-on-inactive policy that macOS (and
+            // iOS without a reply in flight) uses. iOS defaults to background
+            // retention, where `.inactive` only snapshots, so the platform
+            // default would make the test depend on the destination.
+            backgroundRetentionEnabled: false
         )
 
         let relaunchResult = await coordinator.handle(.relaunch)
@@ -81,7 +86,8 @@ final class AppleLifecycleTests: XCTestCase {
             store: fixture.store,
             voice: voice,
             homeClientFactory: fixture.factory,
-            clock: ContinuousHomeMonotonicClock()
+            clock: ContinuousHomeMonotonicClock(),
+            backgroundRetentionEnabled: false
         )
         _ = await coordinator.handle(.relaunch)
         XCTAssertTrue(fixture.store.connectionState.isConnected)

@@ -2885,6 +2885,11 @@ final class ConversationStore {
         sessionMetadata = nil
         sessionStartedAt = nil
         if reconnectTask == nil {
+            // The loop below reconnects the same conversation. A connect retry
+            // armed earlier (for example by an uncertain submission) would wake
+            // at nearly the same time and run a second recovery, whose outcome
+            // could land after the loop's and leave the store reconnecting.
+            cancelHomeConnectRetry()
             Task { await persistConversation() }
             reconnectTask = Task { [weak self] in
                 await self?.runHomeReconnectLoop()

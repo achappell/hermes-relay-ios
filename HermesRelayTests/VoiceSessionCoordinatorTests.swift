@@ -3658,9 +3658,23 @@ final class VoiceSessionCoordinatorTests: XCTestCase {
         await responseTask.value
         _ = await harness.lifecycle.handle(.active)
 
+        // The reply ended as a playback failure. That is recorded
+        // synchronously when the response task clears, before the retention
+        // callback can queue the lifecycle teardown. `voice.state` itself is
+        // not stable afterwards: teardown resets it to idle, and whether it
+        // runs before or after the `.active` above is a scheduling race
+        // between two separately queued main-actor tasks.
+        let events = harness.journal.snapshot().map(\.event)
+        XCTAssertTrue(
+            events.contains { $0.hasPrefix("voice response ended path=draft state=failed ") },
+            "The reply must end as a playback failure: \(events.filter { $0.hasPrefix("voice response ended") })"
+        )
         XCTAssertNotEqual(harness.voice.state, .speaking)
-        guard case .failed = harness.voice.state else {
-            return XCTFail("Expected a playback failure, got \(harness.voice.state)")
+        switch harness.voice.state {
+        case .failed, .idle:
+            break // failed if `.active` won the race, idle if teardown did
+        default:
+            XCTFail("Unexpected state after a failed reply: \(harness.voice.state)")
         }
         XCTAssertEqual(harness.voice.backgroundRetention, .none, "No reply is left in flight")
         let submitted = await harness.client.submittedTexts
