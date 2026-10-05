@@ -3181,6 +3181,96 @@ final class VoiceSessionCoordinatorTests: XCTestCase {
     }
 
     @MainActor
+    func testBackgroundedPlayingReplyKeepsTheSocketAndExplainsTeardownInTheJournal() async throws {
+        let output = CoordinatorAudioOutput(waitsForFinish: true, stopReleasesFinish: true)
+        let harness = try await makeBackgroundVoiceHarness(output: output)
+        defer { harness.cleanUp() }
+        let responseTask = try await startPlayingHomeReply(harness, prompt: "Read me the news")
+
+        let inactive = await harness.lifecycle.handle(.inactive)
+        let background = await harness.lifecycle.handle(.background)
+        // Let any queued retention or teardown work run before asserting.
+        try await Task.sleep(for: .milliseconds(100))
+
+        XCTAssertEqual(inactive, .completed)
+        XCTAssertEqual(background, .completed)
+        XCTAssertTrue(harness.lifecycle.isRetainingBackgroundWork)
+        XCTAssertEqual(harness.voice.backgroundRetention, .reply)
+        XCTAssertTrue(harness.store.connectionState.isConnected)
+        var closeCount = await harness.client.closeCount
+        XCTAssertEqual(closeCount, 0, "A reply still playing keeps the Home socket")
+        var events = harness.journal.snapshot().map(\.event)
+        XCTAssertTrue(events.contains("voice background enter retention=reply"))
+        XCTAssertFalse(events.contains { $0.hasPrefix("voice background retention ended") })
+        XCTAssertFalse(events.contains { $0.hasPrefix("lifecycle deactivate") })
+
+        await output.allowFinish()
+        await responseTask.value
+        await pollUntil { harness.store.connectionState == .disconnected }
+
+        closeCount = await harness.client.closeCount
+        XCTAssertEqual(closeCount, 1)
+        events = harness.journal.snapshot().map(\.event)
+        XCTAssertTrue(events.contains("voice background retention ended reason=workFinished"))
+        XCTAssertTrue(events.contains { $0.hasPrefix("lifecycle deactivate trigger=backgroundWorkEnded") })
+        XCTAssertTrue(events.contains("lifecycle closing Home client trigger=backgroundWorkEnded"))
+        XCTAssertTrue(events.contains { $0.hasPrefix("voice stopForLifecycle") })
+    }
+
+    @MainActor
+    func testJournalNamesTheInterruptionThatEndedBackgroundRetention() async throws {
+        let output = CoordinatorAudioOutput(waitsForFinish: true, stopReleasesFinish: true)
+        let harness = try await makeBackgroundVoiceHarness(output: output)
+        defer { harness.cleanUp() }
+        let responseTask = try await startPlayingHomeReply(harness, prompt: "Read me the news")
+        _ = await harness.lifecycle.handle(.background)
+
+        harness.events.send(.interruptionBegan)
+        await pollUntil { harness.voice.isReplyOutputPaused }
+        harness.events.send(.interruptionEnded(shouldResume: false))
+        await pollUntil { harness.store.connectionState == .disconnected }
+
+        let events = harness.journal.snapshot().map(\.event)
+        XCTAssertTrue(events.contains("voice audio session event interruptionBegan reply=true backgrounded=true"))
+        XCTAssertTrue(events.contains("voice background retention ended reason=interruption"))
+        XCTAssertTrue(events.contains("lifecycle closing Home client trigger=backgroundWorkEnded"))
+        await output.allowFinish()
+        await responseTask.value
+    }
+
+    @MainActor
+    func testJournalNamesTheLockScreenStopThatEndedBackgroundRetention() async throws {
+        let output = CoordinatorAudioOutput(waitsForFinish: true, stopReleasesFinish: true)
+        let harness = try await makeBackgroundVoiceHarness(output: output)
+        defer { harness.cleanUp() }
+        let responseTask = try await startPlayingHomeReply(harness, prompt: "Read me the news")
+        _ = await harness.lifecycle.handle(.background)
+
+        harness.nowPlaying.send(.stop)
+        await pollUntil { harness.store.connectionState == .disconnected }
+
+        let events = harness.journal.snapshot().map(\.event)
+        XCTAssertTrue(events.contains("voice background retention ended reason=nowPlayingStop"))
+        await output.allowFinish()
+        await responseTask.value
+    }
+
+    @MainActor
+    func testJournalNamesWindowDisappearanceAndIdleBackgroundTeardown() async throws {
+        let harness = try await makeBackgroundVoiceHarness()
+        defer { harness.cleanUp() }
+
+        let ignored = await harness.lifecycle.handleWindowDisappeared(isSceneActive: false)
+        let background = await harness.lifecycle.handle(.background)
+
+        XCTAssertEqual(ignored, .completed)
+        XCTAssertEqual(background, .completed)
+        let events = harness.journal.snapshot().map(\.event)
+        XCTAssertTrue(events.contains("lifecycle windowDisappeared scene_active=false ignored"))
+        XCTAssertTrue(events.contains("lifecycle deactivate trigger=backgroundWithoutRetention reply=none"))
+    }
+
+    @MainActor
     func testBackgroundOutputEngineFailureEndsTheReplyInsteadOfStayingSpeaking() async throws {
         let output = CoordinatorAudioOutput(waitsForFinish: true, stopReleasesFinish: true)
         let harness = try await makeBackgroundVoiceHarness(output: output)
@@ -3465,6 +3555,7 @@ final class VoiceSessionCoordinatorTests: XCTestCase {
         let nowPlaying = RecordingNowPlaying()
         let policy = RecordingAudioSessionPolicy()
         let events = ScriptedAudioSessionEvents()
+        let journal = DiagnosticsJournal(fileURL: nil)
         let voice = VoiceSessionCoordinator(
             store: fixture.store,
             input: CoordinatorSpeechInput(),
@@ -3473,14 +3564,16 @@ final class VoiceSessionCoordinatorTests: XCTestCase {
             clock: clock,
             audioSessionPolicy: policy,
             audioSessionEvents: events,
-            nowPlaying: nowPlaying
+            nowPlaying: nowPlaying,
+            journal: journal
         )
         let lifecycle = AppleLifecycleCoordinator(
             store: fixture.store,
             voice: voice,
             homeClientFactory: FakeHomeBridgeSessionClientFactory(client: fixture.client),
             clock: clock,
-            backgroundRetentionEnabled: backgroundRetentionEnabled
+            backgroundRetentionEnabled: backgroundRetentionEnabled,
+            journal: journal
         )
         return BackgroundVoiceHarness(
             fixture: fixture,
@@ -3489,7 +3582,8 @@ final class VoiceSessionCoordinatorTests: XCTestCase {
             nowPlaying: nowPlaying,
             policy: policy,
             events: events,
-            output: output
+            output: output,
+            journal: journal
         )
     }
 
@@ -3648,6 +3742,7 @@ private struct BackgroundVoiceHarness {
     let policy: RecordingAudioSessionPolicy
     let events: ScriptedAudioSessionEvents
     let output: CoordinatorAudioOutput
+    let journal: DiagnosticsJournal
 
     var store: ConversationStore { fixture.store }
     var client: FakeHomeBridgeSessionClient { fixture.client }

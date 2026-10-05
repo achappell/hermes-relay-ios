@@ -42,19 +42,22 @@ final class AppleLifecycleCoordinator {
     // still finishing can never drop or undo a newer activation.
     private var latestRequest: UInt64 = 0
     private var pendingWork: Task<Void, Never>?
+    private let journal: DiagnosticsJournal
 
     init(
         store: ConversationStore,
         voice: VoiceSessionCoordinator,
         homeClientFactory: HomeBridgeSessionClientFactory,
         clock: any HomeMonotonicClock,
-        backgroundRetentionEnabled: Bool = AppleLifecycleCoordinator.platformSupportsBackgroundRetention
+        backgroundRetentionEnabled: Bool = AppleLifecycleCoordinator.platformSupportsBackgroundRetention,
+        journal: DiagnosticsJournal = .shared
     ) {
         self.store = store
         self.voice = voice
         self.homeClientFactory = homeClientFactory
         self.clock = clock
         self.backgroundRetentionEnabled = backgroundRetentionEnabled
+        self.journal = journal
         store.configureHomeClientFactory(homeClientFactory)
     }
 
@@ -70,8 +73,10 @@ final class AppleLifecycleCoordinator {
         guard !backgroundRetentionEnabled || isSceneActive else {
             // Inactive/background phase callbacks own iOS teardown. Do not let
             // a disappearing view supersede phase work already in the queue.
+            journal.record("lifecycle windowDisappeared scene_active=false ignored")
             return .completed
         }
+        journal.record("lifecycle windowDisappeared scene_active=\(isSceneActive) teardown")
         return await handle(.windowDisappeared)
     }
 
@@ -81,7 +86,10 @@ final class AppleLifecycleCoordinator {
         let previous = pendingWork
         let work = Task { @MainActor [weak self] () -> AppleLifecycleOutcome in
             await previous?.value
-            guard let self, request == self.latestRequest else { return .completed }
+            guard let self, request == self.latestRequest else {
+                self?.journal.record("lifecycle input=\(input.journalName) superseded")
+                return .completed
+            }
             return await self.process(input)
         }
         pendingWork = Task { _ = await work.value }
@@ -89,6 +97,9 @@ final class AppleLifecycleCoordinator {
     }
 
     private func process(_ input: AppleLifecycleInput) async -> AppleLifecycleOutcome {
+        journal.record(
+            "lifecycle input=\(input.journalName) active=\(isActive) retaining=\(isRetainingBackgroundWork)"
+        )
         switch input {
         case .active:
             if isRetainingBackgroundWork {
@@ -107,10 +118,10 @@ final class AppleLifecycleCoordinator {
         case .background where backgroundRetentionEnabled:
             return await deactivateRetainingVoiceWork()
         case .inactive, .background, .suspended, .windowDisappeared:
-            return await deactivate()
+            return await deactivate(trigger: input.journalName)
         case .backgroundWorkEnded:
             guard isRetainingBackgroundWork else { return .completed }
-            return await deactivate()
+            return await deactivate(trigger: input.journalName)
         }
     }
 
@@ -126,7 +137,7 @@ final class AppleLifecycleCoordinator {
     /// the retained work has already ended, tear down here instead.
     private func snapshotOrFinishRetainedWork() async -> AppleLifecycleOutcome {
         if isRetainingBackgroundWork, voice.backgroundRetention == .none {
-            return await deactivate()
+            return await deactivate(trigger: "inactiveAfterRetentionEnded")
         }
         return await snapshotOnly()
     }
@@ -134,7 +145,7 @@ final class AppleLifecycleCoordinator {
     private func deactivateRetainingVoiceWork() async -> AppleLifecycleOutcome {
         guard !isRetainingBackgroundWork else { return await snapshotOrFinishRetainedWork() }
         guard isActive, voice.backgroundRetention != .none else {
-            return await deactivate()
+            return await deactivate(trigger: "backgroundWithoutRetention")
         }
         guard await store.lifecycleSnapshot() else {
             deactivationPending = true
@@ -148,7 +159,7 @@ final class AppleLifecycleCoordinator {
                 _ = await self?.handle(.backgroundWorkEnded)
             }
         }
-        guard retained else { return await deactivate() }
+        guard retained else { return await deactivate(trigger: "backgroundRetentionRefused") }
         return .completed
     }
 
@@ -161,14 +172,17 @@ final class AppleLifecycleCoordinator {
             await voice.exitBackground()
             return .completed
         }
-        let teardown = await deactivate()
+        journal.record(
+            "lifecycle active found no live transport while retaining; deactivate and reactivate"
+        )
+        let teardown = await deactivate(trigger: "activeWithoutLiveTransport")
         guard teardown == .completed else { return teardown }
         return await activate()
     }
 
     private func activate() async -> AppleLifecycleOutcome {
         if deactivationPending {
-            let result = await deactivate()
+            let result = await deactivate(trigger: "pendingBeforeActivate")
             guard result == .completed else { return result }
         }
 
@@ -194,7 +208,10 @@ final class AppleLifecycleCoordinator {
         return .completed
     }
 
-    private func deactivate() async -> AppleLifecycleOutcome {
+    private func deactivate(trigger: String) async -> AppleLifecycleOutcome {
+        journal.record(
+            "lifecycle deactivate trigger=\(trigger) reply=\(voice.backgroundRetention.journalName)"
+        )
         let snapshotSucceeded = await store.lifecycleWillDeactivate()
         guard snapshotSucceeded else {
             deactivationPending = true
@@ -212,7 +229,24 @@ final class AppleLifecycleCoordinator {
         // the same client twice.
         let client = store.takeHomeClientForLifecycle()
         activeHomeClient = nil
+        if client != nil {
+            journal.record("lifecycle closing Home client trigger=\(trigger)")
+        }
         await client?.close()
         return .completed
+    }
+}
+
+extension AppleLifecycleInput {
+    var journalName: String {
+        switch self {
+        case .active: "active"
+        case .inactive: "inactive"
+        case .background: "background"
+        case .suspended: "suspended"
+        case .windowDisappeared: "windowDisappeared"
+        case .relaunch: "relaunch"
+        case .backgroundWorkEnded: "backgroundWorkEnded"
+        }
     }
 }

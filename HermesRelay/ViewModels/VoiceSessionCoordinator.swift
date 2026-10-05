@@ -77,6 +77,27 @@ enum VoiceBackgroundRetention: Equatable, Sendable {
     case voiceSession
 }
 
+extension VoiceBackgroundRetention {
+    var journalName: String {
+        switch self {
+        case .none: "none"
+        case .reply: "reply"
+        case .voiceSession: "voiceSession"
+        }
+    }
+}
+
+extension AudioSessionEvent {
+    var journalName: String {
+        switch self {
+        case .interruptionBegan: "interruptionBegan"
+        case .interruptionEnded(let shouldResume): "interruptionEnded(shouldResume=\(shouldResume))"
+        case .oldDeviceUnavailable: "oldDeviceUnavailable"
+        case .newDeviceAvailable: "newDeviceAvailable"
+        }
+    }
+}
+
 /// What paused reply output (IOS-HOME-07).
 enum ReplyPauseReason: Equatable, Sendable {
     /// A phone call, Siri or another app took the audio session.
@@ -162,10 +183,13 @@ final class VoiceSessionCoordinator {
     private let backgroundIdleTimeout: Duration
     private let audioSessionPolicy: any BackgroundAudioSessionPolicy
     private let nowPlaying: (any NowPlayingPresenting)?
+    private let journal: DiagnosticsJournal
     private(set) var isBackgrounded = false
     /// Set when background work must end now (idle timeout, lock-screen Stop,
     /// an interruption that cannot resume). Retention then reports `.none`.
     private var backgroundWorkEnded = false
+    /// Why `backgroundWorkEnded` was set; journaled when retention ends.
+    @ObservationIgnored private var backgroundEndReason: String?
     private(set) var backgroundIdleTimeoutFired = false
     /// Why reply output is held. Each source resumes only its own pause.
     private(set) var replyPauseReason: ReplyPauseReason?
@@ -191,7 +215,8 @@ final class VoiceSessionCoordinator {
         backgroundIdleTimeout: Duration = .seconds(60),
         audioSessionPolicy: any BackgroundAudioSessionPolicy = NoopBackgroundAudioSessionPolicy(),
         audioSessionEvents: any AudioSessionEventSource = SystemAudioSessionEventSource(),
-        nowPlaying: (any NowPlayingPresenting)? = nil
+        nowPlaying: (any NowPlayingPresenting)? = nil,
+        journal: DiagnosticsJournal = .shared
     ) {
         self.interruptByTalking = interruptByTalking
         self.store = store
@@ -206,6 +231,7 @@ final class VoiceSessionCoordinator {
         self.backgroundIdleTimeout = backgroundIdleTimeout
         self.audioSessionPolicy = audioSessionPolicy
         self.nowPlaying = nowPlaying
+        self.journal = journal
         let events = audioSessionEvents.events()
         audioSessionEventTask = Task { @MainActor [weak self] in
             for await event in events {
@@ -884,6 +910,9 @@ final class VoiceSessionCoordinator {
     /// response work, stops native playback, and never sends an interrupt or
     /// reconnect while the surface is inactive.
     func stopForLifecycle() async {
+        journal.record(
+            "voice stopForLifecycle reply=\(responseTask != nil) hands_free=\(isHandsFreeArmed) backgrounded=\(isBackgrounded)"
+        )
         // This teardown is the lifecycle's own; never re-notify it.
         onBackgroundRetentionEnded = nil
         responseGeneration &+= 1
@@ -1517,11 +1546,14 @@ extension VoiceSessionCoordinator {
     /// tears down as before. `onRetentionEnded` fires once, when the work
     /// ends or the idle timeout fires, so the caller can run its teardown.
     func enterBackground(onRetentionEnded: @escaping @MainActor () -> Void) async -> Bool {
-        guard backgroundRetention != .none else { return false }
+        let retention = backgroundRetention
+        guard retention != .none else { return false }
         isBackgrounded = true
         backgroundWorkEnded = false
         backgroundIdleTimeoutFired = false
+        backgroundEndReason = nil
         onBackgroundRetentionEnded = onRetentionEnded
+        journal.record("voice background enter retention=\(retention.journalName)")
         await audioSessionPolicy.setBackgroundVoiceActive(true)
         // A hands-free session with no reply output is not "playing".
         nowPlaying?.show(title: nowPlayingTitle, isPlaying: isReplyOutputPlaying) { [weak self] command in
@@ -1535,6 +1567,7 @@ extension VoiceSessionCoordinator {
     /// by lock-screen Pause or an interruption has no foreground control, so
     /// it resumes; a route-loss pause waits for the route to come back.
     func exitBackground() async {
+        journal.record("voice background exit")
         if replyPauseReason == .user || replyPauseReason == .interruption {
             await resumeReplyOutput()
         }
@@ -1542,6 +1575,9 @@ extension VoiceSessionCoordinator {
     }
 
     func handleAudioSessionEvent(_ event: AudioSessionEvent) async {
+        journal.record(
+            "voice audio session event \(event.journalName) reply=\(responseTask != nil) backgrounded=\(isBackgrounded)"
+        )
         switch event {
         case .interruptionBegan:
             // Decision 5: an interruption ends the mic session outright.
@@ -1563,7 +1599,7 @@ extension VoiceSessionCoordinator {
                !backgroundIdleTimeoutFired {
                 await resumeReplyOutput()
             } else if isBackgrounded {
-                endBackgroundWork()
+                endBackgroundWork(reason: "interruption")
             } else {
                 await stopPlayback()
             }
@@ -1592,7 +1628,7 @@ extension VoiceSessionCoordinator {
                 await pauseReplyOutput(.user)
             }
         case .stop:
-            endBackgroundWork()
+            endBackgroundWork(reason: "nowPlayingStop")
         }
     }
 
@@ -1628,9 +1664,10 @@ extension VoiceSessionCoordinator {
         Task { await output.resume() }
     }
 
-    private func endBackgroundWork() {
+    private func endBackgroundWork(reason: String) {
         guard isBackgrounded else { return }
         backgroundWorkEnded = true
+        backgroundEndReason = reason
         evaluateBackgroundRetention()
     }
 
@@ -1654,6 +1691,11 @@ extension VoiceSessionCoordinator {
             cancelBackgroundIdleTimeout()
             let callback = onBackgroundRetentionEnded
             onBackgroundRetentionEnded = nil
+            if callback != nil {
+                journal.record(
+                    "voice background retention ended reason=\(backgroundEndReason ?? "workFinished")"
+                )
+            }
             callback?()
             return
         }
@@ -1708,7 +1750,7 @@ extension VoiceSessionCoordinator {
             self.backgroundIdleDeadlineArmed = false
             self.backgroundIdleTask = nil
             self.backgroundIdleTimeoutFired = true
-            self.endBackgroundWork()
+            self.endBackgroundWork(reason: "idleTimeout")
         }
     }
 

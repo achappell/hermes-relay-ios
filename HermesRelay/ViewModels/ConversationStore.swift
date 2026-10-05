@@ -1909,6 +1909,7 @@ final class ConversationStore {
                   !self.homeControlTerminal else { return }
             self.cancelHomeControlDeadlines()
             self.homeJoinTimeout = .controlTerminalMissing
+            DiagnosticsJournal.shared.record("store Home deadline expired kind=controlTerminalMissing")
             let conversation = self.homeConversationBinding
             let text = self.activeTurnText
                 ?? self.unconfirmedTurnText
@@ -1951,6 +1952,7 @@ final class ConversationStore {
                   !self.homeAudioTerminal,
                   !self.homeAudioTerminalProcessing else { return }
             self.homeJoinTimeout = .audioTerminalMissing
+            DiagnosticsJournal.shared.record("store Home deadline expired kind=audioTerminalMissing")
             await self.markHomeAudioUnavailable(generation: self.nextTurnGeneration)
         }
     }
@@ -1972,6 +1974,7 @@ final class ConversationStore {
                   !self.homeAudioTerminal,
                   !self.homeAudioTerminalProcessing else { return }
             self.homeJoinTimeout = .audioStartMissing
+            DiagnosticsJournal.shared.record("store Home deadline expired kind=audioStartMissing")
             await self.markHomeAudioUnavailable(generation: self.nextTurnGeneration)
         }
     }
@@ -2360,6 +2363,9 @@ final class ConversationStore {
         attemptID: UUID,
         turn: HomeTurnBinding? = nil
     ) async {
+        DiagnosticsJournal.shared.record(
+            "store Home submission marked uncertain; closing Home client \(failure.diagnosticSummary)"
+        )
         canContinueWithoutResendingHomeTurn = false
         homeReconnectConfirmsNoUnresolvedTurn = false
         homeRecovery = makeHomeRecovery(
@@ -2846,6 +2852,7 @@ final class ConversationStore {
 
     private func handleUnexpectedHomeTransportLoss() {
         guard isLifecycleActive, !homeOperationsSuppressed else { return }
+        DiagnosticsJournal.shared.record("store Home transport lost unexpectedly; reconnecting")
         canContinueWithoutResendingHomeTurn = false
         homeReconnectConfirmsNoUnresolvedTurn = false
         if let recovery = homeRecovery,

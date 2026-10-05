@@ -940,6 +940,9 @@ actor URLSessionHomeBridgeSessionClient: HomeBridgeSessionClient {
 
     func close() async {
         guard !closed else { return }
+        DiagnosticsJournal.shared.record(
+            "home client close socket=\(socket != nil) turn_audio=\(activeAudioScope != nil)"
+        )
         closed = true
         generation &+= 1
         readerTask?.cancel()
@@ -980,6 +983,9 @@ actor URLSessionHomeBridgeSessionClient: HomeBridgeSessionClient {
 
     private func retireSocketForReconnect() async {
         let connection = socket
+        if connection != nil {
+            DiagnosticsJournal.shared.record("home client retire socket for reconnect")
+        }
         generation &+= 1
         readerTask?.cancel()
         readerTask = nil

@@ -162,6 +162,138 @@ final class AudioOutputTests: XCTestCase {
         XCTAssertEqual(journal.snapshot().map(\.event), ["audio output engine stopped restart=failed"])
     }
 
+    // MARK: Live session is never reconfigured (2026-10-05 device evidence)
+
+    func testBackgroundNeverReconfiguresALiveSession() async throws {
+        let driver = RecordingAudioSessionDriver()
+        let journal = DiagnosticsJournal(fileURL: nil)
+        let session = AppleAudioSessionCoordinator(driver: driver, journal: journal)
+        try await session.activateOutput()
+        let beforeBackground = driver.calls
+        XCTAssertEqual(
+            beforeBackground,
+            [.setCategory(AudioSessionConfiguration(mode: .spokenAudio, mixing: .duckOthers)), .setActive(true)]
+        )
+
+        await session.setBackgroundVoiceActive(true)
+
+        XCTAssertEqual(driver.calls, beforeBackground, "Backgrounding must not touch the session behind running I/O")
+        XCTAssertEqual(
+            journal.snapshot().map(\.event),
+            [
+                "audio session category applied mode=spokenAudio mixing=duckOthers live=false",
+                "audio session mixing wanted=nonMixable deferred live=true",
+            ]
+        )
+    }
+
+    func testDeferredNonMixableRuleAppliesWhenTheSessionNextActivates() async throws {
+        let driver = RecordingAudioSessionDriver()
+        let session = AppleAudioSessionCoordinator(driver: driver, journal: DiagnosticsJournal(fileURL: nil))
+        try await session.activateOutput()
+        await session.setBackgroundVoiceActive(true)
+        await session.deactivateOutput()
+
+        try await session.activateOutput()
+
+        XCTAssertEqual(
+            driver.calls.last(where: \.isCategory),
+            .setCategory(AudioSessionConfiguration(mode: .spokenAudio, mixing: .nonMixable))
+        )
+    }
+
+    func testAnIdleSessionTakesTheBackgroundRuleAtActivation() async throws {
+        let driver = RecordingAudioSessionDriver()
+        let session = AppleAudioSessionCoordinator(driver: driver, journal: DiagnosticsJournal(fileURL: nil))
+
+        await session.setBackgroundVoiceActive(true)
+        try await session.activateInput()
+
+        XCTAssertEqual(
+            driver.calls,
+            [.setCategory(AudioSessionConfiguration(mode: .measurement, mixing: .nonMixable)), .setActive(true)]
+        )
+    }
+
+    func testALiveSessionKeepsItsMixingWhenTheModeSwitches() async throws {
+        let driver = RecordingAudioSessionDriver()
+        let session = AppleAudioSessionCoordinator(driver: driver, journal: DiagnosticsJournal(fileURL: nil))
+        try await session.activateOutput()
+        await session.setBackgroundVoiceActive(true)
+
+        try await session.activateInput()
+
+        XCTAssertEqual(
+            driver.calls.last(where: \.isCategory),
+            .setCategory(AudioSessionConfiguration(mode: .measurement, mixing: .duckOthers)),
+            "A mode switch must not also flip the live session to non-mixable"
+        )
+    }
+
+    func testReactivatingALiveOutputSessionOnlyActivatesIt() async throws {
+        let driver = RecordingAudioSessionDriver()
+        let session = AppleAudioSessionCoordinator(driver: driver, journal: DiagnosticsJournal(fileURL: nil))
+        try await session.activateOutput()
+        let beforeRestart = driver.calls.count
+
+        try await session.reactivateOutput()
+        try await session.activateOutput()
+
+        XCTAssertEqual(Array(driver.calls.dropFirst(beforeRestart)), [.setActive(true), .setActive(true)])
+        XCTAssertEqual(driver.calls.filter(\.isCategory).count, 1)
+    }
+
+    func testEngineRestartReactivatesTheSessionWithoutReapplyingItsCategory() async throws {
+        let driver = RecordingAudioSessionDriver()
+        let session = AppleAudioSessionCoordinator(driver: driver, journal: DiagnosticsJournal(fileURL: nil))
+        let control = SimulatedEngineControl(reportsStoppedOnce: true)
+        let journal = DiagnosticsJournal(fileURL: nil)
+        let output = AppleAudioOutput(
+            audioSessionCoordinator: session,
+            engineControl: control.control,
+            journal: journal
+        )
+        let format = AudioFormat(sampleRate: 24_000, channels: 1, sampleWidth: 2)
+        try await output.start(format: format)
+        _ = try await output.append(Data(count: 2_400))
+        let beforeRestart = driver.calls.count
+
+        await output.handleEngineConfigurationChange()
+        try await output.finish()
+
+        XCTAssertEqual(control.startCount, 1)
+        XCTAssertEqual(Array(driver.calls.dropFirst(beforeRestart)), [.setActive(true)])
+        XCTAssertEqual(driver.calls.filter(\.isCategory).count, 1, "The restart never sets the category again")
+        XCTAssertEqual(journal.snapshot().map(\.event), ["audio output engine stopped restart=ok"])
+    }
+
+    func testBurstOfConfigurationChangesRestartsTheEngineOnce() async throws {
+        let driver = RecordingAudioSessionDriver()
+        let session = AppleAudioSessionCoordinator(driver: driver, journal: DiagnosticsJournal(fileURL: nil))
+        let control = StoppedUntilStartedEngineControl()
+        let journal = DiagnosticsJournal(fileURL: nil)
+        let output = AppleAudioOutput(
+            audioSessionCoordinator: session,
+            engineControl: control.control,
+            journal: journal
+        )
+        let format = AudioFormat(sampleRate: 24_000, channels: 1, sampleWidth: 2)
+        try await output.start(format: format)
+        _ = try await output.append(Data(count: 2_400))
+        let beforeRestart = driver.calls.count
+
+        await withTaskGroup(of: Void.self) { group in
+            for _ in 0..<4 {
+                group.addTask { await output.handleEngineConfigurationChange() }
+            }
+        }
+        try await output.finish()
+
+        XCTAssertEqual(control.startCount, 1, "Four notifications coalesce into one restart")
+        XCTAssertEqual(Array(driver.calls.dropFirst(beforeRestart)), [.setActive(true)])
+        XCTAssertEqual(journal.snapshot().map(\.event), ["audio output engine stopped restart=ok"])
+    }
+
     func testRecoveringOutputWritesBufferedPCMWhenLiveOutputFails() async throws {
         let liveOutput = RecordingAudioOutput(appendError: .outputFailed)
         let output = RecoveringAudioOutput(liveOutput: liveOutput)
@@ -592,5 +724,52 @@ private final class SimulatedEngineControl: @unchecked Sendable {
                 try engine.start()
             }
         )
+    }
+}
+
+/// Reports the engine stopped until a restart was requested, so a burst of
+/// notifications can be told apart from one restart.
+private final class StoppedUntilStartedEngineControl: @unchecked Sendable {
+    private let lock = NSLock()
+    private var started = false
+    private var starts = 0
+
+    var startCount: Int { lock.withLock { starts } }
+
+    var control: AudioOutputEngineControl {
+        AudioOutputEngineControl(
+            isRunning: { [self] _ in lock.withLock { started } },
+            start: { [self] _ in
+                lock.withLock {
+                    starts += 1
+                    started = true
+                }
+            }
+        )
+    }
+}
+
+private enum RecordedAudioSessionCall: Equatable {
+    case setCategory(AudioSessionConfiguration)
+    case setActive(Bool)
+
+    var isCategory: Bool {
+        if case .setCategory = self { return true }
+        return false
+    }
+}
+
+private final class RecordingAudioSessionDriver: AudioSessionDriver, @unchecked Sendable {
+    private let lock = NSLock()
+    private var recorded: [RecordedAudioSessionCall] = []
+
+    var calls: [RecordedAudioSessionCall] { lock.withLock { recorded } }
+
+    func setCategory(_ configuration: AudioSessionConfiguration) throws {
+        lock.withLock { recorded.append(.setCategory(configuration)) }
+    }
+
+    func setActive(_ active: Bool, notifyOthersOnDeactivation: Bool) throws {
+        lock.withLock { recorded.append(.setActive(active)) }
     }
 }

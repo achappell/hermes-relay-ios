@@ -33,6 +33,10 @@ actor AppleAudioOutput: AudioOutput {
     private let engineControl: AudioOutputEngineControl
     private let journal: DiagnosticsJournal
     private var configurationObserver: AudioEngineConfigurationObserver?
+    /// Engine configuration changes are coalesced into one restart pass.
+    private var isHandlingConfigurationChange = false
+    private var configurationChangeRecheck = false
+    private static let maximumConfigurationPasses = 3
 
     init(
         diagnostics: any AudioPlaybackDiagnostics = NoopAudioPlaybackDiagnostics(),
@@ -62,9 +66,7 @@ actor AppleAudioOutput: AudioOutput {
         }
 
         do {
-            #if os(iOS)
             try await audioSessionCoordinator.activateOutput()
-            #endif
 
             engine.connect(playerNode, to: engine.mainMixerNode, format: avFormat)
             engine.prepare()
@@ -147,9 +149,7 @@ actor AppleAudioOutput: AudioOutput {
         guard isPaused else { return }
         isPaused = false
         guard audioFormat != nil else { return }
-        #if os(iOS)
-        try? await audioSessionCoordinator.activateOutput()
-        #endif
+        try? await audioSessionCoordinator.reactivateOutput()
         if !engine.isRunning {
             try? engine.start()
         }
@@ -167,17 +167,35 @@ actor AppleAudioOutput: AudioOutput {
         }
     }
 
-    /// iOS stops the engine when the session's I/O is reconfigured, for
-    /// example when backgrounding re-applies the session category. Without a
+    /// iOS stops the engine when the session's I/O is reconfigured. Without a
     /// restart, scheduled buffers never play and `finish()` waits forever.
+    ///
+    /// Notifications can arrive in bursts, and a restart that re-applied the
+    /// session category used to post the next one (the 2026-10-05 device runs
+    /// restarted two to three times in a row). Concurrent notifications are
+    /// therefore coalesced into one restart, and the restart only re-activates
+    /// the session: it never sets the category again.
     func handleEngineConfigurationChange() async {
+        if isHandlingConfigurationChange {
+            configurationChangeRecheck = true
+            return
+        }
+        isHandlingConfigurationChange = true
+        defer { isHandlingConfigurationChange = false }
+        var passes = 0
+        repeat {
+            configurationChangeRecheck = false
+            await restartEngineIfStopped()
+            passes += 1
+        } while configurationChangeRecheck && passes < Self.maximumConfigurationPasses
+    }
+
+    private func restartEngineIfStopped() async {
         guard audioFormat != nil, !isPaused, isAcceptingAudio || playbackStarted else {
             return
         }
         guard !engineControl.isRunning(engine) else { return }
-        #if os(iOS)
-        try? await audioSessionCoordinator.activateOutput()
-        #endif
+        try? await audioSessionCoordinator.reactivateOutput()
         do {
             try engineControl.start(engine)
         } catch {
@@ -200,7 +218,8 @@ actor AppleAudioOutput: AudioOutput {
             forName: .AVAudioEngineConfigurationChange,
             object: engine,
             queue: nil
-        ) { [weak self] _ in
+        ) { [weak self, journal] _ in
+            journal.record("audio output engine configuration change notification")
             Task {
                 await self?.handleEngineConfigurationChange()
             }

@@ -107,12 +107,19 @@ struct SystemAudioSessionEventSource: AudioSessionEventSource {
         ) { notification in
             guard let rawType = notification.userInfo?[AVAudioSessionInterruptionTypeKey] as? UInt,
                   let type = AVAudioSession.InterruptionType(rawValue: rawType) else { return }
+            let reason = notification.userInfo?[AVAudioSessionInterruptionReasonKey] as? UInt
             switch type {
             case .began:
+                DiagnosticsJournal.shared.record(
+                    "audio session interruption began reason=\(reason.map(String.init) ?? "none")"
+                )
                 continuation.yield(.interruptionBegan)
             case .ended:
                 let rawOptions = notification.userInfo?[AVAudioSessionInterruptionOptionKey] as? UInt ?? 0
                 let options = AVAudioSession.InterruptionOptions(rawValue: rawOptions)
+                DiagnosticsJournal.shared.record(
+                    "audio session interruption ended should_resume=\(options.contains(.shouldResume))"
+                )
                 continuation.yield(.interruptionEnded(shouldResume: options.contains(.shouldResume)))
             @unknown default:
                 break
@@ -124,6 +131,7 @@ struct SystemAudioSessionEventSource: AudioSessionEventSource {
             queue: nil
         ) { notification in
             guard let rawReason = notification.userInfo?[AVAudioSessionRouteChangeReasonKey] as? UInt else { return }
+            DiagnosticsJournal.shared.record("audio session route change reason=\(rawReason)")
             switch AVAudioSession.RouteChangeReason(rawValue: rawReason) {
             case .oldDeviceUnavailable:
                 continuation.yield(.oldDeviceUnavailable)
@@ -152,65 +160,120 @@ private final class NotificationTokens: @unchecked Sendable {
     }
 }
 
+/// How the shared audio session is configured for one kind of use.
+enum AudioSessionMode: Equatable, Sendable {
+    /// Speech capture.
+    case measurement
+    /// Reply playback.
+    case spokenAudio
+}
+
+struct AudioSessionConfiguration: Equatable, Sendable {
+    let mode: AudioSessionMode
+    let mixing: AudioSessionMixing
+}
+
+/// The only seam to `AVAudioSession`. Tests replace it to assert exactly which
+/// session calls a lifecycle or engine event makes, without audio hardware.
+protocol AudioSessionDriver: Sendable {
+    func setCategory(_ configuration: AudioSessionConfiguration) throws
+    func setActive(_ active: Bool, notifyOthersOnDeactivation: Bool) throws
+}
+
+struct SystemAudioSessionDriver: AudioSessionDriver {
+    func setCategory(_ configuration: AudioSessionConfiguration) throws {
+        #if os(iOS)
+        var options: AVAudioSession.CategoryOptions = [
+            .defaultToSpeaker, .allowBluetoothHFP, .allowBluetoothA2DP,
+        ]
+        if configuration.mixing == .duckOthers {
+            options.insert(.duckOthers)
+        }
+        try AVAudioSession.sharedInstance().setCategory(
+            .playAndRecord,
+            mode: configuration.mode == .measurement ? .measurement : .spokenAudio,
+            options: options
+        )
+        #endif
+    }
+
+    func setActive(_ active: Bool, notifyOthersOnDeactivation: Bool) throws {
+        #if os(iOS)
+        try AVAudioSession.sharedInstance().setActive(
+            active,
+            options: notifyOthersOnDeactivation ? .notifyOthersOnDeactivation : []
+        )
+        #endif
+    }
+}
+
 /// Keeps the microphone alive while hands-free mode listens during playback.
 /// The two platform adapters share this lease so one of them cannot deactivate
 /// the audio session out from under the other.
+///
+/// A live session is never reconfigured behind running I/O. Removing
+/// `duckOthers` also removes the implied `mixWithOthers` (documented on
+/// `AVAudioSessionCategoryOptionDuckOthers`), which turns a mixable session
+/// into a non-mixable one. On the 2026-10-05 device runs that change, applied
+/// by `setBackgroundVoiceActive` while a reply played, was followed about
+/// 0.5 s later by "Session interrupted, will stop iounit" on the playback
+/// engine, so a new mixing rule is only applied when the session next
+/// activates. The same holds for an unchanged category: re-applying it to a
+/// live session posts another route change and engine configuration change,
+/// which is what looped the engine restart.
 actor AppleAudioSessionCoordinator: BackgroundAudioSessionPolicy {
     private var inputActive = false
     private var outputActive = false
+    /// The mixing rule wanted for the next activation.
     private var mixing: AudioSessionMixing = .duckOthers
+    /// What the system session was last told, while this coordinator holds it.
+    private var applied: AudioSessionConfiguration?
+    private var sessionLive = false
+    private let driver: any AudioSessionDriver
+    private let journal: DiagnosticsJournal
+
+    init(
+        driver: any AudioSessionDriver = SystemAudioSessionDriver(),
+        journal: DiagnosticsJournal = .shared
+    ) {
+        self.driver = driver
+        self.journal = journal
+    }
 
     func activateInput() throws {
-        #if os(iOS)
-        let session = AVAudioSession.sharedInstance()
-        try session.setCategory(.playAndRecord, mode: .measurement, options: Self.categoryOptions(for: mixing))
-        try session.setActive(true, options: .notifyOthersOnDeactivation)
-        #endif
+        try activate(mode: .measurement, notifyOthersOnDeactivation: true)
         inputActive = true
     }
 
     func activateOutput() throws {
-        #if os(iOS)
-        let session = AVAudioSession.sharedInstance()
-        try session.setCategory(.playAndRecord, mode: .spokenAudio, options: Self.categoryOptions(for: mixing))
-        try session.setActive(true)
-        #endif
+        try activate(mode: .spokenAudio, notifyOthersOnDeactivation: false)
         outputActive = true
     }
 
-    /// Re-applies the category in place when the session is already live, so
-    /// running playback or capture keeps going with the new mixing rule.
+    /// Re-activates the output session after the system stopped its engine.
+    /// A session this coordinator already holds keeps its category; only the
+    /// activation is repeated, because the system may have deactivated it.
+    func reactivateOutput() throws {
+        guard sessionLive else {
+            try activateOutput()
+            return
+        }
+        try driver.setActive(true, notifyOthersOnDeactivation: false)
+        outputActive = true
+    }
+
+    /// Records the mixing rule for backgrounded voice work. A live session is
+    /// left as it is (see the type documentation); the rule applies the next
+    /// time the session activates.
     func setBackgroundVoiceActive(_ active: Bool) {
         let newMixing = AudioSessionMixing.forBackgroundVoice(active)
         guard newMixing != mixing else { return }
-        #if os(iOS)
-        if inputActive || outputActive {
-            // Commit the rule only once the live session accepted it.
-            do {
-                try AVAudioSession.sharedInstance().setCategory(
-                    .playAndRecord,
-                    mode: inputActive ? .measurement : .spokenAudio,
-                    options: Self.categoryOptions(for: newMixing)
-                )
-            } catch {
-                return
-            }
-        }
-        #endif
         mixing = newMixing
+        journal.record(
+            "audio session mixing wanted=\(newMixing.journalName) "
+                + (sessionLive ? "deferred live=true" : "applied-at-next-activation live=false")
+        )
     }
-
-    #if os(iOS)
-    private static func categoryOptions(for mixing: AudioSessionMixing) -> AVAudioSession.CategoryOptions {
-        var options: AVAudioSession.CategoryOptions = [
-            .defaultToSpeaker, .allowBluetoothHFP, .allowBluetoothA2DP,
-        ]
-        if mixing == .duckOthers {
-            options.insert(.duckOthers)
-        }
-        return options
-    }
-    #endif
 
     func deactivateInput() {
         inputActive = false
@@ -222,14 +285,43 @@ actor AppleAudioSessionCoordinator: BackgroundAudioSessionPolicy {
         deactivateIfUnused()
     }
 
+    private func activate(mode: AudioSessionMode, notifyOthersOnDeactivation: Bool) throws {
+        // A live session keeps the mixing it was activated with.
+        let appliedMixing = sessionLive ? (applied?.mixing ?? mixing) : mixing
+        let wanted = AudioSessionConfiguration(mode: mode, mixing: appliedMixing)
+        if !(sessionLive && applied == wanted) {
+            try driver.setCategory(wanted)
+            applied = wanted
+            journal.record(
+                "audio session category applied mode=\(mode.journalName) mixing=\(wanted.mixing.journalName) live=\(sessionLive)"
+            )
+        }
+        try driver.setActive(true, notifyOthersOnDeactivation: notifyOthersOnDeactivation)
+        sessionLive = true
+    }
+
     private func deactivateIfUnused() {
         guard !inputActive, !outputActive else { return }
-        #if os(iOS)
-        try? AVAudioSession.sharedInstance().setActive(
-            false,
-            options: .notifyOthersOnDeactivation
-        )
-        #endif
+        try? driver.setActive(false, notifyOthersOnDeactivation: true)
+        sessionLive = false
+    }
+}
+
+extension AudioSessionMixing {
+    var journalName: String {
+        switch self {
+        case .duckOthers: "duckOthers"
+        case .nonMixable: "nonMixable"
+        }
+    }
+}
+
+extension AudioSessionMode {
+    var journalName: String {
+        switch self {
+        case .measurement: "measurement"
+        case .spokenAudio: "spokenAudio"
+        }
     }
 }
 
