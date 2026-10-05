@@ -43,5 +43,5 @@ Observed in the PNG snapshots:
 
 ## Remaining acceptance
 
-- Device acceptance per the Home hand-off §3 against a HOME-NW-06 Home: ready carries `conn-…`, submit carries `req-…`, response returns `corr-…`; close the carrying socket before checking `/pair` (associations become `linked` only at socket finalize, D1); a duplicate token shows `ambiguous`; a legacy Home shows no decode failures, header errors or reconnect mismatches.
+- Device acceptance per the Home hand-off §3 against a HOME-NW-06 Home: ready carries `conn-…`, submit carries `req-…`, response returns `corr-…`; close the carrying socket before checking `/pair` (associations become `linked` only at socket finalize, D1); a legacy Home shows no decode failures, header errors or reconnect mismatches.
 - Known, accepted limit: real phone/Standard loss timing during a pending submit has not been tested on device.
