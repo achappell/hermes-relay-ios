@@ -199,10 +199,17 @@ protocol AudioOutput: Sendable {
     func finish() async throws
     func stop() async
     func playbackPosition() async -> TimeInterval?
+    /// Seconds of scheduled audio not yet rendered: how far playback is
+    /// ahead of the stream. Nil when there is no live stream or no clock.
+    func playbackLead() async -> TimeInterval?
     /// Holds scheduled audio without discarding it (interruption, route loss,
     /// lock-screen Pause). `finish()` keeps waiting until playback resumes.
     func pause() async
     func resume() async
+}
+
+extension AudioOutput {
+    func playbackLead() async -> TimeInterval? { nil }
 }
 
 enum AudioFallbackPolicy: Equatable, Sendable {
@@ -263,6 +270,10 @@ actor AudioActivityReportingOutput: AudioOutput {
 
     func playbackPosition() async -> TimeInterval? {
         await wrapped.playbackPosition()
+    }
+
+    func playbackLead() async -> TimeInterval? {
+        await wrapped.playbackLead()
     }
 
     func pause() async {
@@ -347,6 +358,10 @@ actor RecoveringAudioOutput: AudioOutput {
         await liveOutput.playbackPosition()
     }
 
+    func playbackLead() async -> TimeInterval? {
+        await liveOutput.playbackLead()
+    }
+
     func pause() async {
         await liveOutput.pause()
     }
@@ -393,6 +408,10 @@ actor HomeAwareAudioOutput: AudioOutput {
 
     func playbackPosition() async -> TimeInterval? {
         await wrapped.playbackPosition()
+    }
+
+    func playbackLead() async -> TimeInterval? {
+        await wrapped.playbackLead()
     }
 
     func pause() async {

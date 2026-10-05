@@ -201,6 +201,17 @@ final class VoiceSessionCoordinator {
     private let audioSessionPolicy: any BackgroundAudioSessionPolicy
     private let nowPlaying: (any NowPlayingPresenting)?
     private let journal: DiagnosticsJournal
+    private let nowPlayingShowDelay: Duration
+    /// Clock for the background playback-lead samples; the coordinator clock
+    /// when nil. Tests give the retention clock its own sleepers.
+    private let playbackLeadClock: (any HomeMonotonicClock)?
+    /// Lock-screen card bookkeeping (see `presentNowPlaying`).
+    @ObservationIgnored private var nowPlayingShowTask: Task<Void, Never>?
+    @ObservationIgnored private var nowPlayingShown = false
+    @ObservationIgnored private var lastNowPlayingPlaying: Bool?
+    /// MediaPlayer writes since the app last entered the background.
+    @ObservationIgnored private var nowPlayingWriteCount = 0
+    @ObservationIgnored private var leadSamplingTask: Task<Void, Never>?
     private(set) var isBackgrounded = false
     /// Set when background work must end now (idle timeout, lock-screen Stop,
     /// an interruption that cannot resume). Retention then reports `.none`.
@@ -233,7 +244,9 @@ final class VoiceSessionCoordinator {
         audioSessionPolicy: any BackgroundAudioSessionPolicy = NoopBackgroundAudioSessionPolicy(),
         audioSessionEvents: any AudioSessionEventSource = SystemAudioSessionEventSource(),
         nowPlaying: (any NowPlayingPresenting)? = nil,
-        journal: DiagnosticsJournal = .shared
+        journal: DiagnosticsJournal = .shared,
+        nowPlayingShowDelay: Duration = .milliseconds(750),
+        playbackLeadClock: (any HomeMonotonicClock)? = nil
     ) {
         self.interruptByTalking = interruptByTalking
         self.store = store
@@ -249,6 +262,8 @@ final class VoiceSessionCoordinator {
         self.audioSessionPolicy = audioSessionPolicy
         self.nowPlaying = nowPlaying
         self.journal = journal
+        self.nowPlayingShowDelay = nowPlayingShowDelay
+        self.playbackLeadClock = playbackLeadClock
         let events = audioSessionEvents.events()
         audioSessionEventTask = Task { @MainActor [weak self] in
             for await event in events {
@@ -261,6 +276,8 @@ final class VoiceSessionCoordinator {
     isolated deinit {
         audioSessionEventTask?.cancel()
         backgroundIdleTask?.cancel()
+        nowPlayingShowTask?.cancel()
+        leadSamplingTask?.cancel()
     }
 
     func toggleHandsFree() async {
@@ -1095,7 +1112,7 @@ final class VoiceSessionCoordinator {
     /// in and whether its audio stream was still open. Content-free.
     private func journalResponseEnded(path: String) {
         journal.record(
-            "voice response ended path=\(path) state=\(state.journalName) audio_stream=\(audioStreamActive) paused=\(isReplyOutputPaused) backgrounded=\(isBackgrounded)"
+            "voice response ended path=\(path) state=\(state.journalName) audio_stream=\(audioStreamActive) paused=\(isReplyOutputPaused) backgrounded=\(isBackgrounded) nowplaying_writes=\(nowPlayingWriteCount)"
         )
     }
 
@@ -1211,9 +1228,11 @@ final class VoiceSessionCoordinator {
         case .audioChunk(let pcm):
             guard !playbackFailed, !state.isTerminal, audioStreamActive else { return }
             streamedAudioBytes += pcm.count
-            await diagnostics.record(.chunkReceived(bytes: pcm.count))
             do {
+                // Schedule first: the chunk-received diagnostic used to cost
+                // the main actor one extra round trip before every append.
                 let readiness = try await output.append(pcm)
+                await diagnostics.record(.chunkReceived(bytes: pcm.count))
                 guard isCurrentResponse(generation) else { return }
                 if !pcm.isEmpty {
                     audioDeliveryStarted = true
@@ -1583,11 +1602,12 @@ extension VoiceSessionCoordinator {
         backgroundEndReason = nil
         onBackgroundRetentionEnded = onRetentionEnded
         journal.record("voice background enter retention=\(retention.journalName)")
+        nowPlayingWriteCount = 0
+        startPlaybackLeadSampling()
         await audioSessionPolicy.setBackgroundVoiceActive(true)
-        // A hands-free session with no reply output is not "playing".
-        nowPlaying?.show(title: nowPlayingTitle, isPlaying: isReplyOutputPlaying) { [weak self] command in
-            Task { await self?.handleNowPlayingCommand(command) }
-        }
+        // The card is registered a beat after the transition, never on the
+        // path that feeds the player (see `presentNowPlaying`).
+        presentNowPlaying()
         evaluateBackgroundRetention()
         return true
     }
@@ -1665,9 +1685,88 @@ extension VoiceSessionCoordinator {
         state == .speaking && !isReplyOutputPaused
     }
 
-    private func updateNowPlayingPlaybackState() {
-        nowPlaying?.update(isPlaying: isReplyOutputPlaying)
+    /// Registers the lock-screen card. Registration (remote commands and
+    /// Now Playing info through MediaPlayer) used to run synchronously at
+    /// background entry, on the main actor that also carries every Home PCM
+    /// chunk, with a further write per chunk. It now runs once, after
+    /// `nowPlayingShowDelay`, and only if the app is still backgrounded.
+    private func presentNowPlaying() {
+        guard nowPlaying != nil else { return }
+        nowPlayingShowTask?.cancel()
+        if nowPlayingShowDelay <= .zero {
+            showNowPlayingNow()
+            return
+        }
+        let clock = self.clock
+        let deadline = clock.now().advanced(by: nowPlayingShowDelay)
+        nowPlayingShowTask = Task { @MainActor [weak self] in
+            do {
+                try await clock.sleep(until: deadline)
+            } catch {
+                return
+            }
+            guard let self, !Task.isCancelled, self.isBackgrounded else { return }
+            self.showNowPlayingNow()
+        }
     }
+
+    private func showNowPlayingNow() {
+        guard let nowPlaying, isBackgrounded, !nowPlayingShown else { return }
+        // A hands-free session with no reply output is not "playing".
+        let playing = isReplyOutputPlaying
+        nowPlaying.show(title: nowPlayingTitle, isPlaying: playing) { [weak self] command in
+            Task { await self?.handleNowPlayingCommand(command) }
+        }
+        nowPlayingShown = true
+        lastNowPlayingPlaying = playing
+        nowPlayingWriteCount += 1
+    }
+
+    /// Writes the playing flag to the card only when it changed since the
+    /// last write, and only while a card is registered. It used to write on
+    /// every PCM chunk.
+    private func updateNowPlayingPlaybackState() {
+        guard nowPlayingShown else { return }
+        let playing = isReplyOutputPlaying
+        guard playing != lastNowPlayingPlaying else { return }
+        lastNowPlayingPlaying = playing
+        nowPlayingWriteCount += 1
+        nowPlaying?.update(isPlaying: playing)
+    }
+
+    /// Content-free playback-lead samples for the first seconds after the
+    /// app leaves the foreground: how much scheduled audio is queued ahead of
+    /// the renderer. Lead near zero means the player starved (feed latency);
+    /// lead that stays positive while a glitch is heard points at render
+    /// timing outside the app.
+    private func startPlaybackLeadSampling() {
+        leadSamplingTask?.cancel()
+        guard responseTask != nil else { return }
+        let clock = playbackLeadClock ?? self.clock
+        let output = self.output
+        let start = clock.now()
+        let interval = Self.leadSampleInterval
+        leadSamplingTask = Task { @MainActor [weak self] in
+            for step in 0...Self.leadSampleCount {
+                guard let self, !Task.isCancelled, self.isBackgrounded else { return }
+                let lead = await output.playbackLead()
+                guard !Task.isCancelled, self.isBackgrounded else { return }
+                let leadText = lead.map { String(Int(($0 * 1000).rounded())) } ?? "none"
+                self.journal.record(
+                    "audio output lead_ms=\(leadText) t_ms=\(step * 250) state=\(self.state.journalName) playing=\(self.isReplyOutputPlaying)"
+                )
+                if step == Self.leadSampleCount { return }
+                do {
+                    try await clock.sleep(until: start.advanced(by: interval * (step + 1)))
+                } catch {
+                    return
+                }
+            }
+        }
+    }
+
+    private static let leadSampleInterval: Duration = .milliseconds(250)
+    private static let leadSampleCount = 20
 
     private func pauseReplyOutput(_ reason: ReplyPauseReason) async {
         guard responseTask != nil, !isReplyOutputPaused else { return }
@@ -1706,6 +1805,12 @@ extension VoiceSessionCoordinator {
         backgroundIdleTimeoutFired = false
         onBackgroundRetentionEnded = nil
         cancelBackgroundIdleTimeout()
+        nowPlayingShowTask?.cancel()
+        nowPlayingShowTask = nil
+        leadSamplingTask?.cancel()
+        leadSamplingTask = nil
+        nowPlayingShown = false
+        lastNowPlayingPlaying = nil
         nowPlaying?.clear()
         await audioSessionPolicy.setBackgroundVoiceActive(false)
     }

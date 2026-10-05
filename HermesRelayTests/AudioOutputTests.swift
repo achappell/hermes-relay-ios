@@ -159,7 +159,10 @@ final class AudioOutputTests: XCTestCase {
         } catch {
             XCTAssertEqual(error as? AudioOutputError, .outputFailed)
         }
-        XCTAssertEqual(journal.snapshot().map(\.event), ["audio output engine stopped restart=failed"])
+        XCTAssertEqual(
+            journal.snapshot().map(\.event).filter { $0.hasPrefix("audio output engine stopped") },
+            ["audio output engine stopped restart=failed"]
+        )
     }
 
     // MARK: Live session is never reconfigured (2026-10-05 device evidence)
@@ -292,6 +295,156 @@ final class AudioOutputTests: XCTestCase {
         XCTAssertEqual(control.startCount, 1, "Four notifications coalesce into one restart")
         XCTAssertEqual(Array(driver.calls.dropFirst(beforeRestart)), [.setActive(true)])
         XCTAssertEqual(journal.snapshot().map(\.event), ["audio output engine stopped restart=ok"])
+    }
+
+    // MARK: Start-of-stream cushion (2026-10-05 background-entry stutter)
+
+    private func cushionedOutput(
+        lead: TimeInterval = 0.3,
+        hold: Duration = .seconds(30),
+        journal: DiagnosticsJournal
+    ) -> AppleAudioOutput {
+        AppleAudioOutput(
+            audioSessionCoordinator: AppleAudioSessionCoordinator(
+                driver: RecordingAudioSessionDriver(),
+                journal: DiagnosticsJournal(fileURL: nil)
+            ),
+            journal: journal,
+            cushion: AudioPlaybackCushion(lead: lead, maximumHold: hold)
+        )
+    }
+
+    /// 24 kHz mono 16-bit: 4 800 bytes is 100 ms.
+    private let hundredMilliseconds = Data(count: 4_800)
+    private let cushionFormat = AudioFormat(sampleRate: 24_000, channels: 1, sampleWidth: 2)
+
+    func testCushionHoldsPlaybackUntilTheLeadThresholdThenStarts() async throws {
+        let journal = DiagnosticsJournal(fileURL: nil)
+        let output = cushionedOutput(journal: journal)
+        try await output.start(format: cushionFormat)
+
+        let first = try await output.append(hundredMilliseconds)
+        let second = try await output.append(hundredMilliseconds)
+        let heldLead = await output.playbackLead()
+        let heldStarted = await output.hasStartedPlayback
+
+        XCTAssertEqual(first, .buffering, "Held audio is not audibly playing yet")
+        XCTAssertEqual(second, .buffering)
+        XCTAssertFalse(heldStarted)
+        XCTAssertEqual(try XCTUnwrap(heldLead), 0.2, accuracy: 0.001)
+        XCTAssertTrue(journal.snapshot().isEmpty)
+
+        let third = try await output.append(hundredMilliseconds)
+        let started = await output.hasStartedPlayback
+
+        XCTAssertEqual(third, .ready)
+        XCTAssertTrue(started, "Playback starts once 300 ms are scheduled")
+        XCTAssertEqual(journal.snapshot().map(\.event), ["audio output cushion started lead_ms=300 reason=threshold"])
+        await output.stop()
+    }
+
+    func testStreamShorterThanTheCushionStartsWhenItEnds() async throws {
+        let journal = DiagnosticsJournal(fileURL: nil)
+        let output = cushionedOutput(journal: journal)
+        try await output.start(format: cushionFormat)
+        _ = try await output.append(Data(count: 2_400)) // 50 ms
+
+        try await output.finish()
+
+        XCTAssertEqual(journal.snapshot().map(\.event), ["audio output cushion started lead_ms=50 reason=finish"])
+        await output.stop()
+    }
+
+    func testCushionHoldIsCappedSoAStalledStreamStillStarts() async throws {
+        let journal = DiagnosticsJournal(fileURL: nil)
+        let output = cushionedOutput(hold: .milliseconds(60), journal: journal)
+        try await output.start(format: cushionFormat)
+        _ = try await output.append(hundredMilliseconds)
+        let beforeCap = await output.hasStartedPlayback
+        XCTAssertFalse(beforeCap)
+
+        try await Task.sleep(for: .milliseconds(400))
+
+        let afterCap = await output.hasStartedPlayback
+        XCTAssertTrue(afterCap, "The hard cap releases a stalled stream")
+        XCTAssertEqual(journal.snapshot().map(\.event), ["audio output cushion started lead_ms=100 reason=cap"])
+        await output.stop()
+    }
+
+    func testPauseHoldsTheCushionAndResumeStartsPlayback() async throws {
+        let journal = DiagnosticsJournal(fileURL: nil)
+        let output = cushionedOutput(hold: .milliseconds(60), journal: journal)
+        try await output.start(format: cushionFormat)
+        await output.pause()
+        _ = try await output.append(hundredMilliseconds)
+        _ = try await output.append(hundredMilliseconds)
+        _ = try await output.append(hundredMilliseconds)
+        try await Task.sleep(for: .milliseconds(300))
+        let whilePaused = await output.hasStartedPlayback
+        XCTAssertFalse(whilePaused, "A paused stream never starts, whatever the threshold or cap")
+
+        await output.resume()
+
+        let afterResume = await output.hasStartedPlayback
+        XCTAssertTrue(afterResume)
+        await output.stop()
+    }
+
+    func testStopCancelsAHeldCushion() async throws {
+        let journal = DiagnosticsJournal(fileURL: nil)
+        let output = cushionedOutput(hold: .milliseconds(80), journal: journal)
+        try await output.start(format: cushionFormat)
+        _ = try await output.append(hundredMilliseconds)
+
+        await output.stop()
+        try await Task.sleep(for: .milliseconds(300))
+
+        let started = await output.hasStartedPlayback
+        XCTAssertFalse(started)
+        XCTAssertTrue(journal.snapshot().isEmpty, "A stopped stream is never started by a stale timer")
+        let lead = await output.playbackLead()
+        XCTAssertNil(lead)
+    }
+
+    func testNoCushionStartsOnTheFirstBufferAsBefore() async throws {
+        let journal = DiagnosticsJournal(fileURL: nil)
+        let output = AppleAudioOutput(
+            audioSessionCoordinator: AppleAudioSessionCoordinator(
+                driver: RecordingAudioSessionDriver(),
+                journal: DiagnosticsJournal(fileURL: nil)
+            ),
+            journal: journal,
+            cushion: .none
+        )
+        try await output.start(format: cushionFormat)
+
+        let readiness = try await output.append(Data(count: 2_400))
+        let started = await output.hasStartedPlayback
+
+        XCTAssertEqual(readiness, .ready)
+        XCTAssertTrue(started)
+        XCTAssertTrue(journal.snapshot().isEmpty)
+        await output.stop()
+    }
+
+    func testEveryStreamStartsWithinTheCushionCapSoNothingWaitsForeverOnTheDrain() async throws {
+        let journal = DiagnosticsJournal(fileURL: nil)
+        let output = cushionedOutput(hold: .seconds(30), journal: journal)
+        try await output.start(format: cushionFormat)
+        _ = try await output.append(Data(count: 480)) // 10 ms, far below the cushion
+
+        // finish() must start the held audio itself; it would otherwise wait
+        // for a drain that can never begin.
+        try await withThrowingTaskGroup(of: Void.self) { group in
+            group.addTask { try await output.finish() }
+            group.addTask {
+                try await Task.sleep(for: .seconds(5))
+                throw AudioOutputError.outputFailed
+            }
+            try await group.next()
+            group.cancelAll()
+        }
+        await output.stop()
     }
 
     func testRecoveringOutputWritesBufferedPCMWhenLiveOutputFails() async throws {

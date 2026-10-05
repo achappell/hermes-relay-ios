@@ -13,6 +13,24 @@ struct AudioOutputEngineControl: Sendable {
     )
 }
 
+/// Start-of-stream playback cushion. Home streams speech at about real time
+/// and the player used to start on the first scheduled buffer, so any late
+/// chunk (for example while the scene changes and the main actor is busy)
+/// starved the player and was heard as stutter. Playback now starts once
+/// `lead` seconds of audio are scheduled, when the stream ends first, or when
+/// `maximumHold` has passed since the first buffer, so a short or stalled
+/// reply still starts promptly. A real-time stream keeps roughly `lead`
+/// seconds of audio queued ahead of the renderer from then on.
+struct AudioPlaybackCushion: Sendable, Equatable {
+    var lead: TimeInterval
+    var maximumHold: Duration
+
+    /// About 300 ms of added start latency, never more than 500 ms.
+    static let standard = AudioPlaybackCushion(lead: 0.3, maximumHold: .milliseconds(500))
+    /// Start on the first buffer, as before the cushion existed.
+    static let none = AudioPlaybackCushion(lead: 0, maximumHold: .zero)
+}
+
 actor AppleAudioOutput: AudioOutput {
     private let engine = AVAudioEngine()
     private let playerNode = AVAudioPlayerNode()
@@ -37,17 +55,22 @@ actor AppleAudioOutput: AudioOutput {
     private var isHandlingConfigurationChange = false
     private var configurationChangeRecheck = false
     private static let maximumConfigurationPasses = 3
+    private let cushion: AudioPlaybackCushion
+    private var cushionTimer: Task<Void, Never>?
+    private var cushionGeneration = 0
 
     init(
         diagnostics: any AudioPlaybackDiagnostics = NoopAudioPlaybackDiagnostics(),
         audioSessionCoordinator: AppleAudioSessionCoordinator = AppleAudioSessionCoordinator(),
         engineControl: AudioOutputEngineControl = .system,
-        journal: DiagnosticsJournal = .shared
+        journal: DiagnosticsJournal = .shared,
+        cushion: AudioPlaybackCushion = .standard
     ) {
         self.diagnostics = diagnostics
         self.audioSessionCoordinator = audioSessionCoordinator
         self.engineControl = engineControl
         self.journal = journal
+        self.cushion = cushion
         engine.attach(playerNode)
     }
 
@@ -100,11 +123,12 @@ actor AppleAudioOutput: AudioOutput {
         var accumulator = pcmFrameAccumulator
         var readiness: AudioPlaybackReadiness = .buffering
         if let completePCM = try accumulator.append(pcm) {
-            let wasPlaybackStarted = playbackStarted
             try await schedule(completePCM, format: audioFormat, bytesPerFrame: bytesPerFrame)
-            readiness = .ready
+            // Audio held back by the cushion is not audibly playing yet.
+            readiness = playbackStarted ? .ready : .buffering
+            let firstBufferScheduled = scheduledAudioBytes == completePCM.count
             await diagnostics.record(.chunkScheduled(bytes: completePCM.count))
-            if !wasPlaybackStarted {
+            if firstBufferScheduled {
                 await diagnostics.record(.firstAudioScheduled(bytes: completePCM.count))
             }
         }
@@ -121,6 +145,9 @@ actor AppleAudioOutput: AudioOutput {
         }
         pcmFrameAccumulator = nil
         isAcceptingAudio = false
+        // A stream shorter than the cushion starts here, or the drain below
+        // would wait for audio that was never played.
+        startCushionedPlayback(reason: "finish")
         await playbackDrain.waitForCompletion()
         if resumeFailed {
             resumeFailed = false
@@ -238,6 +265,23 @@ actor AppleAudioOutput: AudioOutput {
         return Double(playerTime.sampleTime) / playerTime.sampleRate
     }
 
+    /// Whether the player node is playing (false while the cushion holds it).
+    var hasStartedPlayback: Bool { playbackStarted }
+
+    /// Seconds of scheduled audio the renderer has not reached yet.
+    func playbackLead() async -> TimeInterval? {
+        guard let scheduled = scheduledSeconds else { return nil }
+        let played = playbackStarted ? (await playbackPosition() ?? 0) : 0
+        return max(0, scheduled - played)
+    }
+
+    private var scheduledSeconds: TimeInterval? {
+        guard let audioFormat, audioFormat.sampleRate > 0 else { return nil }
+        let bytesPerFrame = Int(audioFormat.streamDescription.pointee.mBytesPerFrame)
+        guard bytesPerFrame > 0, scheduledAudioBytes > 0 else { return nil }
+        return Double(scheduledAudioBytes / bytesPerFrame) / audioFormat.sampleRate
+    }
+
     private func schedule(
         _ pcm: Data,
         format: AVAudioFormat?,
@@ -274,7 +318,7 @@ actor AppleAudioOutput: AudioOutput {
                 await self?.playbackDrain.bufferDidComplete()
             }
         }
-        startPlaybackIfNeeded()
+        releaseCushionIfReady()
     }
 
     private func startPlaybackIfNeeded() {
@@ -283,11 +327,57 @@ actor AppleAudioOutput: AudioOutput {
         playbackStarted = true
     }
 
+    private func releaseCushionIfReady() {
+        guard !playbackStarted else { return }
+        guard cushion.lead > 0 else {
+            startPlaybackIfNeeded()
+            return
+        }
+        if (scheduledSeconds ?? 0) >= cushion.lead {
+            startCushionedPlayback(reason: "threshold")
+        } else if cushionTimer == nil {
+            armCushionTimer()
+        }
+    }
+
+    private func armCushionTimer() {
+        cushionGeneration += 1
+        let generation = cushionGeneration
+        let hold = cushion.maximumHold
+        cushionTimer = Task { [weak self] in
+            try? await Task.sleep(for: hold)
+            guard !Task.isCancelled else { return }
+            await self?.cushionTimerFired(generation: generation)
+        }
+    }
+
+    private func cushionTimerFired(generation: Int) {
+        guard generation == cushionGeneration else { return }
+        startCushionedPlayback(reason: "cap")
+    }
+
+    /// Starts playback of everything scheduled so far. Paused output stays
+    /// held; `resume()` starts it.
+    private func startCushionedPlayback(reason: String) {
+        guard !playbackStarted, !isPaused, scheduledAudioBytes > 0 else { return }
+        cushionTimer?.cancel()
+        cushionTimer = nil
+        cushionGeneration += 1
+        let leadMilliseconds = Int(((scheduledSeconds ?? 0) * 1000).rounded())
+        startPlaybackIfNeeded()
+        if cushion.lead > 0 {
+            journal.record("audio output cushion started lead_ms=\(leadMilliseconds) reason=\(reason)")
+        }
+    }
+
     private func stopResources() async {
         if let configurationObserver {
             NotificationCenter.default.removeObserver(configurationObserver.token)
             self.configurationObserver = nil
         }
+        cushionTimer?.cancel()
+        cushionTimer = nil
+        cushionGeneration += 1
         isAcceptingAudio = false
         pcmFrameAccumulator = nil
         scheduledAudioBytes = 0

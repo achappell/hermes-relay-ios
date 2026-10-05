@@ -218,3 +218,51 @@ The deferral of mixing changes on a live session stays: it is harmless for backg
 1. Install the build and launch it once, then do the 30+ s prompt and background ~10 s into the audio; stay backgrounded through the end of the reply.
 2. Expected journal after `app phase=background`: `voice background enter retention=reply`, `audio session mixing wanted=nonMixable deferred live=true`, no `lifecycle deactivate`/`home client close`/`websocket cancel` until the reply ends, then `voice response ended path=voice state=complete audio_stream=false …`, `voice background retention ended reason=workFinished`, `lifecycle deactivate trigger=backgroundWorkEnded reply=none`, and `home client close`. `runtime created` appears exactly once per launch (none means the build predates this fix; two or more means the stack is still being re-created).
 3. If it still tears down at `.background`, the `lifecycle input=background … retaining=` and `voice response ended` lines say whether the response task ended first and in what state.
+
+## Follow-up: stutter at background entry on build 18 (2026-10-05)
+
+### Evidence
+
+- Build 18 (`0.6.0` (18), the 8482051 stack) kept the reply playing after `.background`; the user hears a transient stutter ("eh-eh-eh-eh-eh") for about two seconds **every** time she backgrounds during playback, and none on the return to the foreground.
+- Journal for the run (UTC): reply audio started 20:50:13.2 (`category applied mode=spokenAudio mixing=duckOthers live=false`), `inactive` 20:50:17.63, `background` 20:50:18.27, `voice background enter retention=reply` and `audio session mixing wanted=nonMixable deferred live=true` at 20:50:18.497. Then **no journal line for 50 s** until she returned (20:51:08.6): no route change, interruption, `audio output engine configuration change notification`, `restart=`, or `category applied`. The engine restart/coalescing path did not run, the mixing deferral made no driver call, and nothing paused the player.
+- No unified-log archive could be captured: libimobiledevice does not see the phone (`idevice_id -l/-n` empty) although `devicectl` shows it connected over a CoreDevice local-network tunnel, and `log collect --device-udid` needs root.
+
+### Cause space (ranked, not proven)
+
+1. Main-actor contention at the scene transition meeting a player with no cushion. Every Home PCM chunk takes the main actor (store pump, then coordinator, then the output actor), and Home streams at about real time, so the player started on the first buffer with roughly one chunk of lead. At background entry the app did three things on that same actor: scene work, the `nowPlaying.show` registration (four remote-command targets plus an info write), and then a MediaPlayer info write **per PCM chunk** (`updateNowPlayingPlaybackState` ran on every `.ready` chunk once the card existed). Foreground playback has no card, so those writes were no-ops there, which fits "only at background entry".
+2. An OS-side render/IO-buffer change when the app leaves the foreground, hitting the same zero-cushion stream. Unverifiable without a log archive.
+3. Engine restart, session, mixing, route or pause/play churn: **ruled out** by the journal for this run.
+
+### Changes
+
+- **Now Playing:** writes only when the playing flag changes and only while a card is registered; the one-time registration (`nowPlaying.show`) is deferred 750 ms after background entry (cancelled if the app returns first, so the card is never registered for a quick peek). `nowplaying_writes=N` (writes since background entry) is added to `voice response ended`.
+- **Feed path:** `output.append` runs before the per-chunk `chunkReceived` diagnostic, removing one main-actor round trip before every chunk is scheduled. The lifecycle snapshots and the session-policy call at `.inactive`/`.background` already run as awaits on other actors (persistence and session coordinator); no other synchronous main-actor work remains on that path. Moving PCM hand-off off the main actor entirely (a store-level PCM sink) was judged too invasive for this change; revisit only if the lead journal shows pump latency larger than the cushion.
+- **Playback cushion:** `AppleAudioOutput` delays `playerNode.play()` until 300 ms of audio are scheduled (`AudioPlaybackCushion.standard`), starts earlier when the stream ends first (`finish()`), and never holds longer than 500 ms after the first buffer. While held, `append` reports `.buffering` (the UI stays "buffering" instead of "speaking"). Pause keeps it held; resume or an engine restart starts it; stop cancels the timer. Cost: about 300 ms extra start latency on a real-time stream (500 ms at most). Journal: `audio output cushion started lead_ms=N reason=threshold|cap|finish`.
+- **Verification journal:** `audio output lead_ms=N t_ms=T state=… playing=…` at background entry and every 250 ms for 5 s (21 lines), where N is the scheduled-but-unrendered audio in milliseconds (`AudioOutput.playbackLead()`).
+
+### Regression coverage
+
+- `AudioOutputTests` (+7): threshold start with `.buffering` while held, short stream starts at `finish()`, hard cap, pause keeps it held and resume starts, stop cancels the timer, `.none` starts on the first buffer, and a sub-cushion stream cannot hang `finish()`.
+- `VoiceSessionCoordinatorTests` (+5): 40 same-state chunks after background make no MediaPlayer write (pause/play write once each, `nowplaying_writes=4`), card registration waits the 750 ms beat, never registers if the app returns first, lead lines at t=0…5000 ms then stop, and sampling stops on return. Two existing tests were updated for the new behavior: the lock-screen test no longer sees foreground updates (`[false, true]`), and `testFailedEngineRestart…` filters the journal to the restart lines.
+- **macOS XCTest (serialized):** 645 tests (633 + 12). Focused: `VoiceSessionCoordinatorTests` 118, `AppleLifecycleTests` 5, `AudioOutputTests` 37, 0 failures. Across 14 full-suite runs, 9 were clean; the 5 others failed only the two known flaky tests (`ConversationStoreReconnectTests.testAutomaticHomeReconnectCanReleaseConfirmedInactiveRecovery`, `VoiceSessionCoordinatorTests.testBackgroundOutputEngineFailureEndsTheReplyInsteadOfStayingSpeaking`), which also fail on the pre-change baseline.
+- **iOS Simulator build:** succeeded. Not installed; no Home traffic.
+
+### Reading the new journal lines (retest)
+
+```
+voice background enter retention=reply
+audio output lead_ms=612 t_ms=0   state=speaking playing=true
+audio output lead_ms=601 t_ms=250 state=speaking playing=true
+…
+audio output lead_ms=588 t_ms=5000 state=speaking playing=true
+```
+
+- `audio output cushion started lead_ms=300…340 reason=threshold` appears once at the start of each reply (about 0.3 s after the first chunk).
+- `lead_ms` is how much audio is queued ahead of the renderer. Healthy is a roughly constant value near 300 ms or more through the 5 s.
+- Lead stays above ~100 ms through the background entry **and you still hear stutter** → the cause is OS render/IO timing, not feed latency; capture a log archive (below).
+- Lead drops to ~0 (a few samples at 0–30 ms) around `t_ms` 0–2000 → the feed (main-actor pump or network) starved the player; the cushion was too small for the stall, and the next change is moving PCM hand-off off the main actor.
+- `nowplaying_writes=` on `voice response ended` should be small (a handful: the card registration plus pause/play/finish), not hundreds.
+
+### Capturing a real log archive (not available from this machine today)
+
+`idevicesyslog` needs the phone on usbmuxd: plug the phone in with a USB cable, unlock it, tap Trust if asked, then `idevice_id -l` must print the UDID. Repro: start a long reply, background it, return. Then from the Mac: `idevicesyslog archive /tmp/hermes-bg.tar --start-time $(( $(date +%s) - 300 ))`, extract and rename to `.logarchive`, or with admin rights `sudo log collect --device-udid <UDID> --last 5m --output /tmp/hermes-bg.logarchive`. Look for `AURemoteIO`/`AVAudioEngine` start-stop lines, IO buffer duration changes and the `mediaremoted` activity around `app phase=background`.
