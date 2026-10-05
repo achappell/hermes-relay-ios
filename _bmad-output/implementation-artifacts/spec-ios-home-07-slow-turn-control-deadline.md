@@ -24,6 +24,7 @@ context: []
 - `HermesRelayTests/VoiceSessionCoordinatorTests.swift`: `makeHomeVoiceReviewFixture` now accepts a `homeClock`. Added two `ManualBackgroundClock` regressions. Before the fix, both failed (5 assertion failures). After the fix, both pass, and the full macOS suite passes with 595 tests and 0 failures.
 - Confirmed in Home source that `mark_disconnected` starts the 120 s `client_reconnect_grace` only for an active client claim that is mid-turn (`activity != ready`). Home does not expire the claim while the client stays connected.
 - The unsupported server-to-client approval request in Standard's log is a separate capability gap. This change does not address it.
+- Follow-up (Amanda-approved design, 2026-10-04): when Home advertises `turn_keepalive` after the client opts in with header `X-Hermes-Home-Client-Features: turn_keepalive`, the control deadline becomes 45 s idle, reset by current-turn activity and `turn.alive`, paused while a prompt is pending or the phase is `awaiting_input`, plus an 1800 s backstop. Without the capability, the 120 s fixed deadline from this spec remains. The design is recorded in `validation-ios-home-07.md`.
 
 ## Review Triage Log
 

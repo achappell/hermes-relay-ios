@@ -1608,6 +1608,175 @@ final class VoiceSessionCoordinatorTests: XCTestCase {
         XCTAssertEqual(submitted.count, 1, "A stuck turn fails without being replayed")
     }
 
+    // MARK: Activity-based control deadline (Home turn keep-alives)
+
+    private static let keepaliveCapabilities = HomeBridgeCapabilities(
+        commands: [], heartbeat: true, interrupt: true, timing: .absent, turnKeepalive: true
+    )
+
+    private func keepaliveScope(_ fixture: HomeVoiceReviewFixture) -> HomeEventScope {
+        HomeEventScope(
+            conversationHandle: fixture.claim.conversationHandle,
+            turnID: "turn-1",
+            correlationID: "correlation-1"
+        )
+    }
+
+    @MainActor
+    private func startKeepaliveTurn(
+        _ draft: String,
+        clock: ManualBackgroundClock
+    ) async throws -> (HomeVoiceReviewFixture, VoiceSessionCoordinator, CoordinatorAudioOutput, Task<Void, Never>) {
+        let fixture = try await makeHomeVoiceReviewFixture(
+            homeClock: clock,
+            capabilities: Self.keepaliveCapabilities
+        )
+        let configured = await fixture.store.loadConfiguredClient()
+        XCTAssertTrue(configured)
+        await fixture.store.connect()
+        let output = CoordinatorAudioOutput()
+        let coordinator = VoiceSessionCoordinator(
+            store: fixture.store,
+            input: CoordinatorSpeechInput(),
+            output: output
+        )
+        fixture.store.draft = draft
+        let responseTask = Task { @MainActor in
+            await coordinator.sendDraft()
+        }
+        await waitForHomeVoiceSubmission(fixture.client, atLeast: 1)
+        // Backstop and idle deadlines are both armed at acceptance.
+        await pollUntil { clock.sleeperCount >= 2 }
+        return (fixture, coordinator, output, responseTask)
+    }
+
+    @MainActor
+    private func sendKeepalives(
+        _ fixture: HomeVoiceReviewFixture,
+        clock: ManualBackgroundClock,
+        for seconds: Int
+    ) async throws {
+        for _ in stride(from: 15, through: seconds, by: 15) {
+            clock.advance(by: .seconds(15))
+            await fixture.client.emit(.turnAlive(keepaliveScope(fixture), .running))
+            try await Task.sleep(for: .milliseconds(5))
+        }
+    }
+
+    @MainActor
+    func testKeepaliveTurnRunningFiveMinutesDeliversOnceWithoutReplay() async throws {
+        let clock = ManualBackgroundClock()
+        let (fixture, coordinator, output, responseTask) = try await startKeepaliveTurn(
+            "Do the long job", clock: clock
+        )
+        defer { try? FileManager.default.removeItem(at: fixture.profileURL.deletingLastPathComponent()) }
+
+        try await sendKeepalives(fixture, clock: clock, for: 300)
+        XCTAssertNil(fixture.store.homeJoinTimeout, "Keep-alives hold a 300 s turn open")
+
+        let scope = keepaliveScope(fixture)
+        await fixture.client.emit(.standard(HomeStandardEvent(
+            type: .messageComplete,
+            scope: scope,
+            payload: .final(rendered: nil, text: "Done", status: "complete", reasoning: nil, failureReason: nil)
+        )))
+        await fixture.client.emit(.standard(HomeStandardEvent(
+            type: .turnComplete,
+            scope: scope,
+            payload: .terminal(kind: .terminal)
+        )))
+        await fixture.client.emit(.audioStart(
+            scope,
+            HomeAudioFormat(sampleRate: 24_000, channels: 1, sampleWidth: 2)
+        ))
+        await fixture.client.emit(.binaryPCM(scope, Data([0, 1, 2, 3])))
+        await fixture.client.emit(.audioTerminal(scope, .end))
+        await responseTask.value
+
+        XCTAssertEqual(coordinator.state, .complete)
+        XCTAssertNil(fixture.store.homeJoinTimeout)
+        XCTAssertFalse(
+            fixture.store.messages.contains { $0.text.contains("turn.alive") },
+            "Keep-alives never reach the transcript"
+        )
+        let submitted = await fixture.client.submittedTexts
+        XCTAssertEqual(submitted.count, 1, "The long turn is never replayed")
+        let operations = await output.operations()
+        XCTAssertTrue(operations.contains(.append), "Home audio was not delivered: \(operations)")
+    }
+
+    @MainActor
+    func testKeepaliveTurnSilentForTheIdleDeadlineIsMarkedStuck() async throws {
+        let clock = ManualBackgroundClock()
+        let (fixture, _, _, responseTask) = try await startKeepaliveTurn(
+            "Go quiet", clock: clock
+        )
+        defer { try? FileManager.default.removeItem(at: fixture.profileURL.deletingLastPathComponent()) }
+
+        clock.advance(by: .seconds(44))
+        try await Task.sleep(for: .milliseconds(50))
+        XCTAssertNil(fixture.store.homeJoinTimeout, "44 s of silence is still inside the idle window")
+
+        clock.advance(by: .seconds(1))
+        await pollUntil { fixture.store.homeJoinTimeout == .controlTerminalMissing }
+        await responseTask.value
+
+        XCTAssertEqual(fixture.store.homeJoinTimeout, .controlTerminalMissing)
+        let submitted = await fixture.client.submittedTexts
+        XCTAssertEqual(submitted.count, 1, "A silent turn fails without being replayed")
+    }
+
+    @MainActor
+    func testPendingHomePromptSuspendsTheIdleDeadline() async throws {
+        let clock = ManualBackgroundClock()
+        let (fixture, _, _, responseTask) = try await startKeepaliveTurn(
+            "Ask me first", clock: clock
+        )
+        defer { try? FileManager.default.removeItem(at: fixture.profileURL.deletingLastPathComponent()) }
+
+        await fixture.client.emit(.structuredPrompt(HomeStructuredPrompt(
+            kind: .approval,
+            conversationHandle: fixture.claim.conversationHandle,
+            turnID: "turn-1",
+            correlationID: "approval-1",
+            options: ["yes", "no"],
+            expiresAt: nil,
+            sensitive: false
+        )))
+        await pollUntil { fixture.store.pendingHomePrompt != nil }
+
+        clock.advance(by: .seconds(300))
+        try await Task.sleep(for: .milliseconds(50))
+        XCTAssertNil(fixture.store.homeJoinTimeout, "A turn waiting on the user is not stuck")
+
+        // The backstop still bounds a turn whose prompt is never answered.
+        clock.advance(by: .seconds(1500))
+        await pollUntil { fixture.store.homeJoinTimeout == .controlTerminalMissing }
+        await responseTask.value
+        let submitted = await fixture.client.submittedTexts
+        XCTAssertEqual(submitted.count, 1)
+    }
+
+    @MainActor
+    func testKeepaliveBackstopFiresDespiteContinuousKeepalives() async throws {
+        let clock = ManualBackgroundClock()
+        let (fixture, _, _, responseTask) = try await startKeepaliveTurn(
+            "Never finish", clock: clock
+        )
+        defer { try? FileManager.default.removeItem(at: fixture.profileURL.deletingLastPathComponent()) }
+
+        try await sendKeepalives(fixture, clock: clock, for: 1785)
+        XCTAssertNil(fixture.store.homeJoinTimeout, "Keep-alives hold the turn until the backstop")
+
+        clock.advance(by: .seconds(15))
+        await pollUntil { fixture.store.homeJoinTimeout == .controlTerminalMissing }
+        await responseTask.value
+
+        XCTAssertEqual(fixture.store.homeJoinTimeout, .controlTerminalMissing)
+        let submitted = await fixture.client.submittedTexts
+        XCTAssertEqual(submitted.count, 1, "The backstop fails the turn without replay")
+    }
+
     @MainActor
     func testHomeAudioThatNeverStartsAfterTheTurnCompletesStillFails() async throws {
         let fixture = try await makeHomeVoiceReviewFixture(
@@ -3295,7 +3464,10 @@ final class VoiceSessionCoordinatorTests: XCTestCase {
     private func makeHomeVoiceReviewFixture(
         audioDeadlines: HomeTurnAudioDeadlines = .default,
         persistence: (any ConversationPersistence)? = nil,
-        homeClock: any HomeMonotonicClock = ContinuousHomeMonotonicClock()
+        homeClock: any HomeMonotonicClock = ContinuousHomeMonotonicClock(),
+        capabilities: HomeBridgeCapabilities = HomeBridgeCapabilities(
+            commands: [], heartbeat: true, interrupt: true, timing: .absent
+        )
     ) async throws -> HomeVoiceReviewFixture {
         let profileID = UUID(uuidString: "EEEEEEEE-FFFF-0000-1111-222222222222")!
         let profile = try RelayProfile(
@@ -3329,7 +3501,7 @@ final class VoiceSessionCoordinatorTests: XCTestCase {
             )
         )
         let claim = HomeDemoFixtures.claim(for: profileID)
-        let client = FakeHomeBridgeSessionClient(claim: claim)
+        let client = FakeHomeBridgeSessionClient(claim: claim, capabilities: capabilities)
         let store = ConversationStore(
             configurationStore: configurationStore,
             persistence: persistence,

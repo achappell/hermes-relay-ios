@@ -37,6 +37,10 @@ final class ConversationStore {
     private var homeReconnectConfirmsNoUnresolvedTurn = false
     private var homeAudioRequested = false
     private var homeControlTimeoutTask: Task<Void, Never>?
+    /// With keep-alives: restarted by every sign of life from the turn.
+    private var homeControlIdleTask: Task<Void, Never>?
+    private var homeTurnUsesKeepalive = false
+    private var homeKeepaliveAwaitingInput = false
     private var homeAudioStartTimeoutTask: Task<Void, Never>?
     private var homeAudioTimeoutTask: Task<Void, Never>?
     private(set) var homeJoinTimeout: HomeTurnJoinTimeout?
@@ -1739,6 +1743,7 @@ final class ConversationStore {
                     finishHomeControlTurn(success: false)
                 }
             }
+            restartHomeControlIdle()
         case .audioStart(let scope, let format):
             guard isCurrentHomeEvent(scope),
                   !homeAudioTerminal,
@@ -1753,6 +1758,7 @@ final class ConversationStore {
             homeAudioStartTimeoutTask = nil
             homeAudioState = .streaming(format: format, generation: nextTurnGeneration)
             scheduleHomeAudioDeadline(for: homeTurnBinding)
+            restartHomeControlIdle()
             for event in homeNormalizer.normalizeHomeAudio(event) {
                 if let homeEventHandler { await homeEventHandler(event) }
             }
@@ -1762,6 +1768,7 @@ final class ConversationStore {
                   !homeAudioTerminalProcessing,
                   !data.isEmpty else { return }
             homeAudioLastReceivedAt = homeClock.now()
+            restartHomeControlIdle()
             for event in homeNormalizer.normalizeHomeAudio(event) {
                 if let homeEventHandler { await homeEventHandler(event) }
             }
@@ -1791,6 +1798,7 @@ final class ConversationStore {
             homeAudioTerminal = true
             resumeHomeAudioTerminalWaiter()
             refreshHomeContinueWithoutResendingEligibility()
+            restartHomeControlIdle()
         case .structuredPrompt(let prompt):
             guard prompt.conversationHandle == binding.conversationHandle,
                   isCurrentHomeEvent(HomeEventScope(
@@ -1803,6 +1811,7 @@ final class ConversationStore {
                 receivedAt: now(),
                 expiresAt: prompt.expiresAt
             )
+            restartHomeControlIdle()
         case .command(let command):
             guard command.conversationHandle == binding.conversationHandle else { return }
             homeCommandEvents.append(command)
@@ -1810,6 +1819,11 @@ final class ConversationStore {
         case .activity(let scope, let activity):
             if let scope, !isCurrentHomeEvent(scope) { return }
             activityText = activity == .idle || activity == .stopped ? nil : activity.rawValue
+            if scope != nil { restartHomeControlIdle() }
+        case .turnAlive(let scope, let phase):
+            guard isCurrentHomeEvent(scope) else { return }
+            homeKeepaliveAwaitingInput = phase == .awaitingInput
+            restartHomeControlIdle()
         }
     }
 
@@ -1835,19 +1849,56 @@ final class ConversationStore {
             homeAudioTerminal = true
             resumeHomeAudioTerminalWaiter()
         }
-        homeControlTimeoutTask?.cancel()
-        homeControlTimeoutTask = nil
+        cancelHomeControlDeadlines()
         homeTurnDeliveryState = success ? .completed(turn) : .interrupted(turn)
         homeTurnResult = success
         resumeHomeTurnWaiters(returning: success)
     }
 
+    /// Without keep-alives, the turn has `controlTerminal` from acceptance to
+    /// finish. With keep-alives, it may run for `controlBackstop` as long as
+    /// it is never silent for `controlIdle`; a pending prompt pauses the idle
+    /// clock because the turn is waiting on the user, not stuck.
     private func scheduleHomeControlDeadline(for turn: HomeTurnBinding) {
-        homeControlTimeoutTask?.cancel()
-        let deadline = homeClock.now().advanced(
-            by: homeTurnAudioDeadlines.controlTerminal
+        cancelHomeControlDeadlines()
+        homeTurnUsesKeepalive = homeConversationBinding?.capabilities.turnKeepalive ?? false
+        homeKeepaliveAwaitingInput = false
+        let limit = homeTurnUsesKeepalive
+            ? homeTurnAudioDeadlines.controlBackstop
+            : homeTurnAudioDeadlines.controlTerminal
+        homeControlTimeoutTask = homeControlExpiryTask(
+            for: turn,
+            at: homeClock.now().advanced(by: limit)
         )
-        homeControlTimeoutTask = Task { [weak self] in
+        restartHomeControlIdle()
+    }
+
+    private func restartHomeControlIdle() {
+        homeControlIdleTask?.cancel()
+        homeControlIdleTask = nil
+        guard homeTurnUsesKeepalive,
+              let turn = homeTurnBinding,
+              !homeControlTerminal,
+              pendingHomePrompt == nil,
+              !homeKeepaliveAwaitingInput else { return }
+        homeControlIdleTask = homeControlExpiryTask(
+            for: turn,
+            at: homeClock.now().advanced(by: homeTurnAudioDeadlines.controlIdle)
+        )
+    }
+
+    private func cancelHomeControlDeadlines() {
+        homeControlTimeoutTask?.cancel()
+        homeControlTimeoutTask = nil
+        homeControlIdleTask?.cancel()
+        homeControlIdleTask = nil
+    }
+
+    private func homeControlExpiryTask(
+        for turn: HomeTurnBinding,
+        at deadline: ContinuousClock.Instant
+    ) -> Task<Void, Never> {
+        Task { [weak self] in
             do {
                 try await self?.homeClock.sleep(until: deadline)
             } catch {
@@ -1856,6 +1907,7 @@ final class ConversationStore {
             guard let self,
                   self.homeTurnBinding == turn,
                   !self.homeControlTerminal else { return }
+            self.cancelHomeControlDeadlines()
             self.homeJoinTimeout = .controlTerminalMissing
             let conversation = self.homeConversationBinding
             let text = self.activeTurnText
@@ -2327,8 +2379,7 @@ final class ConversationStore {
         homeEventHandler = nil
         homeEventTask?.cancel()
         homeEventTask = nil
-        homeControlTimeoutTask?.cancel()
-        homeControlTimeoutTask = nil
+        cancelHomeControlDeadlines()
         homeAudioTimeoutTask?.cancel()
         homeAudioTimeoutTask = nil
         homeAudioTerminalWaiter?.resume()
@@ -2360,8 +2411,7 @@ final class ConversationStore {
         canContinueWithoutResendingHomeTurn = false
         homeReconnectConfirmsNoUnresolvedTurn = false
         homeRecovery = nil
-        homeControlTimeoutTask?.cancel()
-        homeControlTimeoutTask = nil
+        cancelHomeControlDeadlines()
         homeAudioTimeoutTask?.cancel()
         homeAudioTimeoutTask = nil
         homeAudioStartTimeoutTask?.cancel()
@@ -2406,8 +2456,7 @@ final class ConversationStore {
         homeTurnDeliveryState = .idle
         homeTurnResult = nil
         unconfirmedTurnText = nil
-        homeControlTimeoutTask?.cancel()
-        homeControlTimeoutTask = nil
+        cancelHomeControlDeadlines()
         homeAudioTimeoutTask?.cancel()
         homeAudioTimeoutTask = nil
         homeAudioStartTimeoutTask?.cancel()
@@ -2443,7 +2492,10 @@ final class ConversationStore {
             return .rejected(.home(code: .requestRejected, phase: .structuredResponse))
         }
         let outcome = await homeClient.respond(to: pending.prompt, with: response)
-        if case .accepted = outcome { pendingHomePrompt = nil }
+        if case .accepted = outcome {
+            pendingHomePrompt = nil
+            restartHomeControlIdle()
+        }
         return outcome
     }
 
@@ -2482,8 +2534,7 @@ final class ConversationStore {
         homeReconnectConfirmsNoUnresolvedTurn = false
         homeEventTask?.cancel()
         homeEventTask = nil
-        homeControlTimeoutTask?.cancel()
-        homeControlTimeoutTask = nil
+        cancelHomeControlDeadlines()
         homeAudioStartTimeoutTask?.cancel()
         homeAudioStartTimeoutTask = nil
         homeAudioTimeoutTask?.cancel()
@@ -2568,8 +2619,7 @@ final class ConversationStore {
         cancelHomeConnectRetry()
         homeEventTask?.cancel()
         homeEventTask = nil
-        homeControlTimeoutTask?.cancel()
-        homeControlTimeoutTask = nil
+        cancelHomeControlDeadlines()
         homeAudioStartTimeoutTask?.cancel()
         homeAudioStartTimeoutTask = nil
         homeAudioTimeoutTask?.cancel()
@@ -2739,8 +2789,7 @@ final class ConversationStore {
         canContinueWithoutResendingHomeTurn = false
         homeReconnectConfirmsNoUnresolvedTurn = false
         homeRecovery = nil
-        homeControlTimeoutTask?.cancel()
-        homeControlTimeoutTask = nil
+        cancelHomeControlDeadlines()
         homeAudioTimeoutTask?.cancel()
         homeAudioTimeoutTask = nil
         homeJoinTimeout = nil

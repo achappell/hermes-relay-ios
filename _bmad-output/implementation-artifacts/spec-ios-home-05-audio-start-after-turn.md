@@ -22,6 +22,8 @@ context: []
 
 Implemented in `ConversationStore.finishHomeControlTurn(success:)`: arm audio-start deadline after successful text completion only when audio has not started or terminated. Kept the 30 s acceptance-time control deadline. `VoiceSessionCoordinator` now defers Home's no-audio `turnComplete` failure to the Home audio terminal/deadline.
 
+Superseded by IOS-HOME-07 (2026-10-04): the acceptance-time control deadline is now 120 s without Home keep-alives. With keep-alives, it is 45 s idle plus an 1800 s backstop. See `spec-ios-home-07-slow-turn-control-deadline.md`.
+
 Added delayed-audio and missing-audio regression tests in `HermesRelayTests/VoiceSessionCoordinatorTests.swift`. The delayed-text test failed before the fix (playback failure; no audio append) and passed afterward.
 
 Blind review found no issues.

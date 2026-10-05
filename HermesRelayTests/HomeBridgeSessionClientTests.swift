@@ -1662,6 +1662,53 @@ final class HomeBridgeSessionClientTests: XCTestCase {
         await client.close()
     }
 
+    func testURLSessionClientOptsIntoTurnKeepalivesAndDecodesTurnAlive() async throws {
+        let fixture = try await makeFixture()
+        let client = fixture.client
+        let stream = await client.events()
+        var events = stream.makeAsyncIterator()
+        guard case .ready(let binding, _) = await client.open(claim: fixture.claim) else {
+            return XCTFail("The bridge must be ready")
+        }
+        let recordedRequest = await fixture.requests.first()
+        let request = try XCTUnwrap(recordedRequest)
+        XCTAssertEqual(
+            request.value(forHTTPHeaderField: HomeBridgeClientOptIn.headerField),
+            HomeBridgeClientOptIn.headerValue
+        )
+
+        await fixture.socket.enqueue(.text(try eventFrame(
+            conversationHandle: binding.conversationHandle,
+            turnID: "turn-1",
+            correlationID: "alive-1",
+            type: "turn.alive",
+            payload: ["phase": "awaiting_input"]
+        )))
+        let aliveEvent = try await events.next()
+        XCTAssertEqual(aliveEvent, .turnAlive(
+            HomeEventScope(
+                conversationHandle: binding.conversationHandle,
+                turnID: "turn-1",
+                correlationID: "alive-1"
+            ),
+            .awaitingInput
+        ))
+        await client.close()
+    }
+
+    func testWireCapabilitiesDecodeTurnKeepaliveOnlyWhenHomeAdvertisesIt() throws {
+        let advertised = try JSONDecoder().decode(
+            HomeWireCapabilities.self,
+            from: Data(#"{"commands":[],"heartbeat":true,"timing":"absent","turn_keepalive":true}"#.utf8)
+        )
+        XCTAssertTrue(HomeBridgeCapabilities(advertised).turnKeepalive)
+        let absent = try JSONDecoder().decode(
+            HomeWireCapabilities.self,
+            from: Data(#"{"commands":[],"heartbeat":true,"timing":"absent"}"#.utf8)
+        )
+        XCTAssertFalse(HomeBridgeCapabilities(absent).turnKeepalive)
+    }
+
     func testURLSessionClientRejectsEmptyTypedStructuredResponses() async throws {
         let fixture = try await makeFixture()
         let client = fixture.client

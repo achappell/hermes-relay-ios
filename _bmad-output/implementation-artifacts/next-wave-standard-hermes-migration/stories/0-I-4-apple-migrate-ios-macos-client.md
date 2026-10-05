@@ -909,6 +909,14 @@ struct HomeTurnAudioDeadlines: Equatable, Sendable {
 }
 ```
 
+> **Superseded (IOS-HOME-07, 2026-10-04):** The 30 s `controlTerminal`
+> value is no longer current. Without Home turn keep-alives, the client waits
+> a fixed 120 s from acceptance. When Home advertises `turn_keepalive`, the
+> control deadline is idle-based: 45 s without current-turn activity, paused
+> while a structured prompt is pending, with an 1800 s backstop from
+> acceptance. See `spec-ios-home-07-slow-turn-control-deadline.md` and
+> `validation-ios-home-07.md`.
+
 `HomePCMAccumulator` joins bytes across arbitrary WebSocket binary frames and
 returns only complete two-byte samples to native playback. `finish()` rejects
 an odd aggregate; an odd individual transport chunk is valid when the next

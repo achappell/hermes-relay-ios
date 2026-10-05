@@ -113,9 +113,13 @@ struct HomeWireCapabilities: Codable, Equatable, Sendable {
     let timing: HomeTimingCapability
     let interrupt: Bool?
     let audio: Bool?
+    /// Present only for clients that opted in with
+    /// `HomeBridgeClientOptIn`; Home then sends `turn.alive` during turns.
+    let turnKeepalive: Bool?
 
     private enum CodingKeys: String, CodingKey, CaseIterable {
         case commands, heartbeat, timing, interrupt, audio
+        case turnKeepalive = "turn_keepalive"
     }
 
     init(
@@ -123,13 +127,15 @@ struct HomeWireCapabilities: Codable, Equatable, Sendable {
         heartbeat: Bool,
         timing: HomeTimingCapability,
         interrupt: Bool? = nil,
-        audio: Bool? = nil
+        audio: Bool? = nil,
+        turnKeepalive: Bool? = nil
     ) {
         self.commands = commands
         self.heartbeat = heartbeat
         self.timing = timing
         self.interrupt = interrupt
         self.audio = audio
+        self.turnKeepalive = turnKeepalive
     }
 
     init(from decoder: Decoder) throws {
@@ -141,6 +147,7 @@ struct HomeWireCapabilities: Codable, Equatable, Sendable {
         timing = try container.decode(HomeTimingCapability.self, forKey: .timing)
         interrupt = try container.decodeIfPresent(Bool.self, forKey: .interrupt)
         audio = try container.decodeIfPresent(Bool.self, forKey: .audio)
+        turnKeepalive = try container.decodeIfPresent(Bool.self, forKey: .turnKeepalive)
     }
 }
 
@@ -506,17 +513,22 @@ struct HomeBridgeCapabilities: Equatable, Sendable {
     let heartbeat: Bool
     let interrupt: Bool
     let timing: HomeTimingCapability
+    /// Home sends `turn.alive` while a turn runs, so the control deadline
+    /// can measure silence instead of total turn length.
+    let turnKeepalive: Bool
 
     init(
         commands: Set<String> = [],
         heartbeat: Bool = false,
         interrupt: Bool = false,
-        timing: HomeTimingCapability = .absent
+        timing: HomeTimingCapability = .absent,
+        turnKeepalive: Bool = false
     ) {
         self.commands = commands
         self.heartbeat = heartbeat
         self.interrupt = interrupt
         self.timing = timing
+        self.turnKeepalive = turnKeepalive
     }
 
     init(_ wire: HomeWireCapabilities) {
@@ -524,7 +536,8 @@ struct HomeBridgeCapabilities: Equatable, Sendable {
             commands: Set(wire.commands.map { $0.lowercased() }),
             heartbeat: wire.heartbeat,
             interrupt: wire.interrupt ?? false,
-            timing: wire.timing
+            timing: wire.timing,
+            turnKeepalive: wire.turnKeepalive ?? false
         )
     }
 }
@@ -1007,6 +1020,12 @@ enum HomeAudioTerminal: String, Sendable {
     case end, fallback, unavailable, invalid
 }
 
+/// Phase reported by Home's `turn.alive` keep-alive.
+enum HomeTurnAlivePhase: String, Sendable {
+    case running
+    case awaitingInput = "awaiting_input"
+}
+
 enum HomeBridgeEvent: Equatable, Sendable {
     case standard(HomeStandardEvent)
     case audioStart(HomeEventScope, HomeAudioFormat)
@@ -1015,6 +1034,8 @@ enum HomeBridgeEvent: Equatable, Sendable {
     case structuredPrompt(HomeStructuredPrompt)
     case command(HomeCommandEvent)
     case activity(HomeEventScope?, HomeActivityKind)
+    /// Home's periodic proof that the turn is still running. Never rendered.
+    case turnAlive(HomeEventScope, HomeTurnAlivePhase)
 }
 
 enum HomePCMError: Error, Equatable, Sendable {
@@ -1049,19 +1070,43 @@ enum HomeTurnJoinTimeout: Equatable, Sendable {
 
 struct HomeTurnAudioDeadlines: Equatable, Sendable {
     let audioStart: Duration
+    /// Fixed wait for a control terminal, from turn acceptance. Used when
+    /// Home does not send `turn.alive` keep-alives.
     let controlTerminal: Duration
     let audioTerminal: Duration
     let playbackDrain: Duration
+    /// With keep-alives: how long the turn may be silent before it is stuck.
+    let controlIdle: Duration
+    /// With keep-alives: overall cap from acceptance, never extended.
+    let controlBackstop: Duration
 
-    /// `controlTerminal` runs from turn acceptance. A Standard turn that runs
-    /// tools can take longer than 30 s (one took about 63 s on device), and
-    /// Home keeps an in-flight client claim for its 120 s reconnect grace, so
-    /// the client waits as long as Home would before treating the turn as stuck.
+    init(
+        audioStart: Duration,
+        controlTerminal: Duration,
+        audioTerminal: Duration,
+        playbackDrain: Duration,
+        controlIdle: Duration = .seconds(45),
+        controlBackstop: Duration = .seconds(1800)
+    ) {
+        self.audioStart = audioStart
+        self.controlTerminal = controlTerminal
+        self.audioTerminal = audioTerminal
+        self.playbackDrain = playbackDrain
+        self.controlIdle = controlIdle
+        self.controlBackstop = controlBackstop
+    }
+
+    /// Without keep-alives, `controlTerminal` (120 s) matches Home's
+    /// reconnect grace: one Standard turn took about 63 s on device. With
+    /// keep-alives every 15 s, three missed beats (45 s) mean the turn is
+    /// stuck, and 1800 s matches Standard's `agent.gateway_timeout`.
     static let `default` = HomeTurnAudioDeadlines(
         audioStart: .seconds(5),
         controlTerminal: .seconds(120),
         audioTerminal: .seconds(30),
-        playbackDrain: .seconds(5)
+        playbackDrain: .seconds(5),
+        controlIdle: .seconds(45),
+        controlBackstop: .seconds(1800)
     )
 }
 
