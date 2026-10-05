@@ -93,6 +93,10 @@ build is 100; a lower value never moves the counter backward. Set
 `HERMES_BUILD_NUMBER_DIR=<directory>` on the `xcodebuild` command line to use
 a different counter directory.
 
+The app shows its marketing version and build number, for example
+`Version 0.6.0 (4)`, in **Configure Relay → Troubleshooting**, read from the
+built app's `CFBundleShortVersionString` and `CFBundleVersion`.
+
 ## Automatic release submission
 
 When `release.yml` packages a version from a release tag, it calls this same

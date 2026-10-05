@@ -818,6 +818,9 @@ struct RelayConfigurationView: View {
                     ) {
                         Label("Share diagnostics", systemImage: "stethoscope")
                     }
+                    LabeledContent("Version", value: Self.appVersionLabel)
+                        .foregroundStyle(HermesVisualTokens.secondaryInk)
+                        .accessibilityIdentifier("app-version")
                 } header: {
                     Text("Troubleshooting")
                 } footer: {
@@ -898,6 +901,12 @@ struct RelayConfigurationView: View {
         #if os(macOS)
         .frame(minWidth: 480, idealWidth: 640, minHeight: 320, idealHeight: 560)
         #endif
+    }
+
+    /// Marketing version and build number from the built app's Info.plist.
+    private static var appVersionLabel: String {
+        let header = DiagnosticsHeader.current()
+        return "\(header.appVersion) (\(header.build))"
     }
 
     @ViewBuilder
