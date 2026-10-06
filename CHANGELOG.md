@@ -1,5 +1,23 @@
 # Changelog
 
+## 0.7.0 (2026-10-06)
+
+<!-- Release notes generated using configuration in .github/release.yml at main -->
+
+## What's Changed
+### Dependencies
+* chore(deps): bump apple-actions/upload-testflight-build from 5.4.0 to 5.5.0 by @dependabot[bot] in https://github.com/achappell/hermes-relay-ios/pull/124
+### Other Changes
+* feat(ios): release Home claims and manage open conversations (IOS-HOME-03) by @achappell in https://github.com/achappell/hermes-relay-ios/pull/116
+* feat(ios): correlate Home connection diagnostics and send schema-2 reports (IOS-DIAG-03) by @achappell in https://github.com/achappell/hermes-relay-ios/pull/119
+* test: cover pending prompt submit transport loss by @achappell in https://github.com/achappell/hermes-relay-ios/pull/120
+* docs(ios): drop duplicate-token device requirement from IOS-DIAG-03 acceptance by @achappell in https://github.com/achappell/hermes-relay-ios/pull/121
+* fix(ios): scroll the Home HUD instead of spilling it under the top and bottom bars by @achappell in https://github.com/achappell/hermes-relay-ios/pull/123
+* fix(ios): keep Home reply audio alive in the background by @achappell in https://github.com/achappell/hermes-relay-ios/pull/122
+
+
+**Full Changelog**: https://github.com/achappell/hermes-relay-ios/compare/v0.6.0...v0.7.0
+
 ## 0.6.0 (2026-09-28)
 
 <!-- Release notes generated using configuration in .github/release.yml at main -->
