@@ -13,16 +13,18 @@ colors:
   panel-dark: '#0D1320'
   raised-panel: '#E6ECF5'
   raised-panel-dark: '#182338'
-  ink-primary: '#0B100B'
+  ink-primary: '#0B101B'
   ink-primary-dark: '#EAF7FF'
   ink-secondary: '#526176'
   ink-secondary-dark: '#B3C0D2'
-  live: '#087F4D'
+  live: '#087A4A'
   live-dark: '#62E6C7'
-  attention: '#976B00'
+  attention: '#8C6300'
   attention-dark: '#FFCF5C'
   identity: '#4C59D9'
   identity-dark: '#7C8CFF'
+  on-identity: '#FFFFFF'
+  on-identity-dark: '#0B101B'
   unavailable: '#BE3455'
   unavailable-dark: '#FF7D9C'
 typography:
@@ -160,7 +162,7 @@ A small text button under the status line, only while a tapped recording is list
 
 ### Hands-free pill (`{components.hands-free-pill}`)
 
-A small capsule under the status line: loop glyph + "Keep listening". It is deliberately quieter than the orb and status line. Off: hairline outline, `{colors.ink-secondary}` text and glyph. On: filled `{colors.identity}` with white text and glyph. No caption. iOS only.
+A small capsule under the status line: loop glyph + "Keep listening". It is deliberately quieter than the orb and status line. Off: hairline outline, `{colors.ink-secondary}` text and glyph. On: filled `{colors.identity}` with `on-identity` text and glyph (white in light, `{colors.canvas-dark}` in dark, so the label stays above 4.5:1). No caption. iOS only.
 
 ### Recent prompts button (`{components.recent-prompts-button}`)
 

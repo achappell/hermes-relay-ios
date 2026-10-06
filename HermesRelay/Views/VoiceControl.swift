@@ -101,7 +101,7 @@ struct HandsFreePill: View {
                 Text("Keep listening")
             }
             .font(.caption.weight(.medium))
-            .foregroundStyle(isOn ? Color.white : HermesVisualTokens.secondaryInk)
+            .foregroundStyle(isOn ? HermesVisualTokens.onIdentity : HermesVisualTokens.secondaryInk)
             .padding(.horizontal, 12)
             .frame(height: 30)
             .background {

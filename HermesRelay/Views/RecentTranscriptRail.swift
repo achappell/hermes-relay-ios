@@ -12,6 +12,14 @@ struct RecentTranscriptEntry: Identifiable, Equatable, Sendable {
         self.text = text
         self.isLive = isLive
     }
+
+    /// What VoiceOver reads for the entry: the speaker, whether it is still
+    /// arriving, then the words.
+    var accessibilityLabel: String {
+        isLive
+            ? "\(role.railLabel), live, \(text)"
+            : "\(role.railLabel), \(text)"
+    }
 }
 
 struct RecentTranscriptProjection: Equatable, Sendable {
@@ -793,11 +801,7 @@ private struct RecentTranscriptEntryView: View {
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .accessibilityElement(children: .combine)
-        .accessibilityLabel(
-            entry.isLive
-                ? "(entry.role.railLabel), live, (entry.text)"
-                : "(entry.role.railLabel), (entry.text)"
-        )
+        .accessibilityLabel(entry.accessibilityLabel)
     }
 }
 
@@ -843,11 +847,7 @@ private struct LiveTranscriptEntryView: View {
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .accessibilityElement(children: .combine)
-        .accessibilityLabel(
-            entry.isLive
-                ? "(entry.role.railLabel), live, (entry.text)"
-                : "(entry.role.railLabel), (entry.text)"
-        )
+        .accessibilityLabel(entry.accessibilityLabel)
     }
 
     private func scrollToLatest(using proxy: ScrollViewProxy, animated: Bool) {

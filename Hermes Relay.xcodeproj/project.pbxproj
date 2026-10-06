@@ -33,7 +33,6 @@
 		A1000000000000000000008A /* WAVFallbackWriter.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1000000000000000000008E /* WAVFallbackWriter.swift */; };
 		A1000000000000000000008F /* VoiceSessionCoordinatorTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000000000000000000093 /* VoiceSessionCoordinatorTests.swift */; };
 		A10000000000000000000090 /* VoiceSessionCoordinator.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000000000000000000094 /* VoiceSessionCoordinator.swift */; };
-		A10000000000000000000091 /* VoiceStatusView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000000000000000000095 /* VoiceStatusView.swift */; };
 		A10000000000000000000092 /* VoiceControl.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000000000000000000096 /* VoiceControl.swift */; };
 		A10000000000000000000097 /* ConversationPersistenceTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1000000000000000000009A /* ConversationPersistenceTests.swift */; };
 		A10000000000000000000098 /* RecoveryTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1000000000000000000009B /* RecoveryTests.swift */; };
@@ -44,6 +43,7 @@
 		A100000000000000000000A4 /* RecentTranscriptRail.swift in Sources */ = {isa = PBXBuildFile; fileRef = A100000000000000000000A5 /* RecentTranscriptRail.swift */; };
 		A100000000000000000000A6 /* ReconnectPolicy.swift in Sources */ = {isa = PBXBuildFile; fileRef = A100000000000000000000A7 /* ReconnectPolicy.swift */; };
 		A100000000000000000000A8 /* ReconnectPolicyTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A100000000000000000000A9 /* ReconnectPolicyTests.swift */; };
+		A10000000000000000000120 /* VisualContrastTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000000000000000000121 /* VisualContrastTests.swift */; };
 		A100000000000000000000AA /* ConversationStoreReconnectTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A100000000000000000000AB /* ConversationStoreReconnectTests.swift */; };
 		A100000000000000000000B0 /* RelayProfileCollection.swift in Sources */ = {isa = PBXBuildFile; fileRef = A100000000000000000000B1 /* RelayProfileCollection.swift */; };
 		A100000000000000000000B2 /* RelayConfigurationView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A100000000000000000000B3 /* RelayConfigurationView.swift */; };
@@ -123,7 +123,6 @@
 		A1000000000000000000008E /* WAVFallbackWriter.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WAVFallbackWriter.swift; sourceTree = "<group>"; };
 		A10000000000000000000093 /* VoiceSessionCoordinatorTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VoiceSessionCoordinatorTests.swift; sourceTree = "<group>"; };
 		A10000000000000000000094 /* VoiceSessionCoordinator.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VoiceSessionCoordinator.swift; sourceTree = "<group>"; };
-		A10000000000000000000095 /* VoiceStatusView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VoiceStatusView.swift; sourceTree = "<group>"; };
 		A10000000000000000000096 /* VoiceControl.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VoiceControl.swift; sourceTree = "<group>"; };
 		A1000000000000000000009A /* ConversationPersistenceTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ConversationPersistenceTests.swift; sourceTree = "<group>"; };
 		A1000000000000000000009B /* RecoveryTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RecoveryTests.swift; sourceTree = "<group>"; };
@@ -135,6 +134,7 @@
 		A100000000000000000000A5 /* RecentTranscriptRail.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RecentTranscriptRail.swift; sourceTree = "<group>"; };
 		A100000000000000000000A7 /* ReconnectPolicy.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ReconnectPolicy.swift; sourceTree = "<group>"; };
 		A100000000000000000000A9 /* ReconnectPolicyTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ReconnectPolicyTests.swift; sourceTree = "<group>"; };
+		A10000000000000000000121 /* VisualContrastTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VisualContrastTests.swift; sourceTree = "<group>"; };
 		A100000000000000000000AB /* ConversationStoreReconnectTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ConversationStoreReconnectTests.swift; sourceTree = "<group>"; };
 		A100000000000000000000B1 /* RelayProfileCollection.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RelayProfileCollection.swift; sourceTree = "<group>"; };
 		A100000000000000000000B3 /* RelayConfigurationView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RelayConfigurationView.swift; sourceTree = "<group>"; };
@@ -234,6 +234,7 @@
 				A10000000000000000000037 /* HermesEventNormalizerTests.swift */,
 				A10000000000000000000039 /* URLSessionHermesSessionClientTests.swift */,
 				A100000000000000000000A9 /* ReconnectPolicyTests.swift */,
+				A10000000000000000000121 /* VisualContrastTests.swift */,
 				A100000000000000000000AB /* ConversationStoreReconnectTests.swift */,
 				A1000000000000000000003C /* ConversationStoreTransportTests.swift */,
 				A1000000000000000000003D /* SpeechInputTests.swift */,
@@ -325,7 +326,6 @@
 				A10000000000000000000109 /* HomePairingScannerView.swift */,
 				A10000000000000000000025 /* ContentView.swift */,
 				A10000000000000000000026 /* MessageBubble.swift */,
-				A10000000000000000000095 /* VoiceStatusView.swift */,
 				A10000000000000000000096 /* VoiceControl.swift */,
 				A100000000000000000000A3 /* AmbientHUD.swift */,
 				A100000000000000000000A5 /* RecentTranscriptRail.swift */,
@@ -482,7 +482,6 @@
 				A10000000000000000000089 /* AppleAudioOutput.swift in Sources */,
 				A1000000000000000000008A /* WAVFallbackWriter.swift in Sources */,
 				A10000000000000000000090 /* VoiceSessionCoordinator.swift in Sources */,
-				A10000000000000000000091 /* VoiceStatusView.swift in Sources */,
 				A10000000000000000000092 /* VoiceControl.swift in Sources */,
 				A100000000000000000000A2 /* AmbientHUD.swift in Sources */,
 				A100000000000000000000A4 /* RecentTranscriptRail.swift in Sources */,
@@ -522,6 +521,7 @@
 				A1000000000000000000001C /* HermesEventNormalizerTests.swift in Sources */,
 				A1000000000000000000001E /* URLSessionHermesSessionClientTests.swift in Sources */,
 				A100000000000000000000A8 /* ReconnectPolicyTests.swift in Sources */,
+				A10000000000000000000120 /* VisualContrastTests.swift in Sources */,
 				A100000000000000000000AA /* ConversationStoreReconnectTests.swift in Sources */,
 				A1000000000000000000002B /* ConversationStoreTransportTests.swift in Sources */,
 				A1000000000000000000002C /* SpeechInputTests.swift in Sources */,

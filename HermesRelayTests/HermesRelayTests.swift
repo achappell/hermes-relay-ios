@@ -130,22 +130,21 @@ final class HermesRelayIOSTests: XCTestCase {
         XCTAssertEqual(ConnectionState.failed("offline").label, "Unavailable")
     }
 
-    func testVoiceStatesExposeStableStatusPresentation() {
-        let expected: [(VoiceState, String, String)] = [
-            (.idle, "Ready", "mic"),
-            (.listening, "Listening", "mic.fill"),
-            (.transcribing, "Transcribing", "waveform"),
-            (.thinking, "Thinking", "ellipsis"),
-            (.speaking, "Speaking", "speaker.wave.2.fill"),
-            (.buffering, "Buffering", "arrow.down.circle"),
-            (.complete, "Complete", "checkmark.circle"),
-            (.interrupted, "Interrupted", "pause.circle"),
-            (.failed("Audio playback failed."), "Audio playback failed.", "exclamationmark.triangle"),
+    func testVoiceStatesExposeStableStatusLabels() {
+        let expected: [(VoiceState, String)] = [
+            (.idle, "Ready"),
+            (.listening, "Listening"),
+            (.transcribing, "Transcribing"),
+            (.thinking, "Thinking"),
+            (.speaking, "Speaking"),
+            (.buffering, "Buffering"),
+            (.complete, "Complete"),
+            (.interrupted, "Interrupted"),
+            (.failed("Audio playback failed."), "Audio playback failed."),
         ]
 
-        for (state, label, systemImage) in expected {
+        for (state, label) in expected {
             XCTAssertEqual(state.label, label)
-            XCTAssertEqual(state.systemImage, systemImage)
         }
     }
 
@@ -544,6 +543,17 @@ final class HermesRelayIOSTests: XCTestCase {
         XCTAssertEqual(
             RecentTranscriptDisplay.historyEntries(from: entries).map(\.id),
             ["older"]
+        )
+    }
+
+    func testRecentTranscriptEntryAccessibilityLabelReadsRoleAndText() {
+        XCTAssertEqual(
+            RecentTranscriptEntry(id: "a", role: .assistant, text: "Hello there").accessibilityLabel,
+            "Hermes, Hello there"
+        )
+        XCTAssertEqual(
+            RecentTranscriptEntry(id: "u", role: .user, text: "Current words", isLive: true).accessibilityLabel,
+            "You, live, Current words"
         )
     }
 

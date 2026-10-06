@@ -17,6 +17,9 @@ enum HermesVisualTokens {
     static let live = Color("HermesLive")
     static let attention = Color("HermesAttention")
     static let identity = Color("HermesIdentity")
+    /// Text and glyphs drawn on a solid `identity` fill: white on the deeper
+    /// light identity, midnight ink on the lighter dark identity.
+    static let onIdentity = Color("HermesOnIdentity")
     static let unavailable = Color("HermesUnavailable")
 
     static let hairline = secondaryInk.opacity(0.22)
