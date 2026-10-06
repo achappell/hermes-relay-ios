@@ -303,6 +303,78 @@ final class AmbientHUDModel {
 
 }
 
+/// The orb is drawn at a fixed 260 pt. This lets it give up height — down to
+/// 60% scale — when the screen is short, so the status block, the orb and the
+/// live transcript fit between the top bar and the bottom bar before the HUD
+/// has to scroll. The scaled drawing keeps its own hit area and accessibility.
+private struct CompressibleOrb<Content: View>: View {
+    private static var drawnSize: CGFloat { 260 }
+    private static var minimumScale: CGFloat { 0.6 }
+    @ViewBuilder let content: Content
+
+    var body: some View {
+        GeometryReader { proxy in
+            let scale = min(1, max(Self.minimumScale, proxy.size.height / Self.drawnSize))
+            content
+                .scaleEffect(scale)
+                .frame(width: proxy.size.width, height: proxy.size.height)
+        }
+        .frame(
+            minHeight: Self.drawnSize * Self.minimumScale,
+            maxHeight: Self.drawnSize
+        )
+    }
+}
+
+/// Sizes its one child to the scroll viewport when the child's smallest
+/// layout fits, and otherwise to that smallest layout, so a scroll view
+/// around it scrolls only once the content can no longer compress. Plain
+/// `frame(minHeight:)` hands the child its natural height, which would defeat
+/// the compression above.
+struct ViewportFillLayout: Layout {
+    var viewportHeight: CGFloat
+
+    /// A child's size is not monotonic in the height it is proposed — flexible
+    /// rows can claim more than a smaller proposal left them — so the smallest
+    /// layout measured at zero height can still overflow when it is used as
+    /// the frame. Grow the proposal until the child fits inside it.
+    private func fittedHeight(of child: LayoutSubview, width: CGFloat) -> CGFloat {
+        var height = max(
+            viewportHeight,
+            child.sizeThatFits(ProposedViewSize(width: width, height: 0)).height
+        )
+        for _ in 0..<4 {
+            let needed = child.sizeThatFits(ProposedViewSize(width: width, height: height)).height
+            if needed <= height { break }
+            height = needed
+        }
+        return height
+    }
+
+    func sizeThatFits(
+        proposal: ProposedViewSize,
+        subviews: Subviews,
+        cache: inout ()
+    ) -> CGSize {
+        guard let child = subviews.first else { return .zero }
+        let width = proposal.width ?? child.sizeThatFits(.unspecified).width
+        return CGSize(width: width, height: fittedHeight(of: child, width: width))
+    }
+
+    func placeSubviews(
+        in bounds: CGRect,
+        proposal: ProposedViewSize,
+        subviews: Subviews,
+        cache: inout ()
+    ) {
+        subviews.first?.place(
+            at: bounds.origin,
+            anchor: .topLeading,
+            proposal: ProposedViewSize(width: bounds.width, height: bounds.height)
+        )
+    }
+}
+
 struct AmbientHUDView: View {
     @Environment(\.openURL) private var openURL
     let presentation: AmbientHUDPresentation
@@ -503,18 +575,20 @@ struct AmbientHUDView: View {
 
             Spacer(minLength: 20)
 
-            if let orbCoordinator {
-                VoiceOrbButton(
-                    coordinator: orbCoordinator,
-                    presentation: presentation,
-                    doorwayState: doorwayState,
-                    statusLabel: doorwayStatusLabel
-                )
-            } else {
-                AmbientVisualizer(
-                    presentation: presentation,
-                    doorwayState: doorwayState
-                )
+            CompressibleOrb {
+                if let orbCoordinator {
+                    VoiceOrbButton(
+                        coordinator: orbCoordinator,
+                        presentation: presentation,
+                        doorwayState: doorwayState,
+                        statusLabel: doorwayStatusLabel
+                    )
+                } else {
+                    AmbientVisualizer(
+                        presentation: presentation,
+                        doorwayState: doorwayState
+                    )
+                }
             }
 
             VStack(spacing: 8) {

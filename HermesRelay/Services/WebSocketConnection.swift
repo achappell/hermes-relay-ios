@@ -63,6 +63,7 @@ final class URLSessionWebSocketConnection: WebSocketConnection, @unchecked Senda
                 }
             }
         } onCancel: {
+            DiagnosticsJournal.shared.record("websocket cancel initiator=send-task-cancelled code=goingAway")
             self.receiveState.finish(throwing: RelaySessionError.disconnected)
             task.cancel(with: .goingAway, reason: nil)
         }
@@ -88,6 +89,7 @@ final class URLSessionWebSocketConnection: WebSocketConnection, @unchecked Senda
     }
 
     func close() async {
+        DiagnosticsJournal.shared.record("websocket cancel initiator=close code=normalClosure")
         receiveState.finish(throwing: RelaySessionError.disconnected)
         task.cancel(with: .normalClosure, reason: nil)
     }
@@ -109,10 +111,14 @@ private final class WebSocketCloseDelegate: NSObject, URLSessionWebSocketDelegat
         reason: Data?
     ) {
         // Close reasons are server-controlled; never copy them into UI/logs.
+        // The numeric close code is a protocol constant, not content.
+        DiagnosticsJournal.shared.record("websocket closed by peer code=\(closeCode.rawValue)")
         receiveState.finish(throwing: RelaySessionError.disconnected)
     }
 
     func urlSession(_ session: URLSession, task: URLSessionTask, didCompleteWithError error: Error?) {
+        let code = (error as NSError?).map { "\($0.domain)/\($0.code)" } ?? "none"
+        DiagnosticsJournal.shared.record("websocket task completed error=\(code)")
         receiveState.finish(throwing: RelaySessionError.disconnected)
     }
 }

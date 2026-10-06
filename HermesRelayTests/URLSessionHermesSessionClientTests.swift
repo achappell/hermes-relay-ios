@@ -517,6 +517,7 @@ final class URLSessionHermesSessionClientTests: XCTestCase {
             XCTAssertEqual(error, .invalidJSON)
         }
 
+        await socket.waitUntilClosed()
         XCTAssertTrue(socket.closeCalled)
         await client.disconnect()
     }
@@ -537,6 +538,7 @@ final class URLSessionHermesSessionClientTests: XCTestCase {
             XCTAssertEqual(error, .nonObjectJSON)
         }
 
+        await socket.waitUntilClosed()
         XCTAssertTrue(socket.closeCalled)
         await client.disconnect()
     }
@@ -844,6 +846,19 @@ private final class FakeWebSocketConnection: WebSocketConnection, @unchecked Sen
         }
     }
 
+    /// The client finishes the active turn's stream before it closes the
+    /// socket (`failTransport`: finish, notify, then close), so a test that
+    /// has just seen the stream end must wait for the close it asserts on.
+    /// On the slower iOS Simulator runner the close lost that race in CI
+    /// (1 of 400 local simulator runs).
+    func waitUntilClosed(timeout: Duration = .seconds(5)) async {
+        let deadline = ContinuousClock.now.advanced(by: timeout)
+        while ContinuousClock.now < deadline {
+            if stateLock.withLock({ closeCalled }) { return }
+            try? await Task.sleep(for: .milliseconds(2))
+        }
+    }
+
     func close() async {
         let continuations = closeState()
         for continuation in continuations {
@@ -914,4 +929,9 @@ private extension String {
         let data = Data(utf8)
         return try XCTUnwrap(JSONSerialization.jsonObject(with: data) as? [String: Any])
     }
+}
+
+extension CloseTestAudioOutput {
+    func pause() async {}
+    func resume() async {}
 }

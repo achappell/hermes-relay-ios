@@ -295,7 +295,7 @@ actor AppleSpeechInput: SpeechInput {
     }
 }
 
-private final class AudioEngineConfigurationObserver: @unchecked Sendable {
+final class AudioEngineConfigurationObserver: @unchecked Sendable {
     let token: NSObjectProtocol
 
     init(_ token: NSObjectProtocol) {

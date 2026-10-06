@@ -39,6 +39,7 @@
 		A10000000000000000000098 /* RecoveryTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1000000000000000000009B /* RecoveryTests.swift */; };
 		A10000000000000000000099 /* ConversationPersistence.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1000000000000000000009C /* ConversationPersistence.swift */; };
 		A100000000000000000000A0 /* AudioActivity.swift in Sources */ = {isa = PBXBuildFile; fileRef = A100000000000000000000A1 /* AudioActivity.swift */; };
+		B7000000000000000000F001 /* NowPlayingController.swift in Sources */ = {isa = PBXBuildFile; fileRef = B7000000000000000000F002 /* NowPlayingController.swift */; };
 		A100000000000000000000A2 /* AmbientHUD.swift in Sources */ = {isa = PBXBuildFile; fileRef = A100000000000000000000A3 /* AmbientHUD.swift */; };
 		A100000000000000000000A4 /* RecentTranscriptRail.swift in Sources */ = {isa = PBXBuildFile; fileRef = A100000000000000000000A5 /* RecentTranscriptRail.swift */; };
 		A100000000000000000000A6 /* ReconnectPolicy.swift in Sources */ = {isa = PBXBuildFile; fileRef = A100000000000000000000A7 /* ReconnectPolicy.swift */; };
@@ -129,6 +130,7 @@
 		A1000000000000000000009C /* ConversationPersistence.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ConversationPersistence.swift; sourceTree = "<group>"; };
 		A1000000000000000000009D /* Development-Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = "Development-Info.plist"; sourceTree = "<group>"; };
 		A100000000000000000000A1 /* AudioActivity.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AudioActivity.swift; sourceTree = "<group>"; };
+		B7000000000000000000F002 /* NowPlayingController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NowPlayingController.swift; sourceTree = "<group>"; };
 		A100000000000000000000A3 /* AmbientHUD.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AmbientHUD.swift; sourceTree = "<group>"; };
 		A100000000000000000000A5 /* RecentTranscriptRail.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RecentTranscriptRail.swift; sourceTree = "<group>"; };
 		A100000000000000000000A7 /* ReconnectPolicy.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ReconnectPolicy.swift; sourceTree = "<group>"; };
@@ -288,6 +290,7 @@
 				A1000000000000000000003F /* AppleSpeechInput.swift */,
 				A1000000000000000000008C /* AudioOutput.swift */,
 				A100000000000000000000A1 /* AudioActivity.swift */,
+				B7000000000000000000F002 /* NowPlayingController.swift */,
 				A1000000000000000000008D /* AppleAudioOutput.swift */,
 				A1000000000000000000008E /* WAVFallbackWriter.swift */,
 				A10000000000000000000034 /* SecureValueStore.swift */,
@@ -341,6 +344,7 @@
 				A10000000000000000000050 /* Sources */,
 				A10000000000000000000051 /* Frameworks */,
 				A10000000000000000000053 /* Resources */,
+				B5A100000000000000000001 /* Stamp Build Number */,
 			);
 			buildRules = (
 			);
@@ -424,6 +428,31 @@
 		};
 /* End PBXResourcesBuildPhase section */
 
+/* Begin PBXShellScriptBuildPhase section */
+		B5A100000000000000000001 /* Stamp Build Number */ = {
+			isa = PBXShellScriptBuildPhase;
+			alwaysOutOfDate = 1;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			inputPaths = (
+				"$(PROJECT_DIR)/scripts/stamp-ios-build-number.sh",
+				"$(PROJECT_FILE_PATH)/project.pbxproj",
+				"$(TARGET_BUILD_DIR)/$(INFOPLIST_PATH)",
+			);
+			name = "Stamp Build Number";
+			outputPaths = (
+				"$(HERMES_BUILD_NUMBER_DIR)/ios-build-number",
+				"$(HERMES_BUILD_NUMBER_DIR)/ios-build-number.lock",
+				"$(HERMES_BUILD_NUMBER_DIR)/ios-build-number.tmp",
+				"$(TARGET_BUILD_DIR)/$(INFOPLIST_PATH)",
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+			shellPath = /bin/sh;
+			shellScript = "\"${PROJECT_DIR}/scripts/stamp-ios-build-number.sh\"\n";
+		};
+/* End PBXShellScriptBuildPhase section */
+
 /* Begin PBXSourcesBuildPhase section */
 		A10000000000000000000050 /* Sources */ = {
 			isa = PBXSourcesBuildPhase;
@@ -449,6 +478,7 @@
 				A1000000000000000000002E /* AppleSpeechInput.swift in Sources */,
 				A10000000000000000000088 /* AudioOutput.swift in Sources */,
 				A100000000000000000000A0 /* AudioActivity.swift in Sources */,
+				B7000000000000000000F001 /* NowPlayingController.swift in Sources */,
 				A10000000000000000000089 /* AppleAudioOutput.swift in Sources */,
 				A1000000000000000000008A /* WAVFallbackWriter.swift in Sources */,
 				A10000000000000000000090 /* VoiceSessionCoordinator.swift in Sources */,
@@ -619,8 +649,9 @@
 				CODE_SIGN_ENTITLEMENTS = HermesRelay/HermesRelay.entitlements;
 				"CODE_SIGN_IDENTITY[sdk=macosx*]" = "Apple Development";
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 1;
+				CURRENT_PROJECT_VERSION = 3;
 				DEVELOPMENT_TEAM = 37CAHGRH45;
+				HERMES_BUILD_NUMBER_DIR = "$(HOME)/Library/Application Support/HermesRelay";
 				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
 				ENABLE_APP_SANDBOX = YES;
 				ENABLE_HARDENED_RUNTIME = YES;
@@ -665,8 +696,9 @@
 				CODE_SIGN_ENTITLEMENTS = HermesRelay/HermesRelay.entitlements;
 				"CODE_SIGN_IDENTITY[sdk=macosx*]" = "Apple Development";
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 1;
+				CURRENT_PROJECT_VERSION = 3;
 				DEVELOPMENT_TEAM = 37CAHGRH45;
+				HERMES_BUILD_NUMBER_DIR = "$(HOME)/Library/Application Support/HermesRelay";
 				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
 				ENABLE_APP_SANDBOX = YES;
 				ENABLE_HARDENED_RUNTIME = YES;

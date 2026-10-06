@@ -37,6 +37,10 @@ final class ConversationStore {
     private var homeReconnectConfirmsNoUnresolvedTurn = false
     private var homeAudioRequested = false
     private var homeControlTimeoutTask: Task<Void, Never>?
+    /// With keep-alives: restarted by every sign of life from the turn.
+    private var homeControlIdleTask: Task<Void, Never>?
+    private var homeTurnUsesKeepalive = false
+    private var homeKeepaliveAwaitingInput = false
     private var homeAudioStartTimeoutTask: Task<Void, Never>?
     private var homeAudioTimeoutTask: Task<Void, Never>?
     private(set) var homeJoinTimeout: HomeTurnJoinTimeout?
@@ -138,7 +142,9 @@ final class ConversationStore {
     /// metadata is the proof that `hello_ack` was accepted.
     var verifiedTurnBinding: HermesTurnBinding? {
         guard connectionState.isConnected, !homeOperationsSuppressed else { return nil }
-        if let homeConversationBinding, transportMode == .home {
+        if transportMode == .home {
+            // A Home turn needs the live transport, not just a cached state.
+            guard let homeConversationBinding, homeClient != nil else { return nil }
             return HermesTurnBinding(
                 profileID: activeProfileID,
                 homeConversation: homeConversationBinding,
@@ -172,6 +178,12 @@ final class ConversationStore {
     // second loss reported while it is running is the same outage, not a new
     // one, so it must not stack a second backoff ladder.
     private var reconnectTask: Task<Void, Never>?
+    // A Home open or reconnect that failed at the transport is retried on the
+    // reconnect policy's ladder, reusing the held claim. A fresh connect,
+    // Disconnect, lifecycle change, or profile change ends the ladder.
+    private var homeConnectRetryTask: Task<Void, Never>?
+    private var homeConnectRetryAttempt = 0
+    private var homeConnectRetryDeadline: ContinuousClock.Instant?
     private var isExpectedDisconnect = false
 
     init(
@@ -350,6 +362,7 @@ final class ConversationStore {
             guard loadGeneration == configurationLoadGeneration else { return false }
             if activeProfileID != profile.id {
                 homeLifecycleGeneration &+= 1
+                cancelHomeConnectRetry()
                 openHomeClaimsGeneration &+= 1
                 canManageOpenHomeClaims = false
                 openHomeClaimList = nil
@@ -516,6 +529,11 @@ final class ConversationStore {
     }
 
     func connect() async {
+        cancelHomeConnectRetry()
+        await performConnect()
+    }
+
+    private func performConnect() async {
         guard isLifecycleActive, !homeOperationsSuppressed else { return }
         while isClosingOpenHomeClaims || homeClaimLifecycleMutationInProgress {
             await withCheckedContinuation { homeClaimMutationWaiters.append($0) }
@@ -764,26 +782,94 @@ final class ConversationStore {
             if reopeningPairedClaim, homeRecovery == nil,
                failure.safeCode == .staleConversation,
                isCurrentHomeOperation(operationGeneration, profileID: claim.profileID) {
-                let canReplace: Bool
-                if claim.claimRef == nil {
-                    canReplace = true
-                    homeClaim = nil
-                    pendingHomeClaimsByProfile.removeValue(forKey: claim.profileID)
-                } else {
-                    canReplace = await releasePairedHomeClaim(
-                        claim,
-                        reason: .staleOpen,
-                        openedBinding: nil
-                    )
-                }
-                if canReplace,
-                   isCurrentHomeOperation(operationGeneration, profileID: claim.profileID) {
-                    await connectHome(operationGeneration: operationGeneration)
-                }
+                await replaceEndedHomeClaim(claim, operationGeneration: operationGeneration)
             }
         case .disconnected(let failure):
             applyHomeConnectionFailure(failure, unavailable: false)
+            scheduleHomeConnectRetry(after: failure, operationGeneration: operationGeneration)
         }
+    }
+
+    /// Home refused the held claim as ended and no turn is unresolved: release
+    /// it where Home can confirm, then make one fresh claim.
+    private func replaceEndedHomeClaim(
+        _ claim: HomeConversationClaim,
+        operationGeneration: UInt64
+    ) async {
+        guard await releaseEndedHomeClaim(claim),
+              isCurrentHomeOperation(operationGeneration, profileID: claim.profileID) else { return }
+        await connectHome(operationGeneration: operationGeneration)
+    }
+
+    private func releaseEndedHomeClaim(_ claim: HomeConversationClaim) async -> Bool {
+        guard claim.claimRef != nil else {
+            homeClaim = nil
+            pendingHomeClaimsByProfile.removeValue(forKey: claim.profileID)
+            return true
+        }
+        return await releasePairedHomeClaim(claim, reason: .staleOpen, openedBinding: nil)
+    }
+
+    /// The held claim that a `stale_conversation` reconnect refusal ended, when
+    /// it may be replaced: a paired claim with no unresolved turn to protect.
+    private func endedHomeClaim(
+        after failure: HomeBridgeFailure,
+        binding: HomeConversationBinding
+    ) -> HomeConversationClaim? {
+        guard homeClaimsPerConnect, homeRecovery == nil,
+              failure.safeCode == .staleConversation,
+              let claim = homeClaim,
+              claim.profileID == binding.profileID,
+              claim.conversationHandle == binding.conversationHandle else { return nil }
+        return claim
+    }
+
+    private static func isRetryableTransportFailure(_ failure: HomeBridgeFailure) -> Bool {
+        guard case .home(let code, let phase) = failure, phase != .lifecycle else { return false }
+        return code == .transportUnavailable || code == .transportTimeout
+    }
+
+    /// Schedules the next connect on the reconnect policy's ladder. Each retry
+    /// only reopens the held claim or reconnects its conversation; it never
+    /// resubmits a prompt.
+    private func scheduleHomeConnectRetry(
+        after failure: HomeBridgeFailure,
+        operationGeneration: UInt64
+    ) {
+        guard Self.isRetryableTransportFailure(failure),
+              homeConnectRetryTask == nil,
+              let profileID = activeProfileID,
+              isCurrentHomeOperation(operationGeneration, profileID: profileID) else { return }
+        let start = homeClock.now()
+        let deadline = homeConnectRetryDeadline
+            ?? start.advanced(by: homeOperationDeadlines.reconnectOverall)
+        let attempt = homeConnectRetryAttempt + 1
+        guard start < deadline,
+              let delay = reconnectPolicy.delayNanoseconds(forAttempt: attempt) else { return }
+        homeConnectRetryDeadline = deadline
+        homeConnectRetryAttempt = attempt
+        connectionState = .reconnecting(attempt: attempt, of: reconnectPolicy.maxAttempts)
+        let wakeAt = min(start.advanced(by: .nanoseconds(Int64(delay))), deadline)
+        homeConnectRetryTask = Task { [weak self] in
+            guard let self else { return }
+            do {
+                try await self.homeClock.sleep(until: wakeAt)
+            } catch { return }
+            guard !Task.isCancelled,
+                  self.isCurrentHomeOperation(operationGeneration, profileID: profileID) else { return }
+            self.homeConnectRetryTask = nil
+            await self.performConnect()
+        }
+    }
+
+    private func cancelHomeConnectRetry() {
+        if homeConnectRetryTask != nil, case .reconnecting = connectionState {
+            connectionState = .disconnected
+        }
+        homeConnectRetryTask?.cancel()
+        homeConnectRetryTask = nil
+        homeConnectRetryAttempt = 0
+        homeConnectRetryDeadline = nil
     }
 
     private func reconnectHome(
@@ -860,8 +946,14 @@ final class ConversationStore {
             await persistConversation()
         case .unavailable(let failure):
             applyHomeConnectionFailure(failure, unavailable: true)
+            if let claim = endedHomeClaim(after: failure, binding: binding),
+               isCurrentHomeOperation(operationGeneration, profileID: claim.profileID) {
+                homeConversationBinding = nil
+                await replaceEndedHomeClaim(claim, operationGeneration: operationGeneration)
+            }
         case .disconnected(let failure):
             applyHomeConnectionFailure(failure, unavailable: false)
+            scheduleHomeConnectRetry(after: failure, operationGeneration: operationGeneration)
         }
     }
 
@@ -885,6 +977,8 @@ final class ConversationStore {
         )
         sessionStartedAt = now()
         connectionState = .connected
+        homeConnectRetryAttempt = 0
+        homeConnectRetryDeadline = nil
         transientError = nil
         startHomeEventPump(client: client)
     }
@@ -1526,6 +1620,7 @@ final class ConversationStore {
         defer { finishHomeClaimLifecycleMutation() }
         reconnectTask?.cancel()
         reconnectTask = nil
+        cancelHomeConnectRetry()
         await waitForHomeConnectOperation()
         await waitForOpenClaimMutation()
 
@@ -1648,6 +1743,7 @@ final class ConversationStore {
                     finishHomeControlTurn(success: false)
                 }
             }
+            restartHomeControlIdle()
         case .audioStart(let scope, let format):
             guard isCurrentHomeEvent(scope),
                   !homeAudioTerminal,
@@ -1662,6 +1758,7 @@ final class ConversationStore {
             homeAudioStartTimeoutTask = nil
             homeAudioState = .streaming(format: format, generation: nextTurnGeneration)
             scheduleHomeAudioDeadline(for: homeTurnBinding)
+            restartHomeControlIdle()
             for event in homeNormalizer.normalizeHomeAudio(event) {
                 if let homeEventHandler { await homeEventHandler(event) }
             }
@@ -1671,6 +1768,7 @@ final class ConversationStore {
                   !homeAudioTerminalProcessing,
                   !data.isEmpty else { return }
             homeAudioLastReceivedAt = homeClock.now()
+            restartHomeControlIdle()
             for event in homeNormalizer.normalizeHomeAudio(event) {
                 if let homeEventHandler { await homeEventHandler(event) }
             }
@@ -1700,6 +1798,7 @@ final class ConversationStore {
             homeAudioTerminal = true
             resumeHomeAudioTerminalWaiter()
             refreshHomeContinueWithoutResendingEligibility()
+            restartHomeControlIdle()
         case .structuredPrompt(let prompt):
             guard prompt.conversationHandle == binding.conversationHandle,
                   isCurrentHomeEvent(HomeEventScope(
@@ -1712,6 +1811,7 @@ final class ConversationStore {
                 receivedAt: now(),
                 expiresAt: prompt.expiresAt
             )
+            restartHomeControlIdle()
         case .command(let command):
             guard command.conversationHandle == binding.conversationHandle else { return }
             homeCommandEvents.append(command)
@@ -1719,6 +1819,11 @@ final class ConversationStore {
         case .activity(let scope, let activity):
             if let scope, !isCurrentHomeEvent(scope) { return }
             activityText = activity == .idle || activity == .stopped ? nil : activity.rawValue
+            if scope != nil { restartHomeControlIdle() }
+        case .turnAlive(let scope, let phase):
+            guard isCurrentHomeEvent(scope) else { return }
+            homeKeepaliveAwaitingInput = phase == .awaitingInput
+            restartHomeControlIdle()
         }
     }
 
@@ -1734,23 +1839,66 @@ final class ConversationStore {
     private func finishHomeControlTurn(success: Bool) {
         guard let turn = homeTurnBinding else { return }
         homeControlTerminal = true
-        if !success {
+        if success {
+            // Standard synthesizes reply audio only once the text completes,
+            // so the audio-start deadline runs from here, not from acceptance.
+            if !homeAudioRequested, !homeAudioTerminal, !homeAudioTerminalProcessing {
+                scheduleHomeAudioStartDeadline(for: turn)
+            }
+        } else {
             homeAudioTerminal = true
             resumeHomeAudioTerminalWaiter()
         }
-        homeControlTimeoutTask?.cancel()
-        homeControlTimeoutTask = nil
+        cancelHomeControlDeadlines()
         homeTurnDeliveryState = success ? .completed(turn) : .interrupted(turn)
         homeTurnResult = success
         resumeHomeTurnWaiters(returning: success)
     }
 
+    /// Without keep-alives, the turn has `controlTerminal` from acceptance to
+    /// finish. With keep-alives, it may run for `controlBackstop` as long as
+    /// it is never silent for `controlIdle`; a pending prompt pauses the idle
+    /// clock because the turn is waiting on the user, not stuck.
     private func scheduleHomeControlDeadline(for turn: HomeTurnBinding) {
-        homeControlTimeoutTask?.cancel()
-        let deadline = homeClock.now().advanced(
-            by: homeTurnAudioDeadlines.controlTerminal
+        cancelHomeControlDeadlines()
+        homeTurnUsesKeepalive = homeConversationBinding?.capabilities.turnKeepalive ?? false
+        homeKeepaliveAwaitingInput = false
+        let limit = homeTurnUsesKeepalive
+            ? homeTurnAudioDeadlines.controlBackstop
+            : homeTurnAudioDeadlines.controlTerminal
+        homeControlTimeoutTask = homeControlExpiryTask(
+            for: turn,
+            at: homeClock.now().advanced(by: limit)
         )
-        homeControlTimeoutTask = Task { [weak self] in
+        restartHomeControlIdle()
+    }
+
+    private func restartHomeControlIdle() {
+        homeControlIdleTask?.cancel()
+        homeControlIdleTask = nil
+        guard homeTurnUsesKeepalive,
+              let turn = homeTurnBinding,
+              !homeControlTerminal,
+              pendingHomePrompt == nil,
+              !homeKeepaliveAwaitingInput else { return }
+        homeControlIdleTask = homeControlExpiryTask(
+            for: turn,
+            at: homeClock.now().advanced(by: homeTurnAudioDeadlines.controlIdle)
+        )
+    }
+
+    private func cancelHomeControlDeadlines() {
+        homeControlTimeoutTask?.cancel()
+        homeControlTimeoutTask = nil
+        homeControlIdleTask?.cancel()
+        homeControlIdleTask = nil
+    }
+
+    private func homeControlExpiryTask(
+        for turn: HomeTurnBinding,
+        at deadline: ContinuousClock.Instant
+    ) -> Task<Void, Never> {
+        Task { [weak self] in
             do {
                 try await self?.homeClock.sleep(until: deadline)
             } catch {
@@ -1759,7 +1907,9 @@ final class ConversationStore {
             guard let self,
                   self.homeTurnBinding == turn,
                   !self.homeControlTerminal else { return }
+            self.cancelHomeControlDeadlines()
             self.homeJoinTimeout = .controlTerminalMissing
+            DiagnosticsJournal.shared.record("store Home deadline expired kind=controlTerminalMissing")
             let conversation = self.homeConversationBinding
             let text = self.activeTurnText
                 ?? self.unconfirmedTurnText
@@ -1802,6 +1952,7 @@ final class ConversationStore {
                   !self.homeAudioTerminal,
                   !self.homeAudioTerminalProcessing else { return }
             self.homeJoinTimeout = .audioTerminalMissing
+            DiagnosticsJournal.shared.record("store Home deadline expired kind=audioTerminalMissing")
             await self.markHomeAudioUnavailable(generation: self.nextTurnGeneration)
         }
     }
@@ -1823,6 +1974,7 @@ final class ConversationStore {
                   !self.homeAudioTerminal,
                   !self.homeAudioTerminalProcessing else { return }
             self.homeJoinTimeout = .audioStartMissing
+            DiagnosticsJournal.shared.record("store Home deadline expired kind=audioStartMissing")
             await self.markHomeAudioUnavailable(generation: self.nextTurnGeneration)
         }
     }
@@ -2105,11 +2257,13 @@ final class ConversationStore {
             messages.append(TranscriptMessage(role: .user, text: text))
             await persistConversation()
             scheduleHomeControlDeadline(for: turn)
-            scheduleHomeAudioStartDeadline(for: turn)
             let completed = await waitForHomeTurnCompletion(turn: turn)
             if completed, eventHandler != nil {
                 await waitForHomeAudioTerminal(turn: turn)
             }
+            DiagnosticsJournal.shared.record(
+                "store Home sendTurn returning completed=\(completed) audio_terminal=\(homeAudioTerminal) audio_requested=\(homeAudioRequested)"
+            )
             homeEventHandler = nil
             activeTurnText = nil
             if !completed {
@@ -2212,6 +2366,9 @@ final class ConversationStore {
         attemptID: UUID,
         turn: HomeTurnBinding? = nil
     ) async {
+        DiagnosticsJournal.shared.record(
+            "store Home submission marked uncertain; closing Home client \(failure.diagnosticSummary)"
+        )
         canContinueWithoutResendingHomeTurn = false
         homeReconnectConfirmsNoUnresolvedTurn = false
         homeRecovery = makeHomeRecovery(
@@ -2231,8 +2388,7 @@ final class ConversationStore {
         homeEventHandler = nil
         homeEventTask?.cancel()
         homeEventTask = nil
-        homeControlTimeoutTask?.cancel()
-        homeControlTimeoutTask = nil
+        cancelHomeControlDeadlines()
         homeAudioTimeoutTask?.cancel()
         homeAudioTimeoutTask = nil
         homeAudioTerminalWaiter?.resume()
@@ -2251,6 +2407,8 @@ final class ConversationStore {
             mode: .home
         )
         await persistConversation()
+        // The prompt stays unconfirmed for the user; only the transport is retried.
+        scheduleHomeConnectRetry(after: failure, operationGeneration: homeLifecycleGeneration)
     }
 
     /// Playback owns the last part of a Home turn. The control terminal is
@@ -2262,8 +2420,7 @@ final class ConversationStore {
         canContinueWithoutResendingHomeTurn = false
         homeReconnectConfirmsNoUnresolvedTurn = false
         homeRecovery = nil
-        homeControlTimeoutTask?.cancel()
-        homeControlTimeoutTask = nil
+        cancelHomeControlDeadlines()
         homeAudioTimeoutTask?.cancel()
         homeAudioTimeoutTask = nil
         homeAudioStartTimeoutTask?.cancel()
@@ -2308,8 +2465,7 @@ final class ConversationStore {
         homeTurnDeliveryState = .idle
         homeTurnResult = nil
         unconfirmedTurnText = nil
-        homeControlTimeoutTask?.cancel()
-        homeControlTimeoutTask = nil
+        cancelHomeControlDeadlines()
         homeAudioTimeoutTask?.cancel()
         homeAudioTimeoutTask = nil
         homeAudioStartTimeoutTask?.cancel()
@@ -2345,7 +2501,10 @@ final class ConversationStore {
             return .rejected(.home(code: .requestRejected, phase: .structuredResponse))
         }
         let outcome = await homeClient.respond(to: pending.prompt, with: response)
-        if case .accepted = outcome { pendingHomePrompt = nil }
+        if case .accepted = outcome {
+            pendingHomePrompt = nil
+            restartHomeControlIdle()
+        }
         return outcome
     }
 
@@ -2371,13 +2530,20 @@ final class ConversationStore {
         homeClient
     }
 
+    /// True only while a connected state is backed by a live transport. A
+    /// cached `.connected` alone does not prove the socket survived.
+    var hasLiveTransport: Bool {
+        guard connectionState.isConnected else { return false }
+        guard transportMode == .home else { return true }
+        return homeClient != nil && homeConversationBinding != nil
+    }
+
     func takeHomeClientForLifecycle() -> (any HomeBridgeSessionClient)? {
         canContinueWithoutResendingHomeTurn = false
         homeReconnectConfirmsNoUnresolvedTurn = false
         homeEventTask?.cancel()
         homeEventTask = nil
-        homeControlTimeoutTask?.cancel()
-        homeControlTimeoutTask = nil
+        cancelHomeControlDeadlines()
         homeAudioStartTimeoutTask?.cancel()
         homeAudioStartTimeoutTask = nil
         homeAudioTimeoutTask?.cancel()
@@ -2390,7 +2556,31 @@ final class ConversationStore {
         homeClient = nil
         homeConversationBinding = nil
         homeTurnBinding = nil
+        switch connectionState {
+        case .failed:
+            // Keep a failure the user must see; only a live state is stale.
+            break
+        default:
+            guard transportMode == .home else { break }
+            // The caller closes this transport: never keep showing Connected.
+            homeBridgeState = .disconnected(.home(code: .transportUnavailable, phase: .lifecycle))
+            connectionState = .disconnected
+            sessionMetadata = nil
+            sessionStartedAt = nil
+        }
         return activeClient
+    }
+
+    /// Persists local state for a non-active phase that keeps voice work
+    /// running (IOS-HOME-07). Unlike `lifecycleWillDeactivate`, it leaves the
+    /// transport, deadlines and retry ladder live; the full deactivation still
+    /// runs when the retained work ends.
+    func lifecycleSnapshot() async -> Bool {
+        guard await persistConversation() else {
+            transientError = "The local conversation could not be saved. Try again before leaving."
+            return false
+        }
+        return true
     }
 
     /// Persist the exact local state that crosses a lifecycle boundary. This
@@ -2435,10 +2625,10 @@ final class ConversationStore {
         openHomeClaimsGeneration &+= 1
         reconnectTask?.cancel()
         reconnectTask = nil
+        cancelHomeConnectRetry()
         homeEventTask?.cancel()
         homeEventTask = nil
-        homeControlTimeoutTask?.cancel()
-        homeControlTimeoutTask = nil
+        cancelHomeControlDeadlines()
         homeAudioStartTimeoutTask?.cancel()
         homeAudioStartTimeoutTask = nil
         homeAudioTimeoutTask?.cancel()
@@ -2563,6 +2753,7 @@ final class ConversationStore {
         defer { finishHomeClaimLifecycleMutation() }
         reconnectTask?.cancel()
         reconnectTask = nil
+        cancelHomeConnectRetry()
         await waitForHomeConnectOperation()
         await waitForOpenClaimMutation()
 
@@ -2607,8 +2798,7 @@ final class ConversationStore {
         canContinueWithoutResendingHomeTurn = false
         homeReconnectConfirmsNoUnresolvedTurn = false
         homeRecovery = nil
-        homeControlTimeoutTask?.cancel()
-        homeControlTimeoutTask = nil
+        cancelHomeControlDeadlines()
         homeAudioTimeoutTask?.cancel()
         homeAudioTimeoutTask = nil
         homeJoinTimeout = nil
@@ -2665,6 +2855,7 @@ final class ConversationStore {
 
     private func handleUnexpectedHomeTransportLoss() {
         guard isLifecycleActive, !homeOperationsSuppressed else { return }
+        DiagnosticsJournal.shared.record("store Home transport lost unexpectedly; reconnecting")
         canContinueWithoutResendingHomeTurn = false
         homeReconnectConfirmsNoUnresolvedTurn = false
         if let recovery = homeRecovery,
@@ -2694,6 +2885,11 @@ final class ConversationStore {
         sessionMetadata = nil
         sessionStartedAt = nil
         if reconnectTask == nil {
+            // The loop below reconnects the same conversation. A connect retry
+            // armed earlier (for example by an uncertain submission) would wake
+            // at nearly the same time and run a second recovery, whose outcome
+            // could land after the loop's and leave the store reconnecting.
+            cancelHomeConnectRetry()
             Task { await persistConversation() }
             reconnectTask = Task { [weak self] in
                 await self?.runHomeReconnectLoop()
@@ -2786,6 +2982,13 @@ final class ConversationStore {
                 return
             case .unavailable(let failure):
                 applyHomeConnectionFailure(failure, unavailable: true)
+                if let claim = endedHomeClaim(after: failure, binding: binding),
+                   isLifecycleActive, !homeOperationsSuppressed, !Task.isCancelled {
+                    homeConversationBinding = nil
+                    if await releaseEndedHomeClaim(claim), !Task.isCancelled {
+                        await performConnect()
+                    }
+                }
                 return
             case .disconnected(let failure):
                 if attempt == reconnectPolicy.maxAttempts {

@@ -125,3 +125,9 @@ board reconciliation remains paused.
 - source_spec: `_bmad-output/implementation-artifacts/spec-ios-home-02-pair-and-connect.md`
   summary: Compile and run the IOS-HOME-02 slice-1 SwiftUI/AVFoundation code, the full iOS simulator suite, the macOS build, and verify the Release Info.plist merge on Xcode 26.6.
   evidence: The implementation container had no Xcode; only the Apple-agnostic code was compiled and tested (Swift 6.2 on Linux). See validation-ios-home-02.md.
+- source_spec: `_bmad-output/implementation-artifacts/spec-ios-home-07-background-voice.md`
+  summary: Device-verify the real AppleAudioOutput pause/resume, AppleAudioSessionCoordinator non-mixable/duck switching, SystemAudioSessionEventSource and NowPlayingController on a physical iPhone.
+  evidence: The iOS-only code paths sit behind fakes in XCTest, and no iOS simulator runtime is installed (IOS-HOME-07 review pass 1).
+- source_spec: `_bmad-output/implementation-artifacts/spec-ios-home-07-background-voice.md`
+  summary: Decide whether a snapshot failure during retained background teardown, or a held push-to-talk capture in the background, needs its own timeout.
+  evidence: maybe-false (unverified medium). Settle it with a device run that forces a persistence failure while backgrounded, and one that holds push-to-talk across a lock.

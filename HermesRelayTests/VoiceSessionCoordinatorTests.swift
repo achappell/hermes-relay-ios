@@ -1447,6 +1447,404 @@ final class VoiceSessionCoordinatorTests: XCTestCase {
     }
 
     @MainActor
+    func testHomeSlowTextReplyStillPlaysAudioThatStartsAfterTheTurnCompletes() async throws {
+        let fixture = try await makeHomeVoiceReviewFixture(
+            audioDeadlines: HomeTurnAudioDeadlines(
+                audioStart: .milliseconds(200),
+                controlTerminal: .seconds(30),
+                audioTerminal: .seconds(5),
+                playbackDrain: .seconds(5)
+            )
+        )
+        defer { try? FileManager.default.removeItem(at: fixture.profileURL.deletingLastPathComponent()) }
+        let configured = await fixture.store.loadConfiguredClient()
+        XCTAssertTrue(configured)
+        await fixture.store.connect()
+        let output = CoordinatorAudioOutput()
+        let coordinator = VoiceSessionCoordinator(
+            store: fixture.store,
+            input: CoordinatorSpeechInput(),
+            output: output
+        )
+        fixture.store.draft = "Think about it for a while"
+        let responseTask = Task { @MainActor in
+            await coordinator.sendDraft()
+        }
+        await waitForHomeVoiceSubmission(fixture.client, atLeast: 1)
+        let scope = HomeEventScope(
+            conversationHandle: fixture.claim.conversationHandle,
+            turnID: "turn-1",
+            correlationID: "correlation-1"
+        )
+        try await Task.sleep(for: .milliseconds(600))
+        await fixture.client.emit(.standard(HomeStandardEvent(
+            type: .messageComplete,
+            scope: scope,
+            payload: .final(
+                rendered: nil,
+                text: "Here is my answer",
+                status: "complete",
+                reasoning: nil,
+                failureReason: nil
+            )
+        )))
+        await fixture.client.emit(.standard(HomeStandardEvent(
+            type: .turnComplete,
+            scope: scope,
+            payload: .terminal(kind: .terminal)
+        )))
+        await fixture.client.emit(.audioStart(
+            scope,
+            HomeAudioFormat(sampleRate: 24_000, channels: 1, sampleWidth: 2)
+        ))
+        await fixture.client.emit(.binaryPCM(scope, Data([0, 1, 2, 3])))
+        await fixture.client.emit(.audioTerminal(scope, .end))
+        await responseTask.value
+
+        XCTAssertNotEqual(
+            coordinator.state,
+            .failed("Audio playback failed. The response text is still available.")
+        )
+        let operations = await output.operations()
+        XCTAssertTrue(operations.contains(.append), "Home audio was not delivered: \(operations)")
+    }
+
+    /// Device incident 2026-10-04: Standard took about 63 s to finish an
+    /// accepted Home turn, but the phone abandoned it at the 30 s control
+    /// deadline and reconnected. Home keeps an in-flight client claim for its
+    /// 120 s reconnect grace, so the reply must still be delivered.
+    @MainActor
+    func testAcceptedHomeTurnThatFinishesAfterSixtyThreeSecondsDeliversWithoutReplay() async throws {
+        let clock = ManualBackgroundClock()
+        let fixture = try await makeHomeVoiceReviewFixture(homeClock: clock)
+        defer { try? FileManager.default.removeItem(at: fixture.profileURL.deletingLastPathComponent()) }
+        let configured = await fixture.store.loadConfiguredClient()
+        XCTAssertTrue(configured)
+        await fixture.store.connect()
+        let output = CoordinatorAudioOutput()
+        let coordinator = VoiceSessionCoordinator(
+            store: fixture.store,
+            input: CoordinatorSpeechInput(),
+            output: output
+        )
+        fixture.store.draft = "Check the house and tell me"
+        let responseTask = Task { @MainActor in
+            await coordinator.sendDraft()
+        }
+        await waitForHomeVoiceSubmission(fixture.client, atLeast: 1)
+        await pollUntil { clock.sleeperCount >= 1 }
+
+        clock.advance(by: .seconds(63))
+        try await Task.sleep(for: .milliseconds(50))
+        XCTAssertNil(fixture.store.homeJoinTimeout, "A slow accepted turn is not abandoned at 63 s")
+
+        let scope = HomeEventScope(
+            conversationHandle: fixture.claim.conversationHandle,
+            turnID: "turn-1",
+            correlationID: "correlation-1"
+        )
+        await fixture.client.emit(.standard(HomeStandardEvent(
+            type: .messageComplete,
+            scope: scope,
+            payload: .final(
+                rendered: nil,
+                text: "Everything looks fine",
+                status: "complete",
+                reasoning: nil,
+                failureReason: nil
+            )
+        )))
+        await fixture.client.emit(.standard(HomeStandardEvent(
+            type: .turnComplete,
+            scope: scope,
+            payload: .terminal(kind: .terminal)
+        )))
+        await fixture.client.emit(.audioStart(
+            scope,
+            HomeAudioFormat(sampleRate: 24_000, channels: 1, sampleWidth: 2)
+        ))
+        await fixture.client.emit(.binaryPCM(scope, Data([0, 1, 2, 3])))
+        await fixture.client.emit(.audioTerminal(scope, .end))
+        await responseTask.value
+
+        XCTAssertEqual(coordinator.state, .complete)
+        XCTAssertNil(fixture.store.homeJoinTimeout)
+        let submitted = await fixture.client.submittedTexts
+        XCTAssertEqual(submitted.count, 1, "The slow turn is never replayed")
+        let operations = await output.operations()
+        XCTAssertTrue(operations.contains(.append), "Home audio was not delivered: \(operations)")
+    }
+
+    @MainActor
+    func testAcceptedHomeTurnWithNoTerminalStillFailsAtTheControlDeadline() async throws {
+        let clock = ManualBackgroundClock()
+        let fixture = try await makeHomeVoiceReviewFixture(homeClock: clock)
+        defer { try? FileManager.default.removeItem(at: fixture.profileURL.deletingLastPathComponent()) }
+        let configured = await fixture.store.loadConfiguredClient()
+        XCTAssertTrue(configured)
+        await fixture.store.connect()
+        let coordinator = VoiceSessionCoordinator(
+            store: fixture.store,
+            input: CoordinatorSpeechInput(),
+            output: CoordinatorAudioOutput()
+        )
+        fixture.store.draft = "This turn never finishes"
+        let responseTask = Task { @MainActor in
+            await coordinator.sendDraft()
+        }
+        await waitForHomeVoiceSubmission(fixture.client, atLeast: 1)
+        await pollUntil { clock.sleeperCount >= 1 }
+
+        clock.advance(by: .seconds(119))
+        try await Task.sleep(for: .milliseconds(50))
+        XCTAssertNil(fixture.store.homeJoinTimeout)
+
+        clock.advance(by: .seconds(1))
+        await pollUntil { fixture.store.homeJoinTimeout == .controlTerminalMissing }
+        await responseTask.value
+
+        XCTAssertEqual(fixture.store.homeJoinTimeout, .controlTerminalMissing)
+        let submitted = await fixture.client.submittedTexts
+        XCTAssertEqual(submitted.count, 1, "A stuck turn fails without being replayed")
+    }
+
+    // MARK: Activity-based control deadline (Home turn keep-alives)
+
+    private static let keepaliveCapabilities = HomeBridgeCapabilities(
+        commands: [], heartbeat: true, interrupt: true, timing: .absent, turnKeepalive: true
+    )
+
+    private func keepaliveScope(_ fixture: HomeVoiceReviewFixture) -> HomeEventScope {
+        HomeEventScope(
+            conversationHandle: fixture.claim.conversationHandle,
+            turnID: "turn-1",
+            correlationID: "correlation-1"
+        )
+    }
+
+    @MainActor
+    private func startKeepaliveTurn(
+        _ draft: String,
+        clock: ManualBackgroundClock
+    ) async throws -> (HomeVoiceReviewFixture, VoiceSessionCoordinator, CoordinatorAudioOutput, Task<Void, Never>) {
+        let fixture = try await makeHomeVoiceReviewFixture(
+            homeClock: clock,
+            capabilities: Self.keepaliveCapabilities
+        )
+        let configured = await fixture.store.loadConfiguredClient()
+        XCTAssertTrue(configured)
+        await fixture.store.connect()
+        let output = CoordinatorAudioOutput()
+        let coordinator = VoiceSessionCoordinator(
+            store: fixture.store,
+            input: CoordinatorSpeechInput(),
+            output: output
+        )
+        fixture.store.draft = draft
+        let responseTask = Task { @MainActor in
+            await coordinator.sendDraft()
+        }
+        await waitForHomeVoiceSubmission(fixture.client, atLeast: 1)
+        // Backstop and idle deadlines are both armed at acceptance.
+        await pollUntil { clock.sleeperCount >= 2 }
+        return (fixture, coordinator, output, responseTask)
+    }
+
+    @MainActor
+    private func sendKeepalives(
+        _ fixture: HomeVoiceReviewFixture,
+        clock: ManualBackgroundClock,
+        for seconds: Int
+    ) async throws {
+        for _ in stride(from: 15, through: seconds, by: 15) {
+            clock.advance(by: .seconds(15))
+            await fixture.client.emit(.turnAlive(keepaliveScope(fixture), .running))
+            try await Task.sleep(for: .milliseconds(5))
+        }
+    }
+
+    @MainActor
+    func testKeepaliveTurnRunningFiveMinutesDeliversOnceWithoutReplay() async throws {
+        let clock = ManualBackgroundClock()
+        let (fixture, coordinator, output, responseTask) = try await startKeepaliveTurn(
+            "Do the long job", clock: clock
+        )
+        defer { try? FileManager.default.removeItem(at: fixture.profileURL.deletingLastPathComponent()) }
+
+        try await sendKeepalives(fixture, clock: clock, for: 300)
+        XCTAssertNil(fixture.store.homeJoinTimeout, "Keep-alives hold a 300 s turn open")
+
+        let scope = keepaliveScope(fixture)
+        await fixture.client.emit(.standard(HomeStandardEvent(
+            type: .messageComplete,
+            scope: scope,
+            payload: .final(rendered: nil, text: "Done", status: "complete", reasoning: nil, failureReason: nil)
+        )))
+        await fixture.client.emit(.standard(HomeStandardEvent(
+            type: .turnComplete,
+            scope: scope,
+            payload: .terminal(kind: .terminal)
+        )))
+        await fixture.client.emit(.audioStart(
+            scope,
+            HomeAudioFormat(sampleRate: 24_000, channels: 1, sampleWidth: 2)
+        ))
+        await fixture.client.emit(.binaryPCM(scope, Data([0, 1, 2, 3])))
+        await fixture.client.emit(.audioTerminal(scope, .end))
+        await responseTask.value
+
+        XCTAssertEqual(coordinator.state, .complete)
+        XCTAssertNil(fixture.store.homeJoinTimeout)
+        XCTAssertFalse(
+            fixture.store.messages.contains { $0.text.contains("turn.alive") },
+            "Keep-alives never reach the transcript"
+        )
+        let submitted = await fixture.client.submittedTexts
+        XCTAssertEqual(submitted.count, 1, "The long turn is never replayed")
+        let operations = await output.operations()
+        XCTAssertTrue(operations.contains(.append), "Home audio was not delivered: \(operations)")
+    }
+
+    @MainActor
+    func testKeepaliveTurnSilentForTheIdleDeadlineIsMarkedStuck() async throws {
+        let clock = ManualBackgroundClock()
+        let (fixture, _, _, responseTask) = try await startKeepaliveTurn(
+            "Go quiet", clock: clock
+        )
+        defer { try? FileManager.default.removeItem(at: fixture.profileURL.deletingLastPathComponent()) }
+
+        clock.advance(by: .seconds(44))
+        try await Task.sleep(for: .milliseconds(50))
+        XCTAssertNil(fixture.store.homeJoinTimeout, "44 s of silence is still inside the idle window")
+
+        clock.advance(by: .seconds(1))
+        await pollUntil { fixture.store.homeJoinTimeout == .controlTerminalMissing }
+        await responseTask.value
+
+        XCTAssertEqual(fixture.store.homeJoinTimeout, .controlTerminalMissing)
+        let submitted = await fixture.client.submittedTexts
+        XCTAssertEqual(submitted.count, 1, "A silent turn fails without being replayed")
+    }
+
+    @MainActor
+    func testPendingHomePromptSuspendsTheIdleDeadline() async throws {
+        let clock = ManualBackgroundClock()
+        let (fixture, _, _, responseTask) = try await startKeepaliveTurn(
+            "Ask me first", clock: clock
+        )
+        defer { try? FileManager.default.removeItem(at: fixture.profileURL.deletingLastPathComponent()) }
+
+        await fixture.client.emit(.structuredPrompt(HomeStructuredPrompt(
+            kind: .approval,
+            conversationHandle: fixture.claim.conversationHandle,
+            turnID: "turn-1",
+            correlationID: "approval-1",
+            options: ["yes", "no"],
+            expiresAt: nil,
+            sensitive: false
+        )))
+        await pollUntil { fixture.store.pendingHomePrompt != nil }
+
+        clock.advance(by: .seconds(300))
+        try await Task.sleep(for: .milliseconds(50))
+        XCTAssertNil(fixture.store.homeJoinTimeout, "A turn waiting on the user is not stuck")
+
+        // The backstop still bounds a turn whose prompt is never answered.
+        clock.advance(by: .seconds(1500))
+        await pollUntil { fixture.store.homeJoinTimeout == .controlTerminalMissing }
+        await responseTask.value
+        let submitted = await fixture.client.submittedTexts
+        XCTAssertEqual(submitted.count, 1)
+    }
+
+    @MainActor
+    func testKeepaliveBackstopFiresDespiteContinuousKeepalives() async throws {
+        let clock = ManualBackgroundClock()
+        let (fixture, _, _, responseTask) = try await startKeepaliveTurn(
+            "Never finish", clock: clock
+        )
+        defer { try? FileManager.default.removeItem(at: fixture.profileURL.deletingLastPathComponent()) }
+
+        try await sendKeepalives(fixture, clock: clock, for: 1785)
+        XCTAssertNil(fixture.store.homeJoinTimeout, "Keep-alives hold the turn until the backstop")
+
+        clock.advance(by: .seconds(15))
+        await pollUntil { fixture.store.homeJoinTimeout == .controlTerminalMissing }
+        await responseTask.value
+
+        XCTAssertEqual(fixture.store.homeJoinTimeout, .controlTerminalMissing)
+        let submitted = await fixture.client.submittedTexts
+        XCTAssertEqual(submitted.count, 1, "The backstop fails the turn without replay")
+    }
+
+    @MainActor
+    func testHomeAudioThatNeverStartsAfterTheTurnCompletesStillFails() async throws {
+        let fixture = try await makeHomeVoiceReviewFixture(
+            audioDeadlines: HomeTurnAudioDeadlines(
+                audioStart: .milliseconds(200),
+                controlTerminal: .seconds(30),
+                audioTerminal: .seconds(5),
+                playbackDrain: .seconds(5)
+            )
+        )
+        defer { try? FileManager.default.removeItem(at: fixture.profileURL.deletingLastPathComponent()) }
+        let configured = await fixture.store.loadConfiguredClient()
+        XCTAssertTrue(configured)
+        await fixture.store.connect()
+        let output = CoordinatorAudioOutput()
+        let coordinator = VoiceSessionCoordinator(
+            store: fixture.store,
+            input: CoordinatorSpeechInput(),
+            output: output
+        )
+        fixture.store.draft = "Say something"
+        let responseTask = Task { @MainActor in
+            await coordinator.sendDraft()
+        }
+        await waitForHomeVoiceSubmission(fixture.client, atLeast: 1)
+        let scope = HomeEventScope(
+            conversationHandle: fixture.claim.conversationHandle,
+            turnID: "turn-1",
+            correlationID: "correlation-1"
+        )
+        try await Task.sleep(for: .milliseconds(600))
+        XCTAssertNotEqual(
+            coordinator.state,
+            .failed("Audio playback failed. The response text is still available.")
+        )
+        await fixture.client.emit(.standard(HomeStandardEvent(
+            type: .messageComplete,
+            scope: scope,
+            payload: .final(
+                rendered: nil,
+                text: "Here is my answer",
+                status: "complete",
+                reasoning: nil,
+                failureReason: nil
+            )
+        )))
+        await fixture.client.emit(.standard(HomeStandardEvent(
+            type: .turnComplete,
+            scope: scope,
+            payload: .terminal(kind: .terminal)
+        )))
+        let completionTime = ContinuousClock.now
+        await responseTask.value
+
+        XCTAssertGreaterThanOrEqual(
+            ContinuousClock.now - completionTime,
+            .milliseconds(150),
+            "The no-audio failure should be delayed until the post-completion deadline"
+        )
+        XCTAssertEqual(
+            coordinator.state,
+            .failed("Audio playback failed. The response text is still available.")
+        )
+        let operations = await output.operations()
+        XCTAssertFalse(operations.contains(.append))
+    }
+
+    @MainActor
     func testHomePlaybackDrainFailureReleasesTurnForNextRequest() async throws {
         let fixture = try await makeHomeVoiceReviewFixture()
         defer { try? FileManager.default.removeItem(at: fixture.profileURL.deletingLastPathComponent()) }
@@ -2406,9 +2804,1251 @@ final class VoiceSessionCoordinatorTests: XCTestCase {
         return store
     }
 
+    // MARK: IOS-HOME-07 background voice work
+
+    @MainActor
+    func testBackgroundKeepsAPlayingHomeReplyAliveThenTearsDownWhenItFinishes() async throws {
+        let output = CoordinatorAudioOutput(waitsForFinish: true, stopReleasesFinish: true)
+        let harness = try await makeBackgroundVoiceHarness(output: output)
+        defer { harness.cleanUp() }
+        let responseTask = try await startPlayingHomeReply(harness, prompt: "Read me the news")
+
+        let inactive = await harness.lifecycle.handle(.inactive)
+        let background = await harness.lifecycle.handle(.background)
+        let disappearance = await harness.lifecycle.handleWindowDisappeared(isSceneActive: false)
+
+        XCTAssertEqual(inactive, .completed)
+        XCTAssertEqual(background, .completed)
+        XCTAssertEqual(disappearance, .completed)
+        XCTAssertTrue(harness.lifecycle.isRetainingBackgroundWork)
+        XCTAssertTrue(harness.store.connectionState.isConnected, "The transport stays up mid-reply")
+        var closeCount = await harness.client.closeCount
+        XCTAssertEqual(closeCount, 0)
+        var operations = await output.operations()
+        XCTAssertFalse(operations.contains(.stop), "Locking must not cut the reply off")
+        XCTAssertEqual(harness.nowPlaying.shownPlaying, [true], "The card reflects active playback")
+        XCTAssertEqual(harness.nowPlaying.shownTitles, ["Hermes conversation"])
+        var policy = await harness.policy.values()
+        XCTAssertEqual(policy, [true], "Backgrounded voice work is non-mixable")
+
+        await output.allowFinish()
+        await responseTask.value
+        await pollUntil { harness.store.connectionState == .disconnected }
+
+        XCTAssertFalse(harness.lifecycle.isRetainingBackgroundWork)
+        XCTAssertFalse(harness.store.isLifecycleActive)
+        closeCount = await harness.client.closeCount
+        XCTAssertEqual(closeCount, 1, "Home sees the claim parked after the reply")
+        XCTAssertFalse(harness.nowPlaying.isShowing, "Teardown clears Now Playing")
+        policy = await harness.policy.values()
+        XCTAssertEqual(policy.last, false)
+        let submitted = await harness.client.submittedTexts
+        XCTAssertEqual(submitted, ["Read me the news"], "No replay")
+        operations = await output.operations()
+        XCTAssertTrue(operations.contains(.finish))
+    }
+
+    @MainActor
+    func testInactiveWindowDisappearanceBeforeBackgroundKeepsPlayingReplyAlive() async throws {
+        let output = CoordinatorAudioOutput(waitsForFinish: true, stopReleasesFinish: true)
+        let harness = try await makeBackgroundVoiceHarness(output: output)
+        defer { harness.cleanUp() }
+        let responseTask = try await startPlayingHomeReply(harness, prompt: "Read me the news")
+
+        let inactive = await harness.lifecycle.handle(.inactive)
+        let disappearance = await harness.lifecycle.handleWindowDisappeared(isSceneActive: false)
+
+        XCTAssertEqual(inactive, .completed)
+        XCTAssertEqual(disappearance, .completed)
+        XCTAssertTrue(harness.store.connectionState.isConnected)
+        let closeCountBeforeBackground = await harness.client.closeCount
+        XCTAssertEqual(closeCountBeforeBackground, 0)
+        var operations = await output.operations()
+        XCTAssertFalse(operations.contains(.stop), "Inactive view disappearance must not stop the reply")
+
+        let background = await harness.lifecycle.handle(.background)
+        XCTAssertEqual(background, .completed)
+        XCTAssertTrue(harness.lifecycle.isRetainingBackgroundWork)
+        XCTAssertTrue(harness.store.connectionState.isConnected)
+        let closeCount = await harness.client.closeCount
+        XCTAssertEqual(closeCount, 0)
+        operations = await output.operations()
+        XCTAssertFalse(operations.contains(.stop), "Backgrounding keeps the reply alive")
+
+        await output.allowFinish()
+        await responseTask.value
+        await pollUntil { harness.store.connectionState == .disconnected }
+    }
+
+    @MainActor
+    func testActiveWindowDisappearanceStillTearsDownPlayingReply() async throws {
+        let output = CoordinatorAudioOutput(waitsForFinish: true, stopReleasesFinish: true)
+        let harness = try await makeBackgroundVoiceHarness(output: output)
+        defer { harness.cleanUp() }
+        let responseTask = try await startPlayingHomeReply(harness, prompt: "Read me the news")
+
+        let result = await harness.lifecycle.handleWindowDisappeared(isSceneActive: true)
+        await responseTask.value
+
+        XCTAssertEqual(result, .completed)
+        XCTAssertFalse(harness.store.isLifecycleActive)
+        XCTAssertEqual(harness.store.connectionState, .disconnected)
+        let closeCount = await harness.client.closeCount
+        XCTAssertEqual(closeCount, 1)
+        let operations = await output.operations()
+        XCTAssertTrue(operations.contains(.stop), "Closing an active window still stops playback")
+    }
+
+    @MainActor
+    func testWindowDisappearanceRemainsUnconditionalWithoutBackgroundRetention() async throws {
+        let harness = try await makeBackgroundVoiceHarness(backgroundRetentionEnabled: false)
+        defer { harness.cleanUp() }
+
+        let result = await harness.lifecycle.handleWindowDisappeared(isSceneActive: false)
+
+        XCTAssertEqual(result, .completed)
+        XCTAssertFalse(harness.store.isLifecycleActive)
+        XCTAssertEqual(harness.store.connectionState, .disconnected)
+        let closeCount = await harness.client.closeCount
+        XCTAssertEqual(closeCount, 1)
+    }
+
+    @MainActor
+    func testNowPlayingStaysStoppedDuringGenerationAndStartsWhenAudioPlays() async throws {
+        let output = CoordinatorAudioOutput(waitsForFinish: true, stopReleasesFinish: true)
+        let harness = try await makeBackgroundVoiceHarness(output: output)
+        defer { harness.cleanUp() }
+        harness.store.draft = "Read me the news"
+        let voice = harness.voice
+        let responseTask = Task { @MainActor in await voice.sendDraft() }
+        await waitForHomeVoiceSubmission(harness.client, atLeast: 1)
+
+        _ = await harness.lifecycle.handle(.background)
+        XCTAssertEqual(harness.nowPlaying.shownPlaying, [false], "Text generation is not audio playback")
+
+        let scope = HomeEventScope(
+            conversationHandle: harness.fixture.claim.conversationHandle,
+            turnID: "turn-1",
+            correlationID: "correlation-1"
+        )
+        await harness.client.emit(.audioStart(
+            scope,
+            HomeAudioFormat(sampleRate: 24_000, channels: 1, sampleWidth: 2)
+        ))
+        await harness.client.emit(.binaryPCM(scope, Data([0, 1, 2, 3])))
+        await pollUntil { harness.voice.state == .speaking }
+        XCTAssertEqual(harness.nowPlaying.playingUpdates.last, true, "The card updates when output starts")
+
+        harness.nowPlaying.send(.stop)
+        await pollUntil { harness.store.connectionState == .disconnected }
+        await responseTask.value
+    }
+
+    @MainActor
+    func testNowPlayingShowsStoppedWhenReplyFinishesButHandsFreeKeepsRetention() async throws {
+        let output = CoordinatorAudioOutput(waitsForFinish: true, stopReleasesFinish: true)
+        let handsFree = CoordinatorHandsFreeInput()
+        let harness = try await makeBackgroundVoiceHarness(output: output, handsFreeInput: handsFree)
+        defer { harness.cleanUp() }
+        await harness.voice.toggleHandsFree()
+        let responseTask = try await startPlayingHomeReply(harness, prompt: "Read me the news")
+        _ = await harness.lifecycle.handle(.background)
+        XCTAssertEqual(harness.nowPlaying.shownPlaying, [true])
+
+        await output.allowFinish()
+        await responseTask.value
+        await pollUntil { harness.voice.state == .complete && harness.voice.backgroundRetention == .voiceSession }
+
+        XCTAssertTrue(harness.lifecycle.isRetainingBackgroundWork)
+        XCTAssertTrue(harness.nowPlaying.isShowing, "Hands-free keeps the card visible")
+        XCTAssertEqual(harness.nowPlaying.playingUpdates.last, false, "A completed reply is no longer playing")
+
+        harness.nowPlaying.send(.stop)
+        await pollUntil { harness.store.connectionState == .disconnected }
+    }
+
+    @MainActor
+    func testInactiveAloneNeverStopsPlaybackOrCapture() async throws {
+        let handsFree = CoordinatorHandsFreeInput()
+        let harness = try await makeBackgroundVoiceHarness(handsFreeInput: handsFree)
+        defer { harness.cleanUp() }
+        await harness.voice.toggleHandsFree()
+        XCTAssertTrue(harness.voice.isHandsFreeArmed)
+
+        let result = await harness.lifecycle.handle(.inactive)
+
+        XCTAssertEqual(result, .completed)
+        XCTAssertTrue(harness.voice.isHandsFreeArmed)
+        let cancels = await handsFree.cancelCount()
+        XCTAssertEqual(cancels, 0)
+        XCTAssertTrue(harness.store.isLifecycleActive)
+        XCTAssertTrue(harness.store.connectionState.isConnected)
+        XCTAssertFalse(harness.lifecycle.isRetainingBackgroundWork)
+        XCTAssertTrue(harness.nowPlaying.shownTitles.isEmpty)
+        await harness.voice.stopForLifecycle()
+    }
+
+    @MainActor
+    func testInactiveSnapshotFailureStillBlocksActivationWithoutStoppingAudio() async throws {
+        let handsFree = CoordinatorHandsFreeInput()
+        let harness = try await makeBackgroundVoiceHarness(
+            handsFreeInput: handsFree,
+            persistence: FailingBackgroundPersistence()
+        )
+        defer { harness.cleanUp() }
+        await harness.voice.toggleHandsFree()
+
+        let result = await harness.lifecycle.handle(.inactive)
+
+        XCTAssertEqual(result, .persistenceFailed)
+        XCTAssertTrue(harness.voice.isHandsFreeArmed)
+        let active = await harness.lifecycle.handle(.active)
+        XCTAssertEqual(active, .persistenceFailed, "A failed snapshot still blocks activation")
+        await harness.voice.stopForLifecycle()
+    }
+
+    @MainActor
+    func testBackgroundHandsFreeSessionEndsAfterSixtyIdleSeconds() async throws {
+        let clock = ManualBackgroundClock()
+        let handsFree = CoordinatorHandsFreeInput()
+        let harness = try await makeBackgroundVoiceHarness(handsFreeInput: handsFree, clock: clock)
+        defer { harness.cleanUp() }
+        await harness.voice.toggleHandsFree()
+        XCTAssertTrue(harness.voice.isHandsFreeArmed)
+
+        let result = await harness.lifecycle.handle(.background)
+
+        XCTAssertEqual(result, .completed)
+        XCTAssertTrue(harness.lifecycle.isRetainingBackgroundWork)
+        XCTAssertEqual(harness.nowPlaying.shownPlaying, [false], "No reply output is playing")
+        await pollUntil { clock.sleeperCount == 1 }
+        clock.advance(by: .seconds(59))
+        try await Task.sleep(for: .milliseconds(20))
+        XCTAssertTrue(harness.voice.isHandsFreeArmed, "The mic stays up inside the idle window")
+        XCTAssertTrue(harness.store.connectionState.isConnected)
+        XCTAssertTrue(harness.lifecycle.isRetainingBackgroundWork, "No teardown at 59 s")
+        let closeCountAt59 = await harness.client.closeCount
+        XCTAssertEqual(closeCountAt59, 0)
+
+        clock.advance(by: .seconds(1))
+        await pollUntil { harness.store.connectionState == .disconnected }
+
+        XCTAssertFalse(harness.lifecycle.isRetainingBackgroundWork, "Teardown at 60 s")
+        XCTAssertFalse(harness.voice.isBackgrounded)
+        XCTAssertFalse(harness.voice.isHandsFreeArmed)
+        XCTAssertEqual(harness.voice.handsFreeStatus, .disarmed)
+        let cancels = await handsFree.cancelCount()
+        XCTAssertGreaterThan(cancels, 0, "The background mic stops at the timeout")
+        let closeCount = await harness.client.closeCount
+        XCTAssertEqual(closeCount, 1)
+        XCTAssertFalse(harness.nowPlaying.isShowing)
+    }
+
+    @MainActor
+    func testBackgroundSpeechRestartsTheIdleWindow() async throws {
+        let clock = ManualBackgroundClock()
+        let handsFree = CoordinatorHandsFreeInput()
+        let harness = try await makeBackgroundVoiceHarness(handsFreeInput: handsFree, clock: clock)
+        defer { harness.cleanUp() }
+        await harness.voice.toggleHandsFree()
+        _ = await harness.lifecycle.handle(.background)
+        await pollUntil { clock.sleeperCount == 1 }
+
+        clock.advance(by: .seconds(30))
+        await handsFree.emit(.activity(AudioActivitySnapshot(
+            microphoneLevel: 0.5,
+            microphoneActivity: .speech,
+            playbackLevel: 0,
+            playbackActive: false
+        )))
+        await pollUntil { harness.voice.isHandsFreeCaptureActive }
+        await pollUntil { clock.sleeperCount == 0 }
+
+        await harness.voice.cancelCapture()
+        await pollUntil { clock.sleeperCount == 1 }
+        clock.advance(by: .seconds(59))
+        try await Task.sleep(for: .milliseconds(20))
+        XCTAssertTrue(harness.lifecycle.isRetainingBackgroundWork, "Voice activity restarts the 60 s window")
+        XCTAssertTrue(harness.store.connectionState.isConnected)
+
+        clock.advance(by: .seconds(1))
+        await pollUntil { harness.store.connectionState == .disconnected }
+    }
+
+    @MainActor
+    func testIdleBackgroundTearsDownImmediately() async throws {
+        let harness = try await makeBackgroundVoiceHarness()
+        defer { harness.cleanUp() }
+
+        _ = await harness.lifecycle.handle(.inactive)
+        let disappearance = await harness.lifecycle.handleWindowDisappeared(isSceneActive: false)
+        let result = await harness.lifecycle.handle(.background)
+
+        XCTAssertEqual(disappearance, .completed)
+        XCTAssertEqual(result, .completed)
+        XCTAssertFalse(harness.lifecycle.isRetainingBackgroundWork)
+        XCTAssertEqual(harness.store.connectionState, .disconnected)
+        XCTAssertFalse(harness.store.isLifecycleActive)
+        let closeCount = await harness.client.closeCount
+        XCTAssertEqual(closeCount, 1)
+        XCTAssertTrue(harness.nowPlaying.shownTitles.isEmpty)
+        let policy = await harness.policy.values()
+        XCTAssertFalse(policy.contains(true), "Idle backgrounding never takes a non-mixable session")
+    }
+
+    @MainActor
+    func testForegroundWithAKeptTransportIsANoOp() async throws {
+        let handsFree = CoordinatorHandsFreeInput()
+        let harness = try await makeBackgroundVoiceHarness(handsFreeInput: handsFree)
+        defer { harness.cleanUp() }
+        await harness.voice.toggleHandsFree()
+        _ = await harness.lifecycle.handle(.background)
+        XCTAssertTrue(harness.lifecycle.isRetainingBackgroundWork)
+        let openCount = await harness.client.openCount
+
+        _ = await harness.lifecycle.handle(.inactive)
+        let result = await harness.lifecycle.handle(.active)
+
+        XCTAssertEqual(result, .completed)
+        XCTAssertFalse(harness.lifecycle.isRetainingBackgroundWork)
+        let reopened = await harness.client.openCount
+        XCTAssertEqual(reopened, openCount, "No reconnect over a kept transport")
+        let closeCount = await harness.client.closeCount
+        XCTAssertEqual(closeCount, 0)
+        XCTAssertTrue(harness.voice.isHandsFreeArmed, "The conversation is intact")
+        XCTAssertFalse(harness.voice.isBackgrounded)
+        XCTAssertFalse(harness.nowPlaying.isShowing)
+        let policy = await harness.policy.values()
+        XCTAssertEqual(policy, [true, false], "The foreground ducks others again")
+        await harness.voice.stopForLifecycle()
+    }
+
+    @MainActor
+    func testInterruptionEndsTheMicSessionAndResumesTheReply() async throws {
+        let output = CoordinatorAudioOutput(waitsForFinish: true, stopReleasesFinish: true)
+        let handsFree = CoordinatorHandsFreeInput()
+        let harness = try await makeBackgroundVoiceHarness(output: output, handsFreeInput: handsFree)
+        defer { harness.cleanUp() }
+        await harness.voice.toggleHandsFree()
+        XCTAssertTrue(harness.voice.isHandsFreeArmed)
+        let responseTask = try await startPlayingHomeReply(harness, prompt: "Tell me a story")
+
+        harness.events.send(.interruptionBegan)
+        await pollUntil { !harness.voice.isHandsFreeArmed && harness.voice.isReplyOutputPaused }
+        var operations = await output.operations()
+        XCTAssertTrue(operations.contains(.pause))
+
+        harness.events.send(.interruptionEnded(shouldResume: true))
+        await pollUntil { !harness.voice.isReplyOutputPaused }
+        operations = await output.operations()
+        XCTAssertTrue(operations.contains(.resume))
+        XCTAssertFalse(harness.voice.isHandsFreeArmed, "The mic session is not restarted")
+
+        await output.allowFinish()
+        await responseTask.value
+        let submitted = await harness.client.submittedTexts
+        XCTAssertEqual(submitted, ["Tell me a story"])
+    }
+
+    @MainActor
+    func testBackgroundInterruptionThatCannotResumeTearsDown() async throws {
+        let output = CoordinatorAudioOutput(waitsForFinish: true, stopReleasesFinish: true)
+        let harness = try await makeBackgroundVoiceHarness(output: output)
+        defer { harness.cleanUp() }
+        let responseTask = try await startPlayingHomeReply(harness, prompt: "Read me the news")
+        _ = await harness.lifecycle.handle(.background)
+        XCTAssertTrue(harness.lifecycle.isRetainingBackgroundWork)
+
+        harness.events.send(.interruptionBegan)
+        await pollUntil { harness.voice.isReplyOutputPaused }
+        harness.events.send(.interruptionEnded(shouldResume: false))
+        await pollUntil { harness.store.connectionState == .disconnected }
+
+        XCTAssertFalse(harness.lifecycle.isRetainingBackgroundWork)
+        XCTAssertFalse(harness.nowPlaying.isShowing)
+        let operations = await output.operations()
+        // Teardown releases the held pause only after stopping playback.
+        let stopIndex = operations.firstIndex(of: .stop)
+        let resumeIndex = operations.firstIndex(of: .resume)
+        XCTAssertNotNil(stopIndex)
+        if let stopIndex, let resumeIndex {
+            XCTAssertGreaterThan(resumeIndex, stopIndex, "The interrupted reply never resumed")
+        }
+        await output.allowFinish()
+        await responseTask.value
+        let submitted = await harness.client.submittedTexts
+        XCTAssertEqual(submitted, ["Read me the news"], "Teardown never resends")
+    }
+
+    @MainActor
+    func testBackgroundedPlayingReplyKeepsTheSocketAndExplainsTeardownInTheJournal() async throws {
+        let output = CoordinatorAudioOutput(waitsForFinish: true, stopReleasesFinish: true)
+        let harness = try await makeBackgroundVoiceHarness(output: output)
+        defer { harness.cleanUp() }
+        let responseTask = try await startPlayingHomeReply(harness, prompt: "Read me the news")
+
+        let inactive = await harness.lifecycle.handle(.inactive)
+        let background = await harness.lifecycle.handle(.background)
+        // Let any queued retention or teardown work run before asserting.
+        try await Task.sleep(for: .milliseconds(100))
+
+        XCTAssertEqual(inactive, .completed)
+        XCTAssertEqual(background, .completed)
+        XCTAssertTrue(harness.lifecycle.isRetainingBackgroundWork)
+        XCTAssertEqual(harness.voice.backgroundRetention, .reply)
+        XCTAssertTrue(harness.store.connectionState.isConnected)
+        var closeCount = await harness.client.closeCount
+        XCTAssertEqual(closeCount, 0, "A reply still playing keeps the Home socket")
+        var events = harness.journal.snapshot().map(\.event)
+        XCTAssertTrue(events.contains("voice background enter retention=reply"))
+        XCTAssertFalse(events.contains { $0.hasPrefix("voice background retention ended") })
+        XCTAssertFalse(events.contains { $0.hasPrefix("lifecycle deactivate") })
+
+        await output.allowFinish()
+        await responseTask.value
+        await pollUntil { harness.store.connectionState == .disconnected }
+
+        closeCount = await harness.client.closeCount
+        XCTAssertEqual(closeCount, 1)
+        events = harness.journal.snapshot().map(\.event)
+        XCTAssertTrue(events.contains("voice background retention ended reason=workFinished"))
+        XCTAssertTrue(events.contains { $0.hasPrefix("lifecycle deactivate trigger=backgroundWorkEnded") })
+        XCTAssertTrue(events.contains("lifecycle closing Home client trigger=backgroundWorkEnded"))
+        XCTAssertTrue(events.contains { $0.hasPrefix("voice stopForLifecycle") })
+    }
+
+    @MainActor
+    func testJournalNamesTheInterruptionThatEndedBackgroundRetention() async throws {
+        let output = CoordinatorAudioOutput(waitsForFinish: true, stopReleasesFinish: true)
+        let harness = try await makeBackgroundVoiceHarness(output: output)
+        defer { harness.cleanUp() }
+        let responseTask = try await startPlayingHomeReply(harness, prompt: "Read me the news")
+        _ = await harness.lifecycle.handle(.background)
+
+        harness.events.send(.interruptionBegan)
+        await pollUntil { harness.voice.isReplyOutputPaused }
+        harness.events.send(.interruptionEnded(shouldResume: false))
+        await pollUntil { harness.store.connectionState == .disconnected }
+
+        let events = harness.journal.snapshot().map(\.event)
+        XCTAssertTrue(events.contains("voice audio session event interruptionBegan reply=true backgrounded=true"))
+        XCTAssertTrue(events.contains("voice background retention ended reason=interruption"))
+        XCTAssertTrue(events.contains("lifecycle closing Home client trigger=backgroundWorkEnded"))
+        await output.allowFinish()
+        await responseTask.value
+    }
+
+    @MainActor
+    func testJournalNamesTheLockScreenStopThatEndedBackgroundRetention() async throws {
+        let output = CoordinatorAudioOutput(waitsForFinish: true, stopReleasesFinish: true)
+        let harness = try await makeBackgroundVoiceHarness(output: output)
+        defer { harness.cleanUp() }
+        let responseTask = try await startPlayingHomeReply(harness, prompt: "Read me the news")
+        _ = await harness.lifecycle.handle(.background)
+
+        harness.nowPlaying.send(.stop)
+        await pollUntil { harness.store.connectionState == .disconnected }
+
+        let events = harness.journal.snapshot().map(\.event)
+        XCTAssertTrue(events.contains("voice background retention ended reason=nowPlayingStop"))
+        await output.allowFinish()
+        await responseTask.value
+    }
+
+    @MainActor
+    func testJournalNamesWindowDisappearanceAndIdleBackgroundTeardown() async throws {
+        let harness = try await makeBackgroundVoiceHarness()
+        defer { harness.cleanUp() }
+
+        let ignored = await harness.lifecycle.handleWindowDisappeared(isSceneActive: false)
+        let background = await harness.lifecycle.handle(.background)
+
+        XCTAssertEqual(ignored, .completed)
+        XCTAssertEqual(background, .completed)
+        let events = harness.journal.snapshot().map(\.event)
+        XCTAssertTrue(events.contains("lifecycle windowDisappeared scene_active=false ignored"))
+        XCTAssertTrue(events.contains("lifecycle deactivate trigger=backgroundWithoutRetention reply=none"))
+    }
+
+    @MainActor
+    func testControlTurnCompletingWhileAudioStreamsKeepsReplyRetentionAndTheSocket() async throws {
+        let output = CoordinatorAudioOutput(waitsForFinish: true, stopReleasesFinish: true)
+        let harness = try await makeBackgroundVoiceHarness(output: output)
+        defer { harness.cleanUp() }
+        harness.store.draft = "Read me the news"
+        let voice = harness.voice
+        let responseTask = Task { @MainActor in await voice.sendDraft() }
+        await waitForHomeVoiceSubmission(harness.client, atLeast: 1)
+        let scope = HomeEventScope(
+            conversationHandle: harness.fixture.claim.conversationHandle,
+            turnID: "turn-1",
+            correlationID: "correlation-1"
+        )
+        await harness.client.emit(.audioStart(
+            scope,
+            HomeAudioFormat(sampleRate: 24_000, channels: 1, sampleWidth: 2)
+        ))
+        await harness.client.emit(.binaryPCM(scope, Data([0, 1, 2, 3])))
+        // Home finishes the text turn while its reply audio is still streaming.
+        await harness.client.emit(.standard(HomeStandardEvent(
+            type: .messageComplete,
+            scope: scope,
+            payload: .final(
+                rendered: nil,
+                text: "Here is the answer",
+                status: "complete",
+                reasoning: nil,
+                failureReason: nil
+            )
+        )))
+        await harness.client.emit(.standard(HomeStandardEvent(
+            type: .turnComplete,
+            scope: scope,
+            payload: .terminal(kind: .terminal)
+        )))
+        await pollUntil { harness.voice.state == .speaking }
+        try await Task.sleep(for: .milliseconds(100))
+        XCTAssertEqual(harness.voice.backgroundRetention, .reply, "Audio is still streaming and playing")
+
+        _ = await harness.lifecycle.handle(.inactive)
+        _ = await harness.lifecycle.handle(.background)
+        try await Task.sleep(for: .milliseconds(100))
+
+        XCTAssertTrue(harness.lifecycle.isRetainingBackgroundWork)
+        XCTAssertTrue(harness.store.connectionState.isConnected)
+        let closeCount = await harness.client.closeCount
+        XCTAssertEqual(closeCount, 0)
+        let events = harness.journal.snapshot().map(\.event)
+        XCTAssertTrue(events.contains("voice background enter retention=reply"))
+        XCTAssertFalse(events.contains { $0.hasPrefix("lifecycle deactivate") })
+
+        // The audio terminal and the playback drain end the reply.
+        await harness.client.emit(.audioTerminal(scope, .end))
+        await output.waitUntilFinishRequested()
+        XCTAssertEqual(harness.voice.backgroundRetention, .reply, "Draining playback is still the reply")
+        await output.allowFinish()
+        await responseTask.value
+        await pollUntil { harness.store.connectionState == .disconnected }
+        let finalEvents = harness.journal.snapshot().map(\.event)
+        XCTAssertTrue(finalEvents.contains("voice background retention ended reason=workFinished"))
+    }
+
+    // MARK: ContentView runtime (2026-10-05 build 17 retest)
+
+    @MainActor
+    func testViewReinitialisationReusesOneRuntimeBoundToTheVoiceCoordinatorInUse() async throws {
+        let harness = try await makeBackgroundVoiceHarness()
+        defer { harness.cleanUp() }
+        var builds = 0
+        let make: @MainActor () -> ContentViewRuntime = {
+            builds += 1
+            return ContentViewRuntime(
+                store: harness.store,
+                voiceCoordinator: harness.voice,
+                homeClientFactory: FakeHomeBridgeSessionClientFactory(client: harness.client),
+                homeClock: ContinuousHomeMonotonicClock(),
+                backgroundRetentionEnabled: true,
+                journal: harness.journal
+            )
+        }
+        let box = ContentViewRuntimeBox()
+
+        // Every scene phase change re-runs ContentView.init and asks again.
+        let first = box.resolve(make)
+        let second = box.resolve(make)
+        let third = box.resolve(make)
+
+        XCTAssertEqual(builds, 1, "One voice and lifecycle stack for the life of the view")
+        XCTAssertTrue(first === second && second === third)
+        XCTAssertTrue(first.voiceCoordinator === harness.voice)
+    }
+
+    @MainActor
+    func testRuntimeLifecycleKeepsAReplyWhoseControlTurnCompletedBeforeItsAudioEnded() async throws {
+        let output = CoordinatorAudioOutput(waitsForFinish: true, stopReleasesFinish: true)
+        let harness = try await makeBackgroundVoiceHarness(output: output)
+        defer { harness.cleanUp() }
+        let box = ContentViewRuntimeBox()
+        let make: @MainActor () -> ContentViewRuntime = {
+            ContentViewRuntime(
+                store: harness.store,
+                voiceCoordinator: harness.voice,
+                homeClientFactory: FakeHomeBridgeSessionClientFactory(client: harness.client),
+                homeClock: ContinuousHomeMonotonicClock(),
+                backgroundRetentionEnabled: true,
+                journal: harness.journal
+            )
+        }
+        harness.store.draft = "Read me the news"
+        let voice = harness.voice
+        let responseTask = Task { @MainActor in await voice.sendDraft() }
+        await waitForHomeVoiceSubmission(harness.client, atLeast: 1)
+        let scope = HomeEventScope(
+            conversationHandle: harness.fixture.claim.conversationHandle,
+            turnID: "turn-1",
+            correlationID: "correlation-1"
+        )
+        await harness.client.emit(.audioStart(
+            scope,
+            HomeAudioFormat(sampleRate: 24_000, channels: 1, sampleWidth: 2)
+        ))
+        await harness.client.emit(.binaryPCM(scope, Data([0, 1, 2, 3])))
+        await harness.client.emit(.standard(HomeStandardEvent(
+            type: .turnComplete,
+            scope: scope,
+            payload: .terminal(kind: .terminal)
+        )))
+        await pollUntil { harness.voice.state == .speaking }
+
+        // The phase handlers a re-initialised view would use: same runtime.
+        _ = await box.resolve(make).lifecycleCoordinator.handle(.inactive)
+        _ = await box.resolve(make).lifecycleCoordinator.handle(.background)
+        try await Task.sleep(for: .milliseconds(100))
+
+        XCTAssertTrue(box.resolve(make).lifecycleCoordinator.isRetainingBackgroundWork)
+        let closeCount = await harness.client.closeCount
+        XCTAssertEqual(closeCount, 0, "The socket stays up while the audio terminal is pending")
+        let events = harness.journal.snapshot().map(\.event)
+        XCTAssertTrue(events.contains("voice background enter retention=reply"))
+        XCTAssertFalse(events.contains { $0.hasPrefix("lifecycle deactivate") })
+
+        await harness.client.emit(.audioTerminal(scope, .end))
+        await output.waitUntilFinishRequested()
+        XCTAssertEqual(harness.voice.backgroundRetention, .reply, "Draining playback is still the reply")
+        await output.allowFinish()
+        await responseTask.value
+        await pollUntil { harness.store.connectionState == .disconnected }
+
+        let finalEvents = harness.journal.snapshot().map(\.event)
+        XCTAssertTrue(finalEvents.contains("voice background retention ended reason=workFinished"))
+        XCTAssertTrue(finalEvents.contains { $0.hasPrefix("voice response ended path=draft state=") })
+        let closes = await harness.client.closeCount
+        XCTAssertEqual(closes, 1)
+    }
+
+    @MainActor
+    func testRuntimeLifecycleStillTearsDownWhenNothingIsInFlight() async throws {
+        let harness = try await makeBackgroundVoiceHarness()
+        defer { harness.cleanUp() }
+        let runtime = ContentViewRuntime(
+            store: harness.store,
+            voiceCoordinator: harness.voice,
+            homeClientFactory: FakeHomeBridgeSessionClientFactory(client: harness.client),
+            homeClock: ContinuousHomeMonotonicClock(),
+            backgroundRetentionEnabled: true,
+            journal: harness.journal
+        )
+
+        _ = await runtime.lifecycleCoordinator.handle(.inactive)
+        _ = await runtime.lifecycleCoordinator.handle(.background)
+
+        XCTAssertFalse(runtime.lifecycleCoordinator.isRetainingBackgroundWork)
+        XCTAssertEqual(harness.store.connectionState, .disconnected)
+        let closeCount = await harness.client.closeCount
+        XCTAssertEqual(closeCount, 1, "Nothing in flight: background tears down as before")
+        let events = harness.journal.snapshot().map(\.event)
+        XCTAssertTrue(events.contains("lifecycle deactivate trigger=backgroundWithoutRetention reply=none"))
+    }
+
+    // MARK: Background-entry stutter (2026-10-05 build 18 retest)
+
+    @MainActor
+    private func startStreamingHomeReply(
+        _ harness: BackgroundVoiceHarness
+    ) async -> (task: Task<Void, Never>, scope: HomeEventScope) {
+        harness.store.draft = "Read me the news"
+        let voice = harness.voice
+        let responseTask = Task { @MainActor in await voice.sendDraft() }
+        await waitForHomeVoiceSubmission(harness.client, atLeast: 1)
+        let scope = HomeEventScope(
+            conversationHandle: harness.fixture.claim.conversationHandle,
+            turnID: "turn-1",
+            correlationID: "correlation-1"
+        )
+        await harness.client.emit(.audioStart(
+            scope,
+            HomeAudioFormat(sampleRate: 24_000, channels: 1, sampleWidth: 2)
+        ))
+        await harness.client.emit(.binaryPCM(scope, Data([0, 1, 2, 3])))
+        await pollUntil { harness.voice.state == .speaking }
+        return (responseTask, scope)
+    }
+
+    /// Ends a reply started by `startStreamingHomeReply`: audio terminal,
+    /// control terminal, then the playback drain.
+    @MainActor
+    private func finishStreamingHomeReply(
+        _ harness: BackgroundVoiceHarness,
+        output: CoordinatorAudioOutput,
+        scope: HomeEventScope,
+        task: Task<Void, Never>
+    ) async {
+        await harness.client.emit(.audioTerminal(scope, .end))
+        await harness.client.emit(.standard(HomeStandardEvent(
+            type: .turnComplete,
+            scope: scope,
+            payload: .terminal(kind: .terminal)
+        )))
+        await output.waitUntilFinishRequested()
+        await output.allowFinish()
+        await task.value
+    }
+
+    @MainActor
+    func testBackgroundedPlaybackWritesNowPlayingOnlyWhenTheStateChanges() async throws {
+        let output = CoordinatorAudioOutput(waitsForFinish: true, stopReleasesFinish: true)
+        let harness = try await makeBackgroundVoiceHarness(output: output)
+        defer { harness.cleanUp() }
+        let (responseTask, scope) = await startStreamingHomeReply(harness)
+
+        _ = await harness.lifecycle.handle(.inactive)
+        _ = await harness.lifecycle.handle(.background)
+        XCTAssertEqual(harness.nowPlaying.shownPlaying, [true])
+        let updatesAfterShow = harness.nowPlaying.playingUpdates.count
+
+        // The old code wrote the card once per PCM chunk.
+        for _ in 0..<40 {
+            await harness.client.emit(.binaryPCM(scope, Data([0, 1, 2, 3])))
+        }
+        try await Task.sleep(for: .milliseconds(100))
+        let appends = await output.operations().filter { $0 == .append }.count
+        XCTAssertGreaterThanOrEqual(appends, 41, "The chunks reached the output")
+        XCTAssertEqual(harness.nowPlaying.playingUpdates.count, updatesAfterShow, "Same state: no MediaPlayer writes")
+
+        harness.nowPlaying.send(.pause)
+        await pollUntil { harness.nowPlaying.playingUpdates.count == updatesAfterShow + 1 }
+        harness.nowPlaying.send(.play)
+        await pollUntil { harness.nowPlaying.playingUpdates.count == updatesAfterShow + 2 }
+        XCTAssertEqual(Array(harness.nowPlaying.playingUpdates.suffix(2)), [false, true])
+
+        await harness.client.emit(.audioTerminal(scope, .end))
+        await harness.client.emit(.standard(HomeStandardEvent(
+            type: .turnComplete,
+            scope: scope,
+            payload: .terminal(kind: .terminal)
+        )))
+        await output.waitUntilFinishRequested()
+        await output.allowFinish()
+        await responseTask.value
+        await pollUntil { harness.store.connectionState == .disconnected }
+        let events = harness.journal.snapshot().map(\.event)
+        // show, pause, play, then the finished reply no longer playing.
+        XCTAssertTrue(
+            events.contains { $0.hasPrefix("voice response ended path=draft") && $0.hasSuffix("nowplaying_writes=4") },
+            "\(events.filter { $0.hasPrefix("voice response ended") })"
+        )
+    }
+
+    @MainActor
+    func testNowPlayingRegistrationWaitsABeatAfterBackgroundEntry() async throws {
+        let clock = ManualBackgroundClock()
+        let output = CoordinatorAudioOutput(waitsForFinish: true, stopReleasesFinish: true)
+        let harness = try await makeBackgroundVoiceHarness(
+            output: output,
+            clock: clock,
+            nowPlayingShowDelay: .seconds(1)
+        )
+        defer { harness.cleanUp() }
+        let (responseTask, scope) = await startStreamingHomeReply(harness)
+
+        _ = await harness.lifecycle.handle(.background)
+
+        XCTAssertTrue(harness.nowPlaying.shownTitles.isEmpty, "Nothing registered on the transition itself")
+        XCTAssertTrue(harness.lifecycle.isRetainingBackgroundWork)
+        clock.advance(by: .milliseconds(900))
+        try await Task.sleep(for: .milliseconds(30))
+        XCTAssertTrue(harness.nowPlaying.shownTitles.isEmpty)
+        clock.advance(by: .milliseconds(100))
+        await pollUntil { harness.nowPlaying.shownPlaying == [true] }
+
+        await finishStreamingHomeReply(harness, output: output, scope: scope, task: responseTask)
+    }
+
+    @MainActor
+    func testReturningToTheForegroundBeforeTheBeatNeverRegistersTheCard() async throws {
+        let clock = ManualBackgroundClock()
+        let output = CoordinatorAudioOutput(waitsForFinish: true, stopReleasesFinish: true)
+        let harness = try await makeBackgroundVoiceHarness(
+            output: output,
+            clock: clock,
+            nowPlayingShowDelay: .seconds(1)
+        )
+        defer { harness.cleanUp() }
+        let (responseTask, scope) = await startStreamingHomeReply(harness)
+        _ = await harness.lifecycle.handle(.background)
+
+        _ = await harness.lifecycle.handle(.active)
+        clock.advance(by: .seconds(2))
+        try await Task.sleep(for: .milliseconds(30))
+
+        XCTAssertTrue(harness.nowPlaying.shownTitles.isEmpty)
+        XCTAssertFalse(harness.voice.isBackgrounded)
+        await finishStreamingHomeReply(harness, output: output, scope: scope, task: responseTask)
+    }
+
+    @MainActor
+    func testBackgroundEntryJournalsPlaybackLeadEveryQuarterSecondForFiveSeconds() async throws {
+        let clock = ManualBackgroundClock()
+        let output = CoordinatorAudioOutput(
+            waitsForFinish: true,
+            stopReleasesFinish: true,
+            playbackLead: 0.42
+        )
+        let harness = try await makeBackgroundVoiceHarness(output: output, clock: clock, playbackLeadClock: clock)
+        defer { harness.cleanUp() }
+        let (responseTask, scope) = await startStreamingHomeReply(harness)
+        func leadLines() -> [String] {
+            harness.journal.snapshot().map(\.event).filter { $0.hasPrefix("audio output lead_ms=") }
+        }
+
+        _ = await harness.lifecycle.handle(.background)
+        await pollUntil { leadLines().count == 1 }
+        XCTAssertEqual(leadLines().first, "audio output lead_ms=420 t_ms=0 state=speaking playing=true")
+        for step in 1...20 {
+            await pollUntil { clock.sleeperCount >= 1 }
+            clock.advance(by: .milliseconds(250))
+            await pollUntil { leadLines().count == step + 1 }
+        }
+        XCTAssertEqual(leadLines().last, "audio output lead_ms=420 t_ms=5000 state=speaking playing=true")
+
+        clock.advance(by: .seconds(5))
+        try await Task.sleep(for: .milliseconds(30))
+        XCTAssertEqual(leadLines().count, 21, "Sampling stops after five seconds")
+
+        await finishStreamingHomeReply(harness, output: output, scope: scope, task: responseTask)
+    }
+
+    @MainActor
+    func testLeadSamplingStopsWhenTheAppReturnsToTheForeground() async throws {
+        let clock = ManualBackgroundClock()
+        let output = CoordinatorAudioOutput(
+            waitsForFinish: true,
+            stopReleasesFinish: true,
+            playbackLead: 0.3
+        )
+        let harness = try await makeBackgroundVoiceHarness(output: output, clock: clock, playbackLeadClock: clock)
+        defer { harness.cleanUp() }
+        let (responseTask, scope) = await startStreamingHomeReply(harness)
+        func leadLines() -> Int {
+            harness.journal.snapshot().map(\.event).filter { $0.hasPrefix("audio output lead_ms=") }.count
+        }
+        _ = await harness.lifecycle.handle(.background)
+        await pollUntil { leadLines() == 1 }
+
+        _ = await harness.lifecycle.handle(.active)
+        clock.advance(by: .seconds(5))
+        try await Task.sleep(for: .milliseconds(30))
+
+        XCTAssertEqual(leadLines(), 1)
+        await finishStreamingHomeReply(harness, output: output, scope: scope, task: responseTask)
+    }
+
+    @MainActor
+    func testBackgroundOutputEngineFailureEndsTheReplyInsteadOfStayingSpeaking() async throws {
+        let output = CoordinatorAudioOutput(waitsForFinish: true, stopReleasesFinish: true)
+        let harness = try await makeBackgroundVoiceHarness(output: output)
+        defer { harness.cleanUp() }
+        let responseTask = try await startPlayingHomeReply(harness, prompt: "Read me the news")
+        _ = await harness.lifecycle.handle(.background)
+        XCTAssertTrue(harness.lifecycle.isRetainingBackgroundWork)
+        await output.waitUntilFinishRequested()
+
+        // The engine stopped in the background and could not be restarted.
+        await output.failPendingFinish(.outputFailed)
+        await responseTask.value
+        _ = await harness.lifecycle.handle(.active)
+
+        // The reply ended as a playback failure. That is recorded
+        // synchronously when the response task clears, before the retention
+        // callback can queue the lifecycle teardown. `voice.state` itself is
+        // not stable afterwards: teardown resets it to idle, and whether it
+        // runs before or after the `.active` above is a scheduling race
+        // between two separately queued main-actor tasks.
+        let events = harness.journal.snapshot().map(\.event)
+        XCTAssertTrue(
+            events.contains { $0.hasPrefix("voice response ended path=draft state=failed ") },
+            "The reply must end as a playback failure: \(events.filter { $0.hasPrefix("voice response ended") })"
+        )
+        XCTAssertNotEqual(harness.voice.state, .speaking)
+        switch harness.voice.state {
+        case .failed, .idle:
+            break // failed if `.active` won the race, idle if teardown did
+        default:
+            XCTFail("Unexpected state after a failed reply: \(harness.voice.state)")
+        }
+        XCTAssertEqual(harness.voice.backgroundRetention, .none, "No reply is left in flight")
+        let submitted = await harness.client.submittedTexts
+        XCTAssertEqual(submitted, ["Read me the news"], "No replay")
+    }
+
+    @MainActor
+    func testRouteLossPausesReplyOutput() async throws {
+        let output = CoordinatorAudioOutput(waitsForFinish: true, stopReleasesFinish: true)
+        let harness = try await makeBackgroundVoiceHarness(output: output)
+        defer { harness.cleanUp() }
+        let responseTask = try await startPlayingHomeReply(harness, prompt: "Read me the news")
+
+        harness.events.send(.oldDeviceUnavailable)
+        await pollUntil { harness.voice.isReplyOutputPaused }
+
+        let operations = await output.operations()
+        XCTAssertTrue(operations.contains(.pause))
+        XCTAssertFalse(operations.contains(.stop), "The reply is held, not moved to the speaker")
+        await harness.voice.stopForLifecycle()
+        await output.allowFinish()
+        await responseTask.value
+    }
+
+    @MainActor
+    func testBackgroundNeverStartsTheMicrophone() async throws {
+        let output = CoordinatorAudioOutput(waitsForFinish: true, stopReleasesFinish: true)
+        let handsFree = CoordinatorHandsFreeInput()
+        let harness = try await makeBackgroundVoiceHarness(output: output, handsFreeInput: handsFree)
+        defer { harness.cleanUp() }
+        let responseTask = try await startPlayingHomeReply(harness, prompt: "Read me the news")
+        _ = await harness.lifecycle.handle(.background)
+        XCTAssertTrue(harness.voice.isBackgrounded)
+
+        await harness.voice.toggleHandsFree()
+        await harness.voice.beginCapture()
+
+        XCTAssertFalse(harness.voice.isHandsFreeArmed)
+        let starts = await handsFree.startCount()
+        XCTAssertEqual(starts, 0)
+        XCTAssertEqual(harness.voice.backgroundRetention, .reply)
+        await output.allowFinish()
+        await responseTask.value
+        await pollUntil { harness.store.connectionState == .disconnected }
+    }
+
+    @MainActor
+    func testLockScreenControlsPauseResumeAndStopTheSession() async throws {
+        let output = CoordinatorAudioOutput(waitsForFinish: true, stopReleasesFinish: true)
+        let harness = try await makeBackgroundVoiceHarness(output: output)
+        defer { harness.cleanUp() }
+        let responseTask = try await startPlayingHomeReply(harness, prompt: "Read me the news")
+        _ = await harness.lifecycle.handle(.background)
+
+        harness.nowPlaying.send(.pause)
+        await pollUntil { harness.voice.isReplyOutputPaused }
+        harness.nowPlaying.send(.play)
+        await pollUntil { !harness.voice.isReplyOutputPaused }
+        // Foreground updates never reach MediaPlayer (no card yet), so only
+        // the lock-screen Pause and Play are written.
+        XCTAssertEqual(harness.nowPlaying.playingUpdates, [false, true])
+
+        harness.nowPlaying.send(.stop)
+        await pollUntil { harness.store.connectionState == .disconnected }
+
+        XCTAssertFalse(harness.lifecycle.isRetainingBackgroundWork)
+        XCTAssertFalse(harness.nowPlaying.isShowing, "Stop clears Now Playing")
+        XCTAssertGreaterThan(harness.nowPlaying.clearCount, 0)
+        await output.allowFinish()
+        await responseTask.value
+    }
+
+    @MainActor
+    func testForegroundAfterTheRetainedTransportDroppedReactivates() async throws {
+        let handsFree = CoordinatorHandsFreeInput()
+        let harness = try await makeBackgroundVoiceHarness(handsFreeInput: handsFree)
+        defer { harness.cleanUp() }
+        await harness.voice.toggleHandsFree()
+        _ = await harness.lifecycle.handle(.background)
+        XCTAssertTrue(harness.lifecycle.isRetainingBackgroundWork)
+        let openCount = await harness.client.openCount
+        // The transport is lost while backgrounded.
+        _ = harness.store.takeHomeClientForLifecycle()
+        XCTAssertFalse(harness.store.hasLiveTransport)
+
+        let result = await harness.lifecycle.handle(.active)
+
+        XCTAssertEqual(result, .completed)
+        XCTAssertFalse(harness.lifecycle.isRetainingBackgroundWork)
+        XCTAssertFalse(harness.voice.isBackgrounded)
+        let reopened = await harness.client.openCount
+        XCTAssertEqual(reopened, openCount + 1, "Foreground reconnects over a dropped transport")
+        XCTAssertTrue(harness.store.connectionState.isConnected)
+        XCTAssertTrue(harness.store.isLifecycleActive)
+    }
+
+    @MainActor
+    func testSocketDropDuringABackgroundReplyKeepsTheUncertainTurnWithoutResending() async throws {
+        let harness = try await makeBackgroundVoiceHarness()
+        defer { harness.cleanUp() }
+        harness.store.draft = "Read me the news"
+        let voice = harness.voice
+        let responseTask = Task { @MainActor in await voice.sendDraft() }
+        await waitForHomeVoiceSubmission(harness.client, atLeast: 1)
+        _ = await harness.lifecycle.handle(.background)
+        XCTAssertTrue(harness.lifecycle.isRetainingBackgroundWork)
+
+        await harness.client.failEvents()
+        await pollUntil { harness.store.unconfirmedTurnText == "Read me the news" }
+
+        // The drop marked the turn uncertain; the retry ladder reconnects
+        // the kept claim while the reply is still retained.
+        await pollUntil { await harness.client.reconnectCount >= 1 }
+        XCTAssertTrue(harness.lifecycle.isRetainingBackgroundWork)
+        let submitted = await harness.client.submittedTexts
+        XCTAssertEqual(submitted, ["Read me the news"], "No resend")
+
+        _ = await harness.lifecycle.handle(.suspended)
+        await responseTask.value
+        XCTAssertEqual(harness.store.unconfirmedTurnText, "Read me the news", "Kept for Resend/Continue")
+        let submittedAfter = await harness.client.submittedTexts
+        XCTAssertEqual(submittedAfter, ["Read me the news"])
+    }
+
+    @MainActor
+    func testLockBeforeAudioStartsStillHonoursTheAudioDeadlineThenTearsDown() async throws {
+        let harness = try await makeBackgroundVoiceHarness(
+            audioDeadlines: HomeTurnAudioDeadlines(
+                audioStart: .milliseconds(200),
+                controlTerminal: .seconds(30),
+                audioTerminal: .seconds(5),
+                playbackDrain: .seconds(5)
+            )
+        )
+        defer { harness.cleanUp() }
+        harness.store.draft = "Say something"
+        let voice = harness.voice
+        let responseTask = Task { @MainActor in await voice.sendDraft() }
+        await waitForHomeVoiceSubmission(harness.client, atLeast: 1)
+        let scope = HomeEventScope(
+            conversationHandle: harness.fixture.claim.conversationHandle,
+            turnID: "turn-1",
+            correlationID: "correlation-1"
+        )
+        await harness.client.emit(.standard(HomeStandardEvent(
+            type: .messageComplete,
+            scope: scope,
+            payload: .final(rendered: nil, text: "Answer", status: "complete", reasoning: nil, failureReason: nil)
+        )))
+        await harness.client.emit(.standard(HomeStandardEvent(
+            type: .turnComplete,
+            scope: scope,
+            payload: .terminal(kind: .terminal)
+        )))
+        await pollUntil { harness.store.messages.contains { $0.text == "Answer" } }
+
+        _ = await harness.lifecycle.handle(.background)
+        XCTAssertTrue(harness.lifecycle.isRetainingBackgroundWork, "Pending audio keeps the reply alive")
+
+        await responseTask.value
+        await pollUntil { harness.store.connectionState == .disconnected }
+        XCTAssertFalse(harness.lifecycle.isRetainingBackgroundWork)
+        let closeCount = await harness.client.closeCount
+        XCTAssertEqual(closeCount, 1, "Deadline expiry tears down")
+    }
+
+    @MainActor
+    func testStaleBackgroundAfterTheWorkEndedTearsDown() async throws {
+        let handsFree = CoordinatorHandsFreeInput()
+        let harness = try await makeBackgroundVoiceHarness(handsFreeInput: handsFree)
+        defer { harness.cleanUp() }
+        await harness.voice.toggleHandsFree()
+        _ = await harness.lifecycle.handle(.background)
+        XCTAssertTrue(harness.lifecycle.isRetainingBackgroundWork)
+
+        // Lock-screen Stop queues `.backgroundWorkEnded`; a newer phase that
+        // supersedes it must still finish the teardown.
+        await harness.voice.handleNowPlayingCommand(.stop)
+        for _ in 0..<5 { await Task.yield() }
+        _ = await harness.lifecycle.handle(.background)
+
+        await pollUntil { harness.store.connectionState == .disconnected }
+        XCTAssertFalse(harness.lifecycle.isRetainingBackgroundWork)
+        XCTAssertFalse(harness.store.isLifecycleActive)
+        let closeCount = await harness.client.closeCount
+        XCTAssertEqual(closeCount, 1)
+    }
+
+    @MainActor
+    func testPausedBackgroundReplyTimesOutAfterSixtySeconds() async throws {
+        let clock = ManualBackgroundClock()
+        let output = CoordinatorAudioOutput(waitsForFinish: true, stopReleasesFinish: true)
+        let harness = try await makeBackgroundVoiceHarness(output: output, clock: clock)
+        defer { harness.cleanUp() }
+        let responseTask = try await startPlayingHomeReply(harness, prompt: "Read me the news")
+        _ = await harness.lifecycle.handle(.background)
+        XCTAssertEqual(clock.sleeperCount, 0, "A playing reply has no idle timeout")
+
+        await harness.voice.handleNowPlayingCommand(.pause)
+        await pollUntil { clock.sleeperCount == 1 }
+        clock.advance(by: .seconds(59))
+        try await Task.sleep(for: .milliseconds(20))
+        XCTAssertTrue(harness.lifecycle.isRetainingBackgroundWork)
+
+        clock.advance(by: .seconds(1))
+        await pollUntil { harness.store.connectionState == .disconnected }
+        XCTAssertFalse(harness.lifecycle.isRetainingBackgroundWork)
+        XCTAssertFalse(harness.nowPlaying.isShowing)
+        await responseTask.value
+    }
+
+    @MainActor
+    func testRouteLossBlocksInterruptionAndNowPlayingResumeUntilRouteReturns() async throws {
+        let output = CoordinatorAudioOutput(waitsForFinish: true, stopReleasesFinish: true)
+        let harness = try await makeBackgroundVoiceHarness(output: output)
+        defer { harness.cleanUp() }
+        let responseTask = try await startPlayingHomeReply(harness, prompt: "Read me the news")
+        _ = await harness.lifecycle.handle(.background)
+
+        harness.events.send(.oldDeviceUnavailable)
+        await pollUntil { harness.voice.replyPauseReason == .routeLoss }
+        harness.events.send(.interruptionEnded(shouldResume: true))
+        harness.nowPlaying.send(.play)
+        harness.nowPlaying.send(.togglePlayPause)
+        try await Task.sleep(for: .milliseconds(30))
+
+        XCTAssertEqual(harness.voice.replyPauseReason, .routeLoss, "Only route availability releases this pause")
+        var operations = await output.operations()
+        XCTAssertFalse(operations.contains(.resume), "Lock-screen commands never route audio to the speaker")
+        XCTAssertEqual(harness.nowPlaying.playingUpdates.last, false)
+
+        harness.events.send(.newDeviceAvailable)
+        await pollUntil { !harness.voice.isReplyOutputPaused }
+        operations = await output.operations()
+        XCTAssertTrue(operations.contains(.resume), "A new route resumes the reply")
+        XCTAssertEqual(harness.nowPlaying.playingUpdates.last, true)
+
+        await harness.voice.stopForLifecycle()
+        await responseTask.value
+    }
+
+    func testMacOSLifecycleNeverRetainsBackgroundWork() {
+        #if os(macOS)
+        XCTAssertFalse(AppleLifecycleCoordinator.platformSupportsBackgroundRetention)
+        #else
+        XCTAssertTrue(AppleLifecycleCoordinator.platformSupportsBackgroundRetention)
+        #endif
+    }
+
+    @MainActor
+    private func makeBackgroundVoiceHarness(
+        output: CoordinatorAudioOutput = CoordinatorAudioOutput(),
+        handsFreeInput: CoordinatorHandsFreeInput? = nil,
+        clock: any HomeMonotonicClock = ContinuousHomeMonotonicClock(),
+        persistence: (any ConversationPersistence)? = nil,
+        audioDeadlines: HomeTurnAudioDeadlines = .default,
+        backgroundRetentionEnabled: Bool = true,
+        nowPlayingShowDelay: Duration = .zero,
+        playbackLeadClock: (any HomeMonotonicClock)? = ContinuousHomeMonotonicClock()
+    ) async throws -> BackgroundVoiceHarness {
+        let fixture = try await makeHomeVoiceReviewFixture(
+            audioDeadlines: audioDeadlines,
+            persistence: persistence
+        )
+        let configured = await fixture.store.loadConfiguredClient()
+        XCTAssertTrue(configured)
+        await fixture.store.connect()
+        XCTAssertTrue(fixture.store.connectionState.isConnected)
+        let nowPlaying = RecordingNowPlaying()
+        let policy = RecordingAudioSessionPolicy()
+        let events = ScriptedAudioSessionEvents()
+        let journal = DiagnosticsJournal(fileURL: nil)
+        let voice = VoiceSessionCoordinator(
+            store: fixture.store,
+            input: CoordinatorSpeechInput(),
+            output: output,
+            handsFreeInput: handsFreeInput,
+            clock: clock,
+            audioSessionPolicy: policy,
+            audioSessionEvents: events,
+            nowPlaying: nowPlaying,
+            journal: journal,
+            nowPlayingShowDelay: nowPlayingShowDelay,
+            playbackLeadClock: playbackLeadClock
+        )
+        let lifecycle = AppleLifecycleCoordinator(
+            store: fixture.store,
+            voice: voice,
+            homeClientFactory: FakeHomeBridgeSessionClientFactory(client: fixture.client),
+            clock: clock,
+            backgroundRetentionEnabled: backgroundRetentionEnabled,
+            journal: journal
+        )
+        return BackgroundVoiceHarness(
+            fixture: fixture,
+            voice: voice,
+            lifecycle: lifecycle,
+            nowPlaying: nowPlaying,
+            policy: policy,
+            events: events,
+            output: output,
+            journal: journal
+        )
+    }
+
+    /// Submits a Home voice turn and drives it until its audio is playing.
+    @MainActor
+    private func startPlayingHomeReply(
+        _ harness: BackgroundVoiceHarness,
+        prompt: String
+    ) async throws -> Task<Void, Never> {
+        harness.store.draft = prompt
+        let voice = harness.voice
+        let responseTask = Task { @MainActor in
+            await voice.sendDraft()
+        }
+        await waitForHomeVoiceSubmission(harness.client, atLeast: 1)
+        let scope = HomeEventScope(
+            conversationHandle: harness.fixture.claim.conversationHandle,
+            turnID: "turn-1",
+            correlationID: "correlation-1"
+        )
+        await harness.client.emit(.audioStart(
+            scope,
+            HomeAudioFormat(sampleRate: 24_000, channels: 1, sampleWidth: 2)
+        ))
+        await harness.client.emit(.binaryPCM(scope, Data([0, 1, 2, 3])))
+        await harness.client.emit(.standard(HomeStandardEvent(
+            type: .messageComplete,
+            scope: scope,
+            payload: .final(
+                rendered: nil,
+                text: "Here is the answer",
+                status: "complete",
+                reasoning: nil,
+                failureReason: nil
+            )
+        )))
+        await harness.client.emit(.audioTerminal(scope, .end))
+        await harness.client.emit(.standard(HomeStandardEvent(
+            type: .turnComplete,
+            scope: scope,
+            payload: .terminal(kind: .terminal)
+        )))
+        await harness.output.waitUntilFinishRequested()
+        XCTAssertEqual(harness.voice.backgroundRetention, .reply)
+        return responseTask
+    }
+
+    @MainActor
+    private func pollUntil(
+        timeout: Duration = .seconds(2),
+        file: StaticString = #filePath,
+        line: UInt = #line,
+        _ condition: @MainActor () async -> Bool
+    ) async {
+        let deadline = ContinuousClock.now + timeout
+        while !(await condition()) {
+            guard ContinuousClock.now < deadline else {
+                XCTFail("Timed out waiting for condition", file: file, line: line)
+                return
+            }
+            try? await Task.sleep(for: .milliseconds(5))
+        }
+    }
+
     @MainActor
     private func makeHomeVoiceReviewFixture(
-        audioDeadlines: HomeTurnAudioDeadlines = .default
+        audioDeadlines: HomeTurnAudioDeadlines = .default,
+        persistence: (any ConversationPersistence)? = nil,
+        homeClock: any HomeMonotonicClock = ContinuousHomeMonotonicClock(),
+        capabilities: HomeBridgeCapabilities = HomeBridgeCapabilities(
+            commands: [], heartbeat: true, interrupt: true, timing: .absent
+        )
     ) async throws -> HomeVoiceReviewFixture {
         let profileID = UUID(uuidString: "EEEEEEEE-FFFF-0000-1111-222222222222")!
         let profile = try RelayProfile(
@@ -2442,11 +4082,13 @@ final class VoiceSessionCoordinatorTests: XCTestCase {
             )
         )
         let claim = HomeDemoFixtures.claim(for: profileID)
-        let client = FakeHomeBridgeSessionClient(claim: claim)
+        let client = FakeHomeBridgeSessionClient(claim: claim, capabilities: capabilities)
         let store = ConversationStore(
             configurationStore: configurationStore,
+            persistence: persistence,
             homeClientFactory: FakeHomeBridgeSessionClientFactory(client: client),
             homeClaimProvider: StaticHomeConversationClaimProvider(claim: claim),
+            homeClock: homeClock,
             homeTurnAudioDeadlines: audioDeadlines
         )
         return HomeVoiceReviewFixture(
@@ -2482,6 +4124,151 @@ private final class HomeVoiceReviewSecureValueStore: SecureValueStore, @unchecke
     func read(service: String, account: String) throws -> Data? { nil }
     func write(_ value: Data, service: String, account: String) throws {}
     func delete(service: String, account: String) throws {}
+}
+
+@MainActor
+private struct BackgroundVoiceHarness {
+    let fixture: HomeVoiceReviewFixture
+    let voice: VoiceSessionCoordinator
+    let lifecycle: AppleLifecycleCoordinator
+    let nowPlaying: RecordingNowPlaying
+    let policy: RecordingAudioSessionPolicy
+    let events: ScriptedAudioSessionEvents
+    let output: CoordinatorAudioOutput
+    let journal: DiagnosticsJournal
+
+    var store: ConversationStore { fixture.store }
+    var client: FakeHomeBridgeSessionClient { fixture.client }
+
+    func cleanUp() {
+        try? FileManager.default.removeItem(at: fixture.profileURL.deletingLastPathComponent())
+    }
+}
+
+@MainActor
+private final class RecordingNowPlaying: NowPlayingPresenting {
+    private(set) var shownTitles: [String] = []
+    private(set) var shownPlaying: [Bool] = []
+    private(set) var playingUpdates: [Bool] = []
+    private(set) var clearCount = 0
+    private(set) var isShowing = false
+    private var onCommand: (@MainActor @Sendable (NowPlayingCommand) -> Void)?
+
+    func show(
+        title: String,
+        isPlaying: Bool,
+        onCommand: @escaping @MainActor @Sendable (NowPlayingCommand) -> Void
+    ) {
+        shownTitles.append(title)
+        shownPlaying.append(isPlaying)
+        isShowing = true
+        self.onCommand = onCommand
+    }
+
+    func update(isPlaying: Bool) {
+        playingUpdates.append(isPlaying)
+    }
+
+    func clear() {
+        clearCount += 1
+        isShowing = false
+        onCommand = nil
+    }
+
+    func send(_ command: NowPlayingCommand) {
+        onCommand?(command)
+    }
+}
+
+private actor RecordingAudioSessionPolicy: BackgroundAudioSessionPolicy {
+    private var recorded: [Bool] = []
+    private var current = false
+
+    func setBackgroundVoiceActive(_ active: Bool) {
+        // Record transitions only, as the real coordinator re-applies the
+        // category only when the mixing rule changes.
+        guard active != current else { return }
+        current = active
+        recorded.append(active)
+    }
+
+    func values() -> [Bool] { recorded }
+}
+
+private final class ScriptedAudioSessionEvents: AudioSessionEventSource, @unchecked Sendable {
+    private let stream: AsyncStream<AudioSessionEvent>
+    private let continuation: AsyncStream<AudioSessionEvent>.Continuation
+
+    init() {
+        (stream, continuation) = AsyncStream<AudioSessionEvent>.makeStream()
+    }
+
+    func events() -> AsyncStream<AudioSessionEvent> { stream }
+
+    func send(_ event: AudioSessionEvent) {
+        continuation.yield(event)
+    }
+}
+
+/// A monotonic clock that only moves when the test advances it.
+private final class ManualBackgroundClock: HomeMonotonicClock, @unchecked Sendable {
+    private let lock = NSLock()
+    private let origin = ContinuousClock.now
+    private var offset: Duration = .zero
+    private var sleepers: [UUID: (deadline: ContinuousClock.Instant, continuation: CheckedContinuation<Void, Error>)] = [:]
+
+    var sleeperCount: Int {
+        lock.withLock { sleepers.count }
+    }
+
+    func now() -> ContinuousClock.Instant {
+        lock.withLock { origin + offset }
+    }
+
+    func sleep(until deadline: ContinuousClock.Instant) async throws {
+        let id = UUID()
+        try await withTaskCancellationHandler {
+            try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
+                lock.lock()
+                if Task.isCancelled {
+                    lock.unlock()
+                    continuation.resume(throwing: CancellationError())
+                } else if origin + offset >= deadline {
+                    lock.unlock()
+                    continuation.resume()
+                } else {
+                    sleepers[id] = (deadline, continuation)
+                    lock.unlock()
+                }
+            }
+        } onCancel: {
+            let sleeper = lock.withLock { sleepers.removeValue(forKey: id) }
+            sleeper?.continuation.resume(throwing: CancellationError())
+        }
+    }
+
+    func advance(by duration: Duration) {
+        let due: [CheckedContinuation<Void, Error>] = lock.withLock {
+            offset += duration
+            let now = origin + offset
+            let ready = sleepers.filter { $0.value.deadline <= now }
+            for id in ready.keys {
+                sleepers.removeValue(forKey: id)
+            }
+            return ready.values.map(\.continuation)
+        }
+        due.forEach { $0.resume() }
+    }
+}
+
+private actor FailingBackgroundPersistence: ConversationPersistence {
+    func load() async throws -> PersistedConversation {
+        PersistedConversation(messages: [], draft: "")
+    }
+
+    func save(_ conversation: PersistedConversation) async throws {
+        throw CocoaError(.fileWriteUnknown)
+    }
 }
 
 private actor CoordinatorHandsFreeInput: HandsFreeInput {
@@ -3022,6 +4809,8 @@ private actor CoordinatorAudioOutput: AudioOutput {
         case append
         case finish
         case stop
+        case pause
+        case resume
     }
 
     private let appendError: AudioOutputError?
@@ -3029,11 +4818,17 @@ private actor CoordinatorAudioOutput: AudioOutput {
     private let appendReadiness: AudioPlaybackReadiness
     private let waitsForFinish: Bool
     private let reportedPlaybackPosition: TimeInterval?
+    private let reportedPlaybackLead: TimeInterval?
+    /// Mirrors `AudioPlaybackDrain.reset()`: stopping releases a pending drain.
+    private let stopReleasesFinish: Bool
     private var finishRequested = false
     private var finishRequestWaiters: [CheckedContinuation<Void, Never>] = []
     private var appendRequested = false
     private var appendRequestWaiters: [CheckedContinuation<Void, Never>] = []
     private var finishWaiter: CheckedContinuation<Void, Never>?
+    /// Thrown by a finish that was waiting, as when the platform output's
+    /// engine could not be restarted mid-drain.
+    private var pendingFinishFailure: AudioOutputError?
     private var recordedOperations: [Operation] = []
 
     init(
@@ -3041,13 +4836,17 @@ private actor CoordinatorAudioOutput: AudioOutput {
         finishError: AudioOutputError? = nil,
         appendReadiness: AudioPlaybackReadiness = .ready,
         waitsForFinish: Bool = false,
-        playbackPosition: TimeInterval? = nil
+        playbackPosition: TimeInterval? = nil,
+        stopReleasesFinish: Bool = false,
+        playbackLead: TimeInterval? = nil
     ) {
         self.appendError = appendError
         self.finishError = finishError
         self.appendReadiness = appendReadiness
         self.waitsForFinish = waitsForFinish
         self.reportedPlaybackPosition = playbackPosition
+        self.reportedPlaybackLead = playbackLead
+        self.stopReleasesFinish = stopReleasesFinish
     }
 
     func start(format: AudioFormat) async throws {
@@ -3077,13 +4876,21 @@ private actor CoordinatorAudioOutput: AudioOutput {
         await withCheckedContinuation { continuation in
             finishWaiter = continuation
         }
+        if let pendingFinishFailure { throw pendingFinishFailure }
     }
 
     func stop() async {
         recordedOperations.append(.stop)
+        if stopReleasesFinish {
+            finishWaiter?.resume()
+            finishWaiter = nil
+        }
     }
 
     func playbackPosition() async -> TimeInterval? { reportedPlaybackPosition }
+    func playbackLead() async -> TimeInterval? { reportedPlaybackLead }
+    func pause() async { recordedOperations.append(.pause) }
+    func resume() async { recordedOperations.append(.resume) }
 
     func operations() -> [Operation] {
         recordedOperations
@@ -3104,6 +4911,12 @@ private actor CoordinatorAudioOutput: AudioOutput {
     }
 
     func allowFinish() {
+        finishWaiter?.resume()
+        finishWaiter = nil
+    }
+
+    func failPendingFinish(_ error: AudioOutputError) {
+        pendingFinishFailure = error
         finishWaiter?.resume()
         finishWaiter = nil
     }
@@ -3292,4 +5105,14 @@ private enum CoordinatorClientError: LocalizedError, Sendable {
     case offline
 
     var errorDescription: String? { "The test relay is offline." }
+}
+
+extension StateRecordingAudioOutput {
+    func pause() async {}
+    func resume() async {}
+}
+
+extension StartGatedAudioOutput {
+    func pause() async {}
+    func resume() async {}
 }

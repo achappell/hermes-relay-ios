@@ -1041,6 +1041,83 @@ final class HomeClientPairingTests: XCTestCase {
     }
 
     @MainActor
+    func testForegroundTransportFailureRetriesTheHeldClaimUntilReady() async throws {
+        // Pilot 2026-10-04: after more than two minutes in the background the
+        // single foreground open failed at the transport and was never retried.
+        let fixture = try await Self.makeFixture()
+        _ = try await Self.pair(fixture)
+        let store = fixture.makeStore(homeClock: InstantPairingTestClock())
+        await store.loadConfiguredClient()
+        await store.connect()
+        let firstHandle = try XCTUnwrap(fixture.echo.clients.last?.openedHandlesSnapshot.last)
+        await fixture.service.resetCalls()
+
+        _ = store.takeHomeClientForLifecycle()
+        fixture.echo.scriptOpens([
+            .disconnected(.home(code: .transportUnavailable, phase: .open)),
+            .disconnected(.home(code: .transportTimeout, phase: .open)),
+        ])
+        await store.loadConfiguredClient()
+        await store.connect()
+        try await Self.waitUntil { store.connectionState == .connected }
+
+        XCTAssertEqual(fixture.echo.clients.last?.openedHandlesSnapshot, [firstHandle, firstHandle, firstHandle])
+        let calls = await fixture.service.calls
+        XCTAssertEqual(calls, [], "The held claim is retried, not replaced")
+
+        // A Disconnect stops any further retry.
+        _ = store.takeHomeClientForLifecycle()
+        fixture.echo.scriptOpens(Array(
+            repeating: .disconnected(.home(code: .transportUnavailable, phase: .open)),
+            count: 2
+        ))
+        await store.loadConfiguredClient()
+        await store.connect()
+        await store.disconnect()
+        let opensAfterDisconnect = fixture.echo.clients.last?.openCount
+        try await Task.sleep(for: .milliseconds(100))
+        XCTAssertEqual(fixture.echo.clients.last?.openCount, opensAfterDisconnect)
+        XCTAssertEqual(store.connectionState, .disconnected)
+    }
+
+    @MainActor
+    func testReconnectRefusedAsStaleWithoutRecoveryOpensAFreshClaim() async throws {
+        // HOME-NW-18 answers a reconnect for an ended claim with
+        // `stale_conversation`; with no unresolved turn the app moves on.
+        let fixture = try await Self.makeFixture()
+        _ = try await Self.pair(fixture)
+        let store = fixture.makeStore()
+        await store.loadConfiguredClient()
+        await store.connect()
+        let firstHandle = try XCTUnwrap(fixture.echo.clients.last?.openedHandlesSnapshot.last)
+        await fixture.service.resetCalls()
+
+        _ = store.takeHomeClientForLifecycle()
+        fixture.echo.scriptOpens([.unavailable(.reconnectRequired)])
+        fixture.echo.scriptReconnects([.unavailable(.home(code: .staleConversation, phase: .reconnect))])
+        await store.loadConfiguredClient()
+        await store.connect()
+
+        XCTAssertEqual(store.connectionState, .connected)
+        let calls = await fixture.service.calls
+        XCTAssertEqual(calls, [.configuration, .claim(grantID: "grant-a", revision: 13)])
+        XCTAssertNotEqual(fixture.echo.clients.last?.openedHandlesSnapshot.last, firstHandle)
+    }
+
+    @MainActor
+    private static func waitUntil(
+        _ condition: @MainActor () -> Bool,
+        file: StaticString = #filePath,
+        line: UInt = #line
+    ) async throws {
+        for _ in 0..<200 {
+            if condition() { return }
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        XCTFail("Condition not met within 2 s", file: file, line: line)
+    }
+
+    @MainActor
     func testClaimDenialLeavesASpecificDisconnectedState() async throws {
         let fixture = try await Self.makeFixture()
         _ = try await Self.pair(fixture)
@@ -1216,6 +1293,33 @@ final class HomeClientPairingTests: XCTestCase {
         XCTAssertEqual(calls, [], "The held claim is reopened, not replaced")
         let submitted = await fixture.echo.allSubmittedTexts()
         XCTAssertEqual(submitted, ["maybe sent"])
+    }
+
+    @MainActor
+    func testASubmitOnADeadTransportReconnectsWithoutResending() async throws {
+        // Pilot 2026-10-04: talking over a dead transport left the app
+        // Disconnected until the user reconnected by hand.
+        let fixture = try await Self.makeFixture()
+        _ = try await Self.pair(fixture)
+        let store = fixture.makeStore(homeClock: InstantPairingTestClock())
+        await store.loadConfiguredClient()
+        await store.connect()
+        let firstClient = try XCTUnwrap(fixture.echo.clients.last)
+        let openedHandle = await firstClient.lastOpenedHandle()
+        let handle = try XCTUnwrap(openedHandle)
+        await firstClient.setNextSubmission(.uncertain(.home(code: .transportUnavailable, phase: .submission)))
+        await fixture.service.resetCalls()
+
+        let completed = await store.sendTurn(text: "are you there")
+
+        XCTAssertFalse(completed)
+        try await Self.waitUntil { store.connectionState == .connected }
+        XCTAssertEqual(fixture.echo.clients.last?.openedHandlesSnapshot, [handle], "The held claim is reopened")
+        let calls = await fixture.service.calls
+        XCTAssertEqual(calls, [], "No fresh claim replaces the held one")
+        let submitted = await fixture.echo.allSubmittedTexts()
+        XCTAssertEqual(submitted, ["are you there"], "The uncertain prompt is never resent")
+        XCTAssertEqual(store.unresolvedTurnTextForDisplay, "are you there", "The user still decides")
     }
 
     func testInterruptedRenewalWithoutANewerCredentialRetriesTheSavedRequest() async throws {
@@ -2543,6 +2647,33 @@ private final class PairingTestMonotonicClock: HomeMonotonicClock, @unchecked Se
     }
 }
 
+/// Sleeps return at once; the clock advances to the requested instant.
+private final class InstantPairingTestClock: HomeMonotonicClock, @unchecked Sendable {
+    private let clock = ContinuousClock()
+    private let lock = NSLock()
+    private var offset: Duration = .zero
+
+    func now() -> ContinuousClock.Instant {
+        lock.lock()
+        defer { lock.unlock() }
+        return clock.now.advanced(by: offset)
+    }
+
+    func sleep(until instant: ContinuousClock.Instant) async throws {
+        try Task.checkCancellation()
+        advance(to: instant)
+        await Task.yield()
+        try Task.checkCancellation()
+    }
+
+    private func advance(to instant: ContinuousClock.Instant) {
+        lock.lock()
+        defer { lock.unlock() }
+        let remaining = clock.now.advanced(by: offset).duration(to: instant)
+        if remaining > .zero { offset += remaining }
+    }
+}
+
 private final class PairingTestSleeps: @unchecked Sendable {
     private let lock = NSLock()
     private var values: [Duration] = []
@@ -2767,12 +2898,39 @@ private final class EchoHomeBridgeClientFactory: HomeBridgeSessionClientFactory,
         return ended.contains(handle)
     }
 
+    private var scriptedOpens: [HomeOpenOutcome] = []
+    private var scriptedReconnects: [HomeReconnectOutcome] = []
+
+    /// The next opens, on any bridge, return these before Home is reached.
+    func scriptOpens(_ outcomes: [HomeOpenOutcome]) {
+        lock.lock(); defer { lock.unlock() }
+        scriptedOpens += outcomes
+    }
+
+    /// The next reconnects, on any bridge, return these.
+    func scriptReconnects(_ outcomes: [HomeReconnectOutcome]) {
+        lock.lock(); defer { lock.unlock() }
+        scriptedReconnects += outcomes
+    }
+
+    func nextScriptedOpen() -> HomeOpenOutcome? {
+        lock.lock(); defer { lock.unlock() }
+        return scriptedOpens.isEmpty ? nil : scriptedOpens.removeFirst()
+    }
+
+    func nextScriptedReconnect() -> HomeReconnectOutcome? {
+        lock.lock(); defer { lock.unlock() }
+        return scriptedReconnects.isEmpty ? nil : scriptedReconnects.removeFirst()
+    }
+
     func make(profileID: UUID, mode: AppleTransportMode) -> any HomeBridgeSessionClient {
         lock.lock()
         let commands = advertisedCommands
         lock.unlock()
         let client = EchoHomeBridgeClient(
             isEnded: { [weak self] in self?.isEnded($0) ?? false },
+            scriptedOpen: { [weak self] in self?.nextScriptedOpen() },
+            scriptedReconnect: { [weak self] in self?.nextScriptedReconnect() },
             commands: commands
         )
         lock.lock()
@@ -2807,14 +2965,20 @@ private actor EchoHomeBridgeClient: HomeBridgeSessionClient {
     nonisolated(unsafe) private(set) var openedHandlesSnapshot: [String] = []
 
     private let isEnded: @Sendable (String) -> Bool
+    private let scriptedOpen: @Sendable () -> HomeOpenOutcome?
+    private let scriptedReconnect: @Sendable () -> HomeReconnectOutcome?
     private let commands: Set<String>
     private(set) var dispatchedCommands: [HomeCommandRequest] = []
 
     init(
         isEnded: @escaping @Sendable (String) -> Bool = { _ in false },
+        scriptedOpen: @escaping @Sendable () -> HomeOpenOutcome? = { nil },
+        scriptedReconnect: @escaping @Sendable () -> HomeReconnectOutcome? = { nil },
         commands: Set<String> = []
     ) {
         self.isEnded = isEnded
+        self.scriptedOpen = scriptedOpen
+        self.scriptedReconnect = scriptedReconnect
         self.commands = commands
         let pair = AsyncThrowingStream<HomeBridgeEvent, Error>.makeStream()
         stream = pair.stream
@@ -2829,6 +2993,9 @@ private actor EchoHomeBridgeClient: HomeBridgeSessionClient {
         openCount += 1
         openedHandles.append(claim.conversationHandle)
         openedHandlesSnapshot = openedHandles
+        if let scripted = scriptedOpen() {
+            return scripted
+        }
         if isEnded(claim.conversationHandle) {
             return .unavailable(.home(code: .staleConversation, phase: .open))
         }
@@ -2846,7 +3013,10 @@ private actor EchoHomeBridgeClient: HomeBridgeSessionClient {
     }
 
     func reconnect(binding: HomeConversationBinding) async -> HomeReconnectOutcome {
-        .ready(binding: binding, unresolvedTurn: nil, confirmsNoUnresolvedTurn: true)
+        if let scripted = scriptedReconnect() {
+            return scripted
+        }
+        return .ready(binding: binding, unresolvedTurn: nil, confirmsNoUnresolvedTurn: true)
     }
 
     func submitPrompt(_ text: String, binding: HomeConversationBinding) async -> HomePromptSubmissionOutcome {

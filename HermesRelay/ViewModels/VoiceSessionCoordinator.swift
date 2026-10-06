@@ -67,6 +67,64 @@ enum HandsFreeStatus: Equatable, Sendable {
     }
 }
 
+/// What in-flight voice work keeps the app alive in the background
+/// (IOS-HOME-07). `.none` means the lifecycle tears down as before.
+enum VoiceBackgroundRetention: Equatable, Sendable {
+    case none
+    /// A turn is submitted, streaming, or its audio is pending or playing.
+    case reply
+    /// Hands-free is armed or capture is live, started in the foreground.
+    case voiceSession
+}
+
+extension VoiceState {
+    /// A state name that never carries a failure message.
+    var journalName: String {
+        switch self {
+        case .idle: "idle"
+        case .listening: "listening"
+        case .transcribing: "transcribing"
+        case .thinking: "thinking"
+        case .speaking: "speaking"
+        case .buffering: "buffering"
+        case .complete: "complete"
+        case .interrupted: "interrupted"
+        case .failed: "failed"
+        }
+    }
+}
+
+extension VoiceBackgroundRetention {
+    var journalName: String {
+        switch self {
+        case .none: "none"
+        case .reply: "reply"
+        case .voiceSession: "voiceSession"
+        }
+    }
+}
+
+extension AudioSessionEvent {
+    var journalName: String {
+        switch self {
+        case .interruptionBegan: "interruptionBegan"
+        case .interruptionEnded(let shouldResume): "interruptionEnded(shouldResume=\(shouldResume))"
+        case .oldDeviceUnavailable: "oldDeviceUnavailable"
+        case .newDeviceAvailable: "newDeviceAvailable"
+        }
+    }
+}
+
+/// What paused reply output (IOS-HOME-07).
+enum ReplyPauseReason: Equatable, Sendable {
+    /// A phone call, Siri or another app took the audio session.
+    case interruption
+    /// The output route disappeared (headphones or AirPods removed).
+    case routeLoss
+    /// Lock-screen Pause.
+    case user
+}
+
 @MainActor
 @Observable
 final class VoiceSessionCoordinator {
@@ -136,6 +194,41 @@ final class VoiceSessionCoordinator {
     // is allowed to mutate state only while its generation is current.
     private var responseGeneration: UInt64 = 0
 
+    // IOS-HOME-07 background voice work. Only the lifecycle coordinator moves
+    // the coordinator in or out of the background.
+    private let clock: any HomeMonotonicClock
+    private let backgroundIdleTimeout: Duration
+    private let audioSessionPolicy: any BackgroundAudioSessionPolicy
+    private let nowPlaying: (any NowPlayingPresenting)?
+    private let journal: DiagnosticsJournal
+    private let nowPlayingShowDelay: Duration
+    /// Clock for the background playback-lead samples; the coordinator clock
+    /// when nil. Tests give the retention clock its own sleepers.
+    private let playbackLeadClock: (any HomeMonotonicClock)?
+    /// Lock-screen card bookkeeping (see `presentNowPlaying`).
+    @ObservationIgnored private var nowPlayingShowTask: Task<Void, Never>?
+    @ObservationIgnored private var nowPlayingShown = false
+    @ObservationIgnored private var lastNowPlayingPlaying: Bool?
+    /// MediaPlayer writes since the app last entered the background.
+    @ObservationIgnored private var nowPlayingWriteCount = 0
+    @ObservationIgnored private var leadSamplingTask: Task<Void, Never>?
+    private(set) var isBackgrounded = false
+    /// Set when background work must end now (idle timeout, lock-screen Stop,
+    /// an interruption that cannot resume). Retention then reports `.none`.
+    private var backgroundWorkEnded = false
+    /// Why `backgroundWorkEnded` was set; journaled when retention ends.
+    @ObservationIgnored private var backgroundEndReason: String?
+    private(set) var backgroundIdleTimeoutFired = false
+    /// Why reply output is held. Each source resumes only its own pause.
+    private(set) var replyPauseReason: ReplyPauseReason?
+    var isReplyOutputPaused: Bool { replyPauseReason != nil }
+    @ObservationIgnored private var backgroundIdleTask: Task<Void, Never>?
+    @ObservationIgnored private var backgroundIdleDeadlineArmed = false
+    @ObservationIgnored private var onBackgroundRetentionEnded: (@MainActor () -> Void)?
+    @ObservationIgnored private var audioSessionEventTask: Task<Void, Never>?
+    /// One live retention observation at a time; re-armed only by its onChange.
+    @ObservationIgnored private var retentionObservationArmed = false
+
     init(
         store: ConversationStore,
         input: any SpeechInput,
@@ -145,7 +238,15 @@ final class VoiceSessionCoordinator {
         handsFreeInput: (any HandsFreeInput)? = nil,
         routeSafetyProvider: any HandsFreeAudioRouteSafetyProvider = SystemHandsFreeAudioRouteSafetyProvider(),
         handsFreeSilenceDurationNanoseconds: UInt64 = 1_500_000_000,
-        interruptByTalking: @escaping @MainActor () -> Bool = { VoicePreferences.interruptByTalking }
+        interruptByTalking: @escaping @MainActor () -> Bool = { VoicePreferences.interruptByTalking },
+        clock: any HomeMonotonicClock = ContinuousHomeMonotonicClock(),
+        backgroundIdleTimeout: Duration = .seconds(60),
+        audioSessionPolicy: any BackgroundAudioSessionPolicy = NoopBackgroundAudioSessionPolicy(),
+        audioSessionEvents: any AudioSessionEventSource = SystemAudioSessionEventSource(),
+        nowPlaying: (any NowPlayingPresenting)? = nil,
+        journal: DiagnosticsJournal = .shared,
+        nowPlayingShowDelay: Duration = .milliseconds(750),
+        playbackLeadClock: (any HomeMonotonicClock)? = nil
     ) {
         self.interruptByTalking = interruptByTalking
         self.store = store
@@ -156,6 +257,27 @@ final class VoiceSessionCoordinator {
         self.routeSafetyProvider = routeSafetyProvider
         self.recognitionFinishTimeoutNanoseconds = recognitionFinishTimeoutNanoseconds
         self.handsFreeSilenceDurationNanoseconds = handsFreeSilenceDurationNanoseconds
+        self.clock = clock
+        self.backgroundIdleTimeout = backgroundIdleTimeout
+        self.audioSessionPolicy = audioSessionPolicy
+        self.nowPlaying = nowPlaying
+        self.journal = journal
+        self.nowPlayingShowDelay = nowPlayingShowDelay
+        self.playbackLeadClock = playbackLeadClock
+        let events = audioSessionEvents.events()
+        audioSessionEventTask = Task { @MainActor [weak self] in
+            for await event in events {
+                guard let self else { return }
+                await self.handleAudioSessionEvent(event)
+            }
+        }
+    }
+
+    isolated deinit {
+        audioSessionEventTask?.cancel()
+        backgroundIdleTask?.cancel()
+        nowPlayingShowTask?.cancel()
+        leadSamplingTask?.cancel()
     }
 
     func toggleHandsFree() async {
@@ -198,7 +320,8 @@ final class VoiceSessionCoordinator {
     }
 
     private func armHandsFree() async {
-        guard !isHandsFreeArmed else { return }
+        // Decision 1: the microphone is never started from the background.
+        guard !isHandsFreeArmed, !isBackgrounded else { return }
         guard let handsFreeInput else {
             setHandsFreeFailure(.message("Hands-free audio input is unavailable."))
             return
@@ -531,10 +654,12 @@ final class VoiceSessionCoordinator {
     }
 
     nonisolated func beginCapture() async {
-        let handsFreeArmed = await MainActor.run { [weak self] in
-            self?.isHandsFreeArmed ?? false
+        // A tapped capture is never started from the background (Decision 1).
+        let blocked = await MainActor.run { [weak self] in
+            guard let self else { return true }
+            return self.isHandsFreeArmed || self.isBackgrounded
         }
-        guard !handsFreeArmed else { return }
+        guard !blocked else { return }
         await waitForCaptureFinish()
 
         let binding: HermesTurnBinding? = await MainActor.run { [weak self] in
@@ -627,6 +752,7 @@ final class VoiceSessionCoordinator {
             provisionalText = ""
         }
         playbackFailed = false
+        clearReplyPause()
         audioDeliveryStarted = false
         audioFileStreamActive = false
         audioFileBuffer.removeAll(keepingCapacity: false)
@@ -638,10 +764,12 @@ final class VoiceSessionCoordinator {
             await self.submitVoiceTurn(text, binding: binding, generation: generation)
         }
         responseTask = task
+        journal.record("voice response started path=voice")
         await task.value
         if responseTask != nil {
             responseTask = nil
         }
+        journalResponseEnded(path: "voice")
     }
 
     private func requestInputFinish() {
@@ -818,6 +946,11 @@ final class VoiceSessionCoordinator {
     /// response work, stops native playback, and never sends an interrupt or
     /// reconnect while the surface is inactive.
     func stopForLifecycle() async {
+        journal.record(
+            "voice stopForLifecycle reply=\(responseTask != nil) hands_free=\(isHandsFreeArmed) backgrounded=\(isBackgrounded)"
+        )
+        // This teardown is the lifecycle's own; never re-notify it.
+        onBackgroundRetentionEnded = nil
         responseGeneration &+= 1
         handsFreeCaptureGeneration &+= 1
         handsFreeSilenceTask?.cancel()
@@ -837,10 +970,12 @@ final class VoiceSessionCoordinator {
         self.captureTask = nil
 
         responseTask?.cancel()
+        // Stopping playback releases a response still waiting for its audio
+        // to drain, including a reply paused by an interruption or route loss.
+        await output.stop()
         if let responseTask { await responseTask.value }
         self.responseTask = nil
 
-        await output.stop()
         stopPlaybackPositionObservation()
         isHandsFreeArmed = false
         isHandsFreeCaptureActive = false
@@ -856,9 +991,13 @@ final class VoiceSessionCoordinator {
         audioDeliveryStarted = false
         audioFileBuffer.removeAll(keepingCapacity: false)
         playbackFailed = false
+        clearReplyPause()
         turnDidComplete = false
         resetSpeechTiming()
         state = .idle
+        // Only now, with capture and playback stopped, release the
+        // non-mixable session and the lock-screen card.
+        await leaveBackground()
     }
 
     func interruptAndBeginCapture() async {
@@ -923,6 +1062,7 @@ final class VoiceSessionCoordinator {
         guard !store.draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
 
         playbackFailed = false
+        clearReplyPause()
         audioDeliveryStarted = false
         audioFileStreamActive = false
         audioFileBuffer.removeAll(keepingCapacity: false)
@@ -934,6 +1074,7 @@ final class VoiceSessionCoordinator {
         }
         await responseTask?.value
         responseTask = nil
+        journalResponseEnded(path: "draft")
     }
 
     /// Resend a turn the relay never confirmed. It goes through the same
@@ -952,6 +1093,7 @@ final class VoiceSessionCoordinator {
         }
 
         playbackFailed = false
+        clearReplyPause()
         audioDeliveryStarted = false
         audioFileStreamActive = false
         audioFileBuffer.removeAll(keepingCapacity: false)
@@ -963,6 +1105,15 @@ final class VoiceSessionCoordinator {
         }
         await responseTask?.value
         responseTask = nil
+        journalResponseEnded(path: "resend")
+    }
+
+    /// Names why the reply stopped counting as in flight: the state it ended
+    /// in and whether its audio stream was still open. Content-free.
+    private func journalResponseEnded(path: String) {
+        journal.record(
+            "voice response ended path=\(path) state=\(state.journalName) audio_stream=\(audioStreamActive) paused=\(isReplyOutputPaused) backgrounded=\(isBackgrounded) nowplaying_writes=\(nowPlayingWriteCount)"
+        )
     }
 
     private nonisolated func consumeRecognition(
@@ -1032,6 +1183,7 @@ final class VoiceSessionCoordinator {
         guard generation == responseGeneration, !Task.isCancelled else { return }
         if !completed, !isFailed, state != .interrupted {
             state = .failed(store.transientError ?? "The voice turn could not be completed.")
+            updateNowPlayingPlaybackState()
         } else if completed, !isFailed, state != .interrupted {
             await finishPlaybackAndEndResponse(generation: generation)
         } else if completed, store.isHomeMode {
@@ -1066,6 +1218,7 @@ final class VoiceSessionCoordinator {
             startPlaybackPositionObservation(generation: generation)
             await diagnostics.record(.streamStarted(format: format))
             state = .buffering
+            updateNowPlayingPlaybackState()
             do {
                 try await output.start(format: format)
                 guard isCurrentResponse(generation) else { return }
@@ -1075,15 +1228,18 @@ final class VoiceSessionCoordinator {
         case .audioChunk(let pcm):
             guard !playbackFailed, !state.isTerminal, audioStreamActive else { return }
             streamedAudioBytes += pcm.count
-            await diagnostics.record(.chunkReceived(bytes: pcm.count))
             do {
+                // Schedule first: the chunk-received diagnostic used to cost
+                // the main actor one extra round trip before every append.
                 let readiness = try await output.append(pcm)
+                await diagnostics.record(.chunkReceived(bytes: pcm.count))
                 guard isCurrentResponse(generation) else { return }
                 if !pcm.isEmpty {
                     audioDeliveryStarted = true
                 }
                 if readiness == .ready {
                     state = .speaking
+                    updateNowPlayingPlaybackState()
                 }
             } catch {
                 await handlePlaybackFailure(generation: generation)
@@ -1119,6 +1275,7 @@ final class VoiceSessionCoordinator {
             audioFileBuffer.removeAll(keepingCapacity: true)
             audioFileStreamActive = true
             state = .buffering
+            updateNowPlayingPlaybackState()
         case .audioFileChunk(let fileData):
             guard !playbackFailed, audioFileStreamActive else { return }
             audioFileBuffer.append(fileData)
@@ -1144,6 +1301,7 @@ final class VoiceSessionCoordinator {
                 if readiness == .ready {
                     startPlaybackPositionObservation(generation: generation)
                     state = .speaking
+                    updateNowPlayingPlaybackState()
                 }
                 try await output.finish()
                 guard isCurrentResponse(generation) else { return }
@@ -1160,9 +1318,11 @@ final class VoiceSessionCoordinator {
             if !isFailed, !audioStreamActive, !audioFileStreamActive {
                 if audioDeliveryStarted {
                     endResponse()
-                } else {
+                } else if !store.isHomeMode {
                     await handlePlaybackFailure(generation: generation)
                 }
+                // Home sends reply audio after the text turn completes; its
+                // audio terminal or audio-start deadline settles playback.
             }
         case .error(let message):
             guard !playbackFailed, !state.isTerminal else { return }
@@ -1175,6 +1335,7 @@ final class VoiceSessionCoordinator {
             await output.stop()
             guard isCurrentResponse(generation, allowingPlaybackFailure: true) else { return }
             state = .failed(message)
+            updateNowPlayingPlaybackState()
         case .audioAbort(_, let reason):
             guard !state.isTerminal else { return }
             if store.isHomeMode, Self.isHomeAudioFailure(reason) {
@@ -1187,6 +1348,7 @@ final class VoiceSessionCoordinator {
             await stopInterruptedPlayback(generation: generation)
             guard generation == responseGeneration, !Task.isCancelled else { return }
             state = .interrupted
+            updateNowPlayingPlaybackState()
         case .speechTiming(let timing):
             guard !state.isTerminal else { return }
             await diagnostics.record(
@@ -1224,6 +1386,7 @@ final class VoiceSessionCoordinator {
             await output.stop()
             guard isCurrentResponse(generation, allowingPlaybackFailure: true) else { return }
             state = .failed(reason)
+            updateNowPlayingPlaybackState()
         case .messageStart, .textDelta, .textReplace, .unknown:
             break
         }
@@ -1240,6 +1403,7 @@ final class VoiceSessionCoordinator {
         playbackFailed = false
         resetSpeechTiming()
         state = .interrupted
+        updateNowPlayingPlaybackState()
     }
 
     private func submitDraft(generation: UInt64) async {
@@ -1253,6 +1417,7 @@ final class VoiceSessionCoordinator {
         guard generation == responseGeneration, !Task.isCancelled else { return }
         if !completed, !isFailed, state != .interrupted {
             state = .failed(store.transientError ?? "The text turn could not be completed.")
+            updateNowPlayingPlaybackState()
             audioFileBuffer.removeAll(keepingCapacity: false)
         } else if completed, !isFailed, state != .interrupted {
             await finishPlaybackAndEndResponse(generation: generation)
@@ -1314,6 +1479,7 @@ final class VoiceSessionCoordinator {
         await output.stop()
         guard isCurrentResponse(generation, allowingPlaybackFailure: true) else { return }
         state = .failed("Audio playback failed. The response text is still available.")
+        updateNowPlayingPlaybackState()
         store.settleActiveAssistantPresentation()
     }
 
@@ -1365,6 +1531,7 @@ final class VoiceSessionCoordinator {
         guard !isFailed, state != .interrupted else { return }
         stopPlaybackPositionObservation()
         state = .complete
+        updateNowPlayingPlaybackState()
         store.settleActiveAssistantPresentation()
     }
 
@@ -1407,6 +1574,336 @@ final class VoiceSessionCoordinator {
         return Double(byteCount / bytesPerFrame) / Double(format.sampleRate)
     }
 
+}
+
+// MARK: - IOS-HOME-07 background voice work
+
+extension VoiceSessionCoordinator {
+    /// The single predicate the lifecycle coordinator asks before teardown.
+    var backgroundRetention: VoiceBackgroundRetention {
+        if isBackgrounded, backgroundWorkEnded { return .none }
+        if responseTask != nil { return .reply }
+        if isHandsFreeArmed || isHandsFreeCaptureActive || captureTask != nil {
+            return .voiceSession
+        }
+        return .none
+    }
+
+    /// Keeps in-flight voice work running after the scene leaves the
+    /// foreground. Returns false when nothing is in flight; the caller then
+    /// tears down as before. `onRetentionEnded` fires once, when the work
+    /// ends or the idle timeout fires, so the caller can run its teardown.
+    func enterBackground(onRetentionEnded: @escaping @MainActor () -> Void) async -> Bool {
+        let retention = backgroundRetention
+        guard retention != .none else { return false }
+        isBackgrounded = true
+        backgroundWorkEnded = false
+        backgroundIdleTimeoutFired = false
+        backgroundEndReason = nil
+        onBackgroundRetentionEnded = onRetentionEnded
+        journal.record("voice background enter retention=\(retention.journalName)")
+        nowPlayingWriteCount = 0
+        startPlaybackLeadSampling()
+        await audioSessionPolicy.setBackgroundVoiceActive(true)
+        // The card is registered a beat after the transition, never on the
+        // path that feeds the player (see `presentNowPlaying`).
+        presentNowPlaying()
+        evaluateBackgroundRetention()
+        return true
+    }
+
+    /// The scene is active again with the transport still live. A reply held
+    /// by lock-screen Pause or an interruption has no foreground control, so
+    /// it resumes; a route-loss pause waits for the route to come back.
+    func exitBackground() async {
+        journal.record("voice background exit")
+        if replyPauseReason == .user || replyPauseReason == .interruption {
+            await resumeReplyOutput()
+        }
+        await leaveBackground()
+    }
+
+    func handleAudioSessionEvent(_ event: AudioSessionEvent) async {
+        journal.record(
+            "voice audio session event \(event.journalName) reply=\(responseTask != nil) backgrounded=\(isBackgrounded)"
+        )
+        switch event {
+        case .interruptionBegan:
+            // Decision 5: an interruption ends the mic session outright.
+            if isHandsFreeArmed {
+                await disableHandsFree()
+            }
+            if captureTask != nil || state.isCaptureActive {
+                await cancelCapture()
+            }
+            if responseTask != nil {
+                await pauseReplyOutput(.interruption)
+            }
+        case .interruptionEnded(let shouldResume):
+            // Only an interruption pause belongs to this event.
+            guard replyPauseReason == .interruption else { return }
+            if shouldResume,
+               responseTask != nil,
+               store.hasLiveTransport,
+               !backgroundIdleTimeoutFired {
+                await resumeReplyOutput()
+            } else if isBackgrounded {
+                endBackgroundWork(reason: "interruption")
+            } else {
+                await stopPlayback()
+            }
+        case .oldDeviceUnavailable:
+            // Never move a reply to the speaker mid-sentence.
+            if responseTask != nil {
+                await pauseReplyOutput(.routeLoss)
+            }
+        case .newDeviceAvailable:
+            if replyPauseReason == .routeLoss {
+                await resumeReplyOutput(allowingRouteLoss: true)
+            }
+        }
+    }
+
+    func handleNowPlayingCommand(_ command: NowPlayingCommand) async {
+        switch command {
+        case .pause:
+            await pauseReplyOutput(.user)
+        case .play:
+            await resumeReplyOutput()
+        case .togglePlayPause:
+            if isReplyOutputPaused {
+                await resumeReplyOutput()
+            } else {
+                await pauseReplyOutput(.user)
+            }
+        case .stop:
+            endBackgroundWork(reason: "nowPlayingStop")
+        }
+    }
+
+    private var isReplyOutputPlaying: Bool {
+        state == .speaking && !isReplyOutputPaused
+    }
+
+    /// Registers the lock-screen card. Registration (remote commands and
+    /// Now Playing info through MediaPlayer) used to run synchronously at
+    /// background entry, on the main actor that also carries every Home PCM
+    /// chunk, with a further write per chunk. It now runs once, after
+    /// `nowPlayingShowDelay`, and only if the app is still backgrounded.
+    private func presentNowPlaying() {
+        guard nowPlaying != nil else { return }
+        nowPlayingShowTask?.cancel()
+        if nowPlayingShowDelay <= .zero {
+            showNowPlayingNow()
+            return
+        }
+        let clock = self.clock
+        let deadline = clock.now().advanced(by: nowPlayingShowDelay)
+        nowPlayingShowTask = Task { @MainActor [weak self] in
+            do {
+                try await clock.sleep(until: deadline)
+            } catch {
+                return
+            }
+            guard let self, !Task.isCancelled, self.isBackgrounded else { return }
+            self.showNowPlayingNow()
+        }
+    }
+
+    private func showNowPlayingNow() {
+        guard let nowPlaying, isBackgrounded, !nowPlayingShown else { return }
+        // A hands-free session with no reply output is not "playing".
+        let playing = isReplyOutputPlaying
+        nowPlaying.show(title: nowPlayingTitle, isPlaying: playing) { [weak self] command in
+            Task { await self?.handleNowPlayingCommand(command) }
+        }
+        nowPlayingShown = true
+        lastNowPlayingPlaying = playing
+        nowPlayingWriteCount += 1
+    }
+
+    /// Writes the playing flag to the card only when it changed since the
+    /// last write, and only while a card is registered. It used to write on
+    /// every PCM chunk.
+    private func updateNowPlayingPlaybackState() {
+        guard nowPlayingShown else { return }
+        let playing = isReplyOutputPlaying
+        guard playing != lastNowPlayingPlaying else { return }
+        lastNowPlayingPlaying = playing
+        nowPlayingWriteCount += 1
+        nowPlaying?.update(isPlaying: playing)
+    }
+
+    /// Content-free playback-lead samples for the first seconds after the
+    /// app leaves the foreground: how much scheduled audio is queued ahead of
+    /// the renderer. Lead near zero means the player starved (feed latency);
+    /// lead that stays positive while a glitch is heard points at render
+    /// timing outside the app.
+    private func startPlaybackLeadSampling() {
+        leadSamplingTask?.cancel()
+        guard responseTask != nil else { return }
+        let clock = playbackLeadClock ?? self.clock
+        let output = self.output
+        let start = clock.now()
+        let interval = Self.leadSampleInterval
+        leadSamplingTask = Task { @MainActor [weak self] in
+            for step in 0...Self.leadSampleCount {
+                guard let self, !Task.isCancelled, self.isBackgrounded else { return }
+                let lead = await output.playbackLead()
+                guard !Task.isCancelled, self.isBackgrounded else { return }
+                let leadText = lead.map { String(Int(($0 * 1000).rounded())) } ?? "none"
+                self.journal.record(
+                    "audio output lead_ms=\(leadText) t_ms=\(step * 250) state=\(self.state.journalName) playing=\(self.isReplyOutputPlaying)"
+                )
+                if step == Self.leadSampleCount { return }
+                do {
+                    try await clock.sleep(until: start.advanced(by: interval * (step + 1)))
+                } catch {
+                    return
+                }
+            }
+        }
+    }
+
+    private static let leadSampleInterval: Duration = .milliseconds(250)
+    private static let leadSampleCount = 20
+
+    private func pauseReplyOutput(_ reason: ReplyPauseReason) async {
+        guard responseTask != nil, !isReplyOutputPaused else { return }
+        replyPauseReason = reason
+        await output.pause()
+        updateNowPlayingPlaybackState()
+    }
+
+    private func resumeReplyOutput(allowingRouteLoss: Bool = false) async {
+        guard responseTask != nil, isReplyOutputPaused else { return }
+        guard allowingRouteLoss || replyPauseReason != .routeLoss else { return }
+        replyPauseReason = nil
+        await output.resume()
+        updateNowPlayingPlaybackState()
+    }
+
+    /// Drops any held pause when a reply ends or a new one starts. The
+    /// platform output keeps a pause across streams, so release it too.
+    func clearReplyPause() {
+        guard replyPauseReason != nil else { return }
+        replyPauseReason = nil
+        let output = self.output
+        Task { await output.resume() }
+    }
+
+    private func endBackgroundWork(reason: String) {
+        guard isBackgrounded else { return }
+        backgroundWorkEnded = true
+        backgroundEndReason = reason
+        evaluateBackgroundRetention()
+    }
+
+    private func leaveBackground() async {
+        isBackgrounded = false
+        backgroundWorkEnded = false
+        backgroundIdleTimeoutFired = false
+        onBackgroundRetentionEnded = nil
+        cancelBackgroundIdleTimeout()
+        nowPlayingShowTask?.cancel()
+        nowPlayingShowTask = nil
+        leadSamplingTask?.cancel()
+        leadSamplingTask = nil
+        nowPlayingShown = false
+        lastNowPlayingPlaying = nil
+        nowPlaying?.clear()
+        await audioSessionPolicy.setBackgroundVoiceActive(false)
+    }
+
+    /// Re-reads retention whenever an input it depends on changes. Ending
+    /// retention notifies the lifecycle owner; an armed hands-free session
+    /// with nothing in flight runs the background idle timeout (Decision 2).
+    private func evaluateBackgroundRetention() {
+        guard isBackgrounded else { return }
+        let retention = backgroundRetention
+        guard retention != .none else {
+            cancelBackgroundIdleTimeout()
+            let callback = onBackgroundRetentionEnded
+            onBackgroundRetentionEnded = nil
+            if callback != nil {
+                journal.record(
+                    "voice background retention ended reason=\(backgroundEndReason ?? "workFinished")"
+                )
+            }
+            callback?()
+            return
+        }
+
+        // Decision 2: an armed hands-free session with nothing in flight, or
+        // a reply held paused, ends after the background idle timeout.
+        let isIdle = (retention == .voiceSession
+            && captureTask == nil
+            && !isHandsFreeCaptureActive)
+            || (retention == .reply && isReplyOutputPaused)
+        if isIdle {
+            if !backgroundIdleDeadlineArmed {
+                armBackgroundIdleTimeout()
+            }
+        } else {
+            cancelBackgroundIdleTimeout()
+        }
+
+        guard !retentionObservationArmed else { return }
+        retentionObservationArmed = true
+        withObservationTracking {
+            _ = self.isBackgrounded
+            _ = self.backgroundWorkEnded
+            _ = self.responseTask
+            _ = self.captureTask
+            _ = self.isHandsFreeArmed
+            _ = self.isHandsFreeCaptureActive
+            _ = self.replyPauseReason
+        } onChange: { [weak self] in
+            Task { @MainActor [weak self] in
+                guard let self else { return }
+                self.retentionObservationArmed = false
+                self.evaluateBackgroundRetention()
+            }
+        }
+    }
+
+    private func armBackgroundIdleTimeout() {
+        cancelBackgroundIdleTimeout()
+        backgroundIdleDeadlineArmed = true
+        let clock = self.clock
+        let deadline = clock.now().advanced(by: backgroundIdleTimeout)
+        backgroundIdleTask = Task { @MainActor [weak self] in
+            do {
+                try await clock.sleep(until: deadline)
+            } catch {
+                return
+            }
+            guard let self, !Task.isCancelled,
+                  self.isBackgrounded,
+                  self.backgroundIdleDeadlineArmed else { return }
+            self.backgroundIdleDeadlineArmed = false
+            self.backgroundIdleTask = nil
+            self.backgroundIdleTimeoutFired = true
+            self.endBackgroundWork(reason: "idleTimeout")
+        }
+    }
+
+    private func cancelBackgroundIdleTimeout() {
+        backgroundIdleDeadlineArmed = false
+        backgroundIdleTask?.cancel()
+        backgroundIdleTask = nil
+    }
+
+    private var nowPlayingTitle: String {
+        let conversationTitle = store.homeSession?.title?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let conversationTitle, !conversationTitle.isEmpty else {
+            return "Hermes conversation"
+        }
+        return conversationTitle.count > 60
+            ? String(conversationTitle.prefix(60)) + "…"
+            : conversationTitle
+    }
 }
 
 private enum CaptureStartFailure: Sendable {

@@ -70,10 +70,32 @@ file or paste it into a workflow log.
 
 The workflow uses the Xcode project's current `MARKETING_VERSION`; a new
 marketing version belongs in the normal Release Please flow. CI overrides
-`CURRENT_PROJECT_VERSION` with the integer build number, so the Xcode project's
-local default can remain `1`. It retains the exported IPA and dSYM as
+`CURRENT_PROJECT_VERSION` with its external integer `build_number` (normally
+the GitHub Actions run number), and the app's `Stamp Build Number` build phase
+does nothing when `CI=true`. The workflow retains the exported IPA and dSYM as
 short-lived workflow artifacts for troubleshooting, but never uploads
 certificates, provisioning profiles, API keys, or app credentials as artifacts.
+
+## Local build numbers
+
+Local builds stamp the built app's `CFBundleVersion` from a per-user counter in
+`~/Library/Application Support/HermesRelay/ios-build-number`. The
+`Stamp Build Number` phase runs after Info.plist processing and before code
+signing, so every local build gets a new, higher number without editing
+tracked files. The counter is local to one user on one Mac; it is not shared
+between machines and is never used by CI.
+
+The next number is the largest of the project's tracked
+`CURRENT_PROJECT_VERSION` plus one, the previous counter plus one, and any
+`CURRENT_PROJECT_VERSION` passed on the command line. A higher explicit value
+such as `CURRENT_PROJECT_VERSION=99` is used exactly and the next default
+build is 100; a lower value never moves the counter backward. Set
+`HERMES_BUILD_NUMBER_DIR=<directory>` on the `xcodebuild` command line to use
+a different counter directory.
+
+The app shows its marketing version and build number, for example
+`Version 0.6.0 (4)`, in **Configure Relay → Troubleshooting**, read from the
+built app's `CFBundleShortVersionString` and `CFBundleVersion`.
 
 ## Automatic release submission
 

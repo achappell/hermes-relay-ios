@@ -818,6 +818,9 @@ struct RelayConfigurationView: View {
                     ) {
                         Label("Share diagnostics", systemImage: "stethoscope")
                     }
+                    LabeledContent("Version", value: Self.appVersionLabel)
+                        .foregroundStyle(HermesVisualTokens.secondaryInk)
+                        .accessibilityIdentifier("app-version")
                 } header: {
                     Text("Troubleshooting")
                 } footer: {
@@ -899,6 +902,14 @@ struct RelayConfigurationView: View {
         .frame(minWidth: 480, idealWidth: 640, minHeight: 320, idealHeight: 560)
         #endif
     }
+
+    /// Marketing version and build number from the built app's Info.plist.
+    private static let appVersionLabel: String = {
+        let info = Bundle.main.infoDictionary ?? [:]
+        let version = info["CFBundleShortVersionString"] as? String ?? "unknown"
+        let build = info["CFBundleVersion"] as? String ?? "unknown"
+        return "\(version) (\(build))"
+    }()
 
     @ViewBuilder
     private func validationMessage(for field: RelayConfigurationField) -> some View {

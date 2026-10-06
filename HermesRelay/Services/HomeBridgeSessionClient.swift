@@ -209,6 +209,14 @@ private struct HomeEventEnvelope {
     let payload: [String: Any]
 }
 
+/// Opts this client into Home's turn keep-alives on the WebSocket upgrade.
+/// A header, not an open/reconnect param: Home rejects unknown params, and
+/// ignores unknown headers, so older Homes still accept this client.
+enum HomeBridgeClientOptIn {
+    static let headerField = "X-Hermes-Home-Client-Features"
+    static let headerValue = "turn_keepalive"
+}
+
 actor URLSessionHomeBridgeSessionClient: HomeBridgeSessionClient {
     private static let allowedMethods: Set<String> = [
         "conversation.open",
@@ -932,6 +940,9 @@ actor URLSessionHomeBridgeSessionClient: HomeBridgeSessionClient {
 
     func close() async {
         guard !closed else { return }
+        DiagnosticsJournal.shared.record(
+            "home client close socket=\(socket != nil) turn_audio=\(activeAudioScope != nil)"
+        )
         closed = true
         generation &+= 1
         readerTask?.cancel()
@@ -972,6 +983,9 @@ actor URLSessionHomeBridgeSessionClient: HomeBridgeSessionClient {
 
     private func retireSocketForReconnect() async {
         let connection = socket
+        if connection != nil {
+            DiagnosticsJournal.shared.record("home client retire socket for reconnect")
+        }
         generation &+= 1
         readerTask?.cancel()
         readerTask = nil
@@ -989,6 +1003,7 @@ actor URLSessionHomeBridgeSessionClient: HomeBridgeSessionClient {
             var request = URLRequest(url: route.endpoint)
             request.httpMethod = "GET"
             request.setValue("Device \(String(decoding: credential, as: UTF8.self))", forHTTPHeaderField: "Authorization")
+            request.setValue(HomeBridgeClientOptIn.headerValue, forHTTPHeaderField: HomeBridgeClientOptIn.headerField)
             // Feature negotiation only (HOME-NW-06); Home ignores it unless present exactly once.
             request.setValue("1", forHTTPHeaderField: "X-Hermes-Diagnostics-Version")
             holder.connection = try await socketFactory.open(urlRequest: request)
@@ -1086,7 +1101,13 @@ actor URLSessionHomeBridgeSessionClient: HomeBridgeSessionClient {
         switch method {
         case "event":
             let envelope = try decodeEventEnvelope(params)
-            if let prompt = try decodeStructuredPrompt(envelope) {
+            if envelope.type == "turn.alive" {
+                // Keep-alive only: never rendered, and ignored without a turn.
+                guard let phaseName = envelope.payload["phase"] as? String,
+                      let phase = HomeTurnAlivePhase(rawValue: phaseName),
+                      envelope.scope.turnID != nil else { return }
+                eventContinuation?.yield(.turnAlive(envelope.scope, phase))
+            } else if let prompt = try decodeStructuredPrompt(envelope) {
                 await diagnostics.record(.eventReceived(kind: .structuredPrompt))
                 pendingPrompts[prompt.correlationID] = HomePendingStructuredPrompt(
                     prompt: prompt,
@@ -1192,9 +1213,10 @@ actor URLSessionHomeBridgeSessionClient: HomeBridgeSessionClient {
     }
 
     private func decodeStandardEvent(_ envelope: HomeEventEnvelope) throws -> HomeStandardEvent? {
-        // Home forwards Standard's full event vocabulary (session.info, tool.*,
-        // session.usage, ...). The envelope above stays strict; an event type
-        // this client does not render is ignored rather than ending the session.
+        // Home forwards an allowlist of Standard events (text, reasoning,
+        // status, terminals, structured prompts); tool.*, session.info, and
+        // session.usage stay server-side. An event type this client does not
+        // render is ignored rather than ending the session.
         guard let type = HomeStandardEventType(standardName: envelope.type) else {
             return nil
         }

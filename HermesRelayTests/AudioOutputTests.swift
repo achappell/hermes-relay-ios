@@ -104,6 +104,402 @@ final class AudioOutputTests: XCTestCase {
         }
     }
 
+    func testPlaybackWrappersForwardPauseAndResumeToTheLiveOutput() async throws {
+        // IOS-HOME-07: a route loss or interruption pauses the real player
+        // through every production wrapper.
+        let liveOutput = RecordingAudioOutput()
+        let recovering = RecoveringAudioOutput(liveOutput: liveOutput)
+        let output = HomeAwareAudioOutput(wrapped: recovering, isHomeMode: { true })
+        let reporting = AudioActivityReportingOutput(wrapped: output, reporter: NoopAudioActivityReporter())
+        let format = AudioFormat(sampleRate: 24_000, channels: 1, sampleWidth: 2)
+        try await reporting.start(format: format)
+
+        await reporting.pause()
+        await reporting.resume()
+
+        let operations = await liveOutput.operations()
+        XCTAssertEqual(Array(operations.suffix(3)), [.start(format), .pause, .resume])
+    }
+
+    func testBackgroundVoiceIsNonMixableAndForegroundDucksOthers() {
+        XCTAssertEqual(AudioSessionMixing.forBackgroundVoice(true), .nonMixable)
+        XCTAssertEqual(AudioSessionMixing.forBackgroundVoice(false), .duckOthers)
+    }
+
+    func testEngineConfigurationChangeRestartsStoppedPlayback() async throws {
+        let control = SimulatedEngineControl(reportsStoppedOnce: true)
+        let journal = DiagnosticsJournal(fileURL: nil)
+        let output = AppleAudioOutput(engineControl: control.control, journal: journal)
+        let format = AudioFormat(sampleRate: 24_000, channels: 1, sampleWidth: 2)
+        try await output.start(format: format)
+        _ = try await output.append(Data(count: 2_400)) // 50 ms of silence
+
+        await output.handleEngineConfigurationChange()
+        try await output.finish()
+
+        XCTAssertEqual(control.startCount, 1, "The stopped engine is restarted once")
+        XCTAssertEqual(journal.snapshot().map(\.event), ["audio output engine stopped restart=ok"])
+    }
+
+    func testFailedEngineRestartFailsThePendingFinishInsteadOfHanging() async throws {
+        let control = SimulatedEngineControl(reportsStoppedOnce: true, startFails: true)
+        let journal = DiagnosticsJournal(fileURL: nil)
+        let output = AppleAudioOutput(engineControl: control.control, journal: journal)
+        let format = AudioFormat(sampleRate: 24_000, channels: 1, sampleWidth: 2)
+        try await output.start(format: format)
+        _ = try await output.append(Data(count: 480_000)) // 10 s, still draining
+        let finish = Task { try await output.finish() }
+        try await Task.sleep(for: .milliseconds(100))
+
+        await output.handleEngineConfigurationChange()
+
+        do {
+            try await finish.value
+            XCTFail("finish() must report the failed restart")
+        } catch {
+            XCTAssertEqual(error as? AudioOutputError, .outputFailed)
+        }
+        XCTAssertEqual(
+            journal.snapshot().map(\.event).filter { $0.hasPrefix("audio output engine stopped") },
+            ["audio output engine stopped restart=failed"]
+        )
+    }
+
+    // MARK: Live session is never reconfigured (2026-10-05 device evidence)
+
+    func testBackgroundNeverReconfiguresALiveSession() async throws {
+        let driver = RecordingAudioSessionDriver()
+        let journal = DiagnosticsJournal(fileURL: nil)
+        let session = AppleAudioSessionCoordinator(driver: driver, journal: journal)
+        try await session.activateOutput()
+        let beforeBackground = driver.calls
+        XCTAssertEqual(
+            beforeBackground,
+            [.setCategory(AudioSessionConfiguration(mode: .spokenAudio, mixing: .duckOthers)), .setActive(true)]
+        )
+
+        await session.setBackgroundVoiceActive(true)
+
+        XCTAssertEqual(driver.calls, beforeBackground, "Backgrounding must not touch the session behind running I/O")
+        XCTAssertEqual(
+            journal.snapshot().map(\.event),
+            [
+                "audio session category applied mode=spokenAudio mixing=duckOthers live=false",
+                "audio session mixing wanted=nonMixable deferred live=true",
+            ]
+        )
+    }
+
+    func testDeferredNonMixableRuleAppliesWhenTheSessionNextActivates() async throws {
+        let driver = RecordingAudioSessionDriver()
+        let session = AppleAudioSessionCoordinator(driver: driver, journal: DiagnosticsJournal(fileURL: nil))
+        try await session.activateOutput()
+        await session.setBackgroundVoiceActive(true)
+        await session.deactivateOutput()
+
+        try await session.activateOutput()
+
+        XCTAssertEqual(
+            driver.calls.last(where: \.isCategory),
+            .setCategory(AudioSessionConfiguration(mode: .spokenAudio, mixing: .nonMixable))
+        )
+    }
+
+    func testAnIdleSessionTakesTheBackgroundRuleAtActivation() async throws {
+        let driver = RecordingAudioSessionDriver()
+        let session = AppleAudioSessionCoordinator(driver: driver, journal: DiagnosticsJournal(fileURL: nil))
+
+        await session.setBackgroundVoiceActive(true)
+        try await session.activateInput()
+
+        XCTAssertEqual(
+            driver.calls,
+            [.setCategory(AudioSessionConfiguration(mode: .measurement, mixing: .nonMixable)), .setActive(true)]
+        )
+    }
+
+    func testALiveSessionKeepsItsMixingWhenTheModeSwitches() async throws {
+        let driver = RecordingAudioSessionDriver()
+        let session = AppleAudioSessionCoordinator(driver: driver, journal: DiagnosticsJournal(fileURL: nil))
+        try await session.activateOutput()
+        await session.setBackgroundVoiceActive(true)
+
+        try await session.activateInput()
+
+        XCTAssertEqual(
+            driver.calls.last(where: \.isCategory),
+            .setCategory(AudioSessionConfiguration(mode: .measurement, mixing: .duckOthers)),
+            "A mode switch must not also flip the live session to non-mixable"
+        )
+    }
+
+    func testReactivatingALiveOutputSessionOnlyActivatesIt() async throws {
+        let driver = RecordingAudioSessionDriver()
+        let session = AppleAudioSessionCoordinator(driver: driver, journal: DiagnosticsJournal(fileURL: nil))
+        try await session.activateOutput()
+        let beforeRestart = driver.calls.count
+
+        try await session.reactivateOutput()
+        try await session.activateOutput()
+
+        XCTAssertEqual(Array(driver.calls.dropFirst(beforeRestart)), [.setActive(true), .setActive(true)])
+        XCTAssertEqual(driver.calls.filter(\.isCategory).count, 1)
+    }
+
+    func testEngineRestartReactivatesTheSessionWithoutReapplyingItsCategory() async throws {
+        let driver = RecordingAudioSessionDriver()
+        let session = AppleAudioSessionCoordinator(driver: driver, journal: DiagnosticsJournal(fileURL: nil))
+        let control = SimulatedEngineControl(reportsStoppedOnce: true)
+        let journal = DiagnosticsJournal(fileURL: nil)
+        let output = AppleAudioOutput(
+            audioSessionCoordinator: session,
+            engineControl: control.control,
+            journal: journal
+        )
+        let format = AudioFormat(sampleRate: 24_000, channels: 1, sampleWidth: 2)
+        try await output.start(format: format)
+        _ = try await output.append(Data(count: 2_400))
+        let beforeRestart = driver.calls.count
+
+        await output.handleEngineConfigurationChange()
+        try await output.finish()
+
+        XCTAssertEqual(control.startCount, 1)
+        XCTAssertEqual(Array(driver.calls.dropFirst(beforeRestart)), [.setActive(true)])
+        XCTAssertEqual(driver.calls.filter(\.isCategory).count, 1, "The restart never sets the category again")
+        XCTAssertEqual(journal.snapshot().map(\.event), ["audio output engine stopped restart=ok"])
+    }
+
+    func testBurstOfConfigurationChangesRestartsTheEngineOnce() async throws {
+        let driver = RecordingAudioSessionDriver()
+        let session = AppleAudioSessionCoordinator(driver: driver, journal: DiagnosticsJournal(fileURL: nil))
+        let control = StoppedUntilStartedEngineControl()
+        let journal = DiagnosticsJournal(fileURL: nil)
+        let output = AppleAudioOutput(
+            audioSessionCoordinator: session,
+            engineControl: control.control,
+            journal: journal
+        )
+        let format = AudioFormat(sampleRate: 24_000, channels: 1, sampleWidth: 2)
+        try await output.start(format: format)
+        _ = try await output.append(Data(count: 2_400))
+        let beforeRestart = driver.calls.count
+
+        await withTaskGroup(of: Void.self) { group in
+            for _ in 0..<4 {
+                group.addTask { await output.handleEngineConfigurationChange() }
+            }
+        }
+        try await output.finish()
+
+        XCTAssertEqual(control.startCount, 1, "Four notifications coalesce into one restart")
+        XCTAssertEqual(Array(driver.calls.dropFirst(beforeRestart)), [.setActive(true)])
+        XCTAssertEqual(journal.snapshot().map(\.event), ["audio output engine stopped restart=ok"])
+    }
+
+    // MARK: Start-of-stream cushion (2026-10-05 background-entry stutter)
+
+    private func cushionedOutput(
+        lead: TimeInterval = 0.3,
+        hold: Duration = .seconds(30),
+        journal: DiagnosticsJournal
+    ) -> AppleAudioOutput {
+        AppleAudioOutput(
+            audioSessionCoordinator: AppleAudioSessionCoordinator(
+                driver: RecordingAudioSessionDriver(),
+                journal: DiagnosticsJournal(fileURL: nil)
+            ),
+            journal: journal,
+            cushion: AudioPlaybackCushion(lead: lead, maximumHold: hold)
+        )
+    }
+
+    /// 24 kHz mono 16-bit: 4 800 bytes is 100 ms.
+    private let hundredMilliseconds = Data(count: 4_800)
+    private let cushionFormat = AudioFormat(sampleRate: 24_000, channels: 1, sampleWidth: 2)
+
+    func testCushionHoldsPlaybackUntilTheLeadThresholdThenStarts() async throws {
+        let journal = DiagnosticsJournal(fileURL: nil)
+        let output = cushionedOutput(journal: journal)
+        try await output.start(format: cushionFormat)
+
+        let first = try await output.append(hundredMilliseconds)
+        let second = try await output.append(hundredMilliseconds)
+        let heldLead = await output.playbackLead()
+        let heldStarted = await output.hasStartedPlayback
+
+        XCTAssertEqual(first, .buffering, "Held audio is not audibly playing yet")
+        XCTAssertEqual(second, .buffering)
+        XCTAssertFalse(heldStarted)
+        XCTAssertEqual(try XCTUnwrap(heldLead), 0.2, accuracy: 0.001)
+        XCTAssertTrue(journal.snapshot().isEmpty)
+
+        let third = try await output.append(hundredMilliseconds)
+        let started = await output.hasStartedPlayback
+
+        XCTAssertEqual(third, .ready)
+        XCTAssertTrue(started, "Playback starts once 300 ms are scheduled")
+        XCTAssertEqual(journal.snapshot().map(\.event), ["audio output cushion started lead_ms=300 reason=threshold"])
+        await output.stop()
+    }
+
+    func testStreamShorterThanTheCushionStartsWhenItEnds() async throws {
+        let journal = DiagnosticsJournal(fileURL: nil)
+        let output = cushionedOutput(journal: journal)
+        try await output.start(format: cushionFormat)
+        _ = try await output.append(Data(count: 2_400)) // 50 ms
+
+        try await output.finish()
+
+        XCTAssertEqual(journal.snapshot().map(\.event), ["audio output cushion started lead_ms=50 reason=finish"])
+        await output.stop()
+    }
+
+    func testCushionHoldIsCappedSoAStalledStreamStillStarts() async throws {
+        let journal = DiagnosticsJournal(fileURL: nil)
+        let output = cushionedOutput(hold: .milliseconds(60), journal: journal)
+        try await output.start(format: cushionFormat)
+        _ = try await output.append(hundredMilliseconds)
+        let beforeCap = await output.hasStartedPlayback
+        XCTAssertFalse(beforeCap)
+
+        try await Task.sleep(for: .milliseconds(400))
+
+        let afterCap = await output.hasStartedPlayback
+        XCTAssertTrue(afterCap, "The hard cap releases a stalled stream")
+        XCTAssertEqual(journal.snapshot().map(\.event), ["audio output cushion started lead_ms=100 reason=cap"])
+        await output.stop()
+    }
+
+    func testPauseHoldsTheCushionAndResumeStartsPlayback() async throws {
+        let journal = DiagnosticsJournal(fileURL: nil)
+        let output = cushionedOutput(hold: .milliseconds(60), journal: journal)
+        try await output.start(format: cushionFormat)
+        await output.pause()
+        _ = try await output.append(hundredMilliseconds)
+        _ = try await output.append(hundredMilliseconds)
+        _ = try await output.append(hundredMilliseconds)
+        try await Task.sleep(for: .milliseconds(300))
+        let whilePaused = await output.hasStartedPlayback
+        XCTAssertFalse(whilePaused, "A paused stream never starts, whatever the threshold or cap")
+
+        await output.resume()
+
+        let afterResume = await output.hasStartedPlayback
+        XCTAssertTrue(afterResume)
+        await output.stop()
+    }
+
+    func testStopCancelsAHeldCushion() async throws {
+        let journal = DiagnosticsJournal(fileURL: nil)
+        let output = cushionedOutput(hold: .milliseconds(80), journal: journal)
+        try await output.start(format: cushionFormat)
+        _ = try await output.append(hundredMilliseconds)
+
+        await output.stop()
+        try await Task.sleep(for: .milliseconds(300))
+
+        let started = await output.hasStartedPlayback
+        XCTAssertFalse(started)
+        XCTAssertTrue(journal.snapshot().isEmpty, "A stopped stream is never started by a stale timer")
+        let lead = await output.playbackLead()
+        XCTAssertNil(lead)
+    }
+
+    func testNoCushionStartsOnTheFirstBufferAsBefore() async throws {
+        let journal = DiagnosticsJournal(fileURL: nil)
+        let output = AppleAudioOutput(
+            audioSessionCoordinator: AppleAudioSessionCoordinator(
+                driver: RecordingAudioSessionDriver(),
+                journal: DiagnosticsJournal(fileURL: nil)
+            ),
+            journal: journal,
+            cushion: .none
+        )
+        try await output.start(format: cushionFormat)
+
+        let readiness = try await output.append(Data(count: 2_400))
+        let started = await output.hasStartedPlayback
+
+        XCTAssertEqual(readiness, .ready)
+        XCTAssertTrue(started)
+        XCTAssertTrue(journal.snapshot().isEmpty)
+        await output.stop()
+    }
+
+    func testEveryStreamStartsWithinTheCushionCapSoNothingWaitsForeverOnTheDrain() async throws {
+        let journal = DiagnosticsJournal(fileURL: nil)
+        let output = cushionedOutput(hold: .seconds(30), journal: journal)
+        try await output.start(format: cushionFormat)
+        _ = try await output.append(Data(count: 480)) // 10 ms, far below the cushion
+
+        // finish() must start the held audio itself; it would otherwise wait
+        // for a drain that can never begin.
+        try await withThrowingTaskGroup(of: Void.self) { group in
+            group.addTask { try await output.finish() }
+            group.addTask {
+                try await Task.sleep(for: .seconds(5))
+                throw AudioOutputError.outputFailed
+            }
+            try await group.next()
+            group.cancelAll()
+        }
+        await output.stop()
+    }
+
+    func testLeadCountsQueuedAudioNotTheNodeTimelineSoItRecoversAfterAnUnderrun() async throws {
+        let journal = DiagnosticsJournal(fileURL: nil)
+        let output = AppleAudioOutput(
+            audioSessionCoordinator: AppleAudioSessionCoordinator(
+                driver: RecordingAudioSessionDriver(),
+                journal: DiagnosticsJournal(fileURL: nil)
+            ),
+            journal: journal,
+            cushion: .none
+        )
+        try await output.start(format: cushionFormat)
+        _ = try await output.append(Data(count: 2_400)) // 50 ms, played out below
+        var drained = false
+        for _ in 0..<200 where !drained {
+            try await Task.sleep(for: .milliseconds(10))
+            drained = (await output.playbackLead()).map { $0 < 0.001 } ?? false
+        }
+        XCTAssertTrue(drained, "The first chunk finished playing")
+        try await Task.sleep(for: .milliseconds(300)) // an underrun
+
+        _ = try await output.append(hundredMilliseconds)
+        let lead = await output.playbackLead()
+
+        // A position-based lead stayed at zero here until the new audio
+        // outgrew the silence; the queued-audio lead sees the whole chunk.
+        XCTAssertEqual(try XCTUnwrap(lead), 0.1, accuracy: 0.03)
+        await output.stop()
+    }
+
+    @MainActor
+    func testNowPlayingRegistrationNeverBlocksTheCallerAndRunsOffTheMainThread() async throws {
+        let registrar = SlowRecordingRegistrar(registerDelay: 0.3)
+        let journal = DiagnosticsJournal(fileURL: nil)
+        let controller = NowPlayingController(registrar: registrar, journal: journal)
+
+        let began = ContinuousClock.now
+        controller.show(title: "Hermes conversation", isPlaying: true) { _ in }
+        controller.update(isPlaying: false)
+        controller.clear()
+        let callerTime = began.duration(to: .now)
+
+        XCTAssertLessThan(callerTime, .milliseconds(100), "The main actor never waits for MediaPlayer")
+        for _ in 0..<300 where registrar.calls.count < 4 {
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        XCTAssertEqual(
+            registrar.calls,
+            ["prewarm", "register Hermes conversation true", "setPlaying Hermes conversation false", "unregister"]
+        )
+        XCTAssertTrue(registrar.allCallsOffTheMainThread)
+        XCTAssertTrue(journal.snapshot().map(\.event).contains { $0.hasPrefix("nowplaying registered took_ms=") })
+    }
+
     func testRecoveringOutputWritesBufferedPCMWhenLiveOutputFails() async throws {
         let liveOutput = RecordingAudioOutput(appendError: .outputFailed)
         let output = RecoveringAudioOutput(liveOutput: liveOutput)
@@ -395,6 +791,8 @@ private actor RecordingAudioOutput: AudioOutput {
         case append
         case finish
         case stop
+        case pause
+        case resume
     }
 
     private let appendError: AudioOutputError?
@@ -431,6 +829,8 @@ private actor RecordingAudioOutput: AudioOutput {
     }
 
     func playbackPosition() async -> TimeInterval? { nil }
+    func pause() async { recordedOperations.append(.pause) }
+    func resume() async { recordedOperations.append(.resume) }
 
     func recordedChunks() -> [Data] { chunks }
     func operations() -> [Operation] { recordedOperations }
@@ -490,5 +890,128 @@ private actor RecordingAudioActivityReporter: AudioActivityReporter {
 
     func events() -> [AudioActivityEvent] {
         recordedEvents
+    }
+}
+
+extension FinishFailingAudioOutput {
+    func pause() async {}
+    func resume() async {}
+}
+
+/// Reports the engine as stopped (as after a system configuration change) and
+/// counts restarts. A successful restart starts the real engine.
+private final class SimulatedEngineControl: @unchecked Sendable {
+    private let lock = NSLock()
+    private var reportsStopped: Bool
+    private let startFails: Bool
+    private var starts = 0
+
+    init(reportsStoppedOnce: Bool, startFails: Bool = false) {
+        reportsStopped = reportsStoppedOnce
+        self.startFails = startFails
+    }
+
+    var startCount: Int { lock.withLock { starts } }
+
+    var control: AudioOutputEngineControl {
+        AudioOutputEngineControl(
+            isRunning: { [self] engine in
+                lock.withLock {
+                    if reportsStopped {
+                        reportsStopped = false
+                        return false
+                    }
+                    return engine.isRunning
+                }
+            },
+            start: { [self] engine in
+                lock.withLock { starts += 1 }
+                if startFails { throw AudioOutputError.outputFailed }
+                try engine.start()
+            }
+        )
+    }
+}
+
+/// Records MediaPlayer calls and makes `register` slow, like the real one.
+private final class SlowRecordingRegistrar: NowPlayingRegistering, @unchecked Sendable {
+    private let lock = NSLock()
+    private var recorded: [String] = []
+    private var offMain = true
+    private let registerDelay: TimeInterval
+
+    init(registerDelay: TimeInterval) {
+        self.registerDelay = registerDelay
+    }
+
+    var calls: [String] { lock.withLock { recorded } }
+    var allCallsOffTheMainThread: Bool { lock.withLock { offMain } }
+
+    private func record(_ call: String) {
+        lock.withLock {
+            recorded.append(call)
+            if Thread.isMainThread { offMain = false }
+        }
+    }
+
+    func prewarm() { record("prewarm") }
+
+    func register(
+        title: String,
+        isPlaying: Bool,
+        onCommand: @escaping @Sendable (NowPlayingCommand) -> Void
+    ) {
+        Thread.sleep(forTimeInterval: registerDelay)
+        record("register \(title) \(isPlaying)")
+    }
+
+    func setPlaying(title: String, isPlaying: Bool) { record("setPlaying \(title) \(isPlaying)") }
+    func unregister() { record("unregister") }
+}
+
+/// Reports the engine stopped until a restart was requested, so a burst of
+/// notifications can be told apart from one restart.
+private final class StoppedUntilStartedEngineControl: @unchecked Sendable {
+    private let lock = NSLock()
+    private var started = false
+    private var starts = 0
+
+    var startCount: Int { lock.withLock { starts } }
+
+    var control: AudioOutputEngineControl {
+        AudioOutputEngineControl(
+            isRunning: { [self] _ in lock.withLock { started } },
+            start: { [self] _ in
+                lock.withLock {
+                    starts += 1
+                    started = true
+                }
+            }
+        )
+    }
+}
+
+private enum RecordedAudioSessionCall: Equatable {
+    case setCategory(AudioSessionConfiguration)
+    case setActive(Bool)
+
+    var isCategory: Bool {
+        if case .setCategory = self { return true }
+        return false
+    }
+}
+
+private final class RecordingAudioSessionDriver: AudioSessionDriver, @unchecked Sendable {
+    private let lock = NSLock()
+    private var recorded: [RecordedAudioSessionCall] = []
+
+    var calls: [RecordedAudioSessionCall] { lock.withLock { recorded } }
+
+    func setCategory(_ configuration: AudioSessionConfiguration) throws {
+        lock.withLock { recorded.append(.setCategory(configuration)) }
+    }
+
+    func setActive(_ active: Bool, notifyOthersOnDeactivation: Bool) throws {
+        lock.withLock { recorded.append(.setActive(active)) }
     }
 }

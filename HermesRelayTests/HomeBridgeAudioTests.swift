@@ -96,3 +96,8 @@ private actor FailingHomeAudioOutput: AudioOutput {
     func stop() async {}
     func playbackPosition() async -> TimeInterval? { nil }
 }
+
+extension FailingHomeAudioOutput {
+    func pause() async {}
+    func resume() async {}
+}
