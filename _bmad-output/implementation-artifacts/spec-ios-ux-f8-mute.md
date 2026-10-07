@@ -17,7 +17,7 @@ context:
 
 **Problem:** The user sometimes needs Hermes to stop talking without stopping Hermes. Today the only way to silence a reply is Interrupt, which ends the turn.
 
-**Approach:** A sticky mute that gates only local playback: audio frames are still consumed and dropped, no interrupt is sent, text keeps streaming. Two defaults are proposed for owner confirmation.
+**Approach:** A sticky mute that gates only local playback: audio frames are still consumed and dropped, no interrupt is sent, text keeps streaming. Launches unmuted; unmuting resumes live.
 
 </frozen-after-approval>
 
@@ -27,14 +27,16 @@ context:
 
 **Layout classes (shared by FB-THINK, FB-TYPE, FB-MUTE, FB-LAYOUT).** *Compact* is a window whose horizontal size class is compact: iPhone, and an Android phone (`WindowWidthSizeClass` Compact). *Large* is a window whose horizontal size class is regular: iPad, Mac, and Android tablets and unfolded foldables (`WindowWidthSizeClass` Medium or Expanded). The class comes from the window's size class (SwiftUI `horizontalSizeClass`, Android `WindowSizeClass`), never from a device model or idiom check. A window that changes class (Split View, Stage Manager, window resize, fold or unfold, rotation) switches layout without losing the draft, the transcript scroll position or screen-reader focus.
 
+**One layout-class resolver.** The layout class is computed in exactly one place per app and read everywhere else; views never branch on platform or device. On macOS the resolver always returns large. (SDK check: `EnvironmentValues.horizontalSizeClass` is available on macOS 10.15+ per the macOS `SwiftUICore` swiftinterface in Xcode 27.2 beta 2, lines 22064-22066, but nothing there defines its value on macOS, so the resolver does not read it there.)
+
 ### Acceptance criteria (shared wording, FB-MUTE)
 
 1. While connected, a mute control is visible next to the other voice controls. It is visually and positionally distinct from Interrupt and never shares its glyph or label.
 2. Muting during a reply silences output at once. No interrupt is sent; reply text keeps streaming; the turn finishes normally and its phase and completion are unchanged.
 3. While muted, incoming reply audio is still received and consumed, then dropped. Nothing is buffered for later playback, and end-of-reply does not wait for dropped audio to play.
 4. Mute is sticky: it applies to every following reply until the user taps unmute.
-5. [Proposed default, owner to confirm] Mute is not kept across app restarts; the app always launches unmuted.
-6. [Proposed default, owner to confirm] Unmuting mid-reply resumes live audio from the current point; dropped audio is never replayed.
+5. Mute is not kept across app restarts; the app always launches unmuted.
+6. Unmuting mid-reply resumes live audio from the current point; dropped audio is never replayed.
 7. The muted state is always visible: the control shows a muted glyph and "Muted" appears in the status line. Screen readers read the control as "Mute Hermes" or "Unmute Hermes" and announce the new state once per change.
 8. While muted, reply text is shown as it streams rather than waiting for speech that will not play.
 9. Interrupt still works while muted and still ends the turn. Mute does not change capture, hands-free or barge-in rules, system volume, or other apps' audio.
@@ -56,7 +58,7 @@ Checked against `origin/main` (dda7181):
 - No Hermes protocol, Home or wire change. Content-safe diagnostics only.
 - Large-format criteria depend on `IOS-UX-F9` (FB-LAYOUT) approval; compact criteria are buildable now.
 - macOS: same mute control, journal line and placement as iPad.
-- Mute is process memory in the voice coordinator, not `@AppStorage` (criterion 5 default).
+- Mute is process memory in the voice coordinator, never `@AppStorage` (criterion 5).
 
 ## Verification
 

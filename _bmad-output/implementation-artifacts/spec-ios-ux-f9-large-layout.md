@@ -27,6 +27,8 @@ context:
 
 **Layout classes (shared by FB-THINK, FB-TYPE, FB-MUTE, FB-LAYOUT).** *Compact* is a window whose horizontal size class is compact: iPhone, and an Android phone (`WindowWidthSizeClass` Compact). *Large* is a window whose horizontal size class is regular: iPad, Mac, and Android tablets and unfolded foldables (`WindowWidthSizeClass` Medium or Expanded). The class comes from the window's size class (SwiftUI `horizontalSizeClass`, Android `WindowSizeClass`), never from a device model or idiom check. A window that changes class (Split View, Stage Manager, window resize, fold or unfold, rotation) switches layout without losing the draft, the transcript scroll position or screen-reader focus.
 
+**One layout-class resolver.** The layout class is computed in exactly one place per app and read everywhere else; views never branch on platform or device. On macOS the resolver always returns large. (SDK check: `EnvironmentValues.horizontalSizeClass` is available on macOS 10.15+ per the macOS `SwiftUICore` swiftinterface in Xcode 27.2 beta 2, lines 22064-22066, but nothing there defines its value on macOS, so the resolver does not read it there.)
+
 ### Acceptance criteria (shared wording, FB-LAYOUT)
 
 1. One written whole-screen proposal covers the large layout class on iPad, Mac and Android tablets and foldables, with a mockup per platform in voice view and typing view, during a reply with thinking text, and with mute on.
@@ -78,7 +80,7 @@ Checked against `origin/main` (dda7181): one `ContentView` serves iPhone, iPad a
 
 - No Hermes protocol, Home or wire change. Content-safe diagnostics only.
 - iPad and Mac share one arrangement; Mac adds menu-bar commands for the shortcuts.
-- Mockups live with the proposal under `_bmad-output/planning-artifacts/ux-designs/` (new dated folder, same pattern as `ux-hermes-relay-ios-2026-09-27`).
+- The proposal and mockups are written once, here, under `_bmad-output/planning-artifacts/ux-designs/` (new dated folder, same pattern as `ux-hermes-relay-ios-2026-09-27`); the Android twin links to it.
 
 ## Verification
 
