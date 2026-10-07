@@ -424,6 +424,58 @@ stories:
     release_scope: later
     depends_on:
       - home:HOME-NW-06
+  - id: IOS-UX-F6
+    title: Make Hermes's thinking text readable
+    kind: local
+    spec: _bmad-output/implementation-artifacts/spec-ios-ux-f6-thinking-text.md
+    tracker_key: ios-ux-f6
+    product_epic: 1
+    owner: hermes-relay-ios
+    release_scope: later
+    depends_on:
+      - ios:IOS-UX-F9
+    acceptance_overlay: _bmad-output/implementation-artifacts/course-correction-2026-09-23.md
+    parity_tag: FB-THINK
+    android_reference: 'ANDROID-UX-13'
+  - id: IOS-UX-F7
+    title: Switch to a typing-focused view when the composer is focused
+    kind: local
+    spec: _bmad-output/implementation-artifacts/spec-ios-ux-f7-typing-view.md
+    tracker_key: ios-ux-f7
+    product_epic: 1
+    owner: hermes-relay-ios
+    release_scope: later
+    depends_on:
+      - ios:IOS-UX-F9
+    acceptance_overlay: _bmad-output/implementation-artifacts/course-correction-2026-09-23.md
+    parity_tag: FB-TYPE
+    android_reference: 'ANDROID-UX-14'
+  - id: IOS-UX-F8
+    title: Mute Hermes's voice without interrupting the reply
+    kind: local
+    spec: _bmad-output/implementation-artifacts/spec-ios-ux-f8-mute.md
+    tracker_key: ios-ux-f8
+    product_epic: 1
+    owner: hermes-relay-ios
+    release_scope: later
+    depends_on:
+      - ios:IOS-UX-F5
+      - ios:IOS-UX-F9
+    acceptance_overlay: _bmad-output/implementation-artifacts/course-correction-2026-09-23.md
+    parity_tag: FB-MUTE
+    android_reference: 'ANDROID-VOICE-06'
+  - id: IOS-UX-F9
+    title: Propose the large-format whole-screen layout
+    kind: local
+    spec: _bmad-output/implementation-artifacts/spec-ios-ux-f9-large-layout.md
+    tracker_key: ios-ux-f9
+    product_epic: 1
+    owner: hermes-relay-ios
+    release_scope: later
+    depends_on: []
+    acceptance_overlay: _bmad-output/implementation-artifacts/course-correction-2026-09-23.md
+    parity_tag: FB-LAYOUT
+    android_reference: 'ANDROID-UX-15'
 epic_scheme: hermes-home-2026-09-23
 epics:
   1: Connect personal clients through HomeBridge
