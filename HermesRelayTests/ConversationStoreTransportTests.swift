@@ -1,4 +1,5 @@
 import Foundation
+import Observation
 import XCTest
 @testable import HermesRelayIOS
 
@@ -694,6 +695,116 @@ final class ConversationStoreTransportTests: XCTestCase {
         XCTAssertNil(fixture.store.unconfirmedTurnText)
     }
 
+    @MainActor
+    func testHomeControlCompletionBeforeInterruptAcknowledgementIsPreserved() async throws {
+        try await assertHomeCompletionSurvivesInterrupt(terminalBeforeAcknowledgement: true)
+    }
+
+    @MainActor
+    func testHomeControlCompletionAfterInterruptAcknowledgementIsPreserved() async throws {
+        try await assertHomeCompletionSurvivesInterrupt(terminalBeforeAcknowledgement: false)
+    }
+
+    @MainActor
+    func testHomeOldAcknowledgementAndCleanupCannotSettleANewerTurn() async throws {
+        let fixture = try await makeHomeReviewFixture(gateInterrupt: true)
+        defer { try? FileManager.default.removeItem(at: fixture.profileURL.deletingLastPathComponent()) }
+        await fixture.store.loadConfiguredClient()
+        await fixture.store.connect()
+        let firstTask = Task { @MainActor in await fixture.store.sendTurn(text: "First turn") }
+        await waitForHomeSubmissionCount(fixture.client, atLeast: 1)
+        await waitForHomeAcceptance(fixture.store)
+        let firstTurn = try XCTUnwrap(fixture.store.verifiedTurnBinding?.homeTurn)
+        let interruptTask = Task { @MainActor in await fixture.store.interruptActiveTurn() }
+        await fixture.interruptGate.waitForRequest()
+        await fixture.client.emit(.standard(HomeStandardEvent(
+            type: .turnInterrupted,
+            scope: HomeEventScope(
+                conversationHandle: firstTurn.conversationHandle,
+                turnID: firstTurn.turnID,
+                correlationID: firstTurn.correlationID
+            ),
+            payload: .terminal(kind: .terminal)
+        )))
+        let firstCompleted = await firstTask.value
+        XCTAssertFalse(firstCompleted)
+        XCTAssertFalse(fixture.store.isSending)
+
+        let nextTask = Task { @MainActor in
+            await fixture.store.sendTurn(text: "Second turn", eventHandler: { _ in })
+        }
+        await waitForHomeSubmissionCount(fixture.client, atLeast: 2)
+        await waitForHomeAcceptance(fixture.store)
+        let nextTurn = try XCTUnwrap(fixture.store.verifiedTurnBinding?.homeTurn)
+        await fixture.interruptGate.acknowledge()
+        _ = await interruptTask.value
+        XCTAssertTrue(fixture.store.isSending, "An old ack cannot release the new turn's admission lock")
+        XCTAssertEqual(fixture.store.homeTurnDeliveryState, .accepted(nextTurn))
+        XCTAssertEqual(fixture.store.unconfirmedTurnText, "Second turn")
+
+        let nextScope = HomeEventScope(
+            conversationHandle: nextTurn.conversationHandle,
+            turnID: nextTurn.turnID,
+            correlationID: nextTurn.correlationID
+        )
+        await fixture.client.emit(.audioTerminal(nextScope, .end))
+        await fixture.client.emit(.standard(HomeStandardEvent(
+            type: .turnComplete, scope: nextScope, payload: .terminal(kind: .terminal)
+        )))
+        let nextCompleted = await nextTask.value
+        XCTAssertTrue(nextCompleted)
+        await fixture.store.completeHomeTurnAfterAudio(for: firstTurn)
+        XCTAssertTrue(fixture.store.isSending, "Old drain cleanup cannot retire the newer completed binding")
+        XCTAssertEqual(fixture.store.homeTurnDeliveryState, .completed(nextTurn))
+        await fixture.store.completeHomeTurnAfterAudio(for: nextTurn)
+        XCTAssertFalse(fixture.store.isSending)
+        let submitted = await fixture.client.submittedTexts
+        XCTAssertEqual(submitted, ["First turn", "Second turn"])
+    }
+
+    @MainActor
+    private func assertHomeCompletionSurvivesInterrupt(terminalBeforeAcknowledgement: Bool) async throws {
+        let fixture = try await makeHomeReviewFixture(gateInterrupt: true)
+        defer { try? FileManager.default.removeItem(at: fixture.profileURL.deletingLastPathComponent()) }
+        await fixture.store.loadConfiguredClient()
+        await fixture.store.connect()
+        let terminal = expectation(description: "Matching control terminal delivered")
+        let sendTask = Task { @MainActor in
+            await fixture.store.sendTurn(text: "Completed control with an audio tail") { event in
+                if case .turnComplete = event { terminal.fulfill() }
+            }
+        }
+        await waitForHomeSubmissionCount(fixture.client, atLeast: 1)
+        await waitForHomeAcceptance(fixture.store)
+        let scope = HomeEventScope(
+            conversationHandle: fixture.claim.conversationHandle,
+            turnID: "turn-1",
+            correlationID: "correlation-1"
+        )
+        let interrupted = expectation(description: "Acknowledgement preserves the already delivered terminal")
+        let interruptTask = Task { @MainActor in
+            let result = await fixture.store.interruptActiveTurn()
+            interrupted.fulfill()
+            return result
+        }
+        await fixture.interruptGate.waitForRequest()
+        if !terminalBeforeAcknowledgement { await fixture.interruptGate.acknowledge() }
+        await fixture.client.emit(.standard(HomeStandardEvent(
+            type: .turnComplete, scope: scope, payload: .terminal(kind: .terminal)
+        )))
+        await fulfillment(of: [terminal], timeout: 2)
+        if terminalBeforeAcknowledgement { await fixture.interruptGate.acknowledge() }
+        await fulfillment(of: [interrupted], timeout: 2)
+        XCTAssertFalse(fixture.store.isSending)
+        XCTAssertNil(fixture.store.unconfirmedTurnText)
+        _ = await fixture.store.lifecycleWillDeactivate()
+        await fixture.store.disconnect()
+        let didStop = await interruptTask.value
+        let completed = await sendTask.value
+        XCTAssertTrue(didStop)
+        XCTAssertTrue(completed, "Local audio cancellation must not rewrite successful control completion")
+    }
+
     private func temporaryProfileURL() -> URL {
         FileManager.default.temporaryDirectory
             .appendingPathComponent("HermesRelayIOS-AutoConnect-\(UUID().uuidString)")
@@ -701,7 +812,7 @@ final class ConversationStoreTransportTests: XCTestCase {
     }
 
     @MainActor
-    private func makeHomeReviewFixture() async throws -> HomeStoreReviewFixture {
+    private func makeHomeReviewFixture(gateInterrupt: Bool = false) async throws -> HomeStoreReviewFixture {
         let profileID = UUID(uuidString: "AAAAAAAA-BBBB-CCCC-DDDD-EEEEEEEEEEEE")!
         let profile = try RelayProfile(
             id: profileID,
@@ -735,17 +846,31 @@ final class ConversationStoreTransportTests: XCTestCase {
         )
         let claim = HomeDemoFixtures.claim(for: profileID)
         let client = FakeHomeBridgeSessionClient(claim: claim)
+        let interruptGate = HomeReviewInterruptGate(client: client, held: gateInterrupt)
         let store = ConversationStore(
             configurationStore: configurationStore,
-            homeClientFactory: FakeHomeBridgeSessionClientFactory(client: client),
+            homeClientFactory: HomeReviewClientFactory(client: interruptGate),
             homeClaimProvider: StaticHomeConversationClaimProvider(claim: claim)
         )
         return HomeStoreReviewFixture(
             store: store,
             client: client,
+            interruptGate: interruptGate,
             claim: claim,
             profileURL: profileURL
         )
+    }
+
+    @MainActor
+    private func waitForHomeAcceptance(_ store: ConversationStore) async {
+        if case .accepted = store.homeTurnDeliveryState { return }
+        let accepted = expectation(description: "Accepted Home binding")
+        withObservationTracking {
+            _ = store.homeTurnDeliveryState
+        } onChange: {
+            accepted.fulfill()
+        }
+        await fulfillment(of: [accepted], timeout: 2)
     }
 
     @MainActor
@@ -765,6 +890,7 @@ final class ConversationStoreTransportTests: XCTestCase {
 private struct HomeStoreReviewFixture {
     let store: ConversationStore
     let client: FakeHomeBridgeSessionClient
+    let interruptGate: HomeReviewInterruptGate
     let claim: HomeConversationClaim
     let profileURL: URL
 }
@@ -785,6 +911,72 @@ private actor HomeInterruptResultRecorder {
     func value() -> Bool? {
         recorded
     }
+}
+
+private struct HomeReviewClientFactory: HomeBridgeSessionClientFactory {
+    let client: HomeReviewInterruptGate
+    func make(profileID: UUID, mode: AppleTransportMode) -> any HomeBridgeSessionClient { client }
+}
+
+private actor HomeReviewInterruptGate: HomeBridgeSessionClient {
+    let client: FakeHomeBridgeSessionClient
+    private let held: Bool
+    private var requestReceived = false
+    private var requestWaiter: CheckedContinuation<Void, Never>?
+    private var acknowledgement: CheckedContinuation<Void, Never>?
+
+    init(client: FakeHomeBridgeSessionClient, held: Bool) {
+        self.client = client
+        self.held = held
+    }
+
+    func waitForRequest() async {
+        if requestReceived { return }
+        await withCheckedContinuation { requestWaiter = $0 }
+    }
+
+    func acknowledge() {
+        acknowledgement?.resume()
+        acknowledgement = nil
+    }
+
+    func interrupt(binding: HomeConversationBinding, turnID: String) async -> HomeInterruptOutcome {
+        let result = await client.interrupt(binding: binding, turnID: turnID)
+        requestReceived = true
+        requestWaiter?.resume()
+        requestWaiter = nil
+        if held { await withCheckedContinuation { acknowledgement = $0 } }
+        return result
+    }
+
+    func open(claim: HomeConversationClaim) async -> HomeOpenOutcome {
+        await client.open(claim: claim)
+    }
+    func reconnect(binding: HomeConversationBinding) async -> HomeReconnectOutcome {
+        await client.reconnect(binding: binding)
+    }
+    func submitPrompt(_ text: String, binding: HomeConversationBinding) async -> HomePromptSubmissionOutcome {
+        await client.submitPrompt(text, binding: binding)
+    }
+    func respond(to prompt: HomeStructuredPrompt, with response: HomePromptResponse) async -> HomeStructuredResponseOutcome {
+        await client.respond(to: prompt, with: response)
+    }
+    func dispatch(_ command: HomeCommandRequest) async -> HomeCommandOutcome {
+        await client.dispatch(command)
+    }
+    func ping(binding: HomeConversationBinding) async -> HomePingOutcome {
+        await client.ping(binding: binding)
+    }
+    func cancelPending(requestID: HomePendingRequestID) async {
+        await client.cancelPending(requestID: requestID)
+    }
+    func events() async -> AsyncThrowingStream<HomeBridgeEvent, Error> {
+        await client.events()
+    }
+    func close(binding: HomeConversationBinding) async -> HomeConversationCloseOutcome {
+        await client.close(binding: binding)
+    }
+    func close() async { await client.close() }
 }
 
 private enum FakeClientError: LocalizedError, Sendable {
