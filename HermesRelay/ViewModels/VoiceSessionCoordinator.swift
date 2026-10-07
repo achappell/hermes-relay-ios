@@ -1134,26 +1134,43 @@ final class VoiceSessionCoordinator {
         guard let activeResponseTask = responseTask else { return false }
 
         let isHomeTurn = store.isHomeMode
+        let homeTurn = store.verifiedTurnBinding?.homeTurn
+        if isHomeTurn {
+            // Stop releases a pending native drain. Retire its generation
+            // before that continuation can finish or clean up this response.
+            responseGeneration &+= 1
+        }
+        let interruptGeneration = responseGeneration
         if !isHomeTurn {
             state = .interrupted
         }
         await output.stop()
+        guard responseGeneration == interruptGeneration else { return false }
         resetSpeechTiming()
         // The relay may already have sent turn_end while local audio is still
         // draining. In that small window there is no active server turn to
         // interrupt; stopping the local output is sufficient and must not
         // trigger the legacy reconnect fallback.
-        let didReconnect = store.isSending
-            ? await store.interruptActiveTurn()
-            : true
-        // Let the active response consume the server's interruption
-        // confirmation (and close its stream) before invalidating its
-        // generation. Cancelling first would make the confirmation look like
-        // a late frame and leave the store waiting for a turn that is already
-        // dead.
-        responseGeneration &+= 1
+        let didStop: Bool
+        if isHomeTurn, store.verifiedTurnBinding?.homeTurn != homeTurn {
+            didStop = !store.isSending
+        } else {
+            didStop = store.isSending ? await store.interruptActiveTurn() : true
+        }
+        guard responseGeneration == interruptGeneration else { return false }
+        // Standard must consume its stream terminal before cancellation.
+        // Home control completion is owned by the store's event pump instead.
+        if !isHomeTurn { responseGeneration &+= 1 }
+        let stoppedGeneration = responseGeneration
         activeResponseTask.cancel()
         await activeResponseTask.value
+        guard responseGeneration == stoppedGeneration else { return false }
+        if let homeTurn {
+            // The retired response generation cannot own final cleanup. Even
+            // a rejected stop may have joined real control/audio completion.
+            await store.completeHomeTurnAfterAudio(for: homeTurn)
+            guard responseGeneration == stoppedGeneration else { return false }
+        }
         responseTask = nil
         audioStreamActive = false
         audioFileStreamActive = false
@@ -1162,15 +1179,17 @@ final class VoiceSessionCoordinator {
         streamedAudioBytes = 0
         playbackFailed = false
 
-        guard didReconnect else {
+        guard didStop else {
             state = .failed(store.transientError ?? "The Hermes relay could not be restored after interruption.")
+            updateNowPlayingPlaybackState()
             return false
         }
 
         if isHomeTurn {
-            // Home only becomes Interrupted after the matching terminal event;
-            // the store's interrupt call does not return before that gate.
+            // Either matching control completion or interruption is known;
+            // acknowledgement alone never finishes an active control turn.
             state = .interrupted
+            updateNowPlayingPlaybackState()
         }
 
         if isHandsFreeArmed {
@@ -1310,10 +1329,10 @@ final class VoiceSessionCoordinator {
             updateNowPlayingPlaybackState()
         } else if completed, !isFailed, state != .interrupted {
             await finishPlaybackAndEndResponse(generation: generation)
-        } else if completed, store.isHomeMode {
+        } else if completed, let turn = store.verifiedTurnBinding?.homeTurn {
             // Control delivery is known even when native playback failed. Do
             // not leave an accepted Home binding permanently in-flight.
-            await store.completeHomeTurnAfterAudio()
+            await store.completeHomeTurnAfterAudio(for: turn)
         }
     }
 
@@ -1545,8 +1564,8 @@ final class VoiceSessionCoordinator {
             audioFileBuffer.removeAll(keepingCapacity: false)
         } else if completed, !isFailed, state != .interrupted {
             await finishPlaybackAndEndResponse(generation: generation)
-        } else if completed, store.isHomeMode {
-            await store.completeHomeTurnAfterAudio()
+        } else if completed, let turn = store.verifiedTurnBinding?.homeTurn {
+            await store.completeHomeTurnAfterAudio(for: turn)
         }
     }
 
@@ -1556,12 +1575,13 @@ final class VoiceSessionCoordinator {
     /// already scheduled before going quiet — `finish()` returns once the
     /// buffers have actually played out.
     private func finishPlaybackAndEndResponse(generation: UInt64) async {
+        let homeTurn = store.verifiedTurnBinding?.homeTurn
         await playRemainingAudioAndEndResponse(generation: generation)
         // Home control delivery is already known here. Every exit, including
         // a playback failure, must release the accepted binding or the next
         // turn is refused locally.
-        if store.isHomeMode, generation == responseGeneration {
-            await store.completeHomeTurnAfterAudio()
+        if let homeTurn, generation == responseGeneration {
+            await store.completeHomeTurnAfterAudio(for: homeTurn)
         }
     }
 

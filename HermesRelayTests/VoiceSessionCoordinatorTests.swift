@@ -2989,6 +2989,172 @@ final class VoiceSessionCoordinatorTests: XCTestCase {
         return store
     }
 
+    @MainActor
+    func testHomeTailInterruptAcknowledgementNeedsNoSecondControlTerminal() async throws {
+        let output = CoordinatorAudioOutput(waitsForFinish: true, stopReleasesFinish: true)
+        let harness = try await makeBackgroundVoiceHarness(output: output)
+        defer { harness.cleanUp() }
+        let (responseTask, scope) = await startStreamingHomeReply(harness)
+        await harness.client.emit(.standard(HomeStandardEvent(
+            type: .turnComplete, scope: scope, payload: .terminal(kind: .terminal)
+        )))
+        await waitUntil {
+            if case .completed = harness.store.homeTurnDeliveryState { return true }
+            return false
+        }
+        _ = await harness.voice.enterBackground(onRetentionEnded: {})
+        XCTAssertEqual(harness.nowPlaying.shownPlaying, [true])
+
+        let stopped = expectation(description: "Tail acknowledgement settles without another control terminal")
+        let interruptTask = Task { @MainActor in
+            await harness.voice.interruptActiveTurn()
+            stopped.fulfill()
+        }
+        await fulfillment(of: [stopped], timeout: 2)
+        XCTAssertFalse(harness.store.isSending)
+        XCTAssertNil(harness.store.unconfirmedTurnText)
+        XCTAssertNil(harness.store.transientError)
+        XCTAssertEqual(harness.voice.state, .interrupted)
+        XCTAssertEqual(harness.nowPlaying.playingUpdates.last, false, "A stopped tail must stop the existing card")
+        await harness.voice.exitBackground()
+        // Deactivation releases a broken implementation's outstanding waiters,
+        // so a red regression reports assertions rather than hanging the suite.
+        _ = await harness.store.lifecycleWillDeactivate()
+        await harness.store.disconnect()
+        await interruptTask.value
+        await responseTask.value
+    }
+
+    @MainActor
+    func testHomeRejectedTailInterruptStillCleansUpAfterRealAudioTerminal() async throws {
+        try await assertHomeFailedTailInterruptCleanup(
+            outcome: .rejected(.home(code: .requestRejected, phase: .interrupt))
+        )
+    }
+
+    @MainActor
+    func testHomeUnavailableTailInterruptStillCleansUpAfterRealAudioTerminal() async throws {
+        try await assertHomeFailedTailInterruptCleanup(
+            outcome: .unavailable(.home(code: .capabilityUnavailable, phase: .interrupt))
+        )
+    }
+
+    @MainActor
+    private func assertHomeFailedTailInterruptCleanup(outcome: HomeInterruptOutcome) async throws {
+        let output = CoordinatorAudioOutput(waitsForFinish: true, stopReleasesFinish: true)
+        let harness = try await makeBackgroundVoiceHarness(output: output)
+        defer { harness.cleanUp() }
+        await harness.client.setCoordinatorInterruptOutcome(outcome)
+        let (responseTask, scope) = await startStreamingHomeReply(harness)
+        await harness.client.emit(.standard(HomeStandardEvent(
+            type: .turnComplete, scope: scope, payload: .terminal(kind: .terminal)
+        )))
+        await waitUntil {
+            if case .completed = harness.store.homeTurnDeliveryState { return true }
+            return false
+        }
+        _ = await harness.voice.enterBackground(onRetentionEnded: {})
+        XCTAssertEqual(harness.nowPlaying.shownPlaying, [true])
+        let stopped = expectation(description: "Failed stop joins real audio completion")
+        let interruptTask = Task { @MainActor in
+            let result = await harness.voice.interruptActiveTurn()
+            stopped.fulfill()
+            return result
+        }
+        await waitUntil { harness.store.transientError != nil }
+        XCTAssertTrue(harness.store.isSending, "Rejection alone cannot invent audio completion")
+        await harness.client.emit(.audioTerminal(scope, .end))
+        await fulfillment(of: [stopped], timeout: 2)
+        XCTAssertFalse(harness.store.isSending, "The interrupted generation must transfer cleanup ownership")
+        XCTAssertNil(harness.store.verifiedTurnBinding?.homeTurn)
+        XCTAssertNil(harness.store.unconfirmedTurnText)
+        XCTAssertEqual(harness.nowPlaying.playingUpdates.last, false)
+        if case .failed = harness.voice.state {
+            // A failed interrupt remains visible despite truthful turn cleanup.
+        } else {
+            XCTFail("Rejected/unavailable interruption must remain a failure")
+        }
+        await harness.voice.exitBackground()
+        _ = await harness.store.lifecycleWillDeactivate()
+        let didStop = await interruptTask.value
+        XCTAssertFalse(didStop)
+        await responseTask.value
+    }
+
+    @MainActor
+    func testHomeNativeDrainReleasedByStopCannotOwnTheNextTurn() async throws {
+        let output = CoordinatorAudioOutput(waitsForFinish: true, stopReleasesFinish: true)
+        let harness = try await makeBackgroundVoiceHarness(output: output)
+        defer { harness.cleanUp() }
+        let (responseTask, oldScope) = await startStreamingHomeReply(harness)
+        await harness.client.emit(.standard(HomeStandardEvent(
+            type: .turnComplete, scope: oldScope, payload: .terminal(kind: .terminal)
+        )))
+        await waitUntil {
+            if case .completed = harness.store.homeTurnDeliveryState { return true }
+            return false
+        }
+        await harness.client.emit(.audioTerminal(oldScope, .end))
+        await output.waitUntilFinishRequested()
+
+        let stopped = expectation(description: "Stop releases the native drain and settles the tail")
+        var interruptFinished = false
+        let interruptTask = Task { @MainActor in
+            await harness.voice.interruptActiveTurn()
+            interruptFinished = true
+            stopped.fulfill()
+        }
+        await fulfillment(of: [stopped], timeout: 2)
+        guard interruptFinished, !harness.store.isSending else {
+            XCTFail("The old Home tail still owns submission")
+            _ = await harness.store.lifecycleWillDeactivate()
+            await harness.store.disconnect()
+            await interruptTask.value
+            await responseTask.value
+            return
+        }
+        await interruptTask.value
+        await responseTask.value
+        XCTAssertEqual(harness.voice.state, .interrupted)
+        let interruptedTurns = await harness.client.interruptTurnIDs
+        XCTAssertTrue(interruptedTurns.isEmpty, "Native-only cancellation needs no server interrupt")
+
+        harness.store.draft = "A new question"
+        let nextTask = Task { @MainActor in await harness.voice.sendDraft() }
+        await waitForHomeVoiceSubmission(harness.client, atLeast: 2)
+        let nextScope = HomeEventScope(
+            conversationHandle: oldScope.conversationHandle,
+            turnID: "turn-2",
+            correlationID: "correlation-2"
+        )
+        await waitUntil {
+            if case .accepted(let turn) = harness.store.homeTurnDeliveryState {
+                return turn.turnID == nextScope.turnID
+            }
+            return false
+        }
+        await harness.client.emit(.standard(HomeStandardEvent(
+            type: .turnInterrupted, scope: oldScope, payload: .terminal(kind: .terminal)
+        )))
+        await harness.client.emit(.audioTerminal(oldScope, .end))
+        // A matching event is an ordered barrier after both stale events.
+        await harness.client.emit(.standard(HomeStandardEvent(
+            type: .turnComplete, scope: nextScope, payload: .terminal(kind: .terminal)
+        )))
+        await waitUntil {
+            if case .completed(let turn) = harness.store.homeTurnDeliveryState {
+                return turn.turnID == nextScope.turnID
+            }
+            return false
+        }
+        XCTAssertTrue(harness.store.isSending, "Old audio terminal must not settle the new turn")
+        let submitted = await harness.client.submittedTexts
+        XCTAssertEqual(submitted, ["Read me the news", "A new question"], "Neither turn is replayed")
+        await harness.client.emit(.audioTerminal(nextScope, .end))
+        await nextTask.value
+        XCTAssertFalse(harness.store.isSending)
+    }
+
     // MARK: IOS-HOME-07 background voice work
 
     @MainActor
@@ -4309,6 +4475,12 @@ private final class HomeVoiceReviewSecureValueStore: SecureValueStore, @unchecke
     func read(service: String, account: String) throws -> Data? { nil }
     func write(_ value: Data, service: String, account: String) throws {}
     func delete(service: String, account: String) throws {}
+}
+
+private extension FakeHomeBridgeSessionClient {
+    func setCoordinatorInterruptOutcome(_ outcome: HomeInterruptOutcome) {
+        nextInterruptOutcome = outcome
+    }
 }
 
 @MainActor
