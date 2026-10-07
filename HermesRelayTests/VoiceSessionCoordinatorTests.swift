@@ -2489,7 +2489,10 @@ final class VoiceSessionCoordinatorTests: XCTestCase {
             output: CoordinatorAudioOutput(),
             handsFreeInput: handsFreeInput,
             routeSafetyProvider: FixedHandsFreeRouteSafetyProvider(.notEchoSafe),
-            handsFreeSilenceDurationNanoseconds: 0
+            handsFreeSilenceDurationNanoseconds: 0,
+            // This test is about activity waking the next capture, not the
+            // post-reply tail window; the tail has its own tests below.
+            handsFreeReplyTail: .zero
         )
 
         await coordinator.toggleHandsFree()
@@ -2525,6 +2528,188 @@ final class VoiceSessionCoordinatorTests: XCTestCase {
         XCTAssertTrue(coordinator.isHandsFreeCaptureActive)
 
         await coordinator.disableHandsFree()
+    }
+
+    // MARK: Hands-free self-echo
+
+    @MainActor
+    func testArmingWhileHermesSpeaksDoesNotLetItsReplyWakeTheNextTurn() async throws {
+        // Tail off: this isolates wake suppression from the tail window.
+        let fixture = await HandsFreeEchoFixture(tail: .zero)
+        let coordinator = fixture.coordinator
+        fixture.store.draft = "Ask Hermes"
+        let reply = Task { @MainActor in await coordinator.sendDraft() }
+        await fixture.output.waitUntilFinishRequested()
+
+        // The user taps "Keep listening" while Hermes is still speaking.
+        await coordinator.toggleHandsFree()
+        XCTAssertTrue(coordinator.isHandsFreeArmed)
+        await fixture.output.allowFinish()
+        await reply.value
+
+        // The recognizer heard the reply through the speaker and now reports
+        // it as one cumulative phrase.
+        await fixture.handsFreeInput.emit(
+            .recognition(SpeechRecognitionUpdate(text: HandsFreeEchoFixture.replyText, isFinal: true))
+        )
+        await fixture.handsFreeInput.emit(.activity(handsFreeSnapshot(.silence)))
+        try await Task.sleep(nanoseconds: 150_000_000)
+
+        XCTAssertEqual(fixture.client.sentTurns, ["Ask Hermes"])
+        XCTAssertFalse(coordinator.isHandsFreeCaptureActive)
+        XCTAssertTrue(coordinator.isHandsFreeArmed)
+
+        await coordinator.disableHandsFree()
+    }
+
+    @MainActor
+    func testReplyTailIgnoresSpeechAndCumulativeReplyTextThenRestartsTheRecognizer() async throws {
+        let fixture = await HandsFreeEchoFixture(tail: .seconds(1))
+        let coordinator = fixture.coordinator
+        await fixture.askByVoiceAndFinishReply()
+        let tailStarted = await fixture.eventually { fixture.clock.sleeperCount > 0 }
+        XCTAssertTrue(tailStarted, "A finished reply opens the tail window")
+
+        // Armed before the reply. Inside the tail the microphone still hears
+        // the speaker: loud enough to look like speech, and transcribed.
+        await fixture.handsFreeInput.emit(.activity(handsFreeSnapshot(.speech)))
+        await fixture.handsFreeInput.emit(
+            .recognition(SpeechRecognitionUpdate(text: HandsFreeEchoFixture.replyText, isFinal: false))
+        )
+        await fixture.handsFreeInput.emit(.activity(handsFreeSnapshot(.silence)))
+        try await Task.sleep(nanoseconds: 150_000_000)
+
+        XCTAssertEqual(fixture.client.sentTurns, [HandsFreeEchoFixture.question])
+        XCTAssertFalse(coordinator.isHandsFreeCaptureActive)
+        XCTAssertEqual(coordinator.provisionalText, "")
+
+        // When the tail ends the recognizer restarts, so the next phrase
+        // is not cumulative with Hermes's words.
+        let startsBefore = await fixture.handsFreeInput.startCount()
+        fixture.clock.advance(by: .seconds(1))
+        let restarted = await fixture.eventually {
+            await fixture.handsFreeInput.startCount() > startsBefore
+        }
+        XCTAssertTrue(restarted)
+        XCTAssertTrue(coordinator.isHandsFreeArmed)
+
+        await coordinator.disableHandsFree()
+    }
+
+    @MainActor
+    func testGenuineSpeechAfterTheReplyTailStillSubmits() async throws {
+        let fixture = await HandsFreeEchoFixture(tail: .seconds(1))
+        let coordinator = fixture.coordinator
+        await fixture.askByVoiceAndFinishReply()
+        let tailStarted = await fixture.eventually { fixture.clock.sleeperCount > 0 }
+        XCTAssertTrue(tailStarted)
+        let startsBefore = await fixture.handsFreeInput.startCount()
+        fixture.clock.advance(by: .seconds(1))
+        let restarted = await fixture.eventually {
+            await fixture.handsFreeInput.startCount() > startsBefore
+        }
+        XCTAssertTrue(restarted)
+
+        // Positive control: the user really speaks after the tail.
+        let followUp = "What about parking tomorrow"
+        await fixture.handsFreeInput.emit(.activity(handsFreeSnapshot(.speech)))
+        await fixture.handsFreeInput.emit(
+            .recognition(SpeechRecognitionUpdate(text: followUp, isFinal: true))
+        )
+        await fixture.handsFreeInput.emit(.activity(handsFreeSnapshot(.silence)))
+        let submitted = await fixture.eventually { fixture.client.sentTurns.count == 2 }
+
+        XCTAssertTrue(submitted)
+        XCTAssertEqual(fixture.client.sentTurns, [HandsFreeEchoFixture.question, followUp])
+        XCTAssertFalse(
+            fixture.journal.snapshot().contains { $0.event == "voice submit dropped reason=echo" }
+        )
+
+        await fixture.output.allowFinish()
+        _ = await fixture.eventually { coordinator.state == .complete }
+        await coordinator.disableHandsFree()
+    }
+
+    @MainActor
+    func testReplyTailDoesNotHoldBackSpeechOnAnEchoSafeRoute() async throws {
+        let fixture = await HandsFreeEchoFixture(route: .echoSafe, tail: .seconds(1))
+        let coordinator = fixture.coordinator
+        await fixture.askByVoiceAndFinishReply()
+        let tailStarted = await fixture.eventually { fixture.clock.sleeperCount > 0 }
+        XCTAssertTrue(tailStarted)
+
+        // Headphones cannot play Hermes back into the microphone.
+        await fixture.handsFreeInput.emit(.activity(handsFreeSnapshot(.speech)))
+        let capturing = await fixture.eventually { coordinator.isHandsFreeCaptureActive }
+
+        XCTAssertTrue(capturing)
+
+        await coordinator.disableHandsFree()
+    }
+
+    @MainActor
+    func testHandsFreeDropsACaptureThatRepeatsTheReplyAndJournalsOnlyTheDecision() async throws {
+        // Tail off: this isolates the text guard from the tail window.
+        let fixture = await HandsFreeEchoFixture(tail: .zero)
+        let coordinator = fixture.coordinator
+        await fixture.askByVoiceAndFinishReply()
+
+        // Speech activity opens a capture, and the recognizer's phrase is the
+        // reply Hermes just spoke, with the recognizer's usual casing.
+        await fixture.handsFreeInput.emit(.activity(handsFreeSnapshot(.speech)))
+        await fixture.handsFreeInput.emit(
+            .recognition(
+                SpeechRecognitionUpdate(
+                    text: HandsFreeEchoFixture.replyText.lowercased() + ".",
+                    isFinal: true
+                )
+            )
+        )
+        await fixture.handsFreeInput.emit(.activity(handsFreeSnapshot(.silence)))
+        let dropped = await fixture.eventually {
+            fixture.journal.snapshot().contains { $0.event == "voice submit dropped reason=echo" }
+        }
+
+        XCTAssertTrue(dropped)
+        XCTAssertEqual(fixture.client.sentTurns, [HandsFreeEchoFixture.question])
+        XCTAssertEqual(coordinator.state, .idle)
+        XCTAssertTrue(coordinator.isHandsFreeArmed)
+        XCTAssertFalse(coordinator.isHandsFreeCaptureActive)
+        let events = fixture.journal.snapshot().map(\.event)
+        XCTAssertFalse(
+            events.contains { $0.localizedCaseInsensitiveContains("garage") },
+            "The journal records the decision, never the text."
+        )
+
+        await coordinator.disableHandsFree()
+    }
+
+    func testEchoGuardRecognisesAReplyHeardBackAndNothingElse() {
+        let reply = "The garage costs about twenty dollars a night, booked at check-in."
+
+        XCTAssertTrue(HandsFreeEchoGuard.isEcho(reply, ofReply: reply))
+        XCTAssertTrue(
+            HandsFreeEchoGuard.isEcho("the garage costs about 20 dollars a night booked at check in", ofReply: reply),
+            "One misheard word still reads as the reply"
+        )
+        XCTAssertTrue(
+            HandsFreeEchoGuard.isEcho("costs about twenty dollars a night", ofReply: reply),
+            "A heard fragment of the reply is still the reply"
+        )
+        XCTAssertFalse(
+            HandsFreeEchoGuard.isEcho("Yes please do", ofReply: "Yes, please do that later."),
+            "A short answer that happens to share the reply's words is the user talking"
+        )
+        XCTAssertFalse(HandsFreeEchoGuard.isEcho("a night", ofReply: reply), "Too short to judge")
+        XCTAssertFalse(HandsFreeEchoGuard.isEcho("What about parking tomorrow", ofReply: reply))
+        XCTAssertFalse(
+            HandsFreeEchoGuard.isEcho(
+                reply + " and then I asked about something else entirely today",
+                ofReply: reply
+            ),
+            "A reply with a lot more said after it is the user talking"
+        )
+        XCTAssertFalse(HandsFreeEchoGuard.isEcho(reply, ofReply: ""))
     }
 
     @MainActor
@@ -4364,6 +4549,77 @@ private struct FixedHandsFreeRouteSafetyProvider: HandsFreeAudioRouteSafetyProvi
 
     func currentSafety() async -> HandsFreeAudioRouteSafety {
         safety
+    }
+}
+
+/// A hands-free session where one spoken question has a reply that stays
+/// "speaking" until the test lets the output drain. The clock is manual so
+/// the post-reply tail ends only when the test says so.
+@MainActor
+private final class HandsFreeEchoFixture {
+    static let question = "Is there parking"
+    static let replyText = "The garage costs about twenty dollars a night"
+
+    let handsFreeInput = CoordinatorHandsFreeInput()
+    let output = CoordinatorAudioOutput(waitsForFinish: true)
+    let clock = ManualBackgroundClock()
+    let journal = DiagnosticsJournal(fileURL: nil)
+    let client: CoordinatorHermesSessionClient
+    let store: ConversationStore
+    let coordinator: VoiceSessionCoordinator
+
+    init(route: HandsFreeAudioRouteSafety = .notEchoSafe, tail: Duration) async {
+        let client = CoordinatorHermesSessionClient(events: [
+            .messageStart,
+            .textDelta(Self.replyText),
+            .audioStart(AudioFormat(sampleRate: 24_000, channels: 1, sampleWidth: 2)),
+            .audioChunk(Data([0, 1])),
+            .audioEnd,
+            .turnComplete(turnID: "turn-1"),
+        ])
+        client.connectResult = .success(SessionMetadata(sessionID: "session-1", model: nil))
+        let store = ConversationStore(client: client)
+        await store.connect()
+        self.client = client
+        self.store = store
+        coordinator = VoiceSessionCoordinator(
+            store: store,
+            input: CoordinatorSpeechInput(),
+            output: output,
+            handsFreeInput: handsFreeInput,
+            routeSafetyProvider: FixedHandsFreeRouteSafetyProvider(route),
+            handsFreeSilenceDurationNanoseconds: 0,
+            handsFreeReplyTail: tail,
+            interruptByTalking: { false },
+            clock: clock,
+            journal: journal
+        )
+    }
+
+    /// Arms "Keep listening", speaks the question, and lets Hermes finish.
+    func askByVoiceAndFinishReply() async {
+        await coordinator.toggleHandsFree()
+        await handsFreeInput.emit(.activity(handsFreeSnapshot(.speech)))
+        await handsFreeInput.emit(
+            .recognition(SpeechRecognitionUpdate(text: Self.question, isFinal: true))
+        )
+        await handsFreeInput.emit(.activity(handsFreeSnapshot(.silence)))
+        await output.waitUntilFinishRequested()
+        await output.allowFinish()
+        _ = await eventually { self.coordinator.state == .complete }
+    }
+
+    /// Polls, because the conditions here are not all observable.
+    func eventually(
+        timeout: Duration = .seconds(2),
+        _ condition: @MainActor () async -> Bool
+    ) async -> Bool {
+        let deadline = ContinuousClock.now.advanced(by: timeout)
+        while ContinuousClock.now < deadline {
+            if await condition() { return true }
+            try? await Task.sleep(nanoseconds: 5_000_000)
+        }
+        return await condition()
     }
 }
 

@@ -28,6 +28,48 @@ enum HandsFreeBargeInPolicy {
     }
 }
 
+/// Recognises recognizer text that is Hermes's own reply heard back through
+/// the microphone. Pure and content-free: it only answers yes or no.
+enum HandsFreeEchoGuard {
+    /// Shorter phrases ("yes", "stop that") are too common in a reply to
+    /// treat as an echo of it.
+    static let minimumWords = 4
+    /// The share of the heard words that must follow the reply's words, in
+    /// order, for the heard text to count as the reply itself.
+    static let minimumOrderedOverlap = 0.8
+
+    static func isEcho(_ heard: String, ofReply reply: String) -> Bool {
+        let heardWords = words(heard)
+        guard heardWords.count >= minimumWords else { return false }
+        let replyWords = words(reply)
+        guard !replyWords.isEmpty else { return false }
+        let overlap = longestCommonSubsequence(heardWords, replyWords)
+        return Double(overlap) >= minimumOrderedOverlap * Double(heardWords.count)
+    }
+
+    /// Lowercased letters and digits only, so punctuation, markdown and
+    /// spacing differences between the spoken and the written reply vanish.
+    private static func words(_ text: String) -> [String] {
+        text.lowercased()
+            .components(separatedBy: CharacterSet.alphanumerics.inverted)
+            .filter { !$0.isEmpty }
+    }
+
+    private static func longestCommonSubsequence(_ a: [String], _ b: [String]) -> Int {
+        var previous = [Int](repeating: 0, count: b.count + 1)
+        var current = previous
+        for wordA in a {
+            for (index, wordB) in b.enumerated() {
+                current[index + 1] = wordA == wordB
+                    ? previous[index] + 1
+                    : max(previous[index + 1], current[index])
+            }
+            swap(&previous, &current)
+        }
+        return previous[b.count]
+    }
+}
+
 enum HandsFreeStatus: Equatable, Sendable {
     case disarmed
     case armed
@@ -190,6 +232,15 @@ final class VoiceSessionCoordinator {
     // playback ends. A fresh activity event may establish the next turn on
     // any route; recognition-only wake after a response requires headphones.
     private var handsFreeWakeSuppressed = false
+    /// After a reply ends the microphone can still hear its last sounds: room
+    /// reverb, the speaker's tail and recognizer lag. For this window
+    /// recognition and speech activity cannot wake a capture on a route that
+    /// is not echo-safe. When it ends the recognizer restarts, because Speech
+    /// reports cumulative text and the running stream still holds Hermes's
+    /// own words. `.zero` disables the window.
+    private let handsFreeReplyTail: Duration
+    private var handsFreeReplyTailTask: Task<Void, Never>?
+    private var isInHandsFreeReplyTail = false
     // Event handlers may outlive a cancelled response task, so every response
     // is allowed to mutate state only while its generation is current.
     private var responseGeneration: UInt64 = 0
@@ -238,6 +289,7 @@ final class VoiceSessionCoordinator {
         handsFreeInput: (any HandsFreeInput)? = nil,
         routeSafetyProvider: any HandsFreeAudioRouteSafetyProvider = SystemHandsFreeAudioRouteSafetyProvider(),
         handsFreeSilenceDurationNanoseconds: UInt64 = 1_500_000_000,
+        handsFreeReplyTail: Duration = .seconds(1),
         interruptByTalking: @escaping @MainActor () -> Bool = { VoicePreferences.interruptByTalking },
         clock: any HomeMonotonicClock = ContinuousHomeMonotonicClock(),
         backgroundIdleTimeout: Duration = .seconds(60),
@@ -257,6 +309,7 @@ final class VoiceSessionCoordinator {
         self.routeSafetyProvider = routeSafetyProvider
         self.recognitionFinishTimeoutNanoseconds = recognitionFinishTimeoutNanoseconds
         self.handsFreeSilenceDurationNanoseconds = handsFreeSilenceDurationNanoseconds
+        self.handsFreeReplyTail = handsFreeReplyTail
         self.clock = clock
         self.backgroundIdleTimeout = backgroundIdleTimeout
         self.audioSessionPolicy = audioSessionPolicy
@@ -298,6 +351,7 @@ final class VoiceSessionCoordinator {
         handsFreeSilenceTask = nil
         handsFreeFinalText = nil
         handsFreeWakeSuppressed = false
+        cancelHandsFreeReplyTail()
         isFinishingHandsFreeInput = true
 
         if let handsFreeInput {
@@ -350,7 +404,9 @@ final class VoiceSessionCoordinator {
             handsFreeStatus = .armed
             isHandsFreeCaptureActive = false
             handsFreeFinalText = nil
-            handsFreeWakeSuppressed = false
+            // Arming mid-reply: Hermes's own speech is what the recognizer
+            // will hear next, so it must not wake the next turn.
+            handsFreeWakeSuppressed = state.isResponseActive
             startHandsFreeStream(stream)
         } catch let error as SpeechInputError {
             if error == .notAuthorized {
@@ -372,6 +428,7 @@ final class VoiceSessionCoordinator {
         isHandsFreeCaptureActive = false
         handsFreeSilenceTask?.cancel()
         handsFreeSilenceTask = nil
+        cancelHandsFreeReplyTail()
         handsFreeFinalText = nil
         provisionalText = ""
         handsFreeStatus = .failed(failure)
@@ -421,6 +478,7 @@ final class VoiceSessionCoordinator {
                 // Activity is a fresh wake signal, including after a
                 // response. The route check inside the helper protects
                 // automatic barge-in while output is still active.
+                guard !(await isHandsFreeWakeHeldByReplyTail()) else { return }
                 _ = await startHandsFreeCaptureIfNeeded()
             } else {
                 if snapshot.microphoneActivity == .silence,
@@ -447,6 +505,7 @@ final class VoiceSessionCoordinator {
             handsFreeSilenceTask?.cancel()
             handsFreeSilenceTask = nil
             if !isHandsFreeCaptureActive {
+                if await isHandsFreeWakeHeldByReplyTail() { return }
                 if !state.isResponseActive, handsFreeWakeSuppressed {
                     let route = await routeSafetyProvider.currentSafety()
                     guard route == .echoSafe else { return }
@@ -587,6 +646,15 @@ final class VoiceSessionCoordinator {
             state = .idle
             return
         }
+        if let reply = store.messages.last(where: { $0.role == .assistant })?.text,
+           HandsFreeEchoGuard.isEcho(text, ofReply: reply) {
+            // The microphone heard Hermes, not the user. Content stays out of
+            // the journal; only the decision is recorded.
+            journal.record("voice submit dropped reason=echo")
+            handsFreeWakeSuppressed = true
+            state = .idle
+            return
+        }
         guard let binding = store.verifiedTurnBinding else {
             setHandsFreeFailure(.message(store.turnUnavailableMessage))
             return
@@ -651,6 +719,59 @@ final class VoiceSessionCoordinator {
             return
         }
         setHandsFreeFailure(.message(error.localizedDescription))
+    }
+
+    /// True while the microphone may still be hearing the end of Hermes's
+    /// reply on a route where it would: speech and recognition cannot wake a
+    /// capture then. Echo-safe routes (headphones) hear nothing of the reply.
+    private func isHandsFreeWakeHeldByReplyTail() async -> Bool {
+        guard isInHandsFreeReplyTail, !isHandsFreeCaptureActive else { return false }
+        return await routeSafetyProvider.currentSafety() != .echoSafe
+    }
+
+    private func beginHandsFreeReplyTail() {
+        // An interrupted reply stops at the tap, so there is no tail to hear;
+        // the user usually starts talking at once.
+        guard isHandsFreeArmed,
+              handsFreeReplyTail > .zero,
+              !isHandsFreeCaptureActive,
+              state != .interrupted else { return }
+        handsFreeReplyTailTask?.cancel()
+        isInHandsFreeReplyTail = true
+        let deadline = clock.now().advanced(by: handsFreeReplyTail)
+        let clock = self.clock
+        handsFreeReplyTailTask = Task { @MainActor [weak self] in
+            do {
+                try await clock.sleep(until: deadline)
+            } catch {
+                return
+            }
+            await self?.endHandsFreeReplyTail()
+        }
+    }
+
+    private func endHandsFreeReplyTail() async {
+        handsFreeReplyTailTask = nil
+        guard isInHandsFreeReplyTail else { return }
+        // A capture, a new turn or a disarm owns the stream now.
+        guard isHandsFreeArmed,
+              !isHandsFreeCaptureActive,
+              !state.isResponseActive,
+              captureTask == nil,
+              responseTask == nil else {
+            isInHandsFreeReplyTail = false
+            return
+        }
+        // Text delivered while the old stream closes is still Hermes's.
+        await finishHandsFreeInputAndWait()
+        await restartHandsFreeStream()
+        isInHandsFreeReplyTail = false
+    }
+
+    private func cancelHandsFreeReplyTail() {
+        handsFreeReplyTailTask?.cancel()
+        handsFreeReplyTailTask = nil
+        isInHandsFreeReplyTail = false
     }
 
     nonisolated func beginCapture() async {
@@ -770,6 +891,7 @@ final class VoiceSessionCoordinator {
             responseTask = nil
         }
         journalResponseEnded(path: "voice")
+        beginHandsFreeReplyTail()
     }
 
     private func requestInputFinish() {
@@ -1075,6 +1197,7 @@ final class VoiceSessionCoordinator {
         await responseTask?.value
         responseTask = nil
         journalResponseEnded(path: "draft")
+        beginHandsFreeReplyTail()
     }
 
     /// Resend a turn the relay never confirmed. It goes through the same
@@ -1106,6 +1229,7 @@ final class VoiceSessionCoordinator {
         await responseTask?.value
         responseTask = nil
         journalResponseEnded(path: "resend")
+        beginHandsFreeReplyTail()
     }
 
     /// Names why the reply stopped counting as in flight: the state it ended

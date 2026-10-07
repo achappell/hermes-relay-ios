@@ -42,8 +42,21 @@ barge-in is permitted only on an echo-safe headphone route.
 - [x] Background noise keeps an active capture open and cancels a pending
       silence endpoint; only classified silence can end the turn.
 - [x] Recognition text from Hermes playback cannot wake or resubmit a second
-      turn on the built-in speaker; a fresh speech-activity event opens the
-      next capture window, while recognizer-only wake remains headphone-safe.
+      turn on the built-in speaker. After a reply ends, a one-second tail
+      window (`handsFreeReplyTail`) ignores speech activity and recognition on
+      routes that are not echo-safe, then restarts the recognizer so its
+      cumulative text starts fresh. Arming "Keep listening" while Hermes is
+      still speaking keeps recognizer-only wake suppressed. A fresh
+      speech-activity event after the tail opens the next capture window, while
+      recognizer-only wake remains headphone-safe.
+- [x] A hands-free capture whose text substantially repeats the last assistant
+      reply (`HandsFreeEchoGuard`: at least four words, 80% of them following
+      the reply's words in order) is dropped instead of submitted. The journal
+      records only `voice submit dropped reason=echo`.
+- [ ] Follow-up, needs a device check: acoustic echo cancellation for the
+      capture session (`AVAudioSession` voice-processing mode or
+      `setVoiceProcessingEnabled` on the input node). Not changed here; the tail
+      window and text guard reduce the symptom without cancelling the echo.
 - [x] The armed waiting state presents "Listening for speech" instead of the
       idle "Ready" label.
 - [x] Disarming cancels active capture, clears provisional text, and releases
