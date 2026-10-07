@@ -1,7 +1,7 @@
 # Active epic parents are in story-index.yaml; numeric story prefixes remain historical.
 schema_version: 1
 generated: 2026-09-12
-last_updated: '2026-10-04'
+last_updated: '2026-10-07'
 project: hermes-relay-ios
 tracking_system: file-system
 status_authority: local
@@ -46,6 +46,10 @@ development_status:
   ios-watch-01: backlog
   ios-diag-01: in-progress
   ios-ux-f5: in-progress
+  ios-ux-f6: backlog
+  ios-ux-f7: backlog
+  ios-ux-f8: backlog
+  ios-ux-f9: backlog
   ios-diag-02: review
   ios-diag-03: review
   epic-7: backlog
