@@ -113,29 +113,6 @@ enum VoiceState: Equatable, Sendable {
         }
     }
 
-    var systemImage: String {
-        switch self {
-        case .idle:
-            return "mic"
-        case .listening:
-            return "mic.fill"
-        case .transcribing:
-            return "waveform"
-        case .thinking:
-            return "ellipsis"
-        case .speaking:
-            return "speaker.wave.2.fill"
-        case .buffering:
-            return "arrow.down.circle"
-        case .complete:
-            return "checkmark.circle"
-        case .interrupted:
-            return "pause.circle"
-        case .failed:
-            return "exclamationmark.triangle"
-        }
-    }
-
     var isCaptureActive: Bool {
         switch self {
         case .listening, .transcribing:
