@@ -1,5 +1,22 @@
 # Changelog
 
+## 0.7.1 (2026-10-08)
+
+<!-- Release notes generated using configuration in .github/release.yml at main -->
+
+## What's Changed
+### Other Changes
+* fix(ios): VoiceOver transcript labels, light-palette contrast, Keep listening pill; drop VoiceStatusView by @achappell in https://github.com/achappell/hermes-relay-ios/pull/125
+* fix(ios): stop hands-free from submitting Hermes's own reply as the user's turn by @achappell in https://github.com/achappell/hermes-relay-ios/pull/127
+* docs(bmad): feedback parity tickets IOS-UX-F6..F9 by @achappell in https://github.com/achappell/hermes-relay-ios/pull/128
+* fix(ios): settle Home audio-tail interruption (IOS-HOME-08) by @achappell in https://github.com/achappell/hermes-relay-ios/pull/129
+* docs: close 0-I-4 and STD-4 on owner acceptance by @achappell in https://github.com/achappell/hermes-relay-ios/pull/130
+* docs(ios): record Apple review acceptance evidence by @achappell in https://github.com/achappell/hermes-relay-ios/pull/132
+* docs: close IOS-HOME-04, IOS-HOME-05, IOS-HOME-08 and IOS-DIAG-02 on owner acceptance by @achappell in https://github.com/achappell/hermes-relay-ios/pull/133
+
+
+**Full Changelog**: https://github.com/achappell/hermes-relay-ios/compare/v0.7.0...v0.7.1
+
 ## 0.7.0 (2026-10-06)
 
 <!-- Release notes generated using configuration in .github/release.yml at main -->
