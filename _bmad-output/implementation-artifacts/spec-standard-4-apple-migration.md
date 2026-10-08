@@ -68,7 +68,9 @@ Amanda accepted STD-4 (alias 0-I-4) as `done` on 2026-10-07.
 - **Superseded, not run:** the manual `-HomeBridgeFake` fake-bridge walkthrough
   was never completed. On owner decision, live Home evidence is accepted in its
   place. No fake walkthrough scenario is marked passed.
-- **No new test run:** this closeout is a documentation and status change. It
-  did not run builds, tests, device checks, or Home traffic.
+- **Test-run scope:** owner acceptance relied on evidence already recorded; it
+  did not require a new migration, device, or Home test run. PR #130 later adds
+  only test-queue synchronization, with no app behavior or acceptance-evidence
+  change; its focused verification is reported in the PR.
 - **Issue #67:** left open by this change; it can be closed after this record
   merges.

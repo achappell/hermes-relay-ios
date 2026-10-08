@@ -136,8 +136,10 @@ Amanda accepted 0-I-4 (alias STD-4, `standard-4-apple-migrate-client`) as
   `conversation.open`, `Home bridge Ready`, `Approved route reachable`, voice
   control confirmed by Amanda). On owner decision, this evidence supersedes the
   uncompleted `-HomeBridgeFake` walkthrough for this migration story only.
-- **No new test run:** this acceptance is a documentation and status change. It
-  did not run builds, tests, device checks, or Home traffic.
+- **Test-run scope:** owner acceptance relied on evidence already recorded; it
+  did not require a new migration, device, or Home test run. A later test-only
+  queue-drain synchronization in PR #130 changes no app behavior or acceptance
+  evidence; its focused verification is reported in the PR.
 - **Scope:** this closes only 0-I-4/STD-4. IOS-HOME-07's device and slow-turn
   gates remain unchanged and unwaived; this acceptance does not close or waive
   any IOS-HOME-07 criterion.

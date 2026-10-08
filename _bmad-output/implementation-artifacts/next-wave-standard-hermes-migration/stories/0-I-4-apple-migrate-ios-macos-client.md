@@ -1969,4 +1969,6 @@ Those remain as tracked in the separate IOS-HOME-07 validation record.
 
 The "Status: review" and public-adapter-blocked statements in the Auto Run
 Result above describe the implementation checkpoint and are superseded by this
-acceptance. This is not a new test run.
+acceptance. Owner acceptance used evidence already recorded; PR #130 later
+added only test-queue synchronization, with no change to app behavior or the
+acceptance basis.
