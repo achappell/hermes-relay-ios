@@ -2,7 +2,8 @@
 story: IOS-HOME-04
 spec: spec-ios-home-04-foreground-reconnect.md
 home_contract: hermes-relay-home 082e593 (HOME-NW-18)
-status: local-verified-live-gates-open
+status: done
+story_status: done
 updated: 2026-10-04
 ---
 
@@ -49,3 +50,11 @@ Result: BUILD SUCCEEDED. No iOS Simulator runtime is installed.
 ## Open live gate
 
 Pilot check on the iPhone: background the app for more than 120 seconds, then bring it back. It should reach Ready without a tap, or show a fresh claim if Home ended the old one.
+
+## Owner acceptance - 2026-10-08
+
+Amanda manually tested IOS-HOME-04 on her own device and accepted it as `done` on 2026-10-08, saying it works well enough to accept.
+
+- No instrumented evidence, steps, or build number were captured by the agent.
+- The specific remaining device checks listed in this record were not individually exercised by the agent and remain unverified.
+- The earlier evidence and limitations above are unchanged; this section records an owner decision, not a new test run.

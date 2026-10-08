@@ -37,3 +37,11 @@ A local loopback runtime smoke can verify the production Apple store/URLSession 
 ## Release notes
 
 The conventional `fix(ios)` commit supplies Release Please's generated changelog. Existing versioned changelog sections are intentionally not edited.
+
+## Owner acceptance - 2026-10-08
+
+Amanda manually tested IOS-HOME-08 on her own device and accepted it as `done` on 2026-10-08, saying it works well enough to accept.
+
+- No instrumented evidence, steps, or build number were captured by the agent.
+- The specific remaining device checks listed in this record were not individually exercised by the agent and remain unverified.
+- The earlier evidence and limitations above are unchanged; this section records an owner decision, not a new test run.
