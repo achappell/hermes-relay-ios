@@ -44,12 +44,10 @@ managed Home bridge task was restarted, the approved route returned HTTP 401 to
 an unauthenticated probe. The Relay then completed a live `conversation.open`
 handshake with a securely provisioned Device credential and reported
 `Home bridge Ready` and `Approved route reachable`. Amanda confirmed that voice
-control also works. The IOS-HOME-07 validation record
-(`validation-ios-home-07.md`) also records live Home traffic on 2026-10-04: a
-turn that Home and Standard accepted was not delivered because the client's
-30 s control-terminal deadline fired first. The deadline was raised to 120 s
-under fake-clock regressions; on-device confirmation of that fix was still
-open in that record and is not claimed here.
+control also works. This 2026-09-21 live result is the evidence basis for
+Amanda's acceptance of STD-4/0-I-4. The separate IOS-HOME-07 validation is
+contextual only; none of that story's device or slow-turn gates are accepted,
+changed, or waived by this closeout.
 
 The earlier `public_adapter_unavailable` finding (a synthetic-credential
 listener probe answered `status: unavailable`, `reason: hermes_unavailable`)
@@ -60,11 +58,13 @@ superseded; see the validation record.
 
 Amanda accepted STD-4 (alias 0-I-4) as `done` on 2026-10-07.
 
-- **Accepted evidence:** the live Home `conversation.open` result of
-  2026-09-21 (`Home bridge Ready`, voice control confirmed by Amanda) and the
-  live Home evidence in `validation-ios-home-07.md`, together with the
-  deterministic Apple gates already recorded. The evidence was accepted as
-  recorded, including the open on-device item above.
+- **Accepted evidence:** the 2026-09-21 live Home `conversation.open` result
+  (`Home bridge Ready`, `Approved route reachable`, voice control confirmed by
+  Amanda). On owner decision, this evidence supersedes the uncompleted
+  `-HomeBridgeFake` walkthrough for this migration story only.
+- **Scope:** this closes only STD-4/0-I-4. IOS-HOME-07's device and slow-turn
+  gates remain unchanged and unwaived; this acceptance does not close or waive
+  any IOS-HOME-07 criterion.
 - **Superseded, not run:** the manual `-HomeBridgeFake` fake-bridge walkthrough
   was never completed. On owner decision, live Home evidence is accepted in its
   place. No fake walkthrough scenario is marked passed.

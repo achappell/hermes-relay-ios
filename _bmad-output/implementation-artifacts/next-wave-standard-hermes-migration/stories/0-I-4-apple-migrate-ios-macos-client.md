@@ -1961,8 +1961,12 @@ computer-use surface could not attach to the iOS Simulator window.
 ## Acceptance — 2026-10-07
 
 Status: done. Amanda accepted this story (alias STD-4) as `done` on
-2026-10-07 on the live Home evidence recorded in the validation record, in
-place of the manual `-HomeBridgeFake` walkthrough, which was never completed.
+2026-10-07 based on the 2026-09-21 live Home `conversation.open` evidence
+(`Home bridge Ready`), in place of the manual `-HomeBridgeFake` walkthrough,
+which was never completed. This closes only migration story 0-I-4/STD-4; it
+does not accept, change, or waive IOS-HOME-07's device or slow-turn gates.
+Those remain as tracked in the separate IOS-HOME-07 validation record.
+
 The "Status: review" and public-adapter-blocked statements in the Auto Run
-Result above describe the implementation checkpoint and are superseded by the
-validation record's Acceptance section. This is not a new test run.
+Result above describe the implementation checkpoint and are superseded by this
+acceptance. This is not a new test run.

@@ -134,21 +134,16 @@ Amanda accepted 0-I-4 (alias STD-4, `standard-4-apple-migrate-client`) as
 
 - **Accepted evidence:** the 2026-09-21 live Home follow-up above (live
   `conversation.open`, `Home bridge Ready`, `Approved route reachable`, voice
-  control confirmed by Amanda) and the live Home evidence in
-  `validation-ios-home-07.md`, together with the deterministic Apple gates
-  recorded in this file. The evidence was accepted as recorded. That includes
-  the 2026-10-04 slow-turn incident in `validation-ios-home-07.md`, whose fix
-  (control-terminal deadline 30 s to 120 s) had fake-clock regressions but no
-  recorded on-device confirmation.
-- **Superseded, not run:** the manual `-HomeBridgeFake` fake-bridge walkthrough
-  was never completed in this environment. On owner decision, live Home
-  evidence is accepted in its place. No fake walkthrough scenario is marked
-  passed.
+  control confirmed by Amanda). On owner decision, this evidence supersedes the
+  uncompleted `-HomeBridgeFake` walkthrough for this migration story only.
 - **No new test run:** this acceptance is a documentation and status change. It
   did not run builds, tests, device checks, or Home traffic.
-- **Superseded text:** the `public_adapter_unavailable` outcome, the "stays
+- **Scope:** this closes only 0-I-4/STD-4. IOS-HOME-07's device and slow-turn
+  gates remain unchanged and unwaived; this acceptance does not close or waive
+  any IOS-HOME-07 criterion.
+- **Historical text:** the `public_adapter_unavailable` outcome, the "stays
   `review`" resume condition, and the 2026-09-21 closeout sentence that the
-  manual matrix was the review boundary describe earlier checkpoints.
+  manual fake matrix was the review boundary describe earlier checkpoints.
   `public_adapter_unavailable` remains the Apple-local factory gate for a Home
   profile whose adapter is absent.
 - **Issue #67** (STD-4) is left open by this change.
