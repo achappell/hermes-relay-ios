@@ -1,6 +1,6 @@
 # IOS-DIAG-02 validation — 2026-09-28
 
-Status: review. Local implementation verified; deployment and physical-device acceptance remain pending.
+Status: done (owner acceptance 2026-10-08; see the section at the end). Earlier status was: review. Local implementation verified; deployment and physical-device acceptance remain pending.
 
 ## Automated evidence
 
@@ -22,3 +22,11 @@ Install the Home endpoint and its documented tailnet route, then install the App
 ## PR #115 base refresh — 2026-09-28
 
 Rebased the diagnostics commit onto updated recovery branch `d0b6689`. Preserved reconnect's current-binding capability handling, the voice interruption setting, and both story tracker entries while retaining diagnostics wrappers. Focused builds/tests passed again: 71 tests on macOS and 71 on iOS Simulator (nine automatic diagnostics, six journal, 56 HomeBridge session tests). Diff/whitespace checks passed. The earlier synthetic manual smoke remains applicable; no new UI behavior was introduced by conflict resolution.
+
+## Owner acceptance - 2026-10-08
+
+Amanda manually tested IOS-DIAG-02 on her own device and accepted it as `done` on 2026-10-08, saying it works well enough to accept.
+
+- No instrumented evidence, steps, or build number were captured by the agent.
+- The specific remaining device checks listed in this record were not individually exercised by the agent and remain unverified.
+- The earlier evidence and limitations above are unchanged; this section records an owner decision, not a new test run.

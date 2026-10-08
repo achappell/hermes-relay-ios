@@ -1,7 +1,7 @@
 ---
 id: IOS-DIAG-02
 title: Automatically send opted-in connection reports to Home
-status: review
+status: done
 product_epic: 6
 ---
 

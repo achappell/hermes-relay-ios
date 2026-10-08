@@ -2,7 +2,8 @@
 story: IOS-HOME-05
 spec: spec-ios-home-05-audio-start-after-turn.md
 home_contract: hermes-relay-home 082e593 (HOME-NW-18)
-status: local-verified-live-gates-open
+status: done
+story_status: done
 updated: 2026-10-04
 ---
 
@@ -21,3 +22,11 @@ Defect: on iOS main 66477da, slow Home text generation outlasted the 5 s audio-s
 | Merge / release | Not performed | Local commits only; no push or PR. |
 
 The regression tests were first run against the original implementation: the slow-text test failed as expected, showing the playback-failure state before audio delivery. Both tests pass with the fix.
+
+## Owner acceptance - 2026-10-08
+
+Amanda manually tested IOS-HOME-05 on her own device and accepted it as `done` on 2026-10-08, saying it works well enough to accept.
+
+- No instrumented evidence, steps, or build number were captured by the agent.
+- The specific remaining device checks listed in this record were not individually exercised by the agent and remain unverified.
+- The earlier evidence and limitations above are unchanged; this section records an owner decision, not a new test run.
