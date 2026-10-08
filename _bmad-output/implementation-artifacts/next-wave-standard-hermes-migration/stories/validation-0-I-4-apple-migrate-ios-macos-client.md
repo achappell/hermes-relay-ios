@@ -1,8 +1,8 @@
 ---
 story: 0-I-4
 run_id: 20260915-222240-story4-review-7
-status: review
-phase: review
+status: done
+phase: done
 ---
 
 # Story 0-I-4 validation record
@@ -16,7 +16,8 @@ strict PCM joining, Apple lifecycle ownership, and the visible safe Home
 status projection. The legacy Hermes client remains the explicit rollback
 path.
 
-The deployed listener for the planned `/api/v1/bridge/ws` transport accepted a
+Historical probe (superseded by the 2026-09-21 live Home follow-up below): the
+deployed listener for the planned `/api/v1/bridge/ws` transport accepted a
 WebSocket request with a deliberately synthetic `Authorization: Device`
 credential. A schema-1 `conversation.open` probe returned
 `status: unavailable` with `reason: hermes_unavailable`. No real Device
@@ -35,8 +36,9 @@ The upstream contract is no longer the implementation blocker: it defines the
 planned schema-1 `/api/v1/bridge/ws`, one endpoint-facing WebSocket, opaque
 handles, Device authentication, route/session state, error codes, event/audio
 shapes, no-replay reconnect, and the vanilla Hermes `0.21.1` ownership
-boundary. The public Home adapter is still unavailable, so live route
-integration remains a separate blocked evidence gate.
+boundary. At the time of this implementation pass the public Home adapter was
+still unavailable, so live route integration was a separate blocked evidence
+gate. That gate was later cleared by the 2026-09-21 live Home follow-up below.
 
 ## Implementation evidence
 
@@ -64,7 +66,8 @@ malformed envelope errors, typed audio-invalid settlement, reconnect audio
 reset, known rejection retry, typed prompt resolution, and Store/Recovery/
 Voice interruption and text-preservation coverage.
 
-The manual fake UI walkthrough could not be completed in this environment. The
+The manual fake UI walkthrough could not be completed in this environment
+(superseded on owner decision; see Acceptance — 2026-10-07). The
 discovered simulator accepted installation and a `-HomeBridgeFake` launch
 request, but the available computer-use surface could not attach to the iOS
 Simulator window. No manual scenario is marked passed. No microphone capture,
@@ -100,11 +103,12 @@ Run `20260914-170648-846a` returned 13 actionable findings. The plan needed to:
 
 ## Resume condition
 
-The local Story 4 spec and wrapper are repaired against the Home contract.
-Implementation and deterministic Apple gates are ready for review through the
-injectable fake Home bridge. The story remains `review`, not `done`, because
-the public adapter is unavailable and the full manual fake walkthrough still
-requires a UI surface that can attach to the simulator.
+Resolved. At the implementation pass the story stayed `review`, not `done`,
+because the public adapter was unavailable and the full manual fake walkthrough
+required a UI surface that could attach to the simulator. The public adapter
+has since been served and verified live (2026-09-21 live Home follow-up), and
+Amanda accepted the story as `done` on 2026-10-07 on live evidence in place of
+the fake walkthrough; see Acceptance — 2026-10-07.
 
 ## Evidence safety
 
@@ -117,8 +121,31 @@ The current merged implementation was re-run on the runtime-resolved iPhone 17 P
 
 The Home route was rechecked after the tailnet repair. At this checkpoint, Tailscale reached the approved Home host, but the WSS route returned HTTP 502 and the Hermes Relay client remained `Home bridge Unavailable`. No Device credential, prompt, turn, audio, or private content was sent. The route was therefore not live evidence for STD-4 at that checkpoint, and the story remained `review` rather than `done`.
 
-This closes the iOS implementation and deterministic validation lane. The subsequent live Home follow-up below records the deployment and operator-authorization verification; the full manual matrix remains the review boundary for marking the story `done`.
+This closes the iOS implementation and deterministic validation lane. The subsequent live Home follow-up below records the deployment and operator-authorization verification; the manual fake-bridge matrix was not completed and was later superseded on owner decision; see Acceptance — 2026-10-07.
 
 ## 2026-09-21 live Home follow-up
 
 After the managed Home bridge task was restarted, the approved route returned HTTP 401 to an unauthenticated probe, confirming the authentication boundary. The Relay then completed a live `conversation.open` handshake using secure in-app Device-credential provisioning for the Kitchen/Hey Missy claim and reported `Home bridge Ready` and `Approved route reachable`. Amanda confirmed that voice control also works. This follow-up contains no credential, prompt, response text, raw protocol frame, PCM data, microphone capture, or private content.
+
+## Acceptance — 2026-10-07
+
+Amanda accepted 0-I-4 (alias STD-4, `standard-4-apple-migrate-client`) as
+`done` on 2026-10-07.
+
+- **Accepted evidence:** the 2026-09-21 live Home follow-up above (live
+  `conversation.open`, `Home bridge Ready`, `Approved route reachable`, voice
+  control confirmed by Amanda). On owner decision, this evidence supersedes the
+  uncompleted `-HomeBridgeFake` walkthrough for this migration story only.
+- **Test-run scope:** owner acceptance relied on evidence already recorded; it
+  did not require a new migration, device, or Home test run. A later test-only
+  queue-drain synchronization in PR #130 changes no app behavior or acceptance
+  evidence; its focused verification is reported in the PR.
+- **Scope:** this closes only 0-I-4/STD-4. IOS-HOME-07's device and slow-turn
+  gates remain unchanged and unwaived; this acceptance does not close or waive
+  any IOS-HOME-07 criterion.
+- **Historical text:** the `public_adapter_unavailable` outcome, the "stays
+  `review`" resume condition, and the 2026-09-21 closeout sentence that the
+  manual fake matrix was the review boundary describe earlier checkpoints.
+  `public_adapter_unavailable` remains the Apple-local factory gate for a Home
+  profile whose adapter is absent.
+- **Issue #67** (STD-4) is left open by this change.

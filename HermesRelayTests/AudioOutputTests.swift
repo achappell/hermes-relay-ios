@@ -479,8 +479,9 @@ final class AudioOutputTests: XCTestCase {
     @MainActor
     func testNowPlayingRegistrationNeverBlocksTheCallerAndRunsOffTheMainThread() async throws {
         let registrar = SlowRecordingRegistrar(registerDelay: 0.3)
+        let queue = DispatchQueue(label: "com.achappell.HermesRelayTests.nowplaying", qos: .utility)
         let journal = DiagnosticsJournal(fileURL: nil)
-        let controller = NowPlayingController(registrar: registrar, journal: journal)
+        let controller = NowPlayingController(registrar: registrar, queue: queue, journal: journal)
 
         let began = ContinuousClock.now
         controller.show(title: "Hermes conversation", isPlaying: true) { _ in }
@@ -489,9 +490,9 @@ final class AudioOutputTests: XCTestCase {
         let callerTime = began.duration(to: .now)
 
         XCTAssertLessThan(callerTime, .milliseconds(100), "The main actor never waits for MediaPlayer")
-        for _ in 0..<300 where registrar.calls.count < 4 {
-            try await Task.sleep(for: .milliseconds(10))
-        }
+        let workDrained = expectation(description: "Now Playing queue drains")
+        queue.async { workDrained.fulfill() }
+        await fulfillment(of: [workDrained], timeout: 3)
         XCTAssertEqual(
             registrar.calls,
             ["prewarm", "register Hermes conversation true", "setPlaying Hermes conversation false", "unregister"]
