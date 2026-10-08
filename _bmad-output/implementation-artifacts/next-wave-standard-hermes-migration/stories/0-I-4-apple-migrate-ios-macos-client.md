@@ -4,7 +4,7 @@ type: 'feature'
 created: '2026-09-14'
 baseline_revision: '7cd4f31'
 baseline_commit: '7cd4f31'
-status: 'review'
+status: 'done'
 review_loop_iteration: 7
 followup_review_recommended: false
 context:
@@ -1957,3 +1957,12 @@ the deployed listener returned `status: unavailable` with
 deliberately synthetic Device credential. No real credential, prompt, turn, or
 audio was sent. The manual fake UI walkthrough remains unavailable because the
 computer-use surface could not attach to the iOS Simulator window.
+
+## Acceptance — 2026-10-07
+
+Status: done. Amanda accepted this story (alias STD-4) as `done` on
+2026-10-07 on the live Home evidence recorded in the validation record, in
+place of the manual `-HomeBridgeFake` walkthrough, which was never completed.
+The "Status: review" and public-adapter-blocked statements in the Auto Run
+Result above describe the implementation checkpoint and are superseded by the
+validation record's Acceptance section. This is not a new test run.
