@@ -2,7 +2,7 @@
 title: 'IOS-UX-F9 — Propose the large-format whole-screen layout'
 type: 'investigation'
 created: '2026-10-07'
-status: 'draft'
+status: 'in-review'
 route: 'dispatch'
 review_loop_iteration: 0
 parity_tag: 'FB-LAYOUT'
@@ -84,6 +84,7 @@ PROVISIONAL decisions: the owner has not confirmed these. Work proceeds on them 
 - One arrangement or two on large windows — options: one arrangement for voice and typing, orb always small beside the transcript (matches FB-TYPE criterion 10; **recommended and drafted**) / voice view keeps a large orb in the side panel and typing shrinks it. The proposal states both and recommends the first; the owner chooses.
 - Keyboard shortcuts — the proposal drafts ⌘⇧L (talk or return to voice), ⌘L (focus composer), ⌘⇧M (mute), ⌘. (interrupt), ⌃⌘S (sidebar), ⌥⌘T (thinking pane) on Apple platforms, and Ctrl equivalents on Android. F7 builds ⌘⇧L ahead of approval. The owner approves or changes them.
 - Android platform notes rest on Material adaptive guidance and the Android twin spec (`spec-android-ux-15-large-layout.md`), not on a build of the Android app; the Android repo's owner reviews them.
+- Android owner review — the Android-specific differences in the proposal (sidebar collapsed at Medium width, Ctrl-based shortcuts) need review by the Android repo's owner before approval.
 
 ## Code Map
 
@@ -110,6 +111,14 @@ PROVISIONAL decisions: the owner has not confirmed these. Work proceeds on them 
 - Given the PR, then it changes no Swift, project or test file.
 
 ## Implementation Notes
+
+Status: proposed; owner approval required. Nothing is approved; approval date pending.
+
+- Written: [`LAYOUT.md`](../planning-artifacts/ux-designs/ux-hermes-relay-large-layout-2026-10-10/LAYOUT.md) (layout classes and resolver, zone table, one-vs-two arrangement with a recommendation, mockup index, narrowing order, reading/focus order, shortcut table, F6-F8 impact, open decisions, approval block "pending") and [`mockups/large-layout.html`](../planning-artifacts/ux-designs/ux-hermes-relay-large-layout-2026-10-10/mockups/large-layout.html) (12 frames plus narrowing strip; offline, no JS).
+- Facts cited from the Xcode 27.2 beta 2 swiftinterfaces (file and line in LAYOUT.md section 1): `NavigationSplitView` iOS 16/macOS 13, `.inspector` iOS 17/macOS 14, `.commands`/`CommandMenu` iOS 14/macOS 11, `.keyboardShortcut` iOS 14/macOS 11, `AccessibilityFocusState` iOS 15/macOS 12, `horizontalSizeClass` iOS 13/macOS 10.15. Android facts from the Android developer docs on window size classes and canonical layouts (links in LAYOUT.md).
+- [INFERENCE] (not verified): pane widths; inspector behaviour in compact; Android `SupportingPaneScaffold`/drawer fit; Ctrl-based Android shortcuts and their collisions; Android Back behaviour; Apple shortcut conventions and system collisions; iPad shortcut overlay. Full list in LAYOUT.md section 11.
+- Shortcuts are proposals; F7 builds ⌘⇧L provisionally ahead of approval. Approval is by director review of this spec in place of the owner checkpoint (owner authorized); the owner corrects afterwards.
+- `story-index.yaml` lists F9 as a dependency of F6-F8 and F5 for F8 and omits F7 for F6; left unedited. F6-F8 compact scope does not treat F9 as a blocker.
 
 ## Spec Change Log
 
