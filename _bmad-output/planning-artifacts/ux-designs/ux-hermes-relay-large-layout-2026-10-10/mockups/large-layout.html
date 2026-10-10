@@ -1,0 +1,356 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Large-format whole-screen layout (proposed)</title>
+<style>
+/* Large-format layout proposal. Same Night Console tokens as key-conversation.html. Offline: inline CSS, system fonts, no JS. */
+:root {
+  --canvas: #0B101B; --console: #101725; --panel: #0D1320; --raised: #182338;
+  --ink: #EAF7FF; --ink2: #B3C0D2; --live: #62E6C7; --attention: #FFCF5C;
+  --identity: #7C8CFF; --unavailable: #FF7D9C; --hair: rgba(179,192,210,.22);
+  --page: #05080F; --page-ink: #EAF7FF;
+}
+@media (prefers-color-scheme: light) { :root { --page: #E9EDF4; --page-ink: #0B101B; } }
+* { box-sizing: border-box; }
+body { margin: 0; background: var(--page); color: var(--page-ink);
+  font: 15px/1.4 -apple-system, BlinkMacSystemFont, "SF Pro Text", system-ui, sans-serif; padding: 24px 16px; }
+h1 { font-size: 20px; margin: 0 0 4px; } h2 { font-size: 17px; margin: 32px 0 4px; }
+.lede, .lede2 { margin: 0 0 20px; opacity: .8; max-width: 90ch; } .lede2 { margin-bottom: 14px; }
+.grid { display: flex; flex-wrap: wrap; gap: 28px; align-items: flex-start; }
+figure { margin: 0; } figcaption { font-size: 13px; margin-top: 10px; max-width: 420px; opacity: .85; }
+figcaption b { display: block; }
+.win { height: 460px; border-radius: 14px; overflow: hidden; background: var(--canvas); color: var(--ink);
+  border: 1px solid var(--hair); display: flex; flex-direction: column; box-shadow: 0 18px 50px rgba(0,0,0,.35); font-size: 12.5px; }
+.win.ipad { border-radius: 22px; border: 8px solid #000; } .win.android { border-radius: 18px; border: 6px solid #000; }
+.bar { height: 26px; display: flex; justify-content: space-between; align-items: center; padding: 0 16px; font-size: 11px; font-weight: 600; flex: none; }
+.bar.mac { background: var(--raised); justify-content: flex-start; gap: 16px; padding: 0 12px; }
+.bar.mac .tl i { display: inline-block; width: 10px; height: 10px; border-radius: 50%; background: var(--ink2); opacity: .6; margin-right: 6px; }
+.menuhint { margin-left: auto; color: var(--ink2); font-weight: 400; }
+.body { flex: 1; display: flex; min-height: 0; }
+.sb { width: 170px; flex: none; background: var(--panel); border-right: 1px solid var(--hair); padding: 10px; }
+.sb .it { padding: 8px 10px; border-radius: 10px; color: var(--ink2); margin-top: 4px; } .sb .it.sel { background: var(--raised); color: var(--ink); }
+.ph { font-weight: 600; font-size: 12px; margin-bottom: 6px; } .ph span { font-weight: 400; color: var(--ink2); margin-left: 6px; font-size: 11px; }
+.main { flex: 1; min-width: 0; display: flex; flex-direction: column; padding: 10px; gap: 8px; }
+.hdr { display: flex; align-items: center; gap: 8px; padding: 8px 12px; border-radius: 14px; background: var(--console); border: 1px solid var(--hair); }
+.dot { width: 8px; height: 8px; border-radius: 50%; background: var(--live); flex: none; }
+.who { font-weight: 600; font-size: 12px; } .stat { margin-left: auto; color: var(--ink2); font-size: 12px; } .stat b { font-weight: 600; }
+.stat.id b { color: var(--identity); } .stat.attn b { color: var(--attention); }
+.tog { width: 24px; height: 24px; border-radius: 8px; border: 1px solid var(--hair); display: grid; place-items: center; color: var(--ink2); }
+.tog svg { width: 14px; height: 14px; fill: currentColor; }
+.tr { flex: 1; min-height: 0; overflow: hidden; padding: 4px 6px; display: flex; flex-direction: column; gap: 8px; }
+.msg { color: var(--ink); } .msg b { display: block; font-size: 10px; letter-spacing: .04em; text-transform: uppercase; color: var(--ink2); font-weight: 600; }
+.think-row { height: 26px; display: flex; align-items: center; gap: 6px; padding: 0 10px; border-radius: 10px; background: var(--panel); border: 1px solid var(--hair); color: var(--ink2); }
+.live::after { content: "\258D"; color: var(--live); margin-left: 1px; }
+.comp { display: flex; gap: 8px; align-items: center; padding: 8px; border-radius: 18px; background: var(--console); border: 1px solid var(--hair); }
+.comp.focus { border-color: var(--identity); box-shadow: 0 0 0 2px color-mix(in srgb, var(--identity) 35%, transparent); }
+.field { flex: 1; height: 32px; display: flex; align-items: center; padding: 0 10px; border-radius: 12px; background: var(--panel); color: var(--ink2); }
+.caret::after { content: "|"; color: var(--identity); margin-left: 1px; }
+.send { width: 32px; height: 32px; border-radius: 50%; background: var(--hair); display: grid; place-items: center; color: var(--ink2); font-weight: 700; }
+.panel { width: 230px; flex: none; display: flex; flex-direction: column; border-left: 1px solid var(--hair); background: var(--panel); }
+.think { flex: 1; padding: 10px; overflow: hidden; } .pt { color: var(--ink); line-height: 1.6; } .dimtxt { color: var(--ink2); }
+.cluster { display: flex; gap: 8px; align-items: center; padding: 10px; border-top: 1px solid var(--hair); background: var(--console); }
+.orb { width: 44px; height: 44px; border-radius: 50%; display: grid; place-items: center; flex: none; color: #fff;
+  background: radial-gradient(circle at 35% 30%, color-mix(in srgb, var(--identity) 70%, white), var(--identity) 70%); }
+.orb svg { width: 20px; height: 20px; fill: #fff; } .orb.focus { outline: 2px solid var(--ink); outline-offset: 2px; }
+.btn { display: inline-flex; flex-direction: column; align-items: center; justify-content: center; gap: 2px; min-width: 56px; height: 46px; padding: 0 6px;
+  border-radius: 12px; border: 1px solid var(--hair); color: var(--ink2); font-size: 10.5px; }
+.btn svg { width: 16px; height: 16px; fill: currentColor; } .btn i { font-style: normal; }
+.btn.mute.on { background: var(--attention); border-color: var(--attention); color: #1a1300; }
+.btn.intr { border-color: var(--unavailable); color: var(--unavailable); } .btn.intr.off { opacity: .4; border-color: var(--hair); color: var(--ink2); }
+.mini { display: flex; width: 420px; height: 150px; gap: 4px; padding: 4px; border: 1px solid var(--hair); border-radius: 10px; background: var(--canvas); color: var(--ink); }
+.mc { display: grid; place-items: center; text-align: center; font-size: 11px; border-radius: 6px; background: var(--console); border: 1px solid var(--hair); padding: 4px; }
+
+</style>
+</head>
+<body>
+<h1>Large-format whole-screen layout</h1>
+<p class="lede">Status: proposed; owner approval required. Nothing here is approved. Companion to LAYOUT.md (IOS-UX-F9 / ANDROID-UX-15, tag FB-LAYOUT). Twelve frames: iPad, Mac and Android tablet or foldable, each in voice view, typing view, reply with thinking text, and mute on. Recommended arrangement: one arrangement for voice and typing, the orb always small beside the transcript. Frames use fixed widths in CSS pixels, not device models; all text is neutral placeholder text. Mute (speaker glyph, label Mute/Unmute) and Interrupt (square stop glyph, label Interrupt) never share a glyph or label.</p>
+<h2>iPad</h2><p class="lede2">iPad: horizontal size class regular. Touch first; hardware keyboard shortcuts as in LAYOUT.md.</p><div class="grid">
+<figure>
+<div class="win ipad" style="width:820px">
+  <div class="bar"><span>9:41</span><span>&#9679;&#9679;&#9679;</span></div>
+  <div class="body">
+  <aside class="sb"><div class="ph">Conversations</div><div class="it sel">Sample conversation A</div><div class="it">Sample conversation B</div><div class="it">Sample conversation C</div></aside>
+  <section class="main">
+    <header class="hdr"><span class="dot"></span><span class="who">Profile &middot; Connected &middot; 02:14</span>
+      <span class="stat id"><b>Ready</b> &middot; Tap to talk</span></header>
+    <div class="tr"><div class="msg"><b>You</b>Neutral sample question one.</div><div class="msg"><b>Hermes</b>Neutral sample reply one. Short and plain.</div></div>
+    <div class="comp"><span class="field">Message Hermes&hellip;</span><span class="send">&#8593;</span></div>
+  </section>
+  <aside class="panel">
+    <div class="think"><div class="ph">Thinking <span>no active turn</span></div><div class="pt dimtxt">Opened thinking text for a turn appears here.</div></div>
+    <div class="cluster">
+      <span class="orb focus" title="Talk (small orb)"><svg viewBox="0 0 24 24"><path d="M12 14a3 3 0 0 0 3-3V5a3 3 0 0 0-6 0v6a3 3 0 0 0 3 3zm5-3a5 5 0 0 1-10 0H5a7 7 0 0 0 6 6.92V21h2v-3.08A7 7 0 0 0 19 11z"/></svg></span>
+      <span class="btn mute"><svg viewBox="0 0 24 24"><path d="M3 9v6h4l5 4V5L7 9H3zm13.5 3a4.5 4.5 0 0 0-2.5-4.03v8.05A4.5 4.5 0 0 0 16.5 12z"/></svg><i>Mute</i></span>
+      <span class="btn intr off"><svg viewBox="0 0 24 24"><rect x="6" y="6" width="12" height="12" rx="2"/></svg><i>Interrupt</i></span>
+    </div>
+  </aside>
+  </div>
+</div>
+<figcaption><b>1 &middot; iPad &middot; Voice view</b>Ready. The orb is small and always in the side cluster. Mute and Interrupt beside it; Interrupt is dimmed with nothing to interrupt.</figcaption>
+</figure>
+<figure>
+<div class="win ipad" style="width:820px">
+  <div class="bar"><span>9:41</span><span>&#9679;&#9679;&#9679;</span></div>
+  <div class="body">
+  <aside class="sb"><div class="ph">Conversations</div><div class="it sel">Sample conversation A</div><div class="it">Sample conversation B</div><div class="it">Sample conversation C</div></aside>
+  <section class="main">
+    <header class="hdr"><span class="dot"></span><span class="who">Profile &middot; Connected &middot; 02:14</span>
+      <span class="stat id"><b>Ready</b> &middot; Typing</span></header>
+    <div class="tr"><div class="msg"><b>You</b>Neutral sample question one.</div><div class="msg"><b>Hermes</b>Neutral sample reply one. Short and plain.</div><div class="msg"><b>You</b>Neutral sample question two.</div><div class="msg"><b>Hermes</b>Neutral sample reply two.</div></div>
+    <div class="comp focus"><span class="field"><span class="caret">Sample draft text</span></span><span class="send">&#8593;</span></div>
+  </section>
+  <aside class="panel">
+    <div class="think"><div class="ph">Thinking <span>no active turn</span></div><div class="pt dimtxt">Opened thinking text for a turn appears here.</div></div>
+    <div class="cluster">
+      <span class="orb" title="Talk (small orb)"><svg viewBox="0 0 24 24"><path d="M12 14a3 3 0 0 0 3-3V5a3 3 0 0 0-6 0v6a3 3 0 0 0 3 3zm5-3a5 5 0 0 1-10 0H5a7 7 0 0 0 6 6.92V21h2v-3.08A7 7 0 0 0 19 11z"/></svg></span>
+      <span class="btn mute"><svg viewBox="0 0 24 24"><path d="M3 9v6h4l5 4V5L7 9H3zm13.5 3a4.5 4.5 0 0 0-2.5-4.03v8.05A4.5 4.5 0 0 0 16.5 12z"/></svg><i>Mute</i></span>
+      <span class="btn intr off"><svg viewBox="0 0 24 24"><rect x="6" y="6" width="12" height="12" rx="2"/></svg><i>Interrupt</i></span>
+    </div>
+  </aside>
+  </div>
+</div>
+<figcaption><b>2 &middot; iPad &middot; Typing view</b>Composer focused. Same arrangement as voice view; nothing moves.</figcaption>
+</figure>
+<figure>
+<div class="win ipad" style="width:820px">
+  <div class="bar"><span>9:41</span><span>&#9679;&#9679;&#9679;</span></div>
+  <div class="body">
+  
+  <section class="main">
+    <header class="hdr"><span class="tog" title="Show conversations"><svg viewBox="0 0 24 24"><path d="M3 5h18v14H3zM5 7v10h4V7z" fill-rule="evenodd"/></svg></span><span class="dot"></span><span class="who">Profile &middot; Connected &middot; 02:14</span>
+      <span class="stat attn"><b>Thinking</b> &middot; Interrupt to stop</span></header>
+    <div class="tr"><div class="msg"><b>You</b>Neutral sample question one.</div><div class="msg"><b>Hermes</b>Neutral sample reply one. Short and plain.</div><div class="msg"><b>You</b>Neutral sample question three.</div><div class="think-row"><span class="chev">&#9656;</span> Thinking &middot; turn 3</div><div class="msg"><b>Hermes</b><span class="live">Neutral sample reply streaming here</span></div></div>
+    <div class="comp"><span class="field">Message Hermes&hellip;</span><span class="send">&#8593;</span></div>
+  </section>
+  <aside class="panel">
+    <div class="think"><div class="ph">Thinking <span>turn 3 &middot; live</span></div><div class="pt">Sample thinking line one.<br>Sample thinking line two.<br>Sample thinking line three.<br><span class="live">Sample thinking line four</span></div></div>
+    <div class="cluster">
+      <span class="orb" title="Talk (small orb)"><svg viewBox="0 0 24 24"><path d="M12 14a3 3 0 0 0 3-3V5a3 3 0 0 0-6 0v6a3 3 0 0 0 3 3zm5-3a5 5 0 0 1-10 0H5a7 7 0 0 0 6 6.92V21h2v-3.08A7 7 0 0 0 19 11z"/></svg></span>
+      <span class="btn mute"><svg viewBox="0 0 24 24"><path d="M3 9v6h4l5 4V5L7 9H3zm13.5 3a4.5 4.5 0 0 0-2.5-4.03v8.05A4.5 4.5 0 0 0 16.5 12z"/></svg><i>Mute</i></span>
+      <span class="btn intr"><svg viewBox="0 0 24 24"><rect x="6" y="6" width="12" height="12" rx="2"/></svg><i>Interrupt</i></span>
+    </div>
+  </aside>
+  </div>
+</div>
+<figcaption><b>3 &middot; iPad &middot; Reply with thinking text</b>Thinking pane accumulates the turn live; transcript keeps the collapsed Thinking row. Interrupt is active. Sidebar hidden by the user; toggle in the header.</figcaption>
+</figure>
+<figure>
+<div class="win ipad" style="width:820px">
+  <div class="bar"><span>9:41</span><span>&#9679;&#9679;&#9679;</span></div>
+  <div class="body">
+  
+  <section class="main">
+    <header class="hdr"><span class="tog" title="Show conversations"><svg viewBox="0 0 24 24"><path d="M3 5h18v14H3zM5 7v10h4V7z" fill-rule="evenodd"/></svg></span><span class="dot"></span><span class="who">Profile &middot; Connected &middot; 02:14</span>
+      <span class="stat attn"><b>Speaking</b> &middot; Muted</span></header>
+    <div class="tr"><div class="msg"><b>You</b>Neutral sample question one.</div><div class="msg"><b>Hermes</b>Neutral sample reply one. Short and plain.</div><div class="msg"><b>You</b>Neutral sample question three.</div><div class="think-row"><span class="chev">&#9656;</span> Thinking &middot; turn 3</div><div class="msg"><b>Hermes</b><span class="live">Neutral sample reply streaming here</span></div></div>
+    <div class="comp"><span class="field">Message Hermes&hellip;</span><span class="send">&#8593;</span></div>
+  </section>
+  <aside class="panel">
+    <div class="think"><div class="ph">Thinking <span>turn 3 &middot; live</span></div><div class="pt">Sample thinking line one.<br>Sample thinking line two.<br>Sample thinking line three.<br><span class="live">Sample thinking line four</span></div></div>
+    <div class="cluster">
+      <span class="orb" title="Talk (small orb)"><svg viewBox="0 0 24 24"><path d="M12 14a3 3 0 0 0 3-3V5a3 3 0 0 0-6 0v6a3 3 0 0 0 3 3zm5-3a5 5 0 0 1-10 0H5a7 7 0 0 0 6 6.92V21h2v-3.08A7 7 0 0 0 19 11z"/></svg></span>
+      <span class="btn mute on"><svg viewBox="0 0 24 24"><path d="M3 9v6h4l5 4V5L7 9H3z"/><path d="M15 9l6 6M21 9l-6 6" stroke="currentColor" stroke-width="2.2" fill="none" stroke-linecap="round"/></svg><i>Unmute</i></span>
+      <span class="btn intr"><svg viewBox="0 0 24 24"><rect x="6" y="6" width="12" height="12" rx="2"/></svg><i>Interrupt</i></span>
+    </div>
+  </aside>
+  </div>
+</div>
+<figcaption><b>4 &middot; iPad &middot; Mute on</b>Muted: speaker-slash glyph and label "Unmute"; status line says Muted. Reply text keeps streaming. Interrupt (square stop glyph) stays active. Sidebar hidden by the user; toggle in the header.</figcaption>
+</figure>
+</div>
+<h2>Mac</h2><p class="lede2">Mac: always large. Same arrangement as iPad; adds the Conversation menu-bar commands.</p><div class="grid">
+<figure>
+<div class="win mac" style="width:900px">
+  <div class="bar mac"><span class="tl"><i></i><i></i><i></i></span><span>Hermes Relay</span><span class="menuhint">Conversation menu</span></div>
+  <div class="body">
+  <aside class="sb"><div class="ph">Conversations</div><div class="it sel">Sample conversation A</div><div class="it">Sample conversation B</div><div class="it">Sample conversation C</div></aside>
+  <section class="main">
+    <header class="hdr"><span class="dot"></span><span class="who">Profile &middot; Connected &middot; 02:14</span>
+      <span class="stat id"><b>Ready</b> &middot; Tap to talk</span></header>
+    <div class="tr"><div class="msg"><b>You</b>Neutral sample question one.</div><div class="msg"><b>Hermes</b>Neutral sample reply one. Short and plain.</div></div>
+    <div class="comp"><span class="field">Message Hermes&hellip;</span><span class="send">&#8593;</span></div>
+  </section>
+  <aside class="panel">
+    <div class="think"><div class="ph">Thinking <span>no active turn</span></div><div class="pt dimtxt">Opened thinking text for a turn appears here.</div></div>
+    <div class="cluster">
+      <span class="orb focus" title="Talk (small orb)"><svg viewBox="0 0 24 24"><path d="M12 14a3 3 0 0 0 3-3V5a3 3 0 0 0-6 0v6a3 3 0 0 0 3 3zm5-3a5 5 0 0 1-10 0H5a7 7 0 0 0 6 6.92V21h2v-3.08A7 7 0 0 0 19 11z"/></svg></span>
+      <span class="btn mute"><svg viewBox="0 0 24 24"><path d="M3 9v6h4l5 4V5L7 9H3zm13.5 3a4.5 4.5 0 0 0-2.5-4.03v8.05A4.5 4.5 0 0 0 16.5 12z"/></svg><i>Mute</i></span>
+      <span class="btn intr off"><svg viewBox="0 0 24 24"><rect x="6" y="6" width="12" height="12" rx="2"/></svg><i>Interrupt</i></span>
+    </div>
+  </aside>
+  </div>
+</div>
+<figcaption><b>5 &middot; Mac &middot; Voice view</b>Ready. The orb is small and always in the side cluster. Mute and Interrupt beside it; Interrupt is dimmed with nothing to interrupt.</figcaption>
+</figure>
+<figure>
+<div class="win mac" style="width:900px">
+  <div class="bar mac"><span class="tl"><i></i><i></i><i></i></span><span>Hermes Relay</span><span class="menuhint">Conversation menu</span></div>
+  <div class="body">
+  <aside class="sb"><div class="ph">Conversations</div><div class="it sel">Sample conversation A</div><div class="it">Sample conversation B</div><div class="it">Sample conversation C</div></aside>
+  <section class="main">
+    <header class="hdr"><span class="dot"></span><span class="who">Profile &middot; Connected &middot; 02:14</span>
+      <span class="stat id"><b>Ready</b> &middot; Typing</span></header>
+    <div class="tr"><div class="msg"><b>You</b>Neutral sample question one.</div><div class="msg"><b>Hermes</b>Neutral sample reply one. Short and plain.</div><div class="msg"><b>You</b>Neutral sample question two.</div><div class="msg"><b>Hermes</b>Neutral sample reply two.</div></div>
+    <div class="comp focus"><span class="field"><span class="caret">Sample draft text</span></span><span class="send">&#8593;</span></div>
+  </section>
+  <aside class="panel">
+    <div class="think"><div class="ph">Thinking <span>no active turn</span></div><div class="pt dimtxt">Opened thinking text for a turn appears here.</div></div>
+    <div class="cluster">
+      <span class="orb" title="Talk (small orb)"><svg viewBox="0 0 24 24"><path d="M12 14a3 3 0 0 0 3-3V5a3 3 0 0 0-6 0v6a3 3 0 0 0 3 3zm5-3a5 5 0 0 1-10 0H5a7 7 0 0 0 6 6.92V21h2v-3.08A7 7 0 0 0 19 11z"/></svg></span>
+      <span class="btn mute"><svg viewBox="0 0 24 24"><path d="M3 9v6h4l5 4V5L7 9H3zm13.5 3a4.5 4.5 0 0 0-2.5-4.03v8.05A4.5 4.5 0 0 0 16.5 12z"/></svg><i>Mute</i></span>
+      <span class="btn intr off"><svg viewBox="0 0 24 24"><rect x="6" y="6" width="12" height="12" rx="2"/></svg><i>Interrupt</i></span>
+    </div>
+  </aside>
+  </div>
+</div>
+<figcaption><b>6 &middot; Mac &middot; Typing view</b>Composer focused. Same arrangement as voice view; nothing moves.</figcaption>
+</figure>
+<figure>
+<div class="win mac" style="width:900px">
+  <div class="bar mac"><span class="tl"><i></i><i></i><i></i></span><span>Hermes Relay</span><span class="menuhint">Conversation menu</span></div>
+  <div class="body">
+  <aside class="sb"><div class="ph">Conversations</div><div class="it sel">Sample conversation A</div><div class="it">Sample conversation B</div><div class="it">Sample conversation C</div></aside>
+  <section class="main">
+    <header class="hdr"><span class="dot"></span><span class="who">Profile &middot; Connected &middot; 02:14</span>
+      <span class="stat attn"><b>Thinking</b> &middot; Interrupt to stop</span></header>
+    <div class="tr"><div class="msg"><b>You</b>Neutral sample question one.</div><div class="msg"><b>Hermes</b>Neutral sample reply one. Short and plain.</div><div class="msg"><b>You</b>Neutral sample question three.</div><div class="think-row"><span class="chev">&#9656;</span> Thinking &middot; turn 3</div><div class="msg"><b>Hermes</b><span class="live">Neutral sample reply streaming here</span></div></div>
+    <div class="comp"><span class="field">Message Hermes&hellip;</span><span class="send">&#8593;</span></div>
+  </section>
+  <aside class="panel">
+    <div class="think"><div class="ph">Thinking <span>turn 3 &middot; live</span></div><div class="pt">Sample thinking line one.<br>Sample thinking line two.<br>Sample thinking line three.<br><span class="live">Sample thinking line four</span></div></div>
+    <div class="cluster">
+      <span class="orb" title="Talk (small orb)"><svg viewBox="0 0 24 24"><path d="M12 14a3 3 0 0 0 3-3V5a3 3 0 0 0-6 0v6a3 3 0 0 0 3 3zm5-3a5 5 0 0 1-10 0H5a7 7 0 0 0 6 6.92V21h2v-3.08A7 7 0 0 0 19 11z"/></svg></span>
+      <span class="btn mute"><svg viewBox="0 0 24 24"><path d="M3 9v6h4l5 4V5L7 9H3zm13.5 3a4.5 4.5 0 0 0-2.5-4.03v8.05A4.5 4.5 0 0 0 16.5 12z"/></svg><i>Mute</i></span>
+      <span class="btn intr"><svg viewBox="0 0 24 24"><rect x="6" y="6" width="12" height="12" rx="2"/></svg><i>Interrupt</i></span>
+    </div>
+  </aside>
+  </div>
+</div>
+<figcaption><b>7 &middot; Mac &middot; Reply with thinking text</b>Thinking pane accumulates the turn live; transcript keeps the collapsed Thinking row. Interrupt is active.</figcaption>
+</figure>
+<figure>
+<div class="win mac" style="width:900px">
+  <div class="bar mac"><span class="tl"><i></i><i></i><i></i></span><span>Hermes Relay</span><span class="menuhint">Conversation menu</span></div>
+  <div class="body">
+  <aside class="sb"><div class="ph">Conversations</div><div class="it sel">Sample conversation A</div><div class="it">Sample conversation B</div><div class="it">Sample conversation C</div></aside>
+  <section class="main">
+    <header class="hdr"><span class="dot"></span><span class="who">Profile &middot; Connected &middot; 02:14</span>
+      <span class="stat attn"><b>Speaking</b> &middot; Muted</span></header>
+    <div class="tr"><div class="msg"><b>You</b>Neutral sample question one.</div><div class="msg"><b>Hermes</b>Neutral sample reply one. Short and plain.</div><div class="msg"><b>You</b>Neutral sample question three.</div><div class="think-row"><span class="chev">&#9656;</span> Thinking &middot; turn 3</div><div class="msg"><b>Hermes</b><span class="live">Neutral sample reply streaming here</span></div></div>
+    <div class="comp"><span class="field">Message Hermes&hellip;</span><span class="send">&#8593;</span></div>
+  </section>
+  <aside class="panel">
+    <div class="think"><div class="ph">Thinking <span>turn 3 &middot; live</span></div><div class="pt">Sample thinking line one.<br>Sample thinking line two.<br>Sample thinking line three.<br><span class="live">Sample thinking line four</span></div></div>
+    <div class="cluster">
+      <span class="orb" title="Talk (small orb)"><svg viewBox="0 0 24 24"><path d="M12 14a3 3 0 0 0 3-3V5a3 3 0 0 0-6 0v6a3 3 0 0 0 3 3zm5-3a5 5 0 0 1-10 0H5a7 7 0 0 0 6 6.92V21h2v-3.08A7 7 0 0 0 19 11z"/></svg></span>
+      <span class="btn mute on"><svg viewBox="0 0 24 24"><path d="M3 9v6h4l5 4V5L7 9H3z"/><path d="M15 9l6 6M21 9l-6 6" stroke="currentColor" stroke-width="2.2" fill="none" stroke-linecap="round"/></svg><i>Unmute</i></span>
+      <span class="btn intr"><svg viewBox="0 0 24 24"><rect x="6" y="6" width="12" height="12" rx="2"/></svg><i>Interrupt</i></span>
+    </div>
+  </aside>
+  </div>
+</div>
+<figcaption><b>8 &middot; Mac &middot; Mute on</b>Muted: speaker-slash glyph and label "Unmute"; status line says Muted. Reply text keeps streaming. Interrupt (square stop glyph) stays active.</figcaption>
+</figure>
+</div>
+<h2>Android tablet / foldable</h2><p class="lede2">Android: WindowWidthSizeClass Expanded here; Medium frames collapse the sidebar (platform convention: list-detail shows one pane at Medium width).</p><div class="grid">
+<figure>
+<div class="win android" style="width:880px">
+  <div class="bar"><span>9:41</span><span>&#9679;&#9679;&#9679;</span></div>
+  <div class="body">
+  <aside class="sb"><div class="ph">Conversations</div><div class="it sel">Sample conversation A</div><div class="it">Sample conversation B</div><div class="it">Sample conversation C</div></aside>
+  <section class="main">
+    <header class="hdr"><span class="dot"></span><span class="who">Profile &middot; Connected &middot; 02:14</span>
+      <span class="stat id"><b>Ready</b> &middot; Tap to talk</span></header>
+    <div class="tr"><div class="msg"><b>You</b>Neutral sample question one.</div><div class="msg"><b>Hermes</b>Neutral sample reply one. Short and plain.</div></div>
+    <div class="comp"><span class="field">Message Hermes&hellip;</span><span class="send">&#8593;</span></div>
+  </section>
+  <aside class="panel">
+    <div class="think"><div class="ph">Thinking <span>no active turn</span></div><div class="pt dimtxt">Opened thinking text for a turn appears here.</div></div>
+    <div class="cluster">
+      <span class="orb focus" title="Talk (small orb)"><svg viewBox="0 0 24 24"><path d="M12 14a3 3 0 0 0 3-3V5a3 3 0 0 0-6 0v6a3 3 0 0 0 3 3zm5-3a5 5 0 0 1-10 0H5a7 7 0 0 0 6 6.92V21h2v-3.08A7 7 0 0 0 19 11z"/></svg></span>
+      <span class="btn mute"><svg viewBox="0 0 24 24"><path d="M3 9v6h4l5 4V5L7 9H3zm13.5 3a4.5 4.5 0 0 0-2.5-4.03v8.05A4.5 4.5 0 0 0 16.5 12z"/></svg><i>Mute</i></span>
+      <span class="btn intr off"><svg viewBox="0 0 24 24"><rect x="6" y="6" width="12" height="12" rx="2"/></svg><i>Interrupt</i></span>
+    </div>
+  </aside>
+  </div>
+</div>
+<figcaption><b>9 &middot; Android tablet / foldable &middot; Voice view</b>Ready. The orb is small and always in the side cluster. Mute and Interrupt beside it; Interrupt is dimmed with nothing to interrupt.</figcaption>
+</figure>
+<figure>
+<div class="win android" style="width:880px">
+  <div class="bar"><span>9:41</span><span>&#9679;&#9679;&#9679;</span></div>
+  <div class="body">
+  <aside class="sb"><div class="ph">Conversations</div><div class="it sel">Sample conversation A</div><div class="it">Sample conversation B</div><div class="it">Sample conversation C</div></aside>
+  <section class="main">
+    <header class="hdr"><span class="dot"></span><span class="who">Profile &middot; Connected &middot; 02:14</span>
+      <span class="stat id"><b>Ready</b> &middot; Typing</span></header>
+    <div class="tr"><div class="msg"><b>You</b>Neutral sample question one.</div><div class="msg"><b>Hermes</b>Neutral sample reply one. Short and plain.</div><div class="msg"><b>You</b>Neutral sample question two.</div><div class="msg"><b>Hermes</b>Neutral sample reply two.</div></div>
+    <div class="comp focus"><span class="field"><span class="caret">Sample draft text</span></span><span class="send">&#8593;</span></div>
+  </section>
+  <aside class="panel">
+    <div class="think"><div class="ph">Thinking <span>no active turn</span></div><div class="pt dimtxt">Opened thinking text for a turn appears here.</div></div>
+    <div class="cluster">
+      <span class="orb" title="Talk (small orb)"><svg viewBox="0 0 24 24"><path d="M12 14a3 3 0 0 0 3-3V5a3 3 0 0 0-6 0v6a3 3 0 0 0 3 3zm5-3a5 5 0 0 1-10 0H5a7 7 0 0 0 6 6.92V21h2v-3.08A7 7 0 0 0 19 11z"/></svg></span>
+      <span class="btn mute"><svg viewBox="0 0 24 24"><path d="M3 9v6h4l5 4V5L7 9H3zm13.5 3a4.5 4.5 0 0 0-2.5-4.03v8.05A4.5 4.5 0 0 0 16.5 12z"/></svg><i>Mute</i></span>
+      <span class="btn intr off"><svg viewBox="0 0 24 24"><rect x="6" y="6" width="12" height="12" rx="2"/></svg><i>Interrupt</i></span>
+    </div>
+  </aside>
+  </div>
+</div>
+<figcaption><b>10 &middot; Android tablet / foldable &middot; Typing view</b>Composer focused. Same arrangement as voice view; nothing moves.</figcaption>
+</figure>
+<figure>
+<div class="win android" style="width:700px">
+  <div class="bar"><span>9:41</span><span>&#9679;&#9679;&#9679;</span></div>
+  <div class="body">
+  
+  <section class="main">
+    <header class="hdr"><span class="tog" title="Show conversations"><svg viewBox="0 0 24 24"><path d="M3 5h18v14H3zM5 7v10h4V7z" fill-rule="evenodd"/></svg></span><span class="dot"></span><span class="who">Profile &middot; Connected &middot; 02:14</span>
+      <span class="stat attn"><b>Thinking</b> &middot; Interrupt to stop</span></header>
+    <div class="tr"><div class="msg"><b>You</b>Neutral sample question one.</div><div class="msg"><b>Hermes</b>Neutral sample reply one. Short and plain.</div><div class="msg"><b>You</b>Neutral sample question three.</div><div class="think-row"><span class="chev">&#9656;</span> Thinking &middot; turn 3</div><div class="msg"><b>Hermes</b><span class="live">Neutral sample reply streaming here</span></div></div>
+    <div class="comp"><span class="field">Message Hermes&hellip;</span><span class="send">&#8593;</span></div>
+  </section>
+  <aside class="panel">
+    <div class="think"><div class="ph">Thinking <span>turn 3 &middot; live</span></div><div class="pt">Sample thinking line one.<br>Sample thinking line two.<br>Sample thinking line three.<br><span class="live">Sample thinking line four</span></div></div>
+    <div class="cluster">
+      <span class="orb" title="Talk (small orb)"><svg viewBox="0 0 24 24"><path d="M12 14a3 3 0 0 0 3-3V5a3 3 0 0 0-6 0v6a3 3 0 0 0 3 3zm5-3a5 5 0 0 1-10 0H5a7 7 0 0 0 6 6.92V21h2v-3.08A7 7 0 0 0 19 11z"/></svg></span>
+      <span class="btn mute"><svg viewBox="0 0 24 24"><path d="M3 9v6h4l5 4V5L7 9H3zm13.5 3a4.5 4.5 0 0 0-2.5-4.03v8.05A4.5 4.5 0 0 0 16.5 12z"/></svg><i>Mute</i></span>
+      <span class="btn intr"><svg viewBox="0 0 24 24"><rect x="6" y="6" width="12" height="12" rx="2"/></svg><i>Interrupt</i></span>
+    </div>
+  </aside>
+  </div>
+</div>
+<figcaption><b>11 &middot; Android tablet / foldable &middot; Reply with thinking text</b>Thinking pane accumulates the turn live; transcript keeps the collapsed Thinking row. Interrupt is active. Medium width (fixed 700): sidebar collapsed.</figcaption>
+</figure>
+<figure>
+<div class="win android" style="width:700px">
+  <div class="bar"><span>9:41</span><span>&#9679;&#9679;&#9679;</span></div>
+  <div class="body">
+  
+  <section class="main">
+    <header class="hdr"><span class="tog" title="Show conversations"><svg viewBox="0 0 24 24"><path d="M3 5h18v14H3zM5 7v10h4V7z" fill-rule="evenodd"/></svg></span><span class="dot"></span><span class="who">Profile &middot; Connected &middot; 02:14</span>
+      <span class="stat attn"><b>Speaking</b> &middot; Muted</span></header>
+    <div class="tr"><div class="msg"><b>You</b>Neutral sample question one.</div><div class="msg"><b>Hermes</b>Neutral sample reply one. Short and plain.</div><div class="msg"><b>You</b>Neutral sample question three.</div><div class="think-row"><span class="chev">&#9656;</span> Thinking &middot; turn 3</div><div class="msg"><b>Hermes</b><span class="live">Neutral sample reply streaming here</span></div></div>
+    <div class="comp"><span class="field">Message Hermes&hellip;</span><span class="send">&#8593;</span></div>
+  </section>
+  <aside class="panel">
+    <div class="think"><div class="ph">Thinking <span>turn 3 &middot; live</span></div><div class="pt">Sample thinking line one.<br>Sample thinking line two.<br>Sample thinking line three.<br><span class="live">Sample thinking line four</span></div></div>
+    <div class="cluster">
+      <span class="orb" title="Talk (small orb)"><svg viewBox="0 0 24 24"><path d="M12 14a3 3 0 0 0 3-3V5a3 3 0 0 0-6 0v6a3 3 0 0 0 3 3zm5-3a5 5 0 0 1-10 0H5a7 7 0 0 0 6 6.92V21h2v-3.08A7 7 0 0 0 19 11z"/></svg></span>
+      <span class="btn mute on"><svg viewBox="0 0 24 24"><path d="M3 9v6h4l5 4V5L7 9H3z"/><path d="M15 9l6 6M21 9l-6 6" stroke="currentColor" stroke-width="2.2" fill="none" stroke-linecap="round"/></svg><i>Unmute</i></span>
+      <span class="btn intr"><svg viewBox="0 0 24 24"><rect x="6" y="6" width="12" height="12" rx="2"/></svg><i>Interrupt</i></span>
+    </div>
+  </aside>
+  </div>
+</div>
+<figcaption><b>12 &middot; Android tablet / foldable &middot; Mute on</b>Muted: speaker-slash glyph and label "Unmute"; status line says Muted. Reply text keeps streaming. Interrupt (square stop glyph) stays active. Medium width (fixed 700): sidebar collapsed.</figcaption>
+</figure>
+</div>
+<h2>Narrowing toward compact</h2>
+<p class="lede2">Order: the sidebar collapses first, then the thinking pane becomes the compact thinking area above the composer, then the voice cluster folds into the compact controls.</p>
+<div class="grid"><figure><div class="mini"><div class="mc" style="flex:2">Conversations</div><div class="mc" style="flex:5">Status / transcript / composer</div><div class="mc" style="flex:3">Thinking pane<br>orb &middot; Mute &middot; Interrupt</div></div><figcaption><b>A &middot; Large, full</b>Sidebar | transcript + composer | thinking pane + voice cluster.</figcaption></figure><figure><div class="mini"><div class="mc" style="flex:6">Status / transcript / composer</div><div class="mc" style="flex:3">Thinking pane<br>orb &middot; Mute &middot; Interrupt</div></div><figcaption><b>B &middot; Sidebar collapses first</b>Becomes a toggle in the header (overlay when opened).</figcaption></figure><figure><div class="mini"><div class="mc" style="flex:6">Status / transcript<br>Thinking &middot; latest 3 lines<br>composer</div><div class="mc" style="flex:2">orb<br>Mute<br>Interrupt</div></div><figcaption><b>C &middot; Thinking pane becomes compact area</b>Latest lines sit above the composer; full text opens in the compact sheet. Voice cluster stays beside the transcript.</figcaption></figure><figure><div class="mini"><div class="mc" style="flex:1">Status &middot; Mute<br>transcript<br>Thinking &middot; latest 3 lines<br>orb + composer</div></div><figcaption><b>D &middot; Compact</b>Small orb joins the composer row; Mute in the header; Interrupt appears in the status line while a reply runs.</figcaption></figure></div>
+</body>
+</html>
