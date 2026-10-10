@@ -211,6 +211,17 @@ final class VoiceSessionCoordinator {
     private var audioFormat: AudioFormat?
     private var audioFileBuffer = Data()
     private var streamedAudioBytes = 0
+    /// Mute gates local playback only (IOS-UX-F8). Audio is still received and
+    /// consumed while muted, then dropped. In memory, never stored: the app
+    /// always launches unmuted, and this coordinator lives for the process.
+    private(set) var isMuted = false
+    /// True once the current reply was muted at any point. The reply rail then
+    /// shows streamed text instead of text paced by playback, which cannot
+    /// follow audio that was dropped (and stays that way if the user unmutes).
+    private(set) var replyTextIsLive = false
+    /// True from the moment this coordinator asks `output` to start a stream
+    /// until it finishes or mute stops it.
+    private var isOutputLive = false
     private var captureFailureMessage: String?
     private var captureBinding: HermesTurnBinding?
     private var playbackPositionTask: Task<Void, Never>?
@@ -1251,6 +1262,52 @@ final class VoiceSessionCoordinator {
         beginHandsFreeReplyTail()
     }
 
+    /// Mutes or unmutes Hermes's voice. Only local playback is gated: no
+    /// interrupt is sent, the turn is untouched, and audio keeps arriving to
+    /// be consumed and dropped. Muting stops live output at once; unmuting
+    /// resumes from the next chunk, never replaying dropped audio.
+    func setMuted(_ muted: Bool) async {
+        guard muted != isMuted else { return }
+        isMuted = muted
+        if muted { replyTextIsLive = true }
+        journal.record(
+            "voice output mute=\(muted ? "on" : "off") reply=\(state.isOutputActive ? "playing" : "idle")"
+        )
+        guard muted, state.isOutputActive else {
+            if muted { isOutputLive = false }
+            return
+        }
+        await stopLiveOutputForMute()
+    }
+
+    private func stopLiveOutputForMute() async {
+        guard isOutputLive else { return }
+        isOutputLive = false
+        await output.stop()
+    }
+
+    /// A muted chunk or file was consumed and dropped. That counts as
+    /// delivered, so a muted reply is never a playback failure, and the
+    /// reply is speaking exactly as it would be unmuted.
+    private func noteDroppedAudio() {
+        audioDeliveryStarted = true
+        guard state != .speaking else { return }
+        state = .speaking
+        updateNowPlayingPlaybackState()
+    }
+
+    /// Bytes to discard from the front of a chunk so output resumes on a
+    /// frame boundary of the segment. `streamedAudioBytes` counts every byte
+    /// of the segment, played or dropped, so the segment offset is known.
+    /// Nil when the chunk ends before the next boundary.
+    private func frameAlignedStart(bytesBefore: Int, chunkCount: Int) -> Int? {
+        guard let format = audioFormat else { return nil }
+        let bytesPerFrame = format.channels * format.sampleWidth
+        guard bytesPerFrame > 0 else { return nil }
+        let skip = (bytesPerFrame - bytesBefore % bytesPerFrame) % bytesPerFrame
+        return skip < chunkCount ? skip : nil
+    }
+
     /// Names why the reply stopped counting as in flight: the state it ended
     /// in and whether its audio stream was still open. Content-free.
     private func journalResponseEnded(path: String) {
@@ -1318,6 +1375,7 @@ final class VoiceSessionCoordinator {
     ) async {
         guard generation == responseGeneration, !Task.isCancelled else { return }
         turnDidComplete = false
+        replyTextIsLive = isMuted
         audioSegmentIndex = 0
         state = .thinking
         let completed = await store.sendTurn(text: text, expectedBinding: binding) { [weak self] event in
@@ -1362,19 +1420,55 @@ final class VoiceSessionCoordinator {
             await diagnostics.record(.streamStarted(format: format))
             state = .buffering
             updateNowPlayingPlaybackState()
+            isOutputLive = false
+            // Muted: the segment is consumed and dropped, so the output is
+            // never started for it.
+            guard !isMuted else { return }
+            isOutputLive = true
             do {
                 try await output.start(format: format)
                 guard isCurrentResponse(generation) else { return }
+                if isMuted { await stopLiveOutputForMute() }
             } catch {
-                await handlePlaybackFailure(generation: generation)
+                if isMuted {
+                    isOutputLive = false
+                } else {
+                    await handlePlaybackFailure(generation: generation)
+                }
             }
         case .audioChunk(let pcm):
             guard !playbackFailed, !state.isTerminal, audioStreamActive else { return }
+            let bytesBefore = streamedAudioBytes
             streamedAudioBytes += pcm.count
             do {
+                var candidate: Data? = isMuted ? nil : pcm
+                if candidate != nil, !isOutputLive {
+                    // The output is not running: the segment started muted, or
+                    // mute stopped it. Resume on a frame boundary so 16-bit
+                    // samples are never read one byte off.
+                    if let skip = frameAlignedStart(bytesBefore: bytesBefore, chunkCount: pcm.count),
+                       let format = audioFormat {
+                        candidate = skip == 0 ? pcm : Data(pcm.dropFirst(skip))
+                        isOutputLive = true
+                        try await output.start(format: format)
+                        guard isCurrentResponse(generation) else { return }
+                        if isMuted {
+                            await stopLiveOutputForMute()
+                            candidate = nil
+                        }
+                    } else {
+                        candidate = nil
+                    }
+                }
+                guard let playable = candidate else {
+                    await diagnostics.record(.chunkReceived(bytes: pcm.count))
+                    guard isCurrentResponse(generation) else { return }
+                    if !pcm.isEmpty { noteDroppedAudio() }
+                    return
+                }
                 // Schedule first: the chunk-received diagnostic used to cost
                 // the main actor one extra round trip before every append.
-                let readiness = try await output.append(pcm)
+                let readiness = try await output.append(playable)
                 await diagnostics.record(.chunkReceived(bytes: pcm.count))
                 guard isCurrentResponse(generation) else { return }
                 if !pcm.isEmpty {
@@ -1385,7 +1479,14 @@ final class VoiceSessionCoordinator {
                     updateNowPlayingPlaybackState()
                 }
             } catch {
-                await handlePlaybackFailure(generation: generation)
+                if isMuted {
+                    // Muting stopped the output under this chunk. The chunk is
+                    // dropped, which is not a playback failure.
+                    isOutputLive = false
+                    if isCurrentResponse(generation), !pcm.isEmpty { noteDroppedAudio() }
+                } else {
+                    await handlePlaybackFailure(generation: generation)
+                }
             }
         case .audioEnd:
             guard !playbackFailed, !state.isTerminal, audioStreamActive else { return }
@@ -1399,7 +1500,10 @@ final class VoiceSessionCoordinator {
             )
             audioSegmentIndex += 1
             do {
-                try await output.finish()
+                if isOutputLive {
+                    try await output.finish()
+                    isOutputLive = false
+                }
                 guard isCurrentResponse(generation) else { return }
                 audioStreamActive = false
                 finalizePlaybackDuration()
@@ -1424,6 +1528,16 @@ final class VoiceSessionCoordinator {
             audioFileBuffer.append(fileData)
         case .audioFileEnd:
             guard !playbackFailed, audioFileStreamActive else { return }
+            if isMuted {
+                // Consumed and dropped: never decoded or played.
+                audioFileBuffer.removeAll(keepingCapacity: false)
+                audioFileStreamActive = false
+                noteDroppedAudio()
+                if turnDidComplete {
+                    endResponse()
+                }
+                return
+            }
             do {
                 let decoded = try WAVAudioDecoder().decode(audioFileBuffer)
                 guard !decoded.pcm.isEmpty else {
@@ -1436,8 +1550,18 @@ final class VoiceSessionCoordinator {
                     format: decoded.format
                 )
                 isPlaybackDurationFinal = playbackDuration != nil
+                isOutputLive = true
                 try await output.start(format: decoded.format)
                 guard isCurrentResponse(generation) else { return }
+                if isMuted {
+                    await stopLiveOutputForMute()
+                    audioFileStreamActive = false
+                    noteDroppedAudio()
+                    if turnDidComplete {
+                        endResponse()
+                    }
+                    return
+                }
                 let readiness = try await output.append(decoded.pcm)
                 guard isCurrentResponse(generation) else { return }
                 audioDeliveryStarted = true
@@ -1447,13 +1571,25 @@ final class VoiceSessionCoordinator {
                     updateNowPlayingPlaybackState()
                 }
                 try await output.finish()
+                isOutputLive = false
                 guard isCurrentResponse(generation) else { return }
                 audioFileStreamActive = false
                 if turnDidComplete {
                     endResponse()
                 }
             } catch {
-                await handlePlaybackFailure(generation: generation)
+                if isMuted {
+                    isOutputLive = false
+                    audioFileStreamActive = false
+                    if isCurrentResponse(generation) {
+                        noteDroppedAudio()
+                        if turnDidComplete {
+                            endResponse()
+                        }
+                    }
+                } else {
+                    await handlePlaybackFailure(generation: generation)
+                }
             }
         case .turnComplete:
             guard !playbackFailed, !state.isTerminal else { return }
@@ -1552,6 +1688,7 @@ final class VoiceSessionCoordinator {
     private func submitDraft(generation: UInt64) async {
         guard generation == responseGeneration, !Task.isCancelled else { return }
         turnDidComplete = false
+        replyTextIsLive = isMuted
         audioSegmentIndex = 0
         state = .thinking
         let completed = await store.sendDraft { [weak self] event in
@@ -1589,7 +1726,10 @@ final class VoiceSessionCoordinator {
         if audioStreamActive {
             audioStreamActive = false
             do {
-                try await output.finish()
+                if isOutputLive {
+                    try await output.finish()
+                    isOutputLive = false
+                }
                 guard isCurrentResponse(generation) else { return }
                 finalizePlaybackDuration()
             } catch {
