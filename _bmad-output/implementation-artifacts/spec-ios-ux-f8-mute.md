@@ -2,7 +2,7 @@
 title: 'IOS-UX-F8 — Mute Hermes's voice without interrupting the reply'
 type: 'feature'
 created: '2026-10-07'
-status: 'backlog'
+status: 'draft'
 route: 'dispatch'
 review_loop_iteration: 0
 parity_tag: 'FB-MUTE'
@@ -43,15 +43,25 @@ context:
 10. Each mute change writes one content-free diagnostics journal line naming the new state and whether a reply was playing.
 11. Large: the mute control sits with the small orb as placed by the approved FB-LAYOUT proposal; compact placement is next to the voice control.
 
-### iOS and macOS today
+## Open Questions
 
-Checked against `origin/main` (dda7181):
-- **Mute gates here:** `VoiceSessionCoordinator.swift:1352-1369`, the `.audioChunk` case, calls `output.append(pcm)` at `:1358` (`AppleAudioOutput.append`, `AppleAudioOutput.swift:115`, which schedules on `AVAudioPlayerNode` at `:331`). While muted the chunk is still received and counted (`streamedAudioBytes`, `:1354`) and is dropped instead of appended. The file-audio path (`.audioFileStart`/`.audioFileChunk`/`.audioFileEnd`, `:1397-1420`) must drop the same way.
-- End of reply: `.audioEnd` (`:1371-1395`) calls `output.finish()` and ends the response only if `audioDeliveryStarted` (`:1388-1392`), otherwise `handlePlaybackFailure` (`:1592`). Muted dropping must count as delivered so a muted reply never becomes a playback failure.
-- Reply reveal: `RecentTranscriptRail.swift:550-564` and `:743-746` reveal text in step with playback (IOS-UX-F5). Criterion 8 needs this to show streamed text when muted.
-- **Distinct from Interrupt:** `VoiceSessionCoordinator.swift:1133-1140` (`interruptActiveTurn`) stops output and sends the interrupt; `ConversationStore.swift:2667`. Mute must call neither.
-- Journal: `VoiceSessionCoordinator` writes content-free lines such as `voice response started path=voice` (`:888`); mute adds `voice output mute=on|off reply=playing|idle`.
-- macOS: `AppleAudioOutput` has no platform branches; the same path applies.
+PROVISIONAL decisions: the owner has not confirmed these. Work proceeds on them under the director's authorization; the owner corrects afterwards.
+
+- Dependency on `IOS-UX-F9` — options: ignore F9 for compact work (compact criteria build now; iPad and Mac use compact placement until F9 is approved) / wait for F9 approval (nothing ships). **Provisional: ignore F9.** `story-index.yaml` still lists `ios:IOS-UX-F9` as a dependency while this spec says compact criteria are buildable now; the index is left unedited and the mismatch is recorded here.
+- Dependency on `IOS-UX-F5` (still `in-progress` in the tracker) — options: F5's reply rail is on `main` (`084c568`), so build on it / wait for F5 device acceptance. **Provisional: build on it.** Criterion 8 needs only the rail code, not F5's closure. F5's pending device checks stay F5's.
+- Status line wording while muted — options: keep the state word and add a "Muted" segment ("Speaking · Muted · Tap to interrupt") / replace the state word. **Provisional: add the segment**, shown whenever muted, including idle ("Ready · Muted · Tap to talk").
+- Muted reply state — options: first dropped non-empty chunk moves the state to `.speaking` as unmuted would (Interrupt, hands-free and Now Playing rules unchanged) / add a new `VoiceState`. **Provisional: `.speaking`**, no new state.
+
+## Code Map
+
+Verified against `origin/main` e58974f (the line numbers in the earlier draft had drifted).
+
+- `HermesRelay/ViewModels/VoiceSessionCoordinator.swift` -- `handle(_:generation:)` (`:1339`): `.audioStart` `:1345` (calls `output.start`), `.audioChunk` `:1371` (counts `streamedAudioBytes`, then `output.append`, sets `audioDeliveryStarted`, `.speaking`), `.audioEnd` `:1390` (`output.finish()`, ends the reply when `turnDidComplete && audioDeliveryStarted`), file path `:1416-1457`, `.turnComplete` `:1458`. `playRemainingAudioAndEndResponse` `:1588` calls `output.finish()` when a stream is open. `interruptActiveTurn` `:1133` is the Interrupt path; mute must not call it. Journal calls use `journal.record(...)` (`:888`). Add here: `private(set) var isMuted`, `setMuted(_:) async`, a live-output flag, dropped-chunk handling.
+- `HermesRelay/Services/AudioOutput.swift` / `AppleAudioOutput.swift` -- `AudioOutput` protocol (`:196`); `start`/`append`/`stop` (`AppleAudioOutput:83,115,167`). `stop()` ends the stream and releases a pending `finish()` drain; the protocol does not change. `PCMFrameAccumulator` (`AudioOutput.swift:31`) re-frames chunks, so a resume after dropped bytes must realign to a frame boundary (see Design Notes).
+- `HermesRelay/Views/RecentTranscriptRail.swift` -- `RecentTranscriptDisplay.entries` `:435` hides the live reply until `playbackPosition != nil`; `revealTarget` `:611` and `revealText` `:737` pace text. Muted must show streamed text (criterion 8). Pure function, unit-testable.
+- `HermesRelay/Views/AmbientHUD.swift` -- status line `orbStatusLine` `:501`; control row under it `:594-623` (`HandsFreePill` is iOS only, `#if os(iOS)` `:610`); `AmbientHUDView` passes playback props to the rail `:902`. `HermesRelay/Views/VoiceControl.swift` -- `HandsFreePill` `:90` is the pattern for the new control; `orbAction` uses `hand.raised.fill` for Interrupt.
+- `HermesRelay/Views/ContentView.swift` -- `ambientHUD` `:391` builds the HUD; `ContentViewRuntime` builds one coordinator per process (`:19-86`), so in-memory mute is sticky for the process and resets on launch.
+- Tests: `HermesRelayTests/VoiceSessionCoordinatorTests.swift` (`CoordinatorAudioOutput` fake, `makeBackgroundVoiceHarness`, `harness.journal`); `HermesRelayTests/HermesRelayTests.swift` (HUD and rail pure tests).
 
 ## Boundaries
 
@@ -60,8 +70,46 @@ Checked against `origin/main` (dda7181):
 - macOS: same mute control, journal line and placement as iPad.
 - Mute is process memory in the voice coordinator, never `@AppStorage` (criterion 5).
 
+## Tasks & Acceptance
+
+**Execution:**
+- [ ] `VoiceSessionCoordinator.swift` -- add `isMuted`, `setMuted`; gate `.audioChunk` and file audio (drop, count bytes, set `audioDeliveryStarted`, `.speaking`); skip `output.finish()` when no output is live; resume with `start` plus frame realignment; muting mid-reply calls `output.stop()` only; one journal line per change -- criteria 2-6, 9, 10
+- [ ] `VoiceControl.swift` -- `MuteButton` (glyph `speaker.slash.fill` muted / `speaker.wave.2` unmuted, labels "Mute Hermes"/"Unmute Hermes", toggle trait, one VoiceOver announcement per change, 44 pt hit area) -- criteria 1, 7
+- [ ] `AmbientHUD.swift` -- show `MuteButton` beside the hands-free pill (both platforms) while connected; append "Muted" to the status line; pass `isMuted` to the rail -- criteria 1, 7, 8
+- [ ] `RecentTranscriptRail.swift` -- when muted, show the live reply as it streams and keep `revealedTexts` in step so unmuting never retracts text -- criterion 8
+- [ ] `VoiceSessionCoordinatorTests.swift`, `HermesRelayTests.swift` -- tests listed in Verification
+- [ ] `spec-ios-ux-f8-mute.md`, `sprint-status.yaml` -- record the outcome, move status to review
+
+**Acceptance Criteria (compact; large uses compact placement until F9):**
+- Given a reply is streaming audio, when the user mutes, then output stops at once, no interrupt reaches the store, text keeps streaming, and the turn completes as `.complete`, never `.failed`.
+- Given muted, when audio chunks and `audioEnd` arrive, then they are consumed and dropped, nothing is appended, and the reply ends without waiting on playback.
+- Given muted, when a file-audio reply (`audioFileStart/Chunk/End`) arrives, then it is dropped and counts as delivered.
+- Given muted and a second reply, then it is also silent; a new coordinator starts unmuted.
+- Given a muted reply mid-stream, when the user unmutes, then later chunks play from the current point and dropped bytes are never replayed.
+- Given muted, when the user taps Interrupt, then the turn ends as it does unmuted and mute stays on.
+- Given any mute change, then exactly one journal line `voice output mute=on|off reply=playing|idle` is written (none when the value does not change), with no content.
+- Given muted, then the status line shows "Muted" and the control reads "Unmute Hermes" with a toggle trait.
+
+## Implementation Notes
+
+## Spec Change Log
+
+## Review Triage Log
+
+## Design Notes
+
+- Drop point is the coordinator, not the output: `AppleAudioOutput` and its wrappers (`RecoveringAudioOutput`, `HomeAwareAudioOutput`, `AudioActivityReportingOutput`) stay unchanged, so the legacy WAV recovery never sees muted audio.
+- Mute flips synchronously, then `await output.stop()`. A chunk handler already past the gate can race the stop: recheck `isMuted` after any awaited `start`, and treat an append that fails because mute stopped the output as dropped, not as a playback failure.
+- Frame realignment: `streamedAudioBytes` counts every byte of the segment. On resume the first appended chunk skips `(bytesPerFrame - bytesBefore % bytesPerFrame) % bytesPerFrame` leading bytes, so 16-bit PCM is never read one byte off.
+- "Playing" in the journal line means `state.isOutputActive` (buffering or speaking).
+- Muting while idle changes only the flag and journal; the next reply is dropped from its first chunk and the output is never started.
+
 ## Verification
 
-- Focused XCTest with a fake output: no interrupt sent while muted; chunks consumed and not appended; muted reply completes without playback failure; sticky across replies; unmute resumes live; journal line once per change.
-- Full iOS Simulator suite and macOS build.
-- On device: mute mid-reply on speaker and headphones, VoiceOver labels.
+**Commands:**
+- `xcodebuild … test` (iOS Simulator, CI command) -- expected: all tests pass, baseline 667 plus new.
+- `xcodebuild … -destination 'platform=macOS' test` -- expected: all pass, baseline 666 plus new.
+
+**Tests (fake output):** no interrupt while muted; chunks consumed, not appended; muted reply completes without playback failure (Standard and Home paths); sticky across replies; unmute resumes live and realigns an odd split; file-audio path dropped; Interrupt works muted; journal line once per change, none on no-op; rail shows streamed text while muted and does not retract after unmute; status line shows "Muted".
+
+**Pending device:** mute mid-reply on speaker and headphones; VoiceOver labels and one announcement per change; other apps' audio and system volume untouched; large-window placement waits for F9.
