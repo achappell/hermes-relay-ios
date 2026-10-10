@@ -2,7 +2,7 @@
 title: 'IOS-UX-F8 — Mute Hermes's voice without interrupting the reply'
 type: 'feature'
 created: '2026-10-07'
-status: 'draft'
+status: 'in-review'
 route: 'dispatch'
 review_loop_iteration: 0
 parity_tag: 'FB-MUTE'
@@ -92,6 +92,22 @@ Verified against `origin/main` e58974f (the line numbers in the earlier draft ha
 
 ## Implementation Notes
 
+Implemented 2026-10-10 on `feat/ios-ux-f8-mute`, compact scope only.
+
+- `VoiceSessionCoordinator`: `isMuted`, `setMuted(_:)`, `replyTextIsLive`, a private `isOutputLive` flag. Muted `.audioChunk` and file audio are consumed and dropped, counted as delivered (`.speaking`). The output is never started for a segment that begins muted. Muting mid-reply calls only `output.stop()`. Unmuting restarts the output from the next chunk that starts on a frame boundary (`frameAlignedStart`).
+- `replyTextIsLive` (not in the spec's first draft): once a reply has been muted at any point, the rail shows streamed text for the rest of that reply. After a mid-reply unmute the playback clock restarts and cannot pace text that was never played, so following the voice again would freeze or retract the text.
+- `MuteButton` in `VoiceControl.swift`, beside the "Keep listening" pill on iOS and alone on macOS. Glyph `speaker.wave.2` / `speaker.slash.fill`, labels "Mute Hermes" / "Unmute Hermes", toggle trait, announcement "Hermes muted" / "Hermes unmuted" once per change. Status line: `Speaking · Muted · Tap to interrupt`.
+- Journal line `voice output mute=on|off reply=playing|idle`, once per change, no content.
+- Not changed: `AudioOutput` and its wrappers, `interruptActiveTurn`, store, protocol.
+- Muted file audio is dropped without decoding, so an empty muted WAV counts as delivered where unmuted it would be a playback failure.
+- Home-path coverage: Home replies use the same `.audioChunk` handler, and the Home audio-start deadline is driven by the audio events, which still arrive while muted. There is no separate Home-fixture mute test.
+
+## Verification record
+
+- iOS Simulator (CI command): 681 tests, 0 failures (baseline 667, +14 new). No test needed a rerun.
+- macOS: 680 tests, 0 failures (baseline 666, +14 new). No test needed a rerun.
+- New tests: 12 in `VoiceSessionCoordinatorTests` (launch unmuted; mute while idle never starts or stops the output; muted reply dropped without failure; sticky across replies; mute mid-reply stops output only with no interrupt; a chunk racing the stop is dropped, not a playback failure; resume on a frame boundary never replays dropped audio; mid-frame resume discards leading bytes; muted file audio; Interrupt works muted; one content-free journal line per change; `replyTextIsLive`), plus 2 in `HermesRelayTests` (rail shows streamed text while muted; status line).
+
 ## Spec Change Log
 
 ## Review Triage Log
@@ -110,6 +126,6 @@ Verified against `origin/main` e58974f (the line numbers in the earlier draft ha
 - `xcodebuild … test` (iOS Simulator, CI command) -- expected: all tests pass, baseline 667 plus new.
 - `xcodebuild … -destination 'platform=macOS' test` -- expected: all pass, baseline 666 plus new.
 
-**Tests (fake output):** no interrupt while muted; chunks consumed, not appended; muted reply completes without playback failure (Standard and Home paths); sticky across replies; unmute resumes live and realigns an odd split; file-audio path dropped; Interrupt works muted; journal line once per change, none on no-op; rail shows streamed text while muted and does not retract after unmute; status line shows "Muted".
+**Tests (fake output):** see the Verification record above. The Home path is covered by the shared handler, not a Home fixture.
 
 **Pending device:** mute mid-reply on speaker and headphones; VoiceOver labels and one announcement per change; other apps' audio and system volume untouched; large-window placement waits for F9.
