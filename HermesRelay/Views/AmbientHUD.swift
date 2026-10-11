@@ -417,6 +417,9 @@ struct AmbientHUDView: View {
     /// Lets the conversation move screen-reader focus to the voice orb when
     /// the voice view returns.
     let orbAccessibilityFocus: AccessibilityFocusState<Bool>.Binding?
+    /// Thinking text per turn (IOS-UX-F6) and how to open one.
+    let thinkingTurns: [ThinkingTurn]
+    let onOpenThinking: (UUID) -> Void
 
     init(
         presentation: AmbientHUDPresentation,
@@ -452,7 +455,9 @@ struct AmbientHUDView: View {
         homeSessionTitle: String? = nil,
         onShowSessions: (() -> Void)? = nil,
         viewMode: ConversationViewMode = .voice,
-        orbAccessibilityFocus: AccessibilityFocusState<Bool>.Binding? = nil
+        orbAccessibilityFocus: AccessibilityFocusState<Bool>.Binding? = nil,
+        thinkingTurns: [ThinkingTurn] = [],
+        onOpenThinking: @escaping (UUID) -> Void = { _ in }
     ) {
         self.presentation = presentation
         self.connectionState = connectionState
@@ -488,6 +493,8 @@ struct AmbientHUDView: View {
         self.onShowSessions = onShowSessions
         self.viewMode = viewMode
         self.orbAccessibilityFocus = orbAccessibilityFocus
+        self.thinkingTurns = thinkingTurns
+        self.onOpenThinking = onOpenThinking
     }
 
     private var liveProvisionalText: String {
@@ -694,7 +701,11 @@ struct AmbientHUDView: View {
 
         Spacer(minLength: 8)
 
-        TypingTranscriptView(messages: transcriptMessages)
+        TypingTranscriptView(
+            messages: transcriptMessages,
+            thinkingTurns: thinkingTurns,
+            onOpenThinking: onOpenThinking
+        )
     }
 
     /// The typing view's status line: the state, then "Muted" while muted.
@@ -961,6 +972,12 @@ struct AmbientHUDView: View {
         )
 
         return VStack(spacing: 10) {
+            if let turn = ThinkingTranscriptOrdering.latestExchangeTurn(
+                messages: transcriptMessages,
+                turns: thinkingTurns
+            ) {
+                ThinkingRow(turn: turn) { onOpenThinking(turn.id) }
+            }
             if projection.entries.isEmpty {
                 Text(doorwayEmptyCaption)
                     .font(.callout)
@@ -1222,6 +1239,8 @@ private struct AmbientVisualizer: View {
 
 struct TranscriptHistoryView: View {
     let messages: [TranscriptMessage]
+    var thinkingTurns: [ThinkingTurn] = []
+    @State private var openThinkingID: UUID?
     @Environment(\.dismiss) private var dismiss
     private let exportFormatter = TranscriptExportFormatter()
 
@@ -1229,8 +1248,13 @@ struct TranscriptHistoryView: View {
         NavigationStack {
             ScrollView {
                 LazyVStack(alignment: .leading, spacing: 12) {
-                    ForEach(messages) { message in
-                        MessageBubble(message: message)
+                    ForEach(ThinkingTranscriptOrdering.items(messages: messages, turns: thinkingTurns)) { item in
+                        switch item {
+                        case .message(let message):
+                            MessageBubble(message: message)
+                        case .thinking(let turn):
+                            ThinkingRow(turn: turn) { openThinkingID = turn.id }
+                        }
                     }
                 }
                 .padding(16)
@@ -1243,6 +1267,12 @@ struct TranscriptHistoryView: View {
             // with a LazyVStack, whose trailing rows do not exist yet when a
             // scrollTo would run.
             .defaultScrollAnchor(.bottom)
+            .sheet(item: Binding(
+                get: { openThinkingID.flatMap { id in thinkingTurns.first { $0.id == id } } },
+                set: { openThinkingID = $0?.id }
+            )) { turn in
+                ThinkingSheet(turn: turn)
+            }
             .navigationTitle("Conversation history")
             #if os(iOS)
             .navigationBarTitleDisplayMode(.inline)

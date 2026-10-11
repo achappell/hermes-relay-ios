@@ -105,6 +105,10 @@ final class ConversationStore {
     var draft = ""
     var transientError: String?
     var activityText: String?
+    /// Hermes's thinking text per turn (IOS-UX-F6). In memory only: never part
+    /// of `messages`, `PersistedConversation`, exports, journal lines or logs.
+    private(set) var thinkingTurns: [ThinkingTurn] = []
+    private var activeThinkingTurnID: UUID?
     var isSending = false
     var unconfirmedTurnText: String?
     private(set) var homeBridgeState: HomeBridgeState = .unconfigured
@@ -237,6 +241,8 @@ final class ConversationStore {
             let conversation = try await persistence.load()
             let restoredRecovery = restoredHomeRecovery(conversation.homeRecovery)
             messages = conversation.messages
+            thinkingTurns = []
+            activeThinkingTurnID = nil
             draft = conversation.draft
             unconfirmedTurnText = conversation.unconfirmedTurnText
             homeRecovery = restoredRecovery
@@ -2075,6 +2081,7 @@ final class ConversationStore {
         isSending = true
         activeAssistantID = nil
         activityText = nil
+        endThinkingTurn()
         transientError = nil
         turnCompleted = false
         interruptedTurnGeneration = nil
@@ -2135,6 +2142,7 @@ final class ConversationStore {
         }
         didComplete = turnCompleted
         activityText = nil
+        endThinkingTurn()
         if !didComplete {
             unconfirmedTurnText = text
             activeAssistantID = nil
@@ -2187,6 +2195,7 @@ final class ConversationStore {
         activeTurnText = text
         activeAssistantID = nil
         activityText = nil
+        endThinkingTurn()
         transientError = nil
         turnCompleted = false
         homeControlTerminal = false
@@ -2278,6 +2287,7 @@ final class ConversationStore {
                     return false
                 }
                 activityText = nil
+                endThinkingTurn()
                 isSending = false
                 await persistConversation()
                 return false
@@ -2391,6 +2401,7 @@ final class ConversationStore {
         unconfirmedTurnText = text
         transientError = failure.safeReason
         activityText = nil
+        endThinkingTurn()
         isSending = false
         activeTurnText = nil
         homeEventHandler = nil
@@ -2807,6 +2818,8 @@ final class ConversationStore {
         activityText = nil
 
         messages = []
+        thinkingTurns = []
+        activeThinkingTurnID = nil
         draft = ""
         unconfirmedTurnText = nil
         activeAssistantID = nil
@@ -3096,7 +3109,7 @@ final class ConversationStore {
                 messages.append(message)
             }
         case .thinkingDelta(let text):
-            activityText = text
+            appendThinking(text)
         case .status(let text, _):
             activityText = text
         case .audioStart, .audioChunk, .audioEnd,
@@ -3108,18 +3121,60 @@ final class ConversationStore {
             interruptionConfirmedTurnGeneration = activeTurnGeneration
             activeAssistantID = nil
             activityText = nil
-        case .messageComplete(_, _, let failureReason):
+            endThinkingTurn()
+        case .messageComplete(_, let reasoning, let failureReason):
             if !failureReason.isEmpty {
                 transientError = failureReason
             }
+            appendCompletionReasoning(reasoning)
+            endThinkingTurn()
         case .turnComplete:
             turnCompleted = true
             activityText = nil
+            endThinkingTurn()
             unconfirmedTurnText = nil
         case .error(let text):
             transientError = text
             messages.append(TranscriptMessage(role: .error, text: text))
         }
+    }
+
+    /// Thinking text arrives in order and only ever appends to the active turn.
+    private func appendThinking(_ text: String) {
+        guard !text.isEmpty else { return }
+        if let id = activeThinkingTurnID,
+           let index = thinkingTurns.firstIndex(where: { $0.id == id }) {
+            thinkingTurns[index].text += text
+            return
+        }
+        let turn = ThinkingTurn(
+            anchorMessageID: messages.last(where: { $0.role == .user })?.id,
+            text: text
+        )
+        thinkingTurns.append(turn)
+        activeThinkingTurnID = turn.id
+    }
+
+    /// Reasoning carried on the completed message may repeat what deltas
+    /// already delivered; it is added only when it is not already contained.
+    private func appendCompletionReasoning(_ reasoning: String) {
+        let trimmed = reasoning.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return }
+        if let id = activeThinkingTurnID,
+           let index = thinkingTurns.firstIndex(where: { $0.id == id }) {
+            guard !thinkingTurns[index].text.contains(trimmed) else { return }
+            thinkingTurns[index].text += thinkingTurns[index].text.isEmpty ? trimmed : "\n\n" + trimmed
+            return
+        }
+        appendThinking(trimmed)
+    }
+
+    private func endThinkingTurn() {
+        if let id = activeThinkingTurnID,
+           let index = thinkingTurns.firstIndex(where: { $0.id == id }) {
+            thinkingTurns[index].isActive = false
+        }
+        activeThinkingTurnID = nil
     }
 
     private var activeAssistantIndex: Int? {
@@ -3170,4 +3225,14 @@ extension PersistedHomeRecovery {
             updatedAt: updatedAt
         )
     }
+}
+
+/// One turn's accumulated thinking text (IOS-UX-F6). Anchored to the user
+/// message that began the turn, so its row sits between that message and the
+/// reply even before the reply message exists.
+struct ThinkingTurn: Identifiable, Equatable, Sendable {
+    let id = UUID()
+    let anchorMessageID: UUID?
+    var text: String
+    var isActive = true
 }

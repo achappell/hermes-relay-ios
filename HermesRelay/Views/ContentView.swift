@@ -123,6 +123,8 @@ struct ContentView: View {
     @State private var launchSettled = false
     @AccessibilityFocusState private var composerAccessibilityFocused: Bool
     @AccessibilityFocusState private var orbAccessibilityFocused: Bool
+    /// The thinking turn open in its sheet (IOS-UX-F6).
+    @State private var openThinkingID: UUID?
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     private let configurationStore: RelayConfigurationStore?
     private let conversationDirectory: URL?
@@ -388,7 +390,18 @@ struct ContentView: View {
             }
         }
         .sheet(isPresented: $showingHistory) {
-            TranscriptHistoryView(messages: store.messages)
+            TranscriptHistoryView(messages: store.messages, thinkingTurns: store.thinkingTurns)
+        }
+        .sheet(item: Binding(
+            get: { openThinkingID.flatMap { id in store.thinkingTurns.first { $0.id == id } } },
+            set: { openThinkingID = $0?.id }
+        )) { turn in
+            ThinkingSheet(turn: turn)
+        }
+        // One announcement when a thinking row appears, never per delta.
+        .onChange(of: store.thinkingTurns.count) { oldCount, newCount in
+            guard newCount > oldCount else { return }
+            AccessibilityNotification.Announcement("Hermes is thinking").post()
         }
         .sheet(isPresented: $showingHomeSessions) {
             HomeSessionsView(
@@ -478,7 +491,9 @@ struct ContentView: View {
                 }
                 : nil,
             viewMode: viewMode,
-            orbAccessibilityFocus: $orbAccessibilityFocused
+            orbAccessibilityFocus: $orbAccessibilityFocused,
+            thinkingTurns: store.thinkingTurns,
+            onOpenThinking: { openThinkingID = $0 }
         )
     }
 
