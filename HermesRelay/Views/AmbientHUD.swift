@@ -498,6 +498,7 @@ struct AmbientHUDView: View {
     }
 
     /// State, then what a tap on the orb will do: "Ready · Tap to talk".
+    /// While muted, "Muted" follows the state: "Speaking · Muted · Tap to interrupt".
     private var orbStatusLine: String {
         guard let orbCoordinator else { return doorwayStatusLabel }
         let action = VoiceControlInteractionPolicy.orbAction(
@@ -505,7 +506,15 @@ struct AmbientHUDView: View {
             isHandsFreeArmed: orbCoordinator.isHandsFreeArmed,
             isHandsFreeCaptureActive: orbCoordinator.isHandsFreeCaptureActive
         )
-        return "\(doorwayStatusLabel) · \(action.prompt)"
+        return Self.orbStatusLine(
+            statusLabel: doorwayStatusLabel,
+            isMuted: orbCoordinator.isMuted,
+            prompt: action.prompt
+        )
+    }
+
+    nonisolated static func orbStatusLine(statusLabel: String, isMuted: Bool, prompt: String) -> String {
+        isMuted ? "\(statusLabel) · Muted · \(prompt)" : "\(statusLabel) · \(prompt)"
     }
 
     private var doorwayStatusLabel: String {
@@ -607,11 +616,14 @@ struct AmbientHUDView: View {
                     .accessibilityHint("Stops listening without sending.")
                 }
 
-                #if os(iOS)
                 if let orbCoordinator {
-                    HandsFreePill(coordinator: orbCoordinator)
+                    HStack(spacing: 10) {
+                        #if os(iOS)
+                        HandsFreePill(coordinator: orbCoordinator)
+                        #endif
+                        MuteButton(coordinator: orbCoordinator)
+                    }
                 }
-                #endif
 
                 if let recoveryMessage = doorwayState.recoveryMessage {
                     doorwayRecoveryNotice(message: recoveryMessage)
@@ -909,6 +921,7 @@ struct AmbientHUDView: View {
                     playbackDuration: playbackDuration,
                     playbackPosition: playbackPosition,
                     isPlaybackDurationFinal: isPlaybackDurationFinal,
+                    showsStreamedReply: voiceCoordinator?.replyTextIsLive ?? false,
                     onShowHistory: onShowHistory
                 )
             }

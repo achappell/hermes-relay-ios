@@ -441,9 +441,15 @@ enum RecentTranscriptDisplay {
         playbackDuration: TimeInterval? = nil,
         playbackPosition: TimeInterval? = nil,
         isPlaybackDurationFinal: Bool = false,
-        fallbackPlaybackOrigin: TimeInterval? = nil
+        fallbackPlaybackOrigin: TimeInterval? = nil,
+        showsStreamedReply: Bool = false
     ) -> [RecentTranscriptEntry] {
         guard isResponseActive, let activeAssistantID else {
+            return projection.entries
+        }
+        // Muted (IOS-UX-F8): no speech will follow the text, so show the
+        // reply as it streams rather than waiting on playback.
+        if showsStreamedReply {
             return projection.entries
         }
         let liveID = activeAssistantID.uuidString
@@ -557,6 +563,8 @@ struct RecentTranscriptRail: View {
     let playbackDuration: TimeInterval?
     let playbackPosition: TimeInterval?
     let isPlaybackDurationFinal: Bool
+    /// True once the reply was muted: text shows as it streams.
+    var showsStreamedReply = false
     let onShowHistory: () -> Void
 
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
@@ -596,7 +604,8 @@ struct RecentTranscriptRail: View {
             playbackDuration: playbackDuration,
             playbackPosition: playbackPosition,
             isPlaybackDurationFinal: isPlaybackDurationFinal,
-            fallbackPlaybackOrigin: fallbackPlaybackOrigin
+            fallbackPlaybackOrigin: fallbackPlaybackOrigin,
+            showsStreamedReply: showsStreamedReply
         )
     }
 
@@ -620,7 +629,7 @@ struct RecentTranscriptRail: View {
             // Any playback position is now enough: FallbackReveal bridges the
             // window before timings or a final duration arrive. The wall-clock
             // reveal below is only for turns with no audio at all.
-            usesPlaybackClock: playbackPosition != nil
+            usesPlaybackClock: playbackPosition != nil || showsStreamedReply
         )
     }
 

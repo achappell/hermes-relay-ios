@@ -140,3 +140,51 @@ struct HandsFreePill: View {
         }
     }
 }
+
+/// Mutes Hermes's voice without interrupting the reply (IOS-UX-F8). It sits
+/// beside the "Keep listening" pill, never shares Interrupt's glyph or label,
+/// and shows the muted state with a slashed speaker and the word "Muted".
+struct MuteButton: View {
+    let coordinator: VoiceSessionCoordinator
+
+    private var isMuted: Bool { coordinator.isMuted }
+
+    var body: some View {
+        Button(action: toggle) {
+            HStack(spacing: 6) {
+                Image(systemName: isMuted ? "speaker.slash.fill" : "speaker.wave.2")
+                    .imageScale(.small)
+                Text(isMuted ? "Muted" : "Mute")
+            }
+            .font(.caption.weight(.medium))
+            .foregroundStyle(isMuted ? HermesVisualTokens.attention : HermesVisualTokens.secondaryInk)
+            .padding(.horizontal, 12)
+            .frame(height: 30)
+            .overlay {
+                Capsule().strokeBorder(
+                    isMuted ? HermesVisualTokens.attention : HermesVisualTokens.secondaryInk.opacity(0.45),
+                    lineWidth: isMuted ? 1.5 : 1
+                )
+            }
+            // Keep a 44 pt hit area around the 30 pt capsule.
+            .padding(.vertical, 7)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel(isMuted ? "Unmute Hermes" : "Mute Hermes")
+        .accessibilityHint("Silences Hermes's voice without stopping the reply.")
+        .accessibilityAddTraits(.isToggle)
+        .accessibilityIdentifier("mute-hermes")
+    }
+
+    private func toggle() {
+        let muted = !coordinator.isMuted
+        Task { @MainActor in
+            await coordinator.setMuted(muted)
+            // Announced once per change.
+            AccessibilityNotification.Announcement(
+                coordinator.isMuted ? "Hermes muted" : "Hermes unmuted"
+            ).post()
+        }
+    }
+}

@@ -738,6 +738,51 @@ final class HermesRelayIOSTests: XCTestCase {
                        "Earlier replies stay; the reply in progress waits for its voice")
     }
 
+    // IOS-UX-F8: a muted reply has no speech to wait for, so its text shows as
+    // it streams, even before any playback position exists.
+    func testMutedReplyShowsStreamedTextWithoutWaitingForPlayback() {
+        let current = TranscriptMessage(role: .assistant, text: "Bogota is the capital of Colombia.")
+        let projection = RecentTranscriptProjection(
+            messages: [current],
+            provisionalText: "",
+            isResponseActive: true,
+            activeAssistantID: current.id
+        )
+
+        let followingVoice = RecentTranscriptDisplay.entries(
+            projection: projection,
+            isResponseActive: true,
+            activeAssistantID: current.id,
+            revealedTexts: [:]
+        )
+        let muted = RecentTranscriptDisplay.entries(
+            projection: projection,
+            isResponseActive: true,
+            activeAssistantID: current.id,
+            revealedTexts: [:],
+            showsStreamedReply: true
+        )
+
+        XCTAssertTrue(followingVoice.isEmpty, "unmuted: the reply waits for its voice")
+        XCTAssertEqual(muted.map(\.text), ["Bogota is the capital of Colombia."])
+        XCTAssertEqual(muted.filter(\.isLive).count, 1)
+    }
+
+    func testStatusLineNamesMutedBetweenTheStateAndTheAction() {
+        XCTAssertEqual(
+            AmbientHUDView.orbStatusLine(statusLabel: "Speaking", isMuted: true, prompt: "Tap to interrupt"),
+            "Speaking · Muted · Tap to interrupt"
+        )
+        XCTAssertEqual(
+            AmbientHUDView.orbStatusLine(statusLabel: "Ready", isMuted: true, prompt: "Tap to talk"),
+            "Ready · Muted · Tap to talk"
+        )
+        XCTAssertEqual(
+            AmbientHUDView.orbStatusLine(statusLabel: "Ready", isMuted: false, prompt: "Tap to talk"),
+            "Ready · Tap to talk"
+        )
+    }
+
     func testRecentTranscriptDisplayUsesAudioDurationWithoutSpeechTiming() {
         let messageID = UUID()
         let response = "Hermes keeps the answer moving."

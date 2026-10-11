@@ -4461,6 +4461,349 @@ final class VoiceSessionCoordinatorTests: XCTestCase {
         }
         XCTFail("The Home voice fake did not receive the prompt")
     }
+
+    // MARK: - IOS-UX-F8 mute
+
+    private static let muteFormat = AudioFormat(sampleRate: 24_000, channels: 1, sampleWidth: 2)
+
+    @MainActor
+    private func muteHarness(
+        output: MuteTestAudioOutput = MuteTestAudioOutput(),
+        journal: DiagnosticsJournal = DiagnosticsJournal(fileURL: nil)
+    ) async -> (
+        coordinator: VoiceSessionCoordinator,
+        store: ConversationStore,
+        client: MuteScriptClient,
+        output: MuteTestAudioOutput,
+        journal: DiagnosticsJournal
+    ) {
+        let client = MuteScriptClient()
+        let store = ConversationStore(client: client)
+        await store.connect()
+        let coordinator = VoiceSessionCoordinator(
+            store: store,
+            input: CoordinatorSpeechInput(),
+            output: output,
+            journal: journal
+        )
+        return (coordinator, store, client, output, journal)
+    }
+
+    /// Starts a typed turn and waits until the relay has it.
+    @MainActor
+    private func startMuteReply(
+        _ coordinator: VoiceSessionCoordinator,
+        _ store: ConversationStore,
+        _ client: MuteScriptClient
+    ) async -> Task<Void, Never> {
+        store.draft = "Say something"
+        let task = Task { @MainActor in await coordinator.sendDraft() }
+        await client.waitUntilTurnStarted()
+        return task
+    }
+
+    @MainActor
+    private func waitForAssistantText(_ store: ConversationStore, _ text: String) async {
+        await waitUntil { store.messages.last?.role == .assistant && store.messages.last?.text == text }
+    }
+
+    private func muteJournalLines(_ journal: DiagnosticsJournal) -> [String] {
+        journal.snapshot().map(\.event).filter { $0.hasPrefix("voice output mute=") }
+    }
+
+    @MainActor
+    func testCoordinatorLaunchesUnmuted() async {
+        let h = await muteHarness()
+        XCTAssertFalse(h.coordinator.isMuted)
+        XCTAssertFalse(h.coordinator.replyTextIsLive)
+    }
+
+    @MainActor
+    func testMutingWhileIdleNeverStartsOrStopsTheOutput() async {
+        let h = await muteHarness()
+
+        await h.coordinator.setMuted(true)
+
+        XCTAssertTrue(h.coordinator.isMuted)
+        let operations = await h.output.operations()
+        XCTAssertEqual(operations, [])
+        XCTAssertEqual(muteJournalLines(h.journal), ["voice output mute=on reply=idle"])
+    }
+
+    @MainActor
+    func testMutedReplyIsConsumedAndDroppedAndCompletesWithoutPlaybackFailure() async {
+        let h = await muteHarness()
+        await h.coordinator.setMuted(true)
+        let task = await startMuteReply(h.coordinator, h.store, h.client)
+
+        await h.client.emit(
+            .messageStart,
+            .textDelta("Hello"),
+            .audioStart(Self.muteFormat),
+            .audioChunk(Data([1, 2, 3, 4])),
+            .audioEnd,
+            .turnComplete(turnID: "turn-1")
+        )
+        await h.client.finish()
+        await task.value
+
+        XCTAssertEqual(h.coordinator.state, .complete)
+        XCTAssertNil(h.store.transientError)
+        XCTAssertEqual(h.store.messages.last?.text, "Hello")
+        let operations = await h.output.operations()
+        XCTAssertEqual(operations, [], "muted audio is never started, appended or finished")
+        let interrupts = await h.client.interruptCount
+        XCTAssertEqual(interrupts, 0)
+    }
+
+    @MainActor
+    func testMuteStaysOnForTheNextReply() async {
+        let h = await muteHarness()
+        await h.coordinator.setMuted(true)
+
+        for text in ["First", "Second"] {
+            let task = await startMuteReply(h.coordinator, h.store, h.client)
+            await h.client.emit(
+                .messageStart,
+                .textDelta(text),
+                .audioStart(Self.muteFormat),
+                .audioChunk(Data([1, 2])),
+                .audioEnd,
+                .turnComplete(turnID: "turn-1")
+            )
+            await h.client.finish()
+            await task.value
+            XCTAssertEqual(h.coordinator.state, .complete)
+        }
+
+        XCTAssertTrue(h.coordinator.isMuted)
+        let operations = await h.output.operations()
+        XCTAssertEqual(operations, [])
+    }
+
+    @MainActor
+    func testMutingMidReplyStopsOutputOnlyAndTheTurnFinishesNormally() async {
+        let h = await muteHarness()
+        let task = await startMuteReply(h.coordinator, h.store, h.client)
+        await h.client.emit(
+            .messageStart,
+            .textDelta("Hel"),
+            .audioStart(Self.muteFormat),
+            .audioChunk(Data([1, 2, 3, 4]))
+        )
+        await h.output.waitUntilAppendRequested()
+        XCTAssertEqual(h.coordinator.state, .speaking)
+
+        await h.coordinator.setMuted(true)
+        await h.client.emit(.audioChunk(Data([5, 6, 7, 8])), .textDelta("lo"))
+        await waitForAssistantText(h.store, "Hello")
+
+        let midReply = await h.output.operations()
+        XCTAssertEqual(midReply, [.start, .append(Data([1, 2, 3, 4])), .stop])
+
+        await h.client.emit(.audioEnd, .turnComplete(turnID: "turn-1"))
+        await h.client.finish()
+        await task.value
+
+        XCTAssertEqual(h.coordinator.state, .complete)
+        XCTAssertNil(h.store.transientError)
+        let operations = await h.output.operations()
+        XCTAssertEqual(operations, [.start, .append(Data([1, 2, 3, 4])), .stop])
+        let interrupts = await h.client.interruptCount
+        XCTAssertEqual(interrupts, 0, "mute never sends an interrupt")
+    }
+
+    @MainActor
+    func testAChunkRacingTheMuteStopIsDroppedNotAPlaybackFailure() async {
+        let output = MuteTestAudioOutput(holdsAppends: true)
+        let h = await muteHarness(output: output)
+        let task = await startMuteReply(h.coordinator, h.store, h.client)
+        await h.client.emit(.messageStart, .textDelta("Hi"), .audioStart(Self.muteFormat))
+        await h.client.emit(.audioChunk(Data([1, 2, 3, 4])))
+        await output.waitUntilAppendEntered()
+
+        // The handler is past the mute gate and inside append when mute stops
+        // the output; the append then fails as the stream no longer exists.
+        await h.coordinator.setMuted(true)
+        await output.releaseHeldAppend()
+
+        await h.client.emit(.audioEnd, .turnComplete(turnID: "turn-1"))
+        await h.client.finish()
+        await task.value
+
+        XCTAssertEqual(h.coordinator.state, .complete)
+        XCTAssertNil(h.store.transientError)
+        XCTAssertEqual(h.store.messages.last?.text, "Hi")
+    }
+
+    @MainActor
+    func testUnmutingResumesLiveAudioOnAFrameBoundaryAndNeverReplaysDroppedAudio() async {
+        let h = await muteHarness()
+        let task = await startMuteReply(h.coordinator, h.store, h.client)
+        await h.client.emit(
+            .messageStart,
+            .audioStart(Self.muteFormat),
+            .audioChunk(Data([1, 2, 3, 4]))
+        )
+        await h.output.waitUntilAppendRequested()
+        await h.coordinator.setMuted(true)
+        // Seven bytes of the segment are consumed; the dropped chunk ends
+        // mid-frame (two-byte frames).
+        await h.client.emit(.audioChunk(Data([5, 6, 7])), .textDelta("x"))
+        await waitForAssistantText(h.store, "x")
+
+        await h.coordinator.setMuted(false)
+        // Ends before the next frame boundary: dropped, output not started.
+        await h.client.emit(.audioChunk(Data([8])))
+        // Starts exactly on a boundary: played whole.
+        await h.client.emit(.audioChunk(Data([9, 10])), .textDelta("y"))
+        await waitForAssistantText(h.store, "xy")
+
+        let operations = await h.output.operations()
+        XCTAssertEqual(
+            operations,
+            [.start, .append(Data([1, 2, 3, 4])), .stop, .start, .append(Data([9, 10]))]
+        )
+
+        await h.client.emit(.audioEnd, .turnComplete(turnID: "turn-1"))
+        await h.client.finish()
+        await task.value
+        XCTAssertEqual(h.coordinator.state, .complete)
+        let finalOperations = await h.output.operations()
+        XCTAssertEqual(finalOperations.last, .finish)
+    }
+
+    @MainActor
+    func testUnmutingMidFrameDiscardsTheLeadingBytesOfTheResumingChunk() async {
+        let h = await muteHarness()
+        await h.coordinator.setMuted(true)
+        let task = await startMuteReply(h.coordinator, h.store, h.client)
+        await h.client.emit(
+            .messageStart,
+            .audioStart(Self.muteFormat),
+            .audioChunk(Data([1, 2, 3])),
+            .textDelta("x")
+        )
+        await waitForAssistantText(h.store, "x")
+
+        await h.coordinator.setMuted(false)
+        // Three bytes were consumed, so byte 4 completes a dropped frame and
+        // playback must begin at byte 5.
+        await h.client.emit(.audioChunk(Data([4, 5, 6, 7])))
+        await h.output.waitUntilAppendRequested()
+
+        let operations = await h.output.operations()
+        XCTAssertEqual(operations, [.start, .append(Data([5, 6, 7]))])
+
+        await h.client.emit(.audioEnd, .turnComplete(turnID: "turn-1"))
+        await h.client.finish()
+        await task.value
+        XCTAssertEqual(h.coordinator.state, .complete)
+    }
+
+    @MainActor
+    func testMutedFileAudioIsDroppedAndCountsAsDelivered() async throws {
+        let writer = WAVFallbackWriter()
+        let wavURL = try writer.write(pcm: Data([1, 2, 3, 4]), format: Self.muteFormat)
+        defer { try? FileManager.default.removeItem(at: wavURL) }
+        let h = await muteHarness()
+        await h.coordinator.setMuted(true)
+        let task = await startMuteReply(h.coordinator, h.store, h.client)
+
+        await h.client.emit(
+            .messageStart,
+            .textDelta("File"),
+            .audioFileStart(contentType: "audio/wav"),
+            .audioFileChunk(try Data(contentsOf: wavURL)),
+            .audioFileEnd,
+            .turnComplete(turnID: "turn-1")
+        )
+        await h.client.finish()
+        await task.value
+
+        XCTAssertEqual(h.coordinator.state, .complete)
+        XCTAssertNil(h.store.transientError)
+        let operations = await h.output.operations()
+        XCTAssertEqual(operations, [])
+    }
+
+    @MainActor
+    func testInterruptStillEndsTheTurnWhileMutedAndMuteStaysOn() async {
+        let h = await muteHarness()
+        await h.coordinator.setMuted(true)
+        let task = await startMuteReply(h.coordinator, h.store, h.client)
+        await h.client.emit(
+            .messageStart,
+            .textDelta("Hello"),
+            .audioStart(Self.muteFormat),
+            .audioChunk(Data([1, 2]))
+        )
+        await waitUntil { h.coordinator.state == .speaking }
+
+        let interrupted = await h.coordinator.interruptActiveTurn()
+        await task.value
+
+        XCTAssertTrue(interrupted)
+        XCTAssertEqual(h.coordinator.state, .interrupted)
+        XCTAssertTrue(h.coordinator.isMuted)
+        let interrupts = await h.client.interruptCount
+        XCTAssertEqual(interrupts, 1)
+    }
+
+    @MainActor
+    func testEachMuteChangeWritesOneContentFreeJournalLine() async {
+        let h = await muteHarness()
+        let task = await startMuteReply(h.coordinator, h.store, h.client)
+        await h.client.emit(
+            .messageStart,
+            .textDelta("secret words"),
+            .audioStart(Self.muteFormat),
+            .audioChunk(Data([1, 2, 3, 4]))
+        )
+        await h.output.waitUntilAppendRequested()
+
+        await h.coordinator.setMuted(true)
+        await h.coordinator.setMuted(true)
+        await h.coordinator.setMuted(false)
+        await h.client.emit(.audioEnd, .turnComplete(turnID: "turn-1"))
+        await h.client.finish()
+        await task.value
+        await h.coordinator.setMuted(true)
+
+        XCTAssertEqual(
+            muteJournalLines(h.journal),
+            [
+                "voice output mute=on reply=playing",
+                "voice output mute=off reply=playing",
+                "voice output mute=on reply=idle",
+            ]
+        )
+        XCTAssertFalse(h.journal.snapshot().contains { $0.event.contains("secret") })
+    }
+
+    @MainActor
+    func testReplyTextStaysLiveForTheReplyThatWasMutedThenFollowsVoiceAgain() async {
+        let h = await muteHarness()
+        let first = await startMuteReply(h.coordinator, h.store, h.client)
+        await h.client.emit(.messageStart, .audioStart(Self.muteFormat), .audioChunk(Data([1, 2])))
+        await h.output.waitUntilAppendRequested()
+        XCTAssertFalse(h.coordinator.replyTextIsLive)
+
+        await h.coordinator.setMuted(true)
+        await h.coordinator.setMuted(false)
+        XCTAssertTrue(h.coordinator.replyTextIsLive, "unmuting must not start retracting text")
+
+        await h.client.emit(.audioEnd, .turnComplete(turnID: "turn-1"))
+        await h.client.finish()
+        await first.value
+
+        let second = await startMuteReply(h.coordinator, h.store, h.client)
+        XCTAssertFalse(h.coordinator.replyTextIsLive)
+        await h.client.emit(.messageStart, .turnComplete(turnID: "turn-2"))
+        await h.client.finish()
+        await second.value
+    }
+
 }
 
 @MainActor
@@ -5543,4 +5886,126 @@ extension StateRecordingAudioOutput {
 extension StartGatedAudioOutput {
     func pause() async {}
     func resume() async {}
+}
+
+private actor MuteTestAudioOutput: AudioOutput {
+    enum Operation: Equatable {
+        case start
+        case append(Data)
+        case finish
+        case stop
+    }
+
+    private let holdsAppends: Bool
+    private var recorded: [Operation] = []
+    private var isStarted = false
+    private var appendRequested = false
+    private var appendRequestWaiters: [CheckedContinuation<Void, Never>] = []
+    private var appendEntered = false
+    private var appendEnteredWaiters: [CheckedContinuation<Void, Never>] = []
+    private var heldAppend: CheckedContinuation<Void, Never>?
+
+    init(holdsAppends: Bool = false) {
+        self.holdsAppends = holdsAppends
+    }
+
+    func start(format: AudioFormat) async throws {
+        recorded.append(.start)
+        isStarted = true
+    }
+
+    func append(_ pcm: Data) async throws -> AudioPlaybackReadiness {
+        if holdsAppends {
+            appendEntered = true
+            appendEnteredWaiters.forEach { $0.resume() }
+            appendEnteredWaiters.removeAll()
+            await withCheckedContinuation { heldAppend = $0 }
+        }
+        // A stopped stream no longer accepts audio, as `AppleAudioOutput`.
+        guard isStarted else { throw AudioOutputError.notStarted }
+        recorded.append(.append(pcm))
+        appendRequested = true
+        appendRequestWaiters.forEach { $0.resume() }
+        appendRequestWaiters.removeAll()
+        return .ready
+    }
+
+    func finish() async throws {
+        recorded.append(.finish)
+    }
+
+    func stop() async {
+        recorded.append(.stop)
+        isStarted = false
+    }
+
+    func playbackPosition() async -> TimeInterval? { nil }
+    func pause() async {}
+    func resume() async {}
+
+    func operations() -> [Operation] { recorded }
+
+    func waitUntilAppendRequested() async {
+        if appendRequested { return }
+        await withCheckedContinuation { appendRequestWaiters.append($0) }
+    }
+
+    func waitUntilAppendEntered() async {
+        if appendEntered { return }
+        await withCheckedContinuation { appendEnteredWaiters.append($0) }
+    }
+
+    func releaseHeldAppend() {
+        heldAppend?.resume()
+        heldAppend = nil
+    }
+}
+
+/// A relay whose turn stream the test drives event by event.
+private actor MuteScriptClient: HermesSessionClient {
+    private(set) var interruptCount = 0
+    private var continuation: AsyncThrowingStream<HermesEvent, Error>.Continuation?
+    private var turnStarted = false
+    private var turnStartWaiters: [CheckedContinuation<Void, Never>] = []
+
+    func connect() async throws -> SessionMetadata {
+        SessionMetadata(sessionID: "session-1", model: nil, capabilities: ["interrupt"])
+    }
+
+    func sendTurn(text: String) async -> AsyncThrowingStream<HermesEvent, Error> {
+        let (stream, continuation) = AsyncThrowingStream<HermesEvent, Error>.makeStream()
+        self.continuation = continuation
+        turnStarted = true
+        turnStartWaiters.forEach { $0.resume() }
+        turnStartWaiters.removeAll()
+        return stream
+    }
+
+    func interruptActiveTurn() async -> Bool {
+        interruptCount += 1
+        continuation?.yield(.turnInterrupted(turnID: "turn-1", reason: "turn interrupted"))
+        continuation?.finish()
+        continuation = nil
+        return true
+    }
+
+    func disconnect() async {}
+
+    func emit(_ events: HermesEvent...) {
+        for event in events { continuation?.yield(event) }
+    }
+
+    func finish() {
+        continuation?.finish()
+        continuation = nil
+    }
+
+    func waitUntilTurnStarted() async {
+        if turnStarted {
+            turnStarted = false
+            return
+        }
+        await withCheckedContinuation { turnStartWaiters.append($0) }
+        turnStarted = false
+    }
 }
