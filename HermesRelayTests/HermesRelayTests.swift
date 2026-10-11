@@ -783,6 +783,71 @@ final class HermesRelayIOSTests: XCTestCase {
         )
     }
 
+    // MARK: - IOS-UX-F7 typing view
+
+    func testTheAppAlwaysLaunchesInTheVoiceView() {
+        XCTAssertEqual(ConversationViewModeReducer.launchMode, .voice)
+    }
+
+    func testFocusingTheComposerEntersTheTypingView() {
+        XCTAssertEqual(
+            ConversationViewModeReducer.reduce(.voice, .composerFocusChanged(isFocused: true)),
+            .typing
+        )
+    }
+
+    // The owner's decision (2026-10-07): the typing view never returns to
+    // voice on its own. Blur (keyboard dismissed by scrolling, tapping the
+    // transcript, or sending) does not leave it, and neither does any voice
+    // state that is not a capture starting.
+    func testTheTypingViewStaysUntilAnExplicitVoiceAction() {
+        var mode = ConversationViewMode.typing
+        let nonCaptureStates: [VoiceState] = [
+            .idle, .thinking, .buffering, .speaking, .complete, .interrupted, .failed("offline"),
+        ]
+        mode = ConversationViewModeReducer.reduce(mode, .composerFocusChanged(isFocused: false))
+        XCTAssertEqual(mode, .typing)
+        for state in nonCaptureStates {
+            mode = ConversationViewModeReducer.reduce(mode, .voiceStateChanged(state))
+            XCTAssertEqual(mode, .typing, "\(state.journalName) must not leave the typing view")
+        }
+        mode = ConversationViewModeReducer.reduce(mode, .composerFocusChanged(isFocused: true))
+        XCTAssertEqual(mode, .typing)
+    }
+
+    func testVoiceControlReturnsToVoiceWhatEverThePermissionOutcome() {
+        // The tap switches the view before the voice action runs, so a denied
+        // permission (voice state .failed) still lands on the voice view.
+        var mode = ConversationViewModeReducer.reduce(.typing, .voiceControlActivated)
+        XCTAssertEqual(mode, .voice)
+        mode = ConversationViewModeReducer.reduce(mode, .voiceStateChanged(.failed("denied")))
+        XCTAssertEqual(mode, .voice)
+    }
+
+    func testAHandsFreeWakeOrAnyCaptureStartReturnsToVoice() {
+        XCTAssertEqual(
+            ConversationViewModeReducer.reduce(.typing, .voiceStateChanged(.listening)),
+            .voice
+        )
+        XCTAssertEqual(
+            ConversationViewModeReducer.reduce(.typing, .voiceStateChanged(.transcribing)),
+            .voice
+        )
+    }
+
+    func testTypingStatusLineShowsMutedAndTheTranscriptSkipsEmptyReplies() {
+        XCTAssertEqual(AmbientHUDView.typingStatusLine(statusLabel: "Ready", isMuted: true), "Ready · Muted")
+        XCTAssertEqual(AmbientHUDView.typingStatusLine(statusLabel: "Ready", isMuted: false), "Ready")
+
+        let messages = [
+            TranscriptMessage(role: .user, text: "Hi"),
+            TranscriptMessage(role: .assistant, text: ""),
+            TranscriptMessage(role: .assistant, text: "  \n"),
+            TranscriptMessage(role: .assistant, text: "Hello"),
+        ]
+        XCTAssertEqual(TypingTranscriptView.visibleMessages(messages).map(\.text), ["Hi", "Hello"])
+    }
+
     func testRecentTranscriptDisplayUsesAudioDurationWithoutSpeechTiming() {
         let messageID = UUID()
         let response = "Hermes keeps the answer moving."

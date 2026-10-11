@@ -2,7 +2,7 @@
 title: 'IOS-UX-F7 — Switch to a typing-focused view when the composer is focused'
 type: 'feature'
 created: '2026-10-07'
-status: 'draft'
+status: 'in-review'
 route: 'dispatch'
 review_loop_iteration: 0
 parity_tag: 'FB-TYPE'
@@ -105,6 +105,19 @@ Verified against `origin/main` e58974f. Line numbers move when IOS-UX-F8 lands u
 - Given Reduce Motion, then the switch is instant.
 
 ## Implementation Notes
+
+Implemented 2026-10-10 on `feat/ios-ux-f7-typing-view` (stacked on F8), compact scope only.
+
+- `ConversationViewMode` + pure `ConversationViewModeReducer`: launch is voice; composer focus enters typing; blur, send, idle never leave; voice-control tap or a capture starting (hands-free wake) returns to voice.
+- `ContentView`: one `ScrollView` kept (content swapped inside `AmbientHUDView`); `defaultScrollAnchor(.bottom)` plus `scrollTo` on mode, message count and keyboard focus changes; `@AccessibilityFocusState` moves focus to the composer on entering typing and to the orb on return; animation off under Reduce Motion; focus changes are ignored for the first 500 ms so a Mac window that auto-focuses the composer still opens in voice view.
+- `AmbientHUDView` typing content keeps the header and the cached, unconfirmed-turn and Home notices, plus recovery and failure notices, and the F8 `MuteButton` with a status line that shows "Muted". Orb, hands-free pill and reply rail are replaced by `TypingTranscriptView` (compact rows, copy/share kept, empty replies skipped).
+- `SmallVoiceControl`: button left of the composer, glyph and hint from `orbAction`, switches to voice, blurs the composer, then runs `performPrimaryAction` (existing permission handling). Shortcut ⌘⇧L is PROVISIONAL pending IOS-UX-F9.
+- Not built: first-keystroke focus, voice-shortcut return (no App Intents exist). Reply text in the typing view shows live.
+
+## Verification record
+
+- iOS Simulator: 687 tests, 0 failures (baseline 667; F8 +14; F7 +6). macOS: 686 tests, 0 failures (baseline 666). No reruns needed.
+- Tests are pure (reducer, status line, transcript filter); the SwiftUI wiring (keyboard, scroll, VoiceOver focus) is pending-device.
 
 ## Spec Change Log
 
