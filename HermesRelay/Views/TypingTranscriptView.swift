@@ -7,6 +7,8 @@ struct TypingTranscriptView: View {
     static let bottomAnchorID = "typing-transcript-bottom"
 
     let messages: [TranscriptMessage]
+    var thinkingTurns: [ThinkingTurn] = []
+    var onOpenThinking: (UUID) -> Void = { _ in }
     private let exportFormatter = TranscriptExportFormatter()
 
     /// Hermes's reply is created empty when it starts; an empty row is noise.
@@ -16,8 +18,18 @@ struct TypingTranscriptView: View {
 
     var body: some View {
         LazyVStack(alignment: .leading, spacing: 8) {
-            ForEach(Self.visibleMessages(messages)) { message in
-                row(for: message)
+            ForEach(
+                ThinkingTranscriptOrdering.items(
+                    messages: Self.visibleMessages(messages),
+                    turns: thinkingTurns
+                )
+            ) { item in
+                switch item {
+                case .message(let message):
+                    row(for: message)
+                case .thinking(let turn):
+                    ThinkingRow(turn: turn) { onOpenThinking(turn.id) }
+                }
             }
             Color.clear
                 .frame(height: 1)

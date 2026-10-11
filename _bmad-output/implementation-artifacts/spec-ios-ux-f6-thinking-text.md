@@ -2,7 +2,7 @@
 title: 'IOS-UX-F6 — Make Hermes's thinking text readable'
 type: 'experiment'
 created: '2026-10-07'
-status: 'draft'
+status: 'in-review'
 route: 'dispatch'
 review_loop_iteration: 0
 parity_tag: 'FB-THINK'
@@ -92,6 +92,22 @@ Verified against `origin/main` e58974f (the earlier draft's line numbers had dri
 
 ## Implementation Notes
 
+Implemented 2026-10-10 on `feat/ios-ux-f6-thinking-text` (stacked on F7 and F8), compact scope only. EXPERIMENT: the owner decides keep, change or remove after use.
+
+- `ConversationStore`: `ThinkingTurn` / `thinkingTurns` beside `messages`, in memory only. `.thinkingDelta` appends to the active turn (anchored to the newest user message); `.status` still goes to `activityText` only; `.messageComplete` reasoning is added when not already contained. The turn ends on completion, interruption, failure and the next turn; cleared on restore and profile clear. Nothing is added to `TranscriptMessage`, `PersistedConversation`, `TranscriptExport` or the journal.
+- `ThinkingRow` (fixed 40 pt, "Hermes is thinking" / "Hermes thought", label never carries the text) and `ThinkingSheet` (live, follows only while at the bottom via `onScrollGeometryChange`, no animated scroll under Reduce Motion, one element per paragraph). `ThinkingTranscriptOrdering` places each row after its user message; shown in the typing transcript, the history sheet (own nested sheet) and above the voice rail for the latest exchange.
+- `ContentView`: sheet presentation and one VoiceOver announcement "Hermes is thinking" when a row is added. The bottom-bar status line stays for status text; thinking no longer feeds it.
+- Home activity `thinking`/`reasoning` without text still shows as the status line (no row).
+
+## Verification record
+
+- iOS Simulator: 694 tests, 0 failures (baseline 667; F8 +14, F7 +6, F6 +7). macOS: 693 tests, 0 failures (baseline 666). No reruns needed.
+- New tests assert append order, status separation, completion reasoning (shown once, not duplicated), one turn per turn, row ordering, follow rule, and that thinking text is absent from the stored conversation file, exports and the diagnostics journal and that a relaunch shows no rows.
+
+## Experiment record
+
+Owner review after use (keep, change, remove): pending.
+
 ## Spec Change Log
 
 ## Review Triage Log
@@ -101,10 +117,6 @@ Verified against `origin/main` e58974f (the earlier draft's line numbers had dri
 - Keying: a turn is anchored to the user message that began it, so the row renders between that message and the reply even though the reply message does not exist yet while thinking.
 - Thinking never reaches `TranscriptMessage`, `PersistedConversation`, `TranscriptExport` or the journal.
 - Follow rule: reuse the shape of `RecentTranscriptFollowState` (`RecentTranscriptRail.swift:83`) for the sheet.
-
-## Experiment record
-
-Owner review after use (keep, change, remove): pending. Record the outcome and date here.
 
 ## Verification
 

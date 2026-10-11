@@ -110,6 +110,164 @@ final class ConversationStoreTransportTests: XCTestCase {
         XCTAssertEqual(store.unconfirmedTurnText, "truncated")
     }
 
+    // MARK: - IOS-UX-F6 thinking text (experiment)
+
+    @MainActor
+    private func thinkingStore(
+        _ events: [HermesEvent],
+        persistence: (any ConversationPersistence)? = nil
+    ) async -> ConversationStore {
+        let client = FakeHermesSessionClient()
+        client.connectResult = .success(SessionMetadata(sessionID: "session-1", model: nil))
+        client.eventsByText["think"] = events
+        let store = ConversationStore(client: client, persistence: persistence)
+        await store.connect()
+        await store.sendTurn(text: "think")
+        return store
+    }
+
+    @MainActor
+    func testThinkingDeltasAppendInArrivalOrderAndNeverReplace() async {
+        let store = await thinkingStore([
+            .thinkingDelta("a"),
+            .thinkingDelta("b"),
+            .status(text: "Working", kind: "tool"),
+            .thinkingDelta("c"),
+            .messageStart,
+            .textDelta("Answer"),
+            .turnComplete(turnID: "turn-1"),
+        ])
+
+        XCTAssertEqual(store.thinkingTurns.map(\.text), ["abc"])
+        XCTAssertFalse(store.thinkingTurns[0].isActive)
+        XCTAssertEqual(store.thinkingTurns[0].anchorMessageID, store.messages.first?.id)
+        XCTAssertFalse(store.messages.contains { $0.text.contains("abc") })
+        XCTAssertEqual(store.messages.last?.text, "Answer")
+    }
+
+    @MainActor
+    func testStatusNeverOverwritesOrHidesThinkingText() async {
+        let client = FakeHermesSessionClient()
+        client.connectResult = .success(SessionMetadata(sessionID: "session-1", model: nil))
+        let store = ConversationStore(client: client)
+        await store.connect()
+        client.eventsByText["think"] = [
+            .thinkingDelta("pondering"),
+            .status(text: "Working", kind: "tool"),
+            .messageStart,
+            .textDelta("x"),
+        ]
+        // The stream ends without a terminal event, so status text would still be set.
+        await store.sendTurn(text: "think")
+
+        XCTAssertEqual(store.thinkingTurns.map(\.text), ["pondering"])
+    }
+
+    @MainActor
+    func testReasoningCarriedOnTheCompletedMessageIsShownOnceAndNotDuplicated() async {
+        let onlyAtCompletion = await thinkingStore([
+            .messageStart,
+            .textDelta("Hi"),
+            .messageComplete(text: "Hi", reasoning: "final reasoning", failureReason: ""),
+            .turnComplete(turnID: "turn-1"),
+        ])
+        XCTAssertEqual(onlyAtCompletion.thinkingTurns.map(\.text), ["final reasoning"])
+
+        let alreadyStreamed = await thinkingStore([
+            .thinkingDelta("final reasoning"),
+            .messageStart,
+            .textDelta("Hi"),
+            .messageComplete(text: "Hi", reasoning: "final reasoning", failureReason: ""),
+            .turnComplete(turnID: "turn-1"),
+        ])
+        XCTAssertEqual(alreadyStreamed.thinkingTurns.map(\.text), ["final reasoning"])
+    }
+
+    @MainActor
+    func testThinkingTurnsAreOnePerTurnAndEndWhenTheTurnEnds() async {
+        let client = FakeHermesSessionClient()
+        client.connectResult = .success(SessionMetadata(sessionID: "session-1", model: nil))
+        client.eventsByText["one"] = [.thinkingDelta("first"), .turnComplete(turnID: "turn-1")]
+        client.eventsByText["two"] = [.thinkingDelta("second"), .turnComplete(turnID: "turn-2")]
+        let store = ConversationStore(client: client)
+        await store.connect()
+        await store.sendTurn(text: "one")
+        await store.sendTurn(text: "two")
+
+        XCTAssertEqual(store.thinkingTurns.map(\.text), ["first", "second"])
+        XCTAssertEqual(store.thinkingTurns.map(\.isActive), [false, false])
+        XCTAssertNotEqual(store.thinkingTurns[0].anchorMessageID, store.thinkingTurns[1].anchorMessageID)
+    }
+
+    @MainActor
+    func testThinkingTextIsNeverPersistedExportedOrJournaled() async throws {
+        let secret = "thinking-secret-7f3a"
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("HermesThinkingTests-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let fileURL = directory.appendingPathComponent("conversation.json")
+        let persistence = JSONConversationPersistence(fileURL: fileURL)
+        let store = await thinkingStore(
+            [
+                .thinkingDelta(secret),
+                .messageStart,
+                .textDelta("Answer"),
+                .messageComplete(text: "Answer", reasoning: "\(secret) more", failureReason: ""),
+                .turnComplete(turnID: "turn-1"),
+            ],
+            persistence: persistence
+        )
+        XCTAssertTrue(store.thinkingTurns.first?.text.contains(secret) == true)
+
+        let stored = try String(contentsOf: fileURL, encoding: .utf8)
+        XCTAssertFalse(stored.contains(secret), "thinking text must never be written to the stored conversation")
+
+        let exported = TranscriptExportFormatter().plainText(for: store.messages)
+            + TranscriptExportFormatter().markdown(for: store.messages)
+        XCTAssertFalse(exported.contains(secret))
+
+        let journal = DiagnosticsJournal.shared.snapshot().map(\.event).joined(separator: "\n")
+        XCTAssertFalse(journal.contains(secret), "thinking text must never reach the diagnostics journal")
+
+        // A relaunch restores messages only: no thinking rows for past turns.
+        let relaunched = ConversationStore(persistence: persistence)
+        await relaunched.loadPersistedConversation()
+        XCTAssertEqual(relaunched.messages.count, 2)
+        XCTAssertTrue(relaunched.thinkingTurns.isEmpty)
+    }
+
+    func testTheThinkingRowSitsAfterItsUserMessageAndBeforeTheReply() {
+        let user = TranscriptMessage(role: .user, text: "Q")
+        let reply = TranscriptMessage(role: .assistant, text: "A")
+        let nextUser = TranscriptMessage(role: .user, text: "Q2")
+        let first = ThinkingTurn(anchorMessageID: user.id, text: "t1")
+        let second = ThinkingTurn(anchorMessageID: nextUser.id, text: "t2")
+
+        let items = ThinkingTranscriptOrdering.items(
+            messages: [user, reply, nextUser],
+            turns: [first, second]
+        )
+
+        XCTAssertEqual(items, [
+            .message(user), .thinking(first), .message(reply), .message(nextUser), .thinking(second),
+        ])
+        XCTAssertEqual(
+            ThinkingTranscriptOrdering.latestExchangeTurn(messages: [user, reply, nextUser], turns: [first, second]),
+            second
+        )
+        XCTAssertNil(
+            ThinkingTranscriptOrdering.latestExchangeTurn(messages: [user, reply, nextUser], turns: [first])
+        )
+    }
+
+    func testTheOpenedThinkingViewFollowsOnlyWhileTheReaderIsAtTheBottom() {
+        XCTAssertTrue(ThinkingFollow.isAtBottom(offset: 600, viewportHeight: 400, contentHeight: 1000))
+        XCTAssertTrue(ThinkingFollow.isAtBottom(offset: 590, viewportHeight: 400, contentHeight: 1000))
+        XCTAssertFalse(ThinkingFollow.isAtBottom(offset: 200, viewportHeight: 400, contentHeight: 1000))
+        XCTAssertEqual(ThinkingRow.title(isActive: true), "Hermes is thinking")
+        XCTAssertEqual(ThinkingRow.title(isActive: false), "Hermes thought")
+    }
+
     @MainActor
     func testServerErrorIsVisibleAndTurnEndsSendingState() async {
         let client = FakeHermesSessionClient()

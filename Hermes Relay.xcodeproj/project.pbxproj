@@ -43,6 +43,7 @@
 		A100000000000000000000A4 /* RecentTranscriptRail.swift in Sources */ = {isa = PBXBuildFile; fileRef = A100000000000000000000A5 /* RecentTranscriptRail.swift */; };
 		C7000000000000000000F701 /* ConversationViewMode.swift in Sources */ = {isa = PBXBuildFile; fileRef = C7000000000000000000F702 /* ConversationViewMode.swift */; };
 		C7000000000000000000F703 /* TypingTranscriptView.swift in Sources */ = {isa = PBXBuildFile; fileRef = C7000000000000000000F704 /* TypingTranscriptView.swift */; };
+		C6000000000000000000F601 /* ThinkingRow.swift in Sources */ = {isa = PBXBuildFile; fileRef = C6000000000000000000F602 /* ThinkingRow.swift */; };
 		A100000000000000000000A6 /* ReconnectPolicy.swift in Sources */ = {isa = PBXBuildFile; fileRef = A100000000000000000000A7 /* ReconnectPolicy.swift */; };
 		A100000000000000000000A8 /* ReconnectPolicyTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A100000000000000000000A9 /* ReconnectPolicyTests.swift */; };
 		A10000000000000000000120 /* VisualContrastTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000000000000000000121 /* VisualContrastTests.swift */; };
@@ -136,6 +137,7 @@
 		A100000000000000000000A5 /* RecentTranscriptRail.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RecentTranscriptRail.swift; sourceTree = "<group>"; };
 		C7000000000000000000F702 /* ConversationViewMode.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ConversationViewMode.swift; sourceTree = "<group>"; };
 		C7000000000000000000F704 /* TypingTranscriptView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TypingTranscriptView.swift; sourceTree = "<group>"; };
+		C6000000000000000000F602 /* ThinkingRow.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ThinkingRow.swift; sourceTree = "<group>"; };
 		A100000000000000000000A7 /* ReconnectPolicy.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ReconnectPolicy.swift; sourceTree = "<group>"; };
 		A100000000000000000000A9 /* ReconnectPolicyTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ReconnectPolicyTests.swift; sourceTree = "<group>"; };
 		A10000000000000000000121 /* VisualContrastTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VisualContrastTests.swift; sourceTree = "<group>"; };
@@ -335,6 +337,7 @@
 				A100000000000000000000A5 /* RecentTranscriptRail.swift */,
 				C7000000000000000000F702 /* ConversationViewMode.swift */,
 				C7000000000000000000F704 /* TypingTranscriptView.swift */,
+				C6000000000000000000F602 /* ThinkingRow.swift */,
 				A100000000000000000000D3 /* VisualDesignTokens.swift */,
 			);
 			path = Views;
@@ -493,6 +496,7 @@
 				A100000000000000000000A4 /* RecentTranscriptRail.swift in Sources */,
 				C7000000000000000000F701 /* ConversationViewMode.swift in Sources */,
 				C7000000000000000000F703 /* TypingTranscriptView.swift in Sources */,
+				C6000000000000000000F601 /* ThinkingRow.swift in Sources */,
 				A10000000000000000000099 /* ConversationPersistence.swift in Sources */,
 				A100000000000000000000B4 /* TranscriptExport.swift in Sources */,
 				A100000000000000000000B6 /* PromptHistory.swift in Sources */,
