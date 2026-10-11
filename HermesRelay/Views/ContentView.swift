@@ -114,6 +114,16 @@ struct ContentView: View {
     @State private var pairingLinkRequest: HomePairingLinkRequest?
     @Environment(\.scenePhase) private var scenePhase
     @FocusState private var focusedField: FocusField?
+    /// The app opens in the voice view; focusing the composer enters the
+    /// typing view and only an explicit voice action leaves it (IOS-UX-F7).
+    @State private var viewMode = ConversationViewModeReducer.launchMode
+    /// A window may focus its first text field when it opens (as on the Mac).
+    /// Focus is ignored until the window has settled, so launch is always the
+    /// voice view.
+    @State private var launchSettled = false
+    @AccessibilityFocusState private var composerAccessibilityFocused: Bool
+    @AccessibilityFocusState private var orbAccessibilityFocused: Bool
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     private let configurationStore: RelayConfigurationStore?
     private let conversationDirectory: URL?
     private let deviceDiscoveryClient: any DeviceDiscoveryClient
@@ -254,20 +264,30 @@ struct ContentView: View {
             // it bounces only when its content overflows.
             GeometryReader { proxy in
                 let isComposing = focusedField == .composer
-                ScrollView {
-                    ViewportFillLayout(viewportHeight: proxy.size.height) {
-                        ambientHUD
+                // The typing view reads like a chat: newest at the bottom.
+                let scrollAnchor: UnitPoint? = viewMode == .typing ? .bottom : nil
+                ScrollViewReader { reader in
+                    ScrollView {
+                        ViewportFillLayout(viewportHeight: proxy.size.height) {
+                            ambientHUD
+                        }
+                    }
+                    .scrollBounceBehavior(.basedOnSize)
+                    .defaultScrollAnchor(scrollAnchor)
+                    // As in Messages: tapping the conversation while typing puts
+                    // the keyboard away (swiping down and sending also do).
+                    .simultaneousGesture(
+                        TapGesture().onEnded {
+                            if isComposing { focusedField = nil }
+                        },
+                        including: isComposing ? .all : .subviews
+                    )
+                    // The keyboard and the composer never cover the newest message.
+                    .onChange(of: typingScrollTrigger) { _, trigger in
+                        guard trigger.mode == .typing else { return }
+                        reader.scrollTo(TypingTranscriptView.bottomAnchorID, anchor: .bottom)
                     }
                 }
-                .scrollBounceBehavior(.basedOnSize)
-                // As in Messages: tapping the conversation while typing puts
-                // the keyboard away (swiping down and sending also do).
-                .simultaneousGesture(
-                    TapGesture().onEnded {
-                        if isComposing { focusedField = nil }
-                    },
-                    including: isComposing ? .all : .subviews
-                )
             }
             .background {
                 AmbientHUDBackdrop(
@@ -281,6 +301,20 @@ struct ContentView: View {
                 bottomSurface
             }
             .scrollDismissesKeyboard(.interactively)
+            .onChange(of: focusedField) { _, newValue in
+                guard launchSettled else {
+                    if newValue != nil { focusedField = nil }
+                    return
+                }
+                applyViewMode(.composerFocusChanged(isFocused: newValue == .composer))
+            }
+            .onChange(of: voiceCoordinator.state) { _, newState in
+                applyViewMode(.voiceStateChanged(newState))
+            }
+            .task {
+                try? await Task.sleep(for: .milliseconds(500))
+                launchSettled = true
+            }
             .navigationTitle("")
             #if os(iOS)
             .navigationBarTitleDisplayMode(.inline)
@@ -442,7 +476,9 @@ struct ContentView: View {
                     scrollToOpenHomeClaimsOnPresent = store.shouldOfferManageOpenHomeClaims
                     showingHomeSessions = true
                 }
-                : nil
+                : nil,
+            viewMode: viewMode,
+            orbAccessibilityFocus: $orbAccessibilityFocused
         )
     }
 
@@ -536,12 +572,20 @@ struct ContentView: View {
             }
 
             HStack(alignment: .bottom, spacing: 8) {
+                if viewMode == .typing {
+                    SmallVoiceControl(
+                        coordinator: voiceCoordinator,
+                        onReturnToVoice: returnToVoice
+                    )
+                }
+
                 if !promptHistory.isEmpty {
                     recentPromptsMenu
                 }
 
                 TextField("Message Hermes…", text: $store.draft, axis: .vertical)
                     .focused($focusedField, equals: .composer)
+                    .accessibilityFocused($composerAccessibilityFocused)
                     .textFieldStyle(.plain)
                     .foregroundStyle(HermesVisualTokens.primaryInk)
                     .lineLimit(1...3)
@@ -630,6 +674,45 @@ struct ContentView: View {
             await voiceCoordinator.sendDraft()
         }
     }
+
+    private var typingScrollTrigger: TypingScrollTrigger {
+        TypingScrollTrigger(
+            mode: viewMode,
+            messageCount: store.messages.count,
+            isComposerFocused: focusedField == .composer
+        )
+    }
+
+    /// Applies a view-mode event. Screen-reader focus follows a switch and
+    /// nothing else is announced. With Reduce Motion the switch is instant.
+    private func applyViewMode(_ event: ConversationViewModeEvent) {
+        let next = ConversationViewModeReducer.reduce(viewMode, event)
+        guard next != viewMode else { return }
+        withAnimation(reduceMotion ? nil : .easeInOut(duration: 0.2)) {
+            viewMode = next
+        }
+        switch next {
+        case .typing:
+            composerAccessibilityFocused = true
+        case .voice:
+            orbAccessibilityFocused = true
+        }
+    }
+
+    /// The small voice control: leave the typing view and put the keyboard
+    /// away before the voice action starts.
+    private func returnToVoice() {
+        applyViewMode(.voiceControlActivated)
+        focusedField = nil
+    }
+}
+
+/// What moves the typing view's scroll position to the newest message: a
+/// switch to the typing view, a new message, or the keyboard coming up.
+private struct TypingScrollTrigger: Equatable {
+    let mode: ConversationViewMode
+    let messageCount: Int
+    let isComposerFocused: Bool
 }
 
 extension View {

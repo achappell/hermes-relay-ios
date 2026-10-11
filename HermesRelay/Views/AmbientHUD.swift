@@ -411,6 +411,12 @@ struct AmbientHUDView: View {
     let homeSessionTitle: String?
     /// Opens the Sessions sheet; nil when the profile has no client sessions.
     let onShowSessions: (() -> Void)?
+    /// Which layout shows (IOS-UX-F7). Typing keeps the header and every
+    /// notice, and swaps the orb and reply rail for the full transcript.
+    let viewMode: ConversationViewMode
+    /// Lets the conversation move screen-reader focus to the voice orb when
+    /// the voice view returns.
+    let orbAccessibilityFocus: AccessibilityFocusState<Bool>.Binding?
 
     init(
         presentation: AmbientHUDPresentation,
@@ -444,7 +450,9 @@ struct AmbientHUDView: View {
         pendingHomePromptKind: HomeStructuredPromptKind? = nil,
         homeCommandEventCount: Int = 0,
         homeSessionTitle: String? = nil,
-        onShowSessions: (() -> Void)? = nil
+        onShowSessions: (() -> Void)? = nil,
+        viewMode: ConversationViewMode = .voice,
+        orbAccessibilityFocus: AccessibilityFocusState<Bool>.Binding? = nil
     ) {
         self.presentation = presentation
         self.connectionState = connectionState
@@ -478,6 +486,8 @@ struct AmbientHUDView: View {
         self.homeCommandEventCount = homeCommandEventCount
         self.homeSessionTitle = homeSessionTitle
         self.onShowSessions = onShowSessions
+        self.viewMode = viewMode
+        self.orbAccessibilityFocus = orbAccessibilityFocus
     }
 
     private var liveProvisionalText: String {
@@ -582,61 +592,11 @@ struct AmbientHUDView: View {
                 homeStatusNotice(bridge: homeBridgeState)
             }
 
-            Spacer(minLength: 20)
-
-            CompressibleOrb {
-                if let orbCoordinator {
-                    VoiceOrbButton(
-                        coordinator: orbCoordinator,
-                        presentation: presentation,
-                        doorwayState: doorwayState,
-                        statusLabel: doorwayStatusLabel
-                    )
-                } else {
-                    AmbientVisualizer(
-                        presentation: presentation,
-                        doorwayState: doorwayState
-                    )
-                }
+            if viewMode == .typing {
+                typingContent
+            } else {
+                voiceContent
             }
-
-            VStack(spacing: 8) {
-                Text(orbStatusLine)
-                    .font(.headline.weight(.semibold))
-                    .foregroundStyle(doorwayTint)
-                    .accessibilityHidden(true)
-
-                if let orbCoordinator, orbCoordinator.state.isCaptureActive,
-                   !orbCoordinator.isHandsFreeArmed {
-                    Button("Cancel") {
-                        Task { await orbCoordinator.cancelCapture() }
-                    }
-                    .font(.footnote.weight(.medium))
-                    .relayGlassButtonStyle()
-                    .accessibilityHint("Stops listening without sending.")
-                }
-
-                if let orbCoordinator {
-                    HStack(spacing: 10) {
-                        #if os(iOS)
-                        HandsFreePill(coordinator: orbCoordinator)
-                        #endif
-                        MuteButton(coordinator: orbCoordinator)
-                    }
-                }
-
-                if let recoveryMessage = doorwayState.recoveryMessage {
-                    doorwayRecoveryNotice(message: recoveryMessage)
-                }
-
-                if let failureMessage = presentation.failureMessage {
-                    failureNotice(message: failureMessage)
-                }
-            }
-
-            Spacer(minLength: 20)
-
-            captionArea
         }
         .padding(.horizontal, 16)
         .padding(.top, 12)
@@ -644,6 +604,102 @@ struct AmbientHUDView: View {
         .frame(maxWidth: 900, maxHeight: .infinity)
         .frame(maxWidth: .infinity)
         .accessibilityElement(children: .contain)
+    }
+
+    @ViewBuilder
+    private var voiceContent: some View {
+        Spacer(minLength: 20)
+
+        CompressibleOrb {
+            if let orbCoordinator {
+                VoiceOrbButton(
+                    coordinator: orbCoordinator,
+                    presentation: presentation,
+                    doorwayState: doorwayState,
+                    statusLabel: doorwayStatusLabel,
+                    accessibilityFocus: orbAccessibilityFocus
+                )
+            } else {
+                AmbientVisualizer(
+                    presentation: presentation,
+                    doorwayState: doorwayState
+                )
+            }
+        }
+
+        VStack(spacing: 8) {
+            Text(orbStatusLine)
+                .font(.headline.weight(.semibold))
+                .foregroundStyle(doorwayTint)
+                .accessibilityHidden(true)
+
+            if let orbCoordinator, orbCoordinator.state.isCaptureActive,
+               !orbCoordinator.isHandsFreeArmed {
+                Button("Cancel") {
+                    Task { await orbCoordinator.cancelCapture() }
+                }
+                .font(.footnote.weight(.medium))
+                .relayGlassButtonStyle()
+                .accessibilityHint("Stops listening without sending.")
+            }
+
+            if let orbCoordinator {
+                HStack(spacing: 10) {
+                    #if os(iOS)
+                    HandsFreePill(coordinator: orbCoordinator)
+                    #endif
+                    MuteButton(coordinator: orbCoordinator)
+                }
+            }
+
+            if let recoveryMessage = doorwayState.recoveryMessage {
+                doorwayRecoveryNotice(message: recoveryMessage)
+            }
+
+            if let failureMessage = presentation.failureMessage {
+                failureNotice(message: failureMessage)
+            }
+        }
+
+        Spacer(minLength: 20)
+
+        captionArea
+    }
+
+    /// The typing view: the transcript sits above the composer with the
+    /// newest message at the bottom. The status row keeps the mute control
+    /// and "Muted" visible, and the recovery and failure notices stay
+    /// reachable, as in the voice view.
+    @ViewBuilder
+    private var typingContent: some View {
+        HStack(spacing: 10) {
+            Text(Self.typingStatusLine(statusLabel: doorwayStatusLabel, isMuted: orbCoordinator?.isMuted ?? false))
+                .font(.footnote.weight(.semibold))
+                .foregroundStyle(doorwayTint)
+                .accessibilityHidden(true)
+            Spacer(minLength: 8)
+            if let orbCoordinator {
+                MuteButton(coordinator: orbCoordinator)
+            }
+        }
+        .padding(.top, 4)
+
+        if let recoveryMessage = doorwayState.recoveryMessage {
+            doorwayRecoveryNotice(message: recoveryMessage)
+        }
+
+        if let failureMessage = presentation.failureMessage {
+            failureNotice(message: failureMessage)
+        }
+
+        Spacer(minLength: 8)
+
+        TypingTranscriptView(messages: transcriptMessages)
+    }
+
+    /// The typing view's status line: the state, then "Muted" while muted.
+    nonisolated static func typingStatusLine(statusLabel: String, isMuted: Bool) -> String {
+        isMuted ? "\(statusLabel) · Muted" : statusLabel
     }
 
     private var cachedContextNotice: some View {
@@ -983,6 +1039,7 @@ private struct VoiceOrbButton: View {
     let presentation: AmbientHUDPresentation
     let doorwayState: ConversationDoorwayState
     let statusLabel: String
+    var accessibilityFocus: AccessibilityFocusState<Bool>.Binding?
     @State private var isActionInFlight = false
 
     private var action: VoiceOrbAction {
@@ -1018,6 +1075,7 @@ private struct VoiceOrbButton: View {
         .accessibilityValue(statusLabel)
         .accessibilityHint(action.accessibilityHint)
         .accessibilityIdentifier("voice-orb")
+        .modifier(OrbAccessibilityFocus(binding: accessibilityFocus))
     }
 
     private func perform() {
@@ -1026,6 +1084,18 @@ private struct VoiceOrbButton: View {
         Task { @MainActor in
             await VoiceControlInteractionPolicy.performPrimaryAction(on: coordinator)
             isActionInFlight = false
+        }
+    }
+}
+
+private struct OrbAccessibilityFocus: ViewModifier {
+    let binding: AccessibilityFocusState<Bool>.Binding?
+
+    func body(content: Content) -> some View {
+        if let binding {
+            content.accessibilityFocused(binding)
+        } else {
+            content
         }
     }
 }

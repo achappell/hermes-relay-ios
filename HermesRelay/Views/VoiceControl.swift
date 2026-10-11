@@ -188,3 +188,54 @@ struct MuteButton: View {
         }
     }
 }
+
+/// The orb's small form in the typing view (IOS-UX-F7). One tap, or ⌘⇧L on a
+/// hardware keyboard, returns to the voice view, dismisses the keyboard and
+/// starts listening through the orb's own path, so microphone permission is
+/// handled exactly as for the orb. ⌘⇧L is provisional until the large-format
+/// layout proposal (IOS-UX-F9) is approved.
+struct SmallVoiceControl: View {
+    let coordinator: VoiceSessionCoordinator
+    /// Switches to the voice view and dismisses the keyboard.
+    let onReturnToVoice: () -> Void
+    @State private var isActionInFlight = false
+
+    private var action: VoiceOrbAction {
+        VoiceControlInteractionPolicy.orbAction(
+            state: coordinator.state,
+            isHandsFreeArmed: coordinator.isHandsFreeArmed,
+            isHandsFreeCaptureActive: coordinator.isHandsFreeCaptureActive
+        )
+    }
+
+    var body: some View {
+        Button(action: perform) {
+            Image(systemName: action.systemImage)
+                .font(.headline.weight(.semibold))
+                .frame(width: 20, height: 20)
+        }
+        .relayGlassButtonStyle()
+        .controlSize(.large)
+        .keyboardShortcut("l", modifiers: [.command, .shift])
+        .accessibilityLabel("Voice")
+        .accessibilityValue(coordinator.state.label)
+        .accessibilityHint("\(action.accessibilityHint) Returns to the voice view.")
+        .accessibilityIdentifier("voice-control-small")
+    }
+
+    private func perform() {
+        // Leave the typing view first, so a denied microphone permission
+        // lands on the voice view's existing permission state.
+        onReturnToVoice()
+        let state = coordinator.state
+        let isHandsFreeListening = coordinator.isHandsFreeArmed
+            && !VoiceControlInteractionPolicy.isResponseActive(state)
+        guard !isHandsFreeListening,
+              !isActionInFlight || VoiceControlInteractionPolicy.isResponseActive(state) else { return }
+        isActionInFlight = true
+        Task { @MainActor in
+            await VoiceControlInteractionPolicy.performPrimaryAction(on: coordinator)
+            isActionInFlight = false
+        }
+    }
+}

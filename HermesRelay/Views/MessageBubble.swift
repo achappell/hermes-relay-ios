@@ -51,7 +51,7 @@ struct MessageBubble: View {
     }
 }
 
-private extension TranscriptRole {
+extension TranscriptRole {
     var label: String {
         switch self {
         case .user:
