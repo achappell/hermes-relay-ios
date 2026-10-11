@@ -2,7 +2,7 @@
 title: 'IOS-UX-F9 — Propose the large-format whole-screen layout'
 type: 'investigation'
 created: '2026-10-07'
-status: 'backlog'
+status: 'in-review'
 route: 'dispatch'
 review_loop_iteration: 0
 parity_tag: 'FB-LAYOUT'
@@ -74,7 +74,60 @@ Narrowing toward compact: the sidebar collapses first, then the thinking pane be
 
 ### iOS and macOS today
 
-Checked against `origin/main` (dda7181): one `ContentView` serves iPhone, iPad and Mac (`HermesRelayApp.swift:139`). No view reads `horizontalSizeClass` and there is no `NavigationSplitView`; large windows get the phone layout (orb `AmbientHUD.swift:305-326`, recent rail `:887-916`, composer `ContentView.swift:543`).
+Re-checked against `origin/main` e58974f: one `ContentView` serves iPhone, iPad and Mac (`WindowGroup` at `HermesRelayApp.swift:139`). No view reads `horizontalSizeClass`, and the app has no `NavigationSplitView`, `.inspector`, `.commands` or `CommandMenu`; large windows get the phone layout (orb `AmbientHUD.swift:310`, recent rail `:887`, composer `ContentView.swift:543`, bottom bar width-capped at 760 pt `:585`, HUD at 900 pt `:632`). `userInterfaceIdiom` is not used either.
+
+## Open Questions
+
+PROVISIONAL decisions: the owner has not confirmed these. Work proceeds on them under the director's authorization; the owner corrects afterwards.
+
+- Approval — criterion 6 needs the owner's written approval and its date. **This PR is a draft proposal; the spec stays `in-review`, never `done`, and no approval date is recorded until the owner approves.** Compact work in F6-F8 proceeds without waiting.
+- One arrangement or two on large windows — options: one arrangement for voice and typing, orb always small beside the transcript (matches FB-TYPE criterion 10; **recommended and drafted**) / voice view keeps a large orb in the side panel and typing shrinks it. The proposal states both and recommends the first; the owner chooses.
+- Keyboard shortcuts — the proposal drafts ⌘⇧L (talk or return to voice), ⌘L (focus composer), ⌘⇧M (mute), ⌘. (interrupt), ⌃⌘S (sidebar), ⌥⌘T (thinking pane) on Apple platforms, and Ctrl equivalents on Android. F7 builds ⌘⇧L ahead of approval. The owner approves or changes them.
+- Android platform notes rest on Material adaptive guidance and the Android twin spec (`spec-android-ux-15-large-layout.md`), not on a build of the Android app; the Android repo's owner reviews them.
+- Android owner review — the Android-specific differences in the proposal (sidebar collapsed at Medium width, Ctrl-based shortcuts) need review by the Android repo's owner before approval.
+
+## Code Map
+
+- `_bmad-output/planning-artifacts/ux-designs/ux-hermes-relay-large-layout-2026-10-10/LAYOUT.md` (new) -- the proposal; frontmatter `status: proposed`, approval block "pending".
+- `_bmad-output/planning-artifacts/ux-designs/ux-hermes-relay-large-layout-2026-10-10/mockups/large-layout.html` (new) -- offline static HTML and CSS in the style of `ux-hermes-relay-ios-2026-09-27/mockups/key-conversation.html` (inline CSS, system fonts, no JS, DESIGN.md tokens); frames for iPad, Mac and Android tablet, each in voice view, typing view, reply with thinking text, and mute on, plus a narrowing strip.
+- `_bmad-output/planning-artifacts/ux-designs/ux-hermes-relay-ios-2026-09-27/DESIGN.md` and `EXPERIENCE.md` -- source of tokens, component names and the accessibility floor; read, not changed.
+- `_bmad-output/implementation-artifacts/spec-ios-ux-f6-thinking-text.md`, `-f7-typing-view.md`, `-f8-mute.md` -- their large-format criteria point at the approved proposal; not edited here.
+- `_bmad-output/implementation-artifacts/sprint-status.yaml` -- `ios-ux-f9` moves to review when the PR opens.
+
+## Tasks & Acceptance
+
+**Execution:**
+- [ ] Check the platform facts the proposal relies on and cite them: SwiftUI `NavigationSplitView`, `.inspector`, `.commands`/`CommandMenu`, `.keyboardShortcut`, `AccessibilityFocusState` from the Xcode 27.2 beta 2 swiftinterfaces (same method as the spec's SDK check); Material adaptive layout and `WindowSizeClass` from the Android developer documentation
+- [ ] `LAYOUT.md` -- criteria 1-5 below as sections: shared layout classes and resolver; arrangement and zone table; per-platform mockup index; narrowing order; reading and focus order per platform; shortcut table; impact on the F6, F7 and F8 large criteria; open decisions; approval block
+- [ ] `mockups/large-layout.html` -- the 12 frames and the narrowing strip
+- [ ] `spec-ios-ux-f9-large-layout.md`, `sprint-status.yaml` -- link the proposal, record the open approval, move F9 to review
+
+**Acceptance Criteria:**
+- Given the proposal, then every platform (iPad, Mac, Android tablet or foldable) has a frame for voice view, typing view, reply with thinking text, and mute on.
+- Given the proposal, then it places transcript, composer, small orb, mute, Interrupt, thinking pane, status line and optional sidebar, and states what collapses first when a window narrows (sidebar, then thinking pane into the compact area above the composer).
+- Given the proposal, then iPad and Mac share one arrangement and each Android difference is named with its platform reason.
+- Given the proposal, then screen-reader order, keyboard focus order and shortcuts are listed per platform.
+- Given the proposal text, then it names no device model or idiom; only horizontal size class or `WindowSizeClass`, and macOS as always large.
+- Given the PR, then it changes no Swift, project or test file.
+
+## Implementation Notes
+
+Status: proposed; owner approval required. Nothing is approved; approval date pending.
+
+- Written: [`LAYOUT.md`](../planning-artifacts/ux-designs/ux-hermes-relay-large-layout-2026-10-10/LAYOUT.md) (layout classes and resolver, zone table, one-vs-two arrangement with a recommendation, mockup index, narrowing order, reading/focus order, shortcut table, F6-F8 impact, open decisions, approval block "pending") and [`mockups/large-layout.html`](../planning-artifacts/ux-designs/ux-hermes-relay-large-layout-2026-10-10/mockups/large-layout.html) (12 frames plus narrowing strip; offline, no JS).
+- Facts cited from the Xcode 27.2 beta 2 swiftinterfaces (file and line in LAYOUT.md section 1): `NavigationSplitView` iOS 16/macOS 13, `.inspector` iOS 17/macOS 14, `.commands`/`CommandMenu` iOS 14/macOS 11, `.keyboardShortcut` iOS 14/macOS 11, `AccessibilityFocusState` iOS 15/macOS 12, `horizontalSizeClass` iOS 13/macOS 10.15. Android facts from the Android developer docs on window size classes and canonical layouts (links in LAYOUT.md).
+- [INFERENCE] (not verified): pane widths; inspector behaviour in compact; Android `SupportingPaneScaffold`/drawer fit; Ctrl-based Android shortcuts and their collisions; Android Back behaviour; Apple shortcut conventions and system collisions; iPad shortcut overlay. Full list in LAYOUT.md section 11.
+- Shortcuts are proposals; F7 builds ⌘⇧L provisionally ahead of approval. Approval is by director review of this spec in place of the owner checkpoint (owner authorized); the owner corrects afterwards.
+- `story-index.yaml` lists F9 as a dependency of F6-F8 and F5 for F8 and omits F7 for F6; left unedited. F6-F8 compact scope does not treat F9 as a blocker.
+
+## Spec Change Log
+
+## Review Triage Log
+
+## Design Notes
+
+- The proposal builds on the starting wireframes in this spec and refines them; where it departs, it says why.
+- Mockups use the existing Night Console tokens and fixed layout widths, not device frames of a named model.
 
 ## Boundaries
 
@@ -84,5 +137,10 @@ Checked against `origin/main` (dda7181): one `ContentView` serves iPhone, iPad a
 
 ## Verification
 
-- Owner review of the proposal and mockups; approval date recorded here.
-- No code; no test run beyond the repo's issue-tracking checks.
+**Commands:**
+- `python3 -m unittest discover -s tests` -- expected: the repo's issue-tracking checks pass.
+- `git diff --name-only origin/main` -- expected: only `_bmad-output/` markdown, HTML and YAML.
+
+**Manual checks:**
+- Open `large-layout.html` in a browser: every frame renders offline, labels match `LAYOUT.md`.
+- Owner review of the proposal; the approval date is recorded here by the owner.
