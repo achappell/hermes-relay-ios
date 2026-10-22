@@ -1,6 +1,6 @@
 ---
 title: 'IOS-UX-F6 — Make Hermes's thinking text readable'
-type: 'experiment'
+type: 'feature'
 created: '2026-10-07'
 status: 'in-review'
 route: 'dispatch'
@@ -17,7 +17,7 @@ context:
 
 **Problem:** While Hermes thinks, its reasoning text flashes across the bottom bar one fragment at a time and is gone before it can be read. The user wants to actually read it. The owner wants to try a transcript-row design and judge it in use.
 
-**Approach:** An experiment: accumulate thinking text per turn in memory, show it as a collapsed row in the transcript, open it full-screen on tap (sheet on compact, pane on large), and announce it once to screen readers. Shared criteria below.
+**Approach:** Accumulate thinking text per turn in memory, show it as a collapsed row in the transcript, open it full-screen on tap (sheet on compact, pane on large), and announce it once to screen readers. Shared criteria below.
 
 </frozen-after-approval>
 
@@ -31,7 +31,7 @@ context:
 
 ### Acceptance criteria (shared wording, FB-THINK)
 
-**Experiment** (owner, 2026-10-07: "try it and see"). After the owner has used it, a follow-up review decides whether to keep, change or remove it; record the outcome in this spec.
+**Owner decision: keep** (Amanda, 2026-10-22: "keep it, it's nice to have"). First tried as an experiment (owner, 2026-10-07: "try it and see"); kept after use on 0.8.0.
 
 1. Thinking text (`thinking.delta`, `reasoning.delta`, `reasoning.available`, and any `reasoning` carried on the completed message) accumulates in arrival order for the active turn. A new delta appends; it never replaces earlier thinking text.
 2. Thinking text and status text are kept apart. A status update never overwrites or hides thinking text, and thinking text never appears inside the reply text.
@@ -50,7 +50,7 @@ PROVISIONAL decisions: the owner has not confirmed these. Work proceeds on them 
 - Which surfaces carry the row — options: the typing-view transcript (F7), the history sheet, and the voice rail's latest turn / typing view and history only (the voice view then shows thinking only as the orb state "Thinking"). **Provisional: all three**, so removing the bottom-bar line leaves no view without a thinking cue.
 - When a row exists — options: only when thinking text arrived for the turn / also for a status-only "thinking" phase (Home activity enum, no text). **Provisional: only when text arrived.** Status-only phases keep the bottom-bar status line.
 - Reasoning on the completed message may repeat what deltas already delivered — options: on completion, add it only when it is not already contained in the accumulated text / always append. **Provisional: add only when not contained**; deltas always append (TUI `gateway_session.py:882` treats `reasoning.available` text as one more delta).
-- Experiment outcome (keep, change or remove) is the owner's after use; this PR does not close it.
+- Outcome: decided — keep (Amanda, 2026-10-22: "keep it, it's nice to have").
 
 ## Code Map
 
@@ -79,7 +79,7 @@ Verified against `origin/main` e58974f (the earlier draft's line numbers had dri
 - [ ] `TypingTranscriptView.swift`, `TranscriptHistoryView`, `RecentTranscriptRail.swift` -- place the row after the turn's user message and before its reply, via one pure ordering helper -- criterion 3
 - [ ] `ContentView.swift` -- remove the thinking line from the bottom bar; present the sheet; post one VoiceOver announcement "Hermes is thinking" when a new row appears, never per delta -- criteria 3, 6
 - [ ] Tests listed in Verification; update tests that asserted thinking in `activityText`
-- [ ] `spec-ios-ux-f6-thinking-text.md`, `sprint-status.yaml` -- record outcome (experiment stays open for owner review), move status to review
+- [x] `spec-ios-ux-f6-thinking-text.md`, `sprint-status.yaml` -- record outcome (kept, 2026-10-22), move status to review
 
 **Acceptance Criteria (compact; large uses the compact sheet until F9):**
 - Given thinking events `a`, `b`, `c` for a turn, then the turn's text is `abc` in order and no later event replaces earlier text.
@@ -92,7 +92,7 @@ Verified against `origin/main` e58974f (the earlier draft's line numbers had dri
 
 ## Implementation Notes
 
-Implemented 2026-10-10 on `feat/ios-ux-f6-thinking-text` (stacked on F7 and F8), compact scope only. EXPERIMENT: the owner decides keep, change or remove after use.
+Implemented 2026-10-10 on `feat/ios-ux-f6-thinking-text` (stacked on F7 and F8), compact scope only. Owner decision 2026-10-22: keep.
 
 - `ConversationStore`: `ThinkingTurn` / `thinkingTurns` beside `messages`, in memory only. `.thinkingDelta` appends to the active turn (anchored to the newest user message); `.status` still goes to `activityText` only; `.messageComplete` reasoning is added when not already contained. The turn ends on completion, interruption, failure and the next turn; cleared on restore and profile clear. Nothing is added to `TranscriptMessage`, `PersistedConversation`, `TranscriptExport` or the journal.
 - `ThinkingRow` (fixed 40 pt, "Hermes is thinking" / "Hermes thought", label never carries the text) and `ThinkingSheet` (live, follows only while at the bottom via `onScrollGeometryChange`, no animated scroll under Reduce Motion, one element per paragraph). `ThinkingTranscriptOrdering` places each row after its user message; shown in the typing transcript, the history sheet (own nested sheet) and above the voice rail for the latest exchange.
@@ -104,9 +104,9 @@ Implemented 2026-10-10 on `feat/ios-ux-f6-thinking-text` (stacked on F7 and F8),
 - iOS Simulator: 694 tests, 0 failures (baseline 667; F8 +14, F7 +6, F6 +7). macOS: 693 tests, 0 failures (baseline 666). No reruns needed.
 - New tests assert append order, status separation, completion reasoning (shown once, not duplicated), one turn per turn, row ordering, follow rule, and that thinking text is absent from the stored conversation file, exports and the diagnostics journal and that a relaunch shows no rows.
 
-## Experiment record
+## Owner decision
 
-Owner review after use (keep, change, remove): pending.
+Keep (Amanda, 2026-10-22: "keep it, it's nice to have"). The feature is no longer an experiment.
 
 ## Spec Change Log
 
@@ -130,5 +130,5 @@ Owner review after use (keep, change, remove): pending.
 
 ## Device acceptance on 0.8.0 (130), 2026-10-22
 
-- **Observed by Amanda:** passed in Session 1 of `acceptance-0.8.0-checklist.md` (16:40–16:46 CDT, household Home). Thinking row, sheet and relaunch clearing passed. Experiment outcome (keep/change/remove) still pending the owner; VoiceOver and reduced motion not checked.
+- **Observed by Amanda:** passed in Session 1 of `acceptance-0.8.0-checklist.md` (16:40–16:46 CDT, household Home). Thinking row, sheet and relaunch clearing passed. Owner decision: keep (2026-10-22). VoiceOver and reduced motion not checked.
 - **Worker-verified (Home logs):** the five Session 1 turns each submitted once and completed once on Home, with no replay. Details in `validation-ios-home-07.md`.
