@@ -674,22 +674,17 @@ struct AmbientHUDView: View {
     }
 
     /// The typing view: the transcript sits above the composer with the
-    /// newest message at the bottom. The status row keeps the mute control
-    /// and "Muted" visible, and the recovery and failure notices stay
-    /// reachable, as in the voice view.
+    /// newest message at the bottom. The status line keeps "Muted" visible;
+    /// the controls (Talk, Mute, Interrupt) sit by the composer (IOS-UX-F10).
+    /// The recovery and failure notices stay reachable, as in the voice view.
     @ViewBuilder
     private var typingContent: some View {
-        HStack(spacing: 10) {
-            Text(Self.typingStatusLine(statusLabel: doorwayStatusLabel, isMuted: orbCoordinator?.isMuted ?? false))
-                .font(.footnote.weight(.semibold))
-                .foregroundStyle(doorwayTint)
-                .accessibilityHidden(true)
-            Spacer(minLength: 8)
-            if let orbCoordinator {
-                MuteButton(coordinator: orbCoordinator)
-            }
-        }
-        .padding(.top, 4)
+        Text(Self.typingStatusLine(statusLabel: doorwayStatusLabel, isMuted: orbCoordinator?.isMuted ?? false))
+            .font(.footnote.weight(.semibold))
+            .foregroundStyle(doorwayTint)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .accessibilityHidden(true)
+            .padding(.top, 4)
 
         if let recoveryMessage = doorwayState.recoveryMessage {
             doorwayRecoveryNotice(message: recoveryMessage)

@@ -4727,6 +4727,39 @@ final class VoiceSessionCoordinatorTests: XCTestCase {
         XCTAssertEqual(operations, [])
     }
 
+    /// IOS-UX-F10: muted mid-reply, the typing view still offers Talk and
+    /// Interrupt, and unmuting resumes without an interrupt.
+    @MainActor
+    func testTypingControlsStayAvailableWhileAMutedReplyPlays() async {
+        let h = await muteHarness()
+        let task = await startMuteReply(h.coordinator, h.store, h.client)
+        await h.client.emit(
+            .messageStart,
+            .textDelta("Hello"),
+            .audioStart(Self.muteFormat),
+            .audioChunk(Data([1, 2]))
+        )
+        await waitUntil { h.coordinator.state == .speaking }
+        await h.coordinator.setMuted(true)
+
+        let muted = TypingControlsPolicy.controls(
+            state: h.coordinator.state,
+            isHandsFreeArmed: h.coordinator.isHandsFreeArmed
+        )
+        XCTAssertTrue(muted.isInterruptEnabled)
+        XCTAssertFalse(muted.talkStartsListening)
+        XCTAssertEqual(h.coordinator.state, .speaking)
+
+        await h.coordinator.setMuted(false)
+        XCTAssertEqual(h.coordinator.state, .speaking)
+        let interrupts = await h.client.interruptCount
+        XCTAssertEqual(interrupts, 0)
+
+        await h.client.emit(.audioEnd, .turnComplete(turnID: "turn-1"))
+        await h.client.finish()
+        await task.value
+    }
+
     @MainActor
     func testInterruptStillEndsTheTurnWhileMutedAndMuteStaysOn() async {
         let h = await muteHarness()
