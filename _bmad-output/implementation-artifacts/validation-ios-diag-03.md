@@ -45,3 +45,18 @@ Observed in the PNG snapshots:
 
 - Device acceptance per the Home hand-off §3 against a HOME-NW-06 Home: ready carries `conn-…`, submit carries `req-…`, response returns `corr-…`; close the carrying socket before checking `/pair` (associations become `linked` only at socket finalize, D1); a legacy Home shows no decode failures, header errors or reconnect mismatches.
 - Known, accepted limit: real phone/Standard loss timing during a pending submit has not been tested on device.
+
+## Device acceptance on 0.8.0 (130), 2026-10-22 — Session 1 only
+
+Household Home, live; build `0.8.0` (`130`) from TestFlight on Amanda's iPhone (`iPhone18,2`, iOS 27.0.1). Checklist: `acceptance-0.8.0-checklist.md` (untracked local file).
+
+- **Observed by Amanda:** Session 1 (checks 1–7) passed, 16:40–16:46 CDT.
+- **Verified by worker from Home logs** (Loki export of Home safe events plus the six schema-2 client reports received 16:40–16:46; read-only): five Home turns on 0.8.0 (16:40:27, 16:40:52, 16:43:47, 16:44:15, 16:44:48). Each phone request (`req-…`) has exactly one `request_started`, one `accepted` response and one `request_completed`; Home has exactly one turn accepted → completed and one audio started → completed per matching `corr-…`. No duplicate submit or replay. None of these turns crossed an interruption, timeout or reconnect.
+- **Open:** Sessions 2–4 (checks 8–19) were not run. The gates below therefore stay open, except where noted.
+
+### DIAG-03 device acceptance (worker-verified, partial)
+
+- Verified: client reports are schema 2 and carry `conn-…` (`conn-99b4…`, `conn-072a…`), `req-…` and `corr-…`; each phone `corr-…` equals the correlation ID on the matching Home turn records.
+- Verified: no decode or header errors in the reports. One `connection_failed code=unknown phase=open` at 16:46:01, after returning from background, recovered the same second with `connection_ready phase=reconnect`; `unknown` cannot rule out a decode failure for that one event.
+- Not verifiable from the export: Home-side connection IDs and reconnect rejection records (not exported).
+- **Open:** `/pair` showing associations `linked` after socket close (needs Home admin); the remaining-acceptance item above stays open.

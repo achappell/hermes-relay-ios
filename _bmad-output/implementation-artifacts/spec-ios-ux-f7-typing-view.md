@@ -138,3 +138,8 @@ Implemented 2026-10-10 on `feat/ios-ux-f7-typing-view` (stacked on F8), compact 
 **Tests (pure):** launch is voice; focus enters typing; blur and send stay typing; tap returns voice in every permission case; a wake or listening start returns voice; the reducer carries no draft or scroll state.
 
 **Pending device:** iPhone software keyboard keeps newest message and composer visible and the switch does not dismiss the keyboard; iPad hardware-keyboard focus and ⌘⇧L; Mac window opens in voice view; VoiceOver focus moves to the composer, then to the orb, with nothing else announced; Reduce Motion.
+
+## Device acceptance on 0.8.0 (130), 2026-10-22
+
+- **Observed by Amanda:** passed in Session 1 of `acceptance-0.8.0-checklist.md` (16:40–16:46 CDT, household Home). Typing view passed. Open: hands-free wake return (checklist #15), VoiceOver focus, reduced motion, hardware keyboard. **UX note (not a failure, tracked separately):** in the typing view Mute is hard to reach, there is no obvious way back to voice, and only Interrupt is offered during a reply.
+- **Worker-verified (Home logs):** the five Session 1 turns each submitted once and completed once on Home, with no replay. Details in `validation-ios-home-07.md`.

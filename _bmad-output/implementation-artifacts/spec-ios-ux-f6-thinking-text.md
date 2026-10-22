@@ -127,3 +127,8 @@ Owner review after use (keep, change, remove): pending.
 **Tests:** deltas append in order; status never overwrites thinking; completion-only reasoning shown and not duplicated; interrupted and failed turns end the row; nothing persisted (save then load); cleared on profile clear; the ordering helper puts the row after its user message and before the reply; follow state stops following when the user scrolls up.
 
 **Pending device:** a long-thinking turn on iPhone (row stays still, sheet grows live, closing keeps position); VoiceOver (one announcement, text readable when opened); Reduce Motion; iPad and Mac open the compact sheet.
+
+## Device acceptance on 0.8.0 (130), 2026-10-22
+
+- **Observed by Amanda:** passed in Session 1 of `acceptance-0.8.0-checklist.md` (16:40–16:46 CDT, household Home). Thinking row, sheet and relaunch clearing passed. Experiment outcome (keep/change/remove) still pending the owner; VoiceOver and reduced motion not checked.
+- **Worker-verified (Home logs):** the five Session 1 turns each submitted once and completed once on Home, with no replay. Details in `validation-ios-home-07.md`.

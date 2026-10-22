@@ -129,3 +129,8 @@ Implemented 2026-10-10 on `feat/ios-ux-f8-mute`, compact scope only.
 **Tests (fake output):** see the Verification record above. The Home path is covered by the shared handler, not a Home fixture.
 
 **Pending device:** mute mid-reply on speaker and headphones; VoiceOver labels and one announcement per change; other apps' audio and system volume untouched; large-window placement waits for F9.
+
+## Device acceptance on 0.8.0 (130), 2026-10-22
+
+- **Observed by Amanda:** passed in Session 1 of `acceptance-0.8.0-checklist.md` (16:40–16:46 CDT, household Home). Mute passed (silence, sticky, unmute resumes live, launches unmuted, Interrupt while muted). Open: mute while backgrounded/locked, VoiceOver announcements; the mute journal line was not checked (journal not in the Home export). **UX note (not a failure, tracked separately):** Mute is hard to reach from the typing view.
+- **Worker-verified (Home logs):** the five Session 1 turns each submitted once and completed once on Home, with no replay. Details in `validation-ios-home-07.md`.
