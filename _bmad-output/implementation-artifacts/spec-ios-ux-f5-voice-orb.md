@@ -42,3 +42,8 @@ context:
 - Focused XCTest for the orb action mapping, send-on-pause for tapped capture, barge-in gating, reply reveal gating, and recent-prompt scoping.
 - Full iOS Simulator suite and macOS build.
 - On device: Key Flows 1 and 2 in EXPERIENCE.md, plus VoiceOver order and reduced motion.
+
+## Device acceptance on 0.8.0 (130), 2026-10-22
+
+- **Observed by Amanda:** passed in Session 1 of `acceptance-0.8.0-checklist.md` (16:40–16:46 CDT, household Home). Covers Key Flow 1 basics (tap to talk, send on pause, reply rail reveal, recent prompts). Open: barge-in opt-in on headphones (checklist #18), VoiceOver order, reduced motion.
+- **Worker-verified (Home logs):** the five Session 1 turns each submitted once and completed once on Home, with no replay. Details in `validation-ios-home-07.md`.
