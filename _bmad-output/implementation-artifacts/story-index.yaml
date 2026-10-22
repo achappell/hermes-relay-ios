@@ -487,6 +487,19 @@ stories:
     acceptance_overlay: _bmad-output/implementation-artifacts/course-correction-2026-09-23.md
     parity_tag: FB-LAYOUT
     android_reference: 'ANDROID-UX-15'
+  - id: IOS-UX-F10
+    title: Typing-view controls by the composer (Talk, Mute, Interrupt)
+    kind: local
+    spec: _bmad-output/implementation-artifacts/spec-ios-ux-f10-typing-controls.md
+    tracker_key: ios-ux-f10
+    product_epic: 1
+    owner: hermes-relay-ios
+    release_scope: later
+    depends_on:
+      - ios:IOS-UX-F7
+      - ios:IOS-UX-F8
+    acceptance_overlay: _bmad-output/implementation-artifacts/course-correction-2026-09-23.md
+    parity_tag: FB-TYPE
 epic_scheme: hermes-home-2026-09-23
 epics:
   1: Connect personal clients through HomeBridge

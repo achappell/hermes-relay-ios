@@ -151,24 +151,13 @@ struct MuteButton: View {
 
     var body: some View {
         Button(action: toggle) {
-            HStack(spacing: 6) {
-                Image(systemName: isMuted ? "speaker.slash.fill" : "speaker.wave.2")
-                    .imageScale(.small)
-                Text(isMuted ? "Muted" : "Mute")
-            }
-            .font(.caption.weight(.medium))
-            .foregroundStyle(isMuted ? HermesVisualTokens.attention : HermesVisualTokens.secondaryInk)
-            .padding(.horizontal, 12)
-            .frame(height: 30)
-            .overlay {
-                Capsule().strokeBorder(
-                    isMuted ? HermesVisualTokens.attention : HermesVisualTokens.secondaryInk.opacity(0.45),
+            Label(isMuted ? "Muted" : "Mute", systemImage: isMuted ? "speaker.slash.fill" : "speaker.wave.2")
+                .typingControlCapsule(
+                    ink: isMuted ? HermesVisualTokens.attention : HermesVisualTokens.secondaryInk,
+                    fill: .clear,
+                    stroke: isMuted ? HermesVisualTokens.attention : HermesVisualTokens.secondaryInk.opacity(0.45),
                     lineWidth: isMuted ? 1.5 : 1
                 )
-            }
-            // Keep a 44 pt hit area around the 30 pt capsule.
-            .padding(.vertical, 7)
-            .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
         .accessibilityLabel(isMuted ? "Unmute Hermes" : "Mute Hermes")
@@ -189,53 +178,164 @@ struct MuteButton: View {
     }
 }
 
-/// The orb's small form in the typing view (IOS-UX-F7). One tap, or ⌘⇧L on a
-/// hardware keyboard, returns to the voice view, dismisses the keyboard and
-/// starts listening through the orb's own path, so microphone permission is
-/// handled exactly as for the orb. ⌘⇧L is provisional until the large-format
-/// layout proposal (IOS-UX-F9) is approved.
-struct SmallVoiceControl: View {
+/// What the typing view's control cluster offers in a voice state
+/// (IOS-UX-F10). Talk, Mute and Interrupt are always shown, in the same
+/// places, so nothing moves while a reply plays.
+struct TypingControls: Equatable, Sendable {
+    /// Whether Talk starts listening after returning to the voice view.
+    /// It never interrupts: mid-reply it only switches views.
+    let talkStartsListening: Bool
+    let talkAccessibilityHint: String
+    let isInterruptEnabled: Bool
+}
+
+enum TypingControlsPolicy {
+    static func controls(state: VoiceState, isHandsFreeArmed: Bool) -> TypingControls {
+        let isReplying = state.isResponseActive
+        let hint: String
+        let startsListening: Bool
+        if isReplying {
+            startsListening = false
+            hint = "Returns to the voice view. The reply keeps playing."
+        } else if state.isCaptureActive || isHandsFreeArmed {
+            startsListening = false
+            hint = "Returns to the voice view. Listening continues."
+        } else {
+            startsListening = true
+            hint = "Returns to the voice view and starts listening."
+        }
+        return TypingControls(
+            talkStartsListening: startsListening,
+            talkAccessibilityHint: hint,
+            isInterruptEnabled: isReplying
+        )
+    }
+}
+
+/// The typing view's controls, by the composer in the thumb zone
+/// (IOS-UX-F10): Talk returns to the voice view, Mute silences Hermes
+/// without ending the reply (IOS-UX-F8), Interrupt ends the reply. All three
+/// stay available while a reply plays. Labels stay visible at every Dynamic
+/// Type size; accessibility sizes stack the controls.
+struct TypingControlCluster: View {
     let coordinator: VoiceSessionCoordinator
     /// Switches to the voice view and dismisses the keyboard.
     let onReturnToVoice: () -> Void
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
+
+    var body: some View {
+        let layout = dynamicTypeSize.isAccessibilitySize
+            ? AnyLayout(VStackLayout(alignment: .leading, spacing: 4))
+            : AnyLayout(HStackLayout(spacing: 8))
+        layout {
+            TalkButton(coordinator: coordinator, onReturnToVoice: onReturnToVoice)
+            MuteButton(coordinator: coordinator)
+            InterruptButton(coordinator: coordinator)
+            if !dynamicTypeSize.isAccessibilitySize {
+                Spacer(minLength: 0)
+            }
+        }
+        .accessibilityElement(children: .contain)
+        .accessibilityIdentifier("typing-controls")
+    }
+}
+
+/// Returns to the voice view (IOS-UX-F7 criterion 4). One tap, or ⌘⇧L on a
+/// hardware keyboard, dismisses the keyboard and, when nothing is playing or
+/// listening, starts listening through the coordinator's capture path, so
+/// microphone permission is handled exactly as for the orb. During a reply
+/// it never interrupts; the voice view's orb offers Interrupt. ⌘⇧L is
+/// provisional until the large-format layout proposal (IOS-UX-F9) is approved.
+struct TalkButton: View {
+    let coordinator: VoiceSessionCoordinator
+    let onReturnToVoice: () -> Void
     @State private var isActionInFlight = false
 
-    private var action: VoiceOrbAction {
-        VoiceControlInteractionPolicy.orbAction(
+    private var controls: TypingControls {
+        TypingControlsPolicy.controls(
             state: coordinator.state,
-            isHandsFreeArmed: coordinator.isHandsFreeArmed,
-            isHandsFreeCaptureActive: coordinator.isHandsFreeCaptureActive
+            isHandsFreeArmed: coordinator.isHandsFreeArmed
         )
     }
 
     var body: some View {
         Button(action: perform) {
-            Image(systemName: action.systemImage)
-                .font(.headline.weight(.semibold))
-                .frame(width: 20, height: 20)
+            Label("Talk", systemImage: "mic.fill")
+                .typingControlCapsule(
+                    ink: HermesVisualTokens.onIdentity,
+                    fill: HermesVisualTokens.identity,
+                    stroke: HermesVisualTokens.identity
+                )
         }
-        .relayGlassButtonStyle()
-        .controlSize(.large)
+        .buttonStyle(.plain)
         .keyboardShortcut("l", modifiers: [.command, .shift])
-        .accessibilityLabel("Voice")
+        .accessibilityLabel("Talk")
         .accessibilityValue(coordinator.state.label)
-        .accessibilityHint("\(action.accessibilityHint) Returns to the voice view.")
-        .accessibilityIdentifier("voice-control-small")
+        .accessibilityHint(controls.talkAccessibilityHint)
+        .accessibilityIdentifier("typing-talk")
     }
 
     private func perform() {
+        let startsListening = controls.talkStartsListening
         // Leave the typing view first, so a denied microphone permission
         // lands on the voice view's existing permission state.
         onReturnToVoice()
-        let state = coordinator.state
-        let isHandsFreeListening = coordinator.isHandsFreeArmed
-            && !VoiceControlInteractionPolicy.isResponseActive(state)
-        guard !isHandsFreeListening,
-              !isActionInFlight || VoiceControlInteractionPolicy.isResponseActive(state) else { return }
+        guard startsListening, !isActionInFlight else { return }
         isActionInFlight = true
         Task { @MainActor in
-            await VoiceControlInteractionPolicy.performPrimaryAction(on: coordinator)
+            await coordinator.beginCapture()
             isActionInFlight = false
         }
+    }
+}
+
+/// Ends the reply from the typing view without starting to listen; the
+/// typing view stays. Same glyph as the orb's interrupt action.
+struct InterruptButton: View {
+    let coordinator: VoiceSessionCoordinator
+
+    private var isEnabled: Bool {
+        TypingControlsPolicy.controls(
+            state: coordinator.state,
+            isHandsFreeArmed: coordinator.isHandsFreeArmed
+        ).isInterruptEnabled
+    }
+
+    var body: some View {
+        Button {
+            Task { @MainActor in
+                _ = await coordinator.interruptActiveTurn()
+            }
+        } label: {
+            Label("Interrupt", systemImage: "hand.raised.fill")
+                .typingControlCapsule(
+                    ink: HermesVisualTokens.secondaryInk,
+                    fill: .clear,
+                    stroke: HermesVisualTokens.secondaryInk.opacity(0.45)
+                )
+        }
+        .buttonStyle(.plain)
+        .disabled(!isEnabled)
+        .accessibilityLabel("Interrupt")
+        .accessibilityHint("Stops the reply.")
+        .accessibilityIdentifier("typing-interrupt")
+    }
+}
+
+extension View {
+    /// The capsule shared by the voice-control pills: a 30 pt capsule that
+    /// grows with Dynamic Type inside a hit area of at least 44 pt.
+    func typingControlCapsule(ink: Color, fill: Color, stroke: Color, lineWidth: CGFloat = 1) -> some View {
+        self
+            .font(.caption.weight(.medium))
+            .foregroundStyle(ink)
+            .padding(.horizontal, 12)
+            .padding(.vertical, 6)
+            .frame(minHeight: 30)
+            .background { Capsule().fill(fill) }
+            .overlay { Capsule().strokeBorder(stroke, lineWidth: lineWidth) }
+            .padding(.vertical, 7)
+            .frame(minWidth: 44, minHeight: 44)
+            .contentShape(Rectangle())
     }
 }

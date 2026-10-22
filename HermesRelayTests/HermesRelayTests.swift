@@ -835,6 +835,41 @@ final class HermesRelayIOSTests: XCTestCase {
         )
     }
 
+    // IOS-UX-F10: Talk, Mute and Interrupt are always shown by the composer;
+    // the policy decides what Talk does and whether Interrupt is enabled.
+
+    func testTypingControlsWhenIdleTalkStartsListeningAndInterruptIsDisabled() {
+        for state: VoiceState in [.idle, .complete, .interrupted, .failed("x")] {
+            let controls = TypingControlsPolicy.controls(state: state, isHandsFreeArmed: false)
+            XCTAssertTrue(controls.talkStartsListening, "\(state)")
+            XCTAssertFalse(controls.isInterruptEnabled, "\(state)")
+            XCTAssertEqual(controls.talkAccessibilityHint, "Returns to the voice view and starts listening.")
+        }
+    }
+
+    func testTypingControlsWhileListeningTalkOnlySwitchesViews() {
+        for state: VoiceState in [.listening, .transcribing] {
+            let controls = TypingControlsPolicy.controls(state: state, isHandsFreeArmed: false)
+            XCTAssertFalse(controls.talkStartsListening, "\(state)")
+            XCTAssertFalse(controls.isInterruptEnabled, "\(state)")
+            XCTAssertEqual(controls.talkAccessibilityHint, "Returns to the voice view. Listening continues.")
+        }
+        let armed = TypingControlsPolicy.controls(state: .idle, isHandsFreeArmed: true)
+        XCTAssertFalse(armed.talkStartsListening)
+        XCTAssertFalse(armed.isInterruptEnabled)
+    }
+
+    func testTypingControlsWhileReplyingEnableInterruptAndTalkNeverInterrupts() {
+        for state: VoiceState in [.thinking, .buffering, .speaking] {
+            for armed in [false, true] {
+                let controls = TypingControlsPolicy.controls(state: state, isHandsFreeArmed: armed)
+                XCTAssertTrue(controls.isInterruptEnabled, "\(state)")
+                XCTAssertFalse(controls.talkStartsListening, "\(state)")
+                XCTAssertEqual(controls.talkAccessibilityHint, "Returns to the voice view. The reply keeps playing.")
+            }
+        }
+    }
+
     func testTypingStatusLineShowsMutedAndTheTranscriptSkipsEmptyReplies() {
         XCTAssertEqual(AmbientHUDView.typingStatusLine(statusLabel: "Ready", isMuted: true), "Ready · Muted")
         XCTAssertEqual(AmbientHUDView.typingStatusLine(statusLabel: "Ready", isMuted: false), "Ready")

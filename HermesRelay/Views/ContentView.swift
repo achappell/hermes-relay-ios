@@ -586,14 +586,14 @@ struct ContentView: View {
                 .foregroundStyle(HermesVisualTokens.secondaryInk)
             }
 
-            HStack(alignment: .bottom, spacing: 8) {
-                if viewMode == .typing {
-                    SmallVoiceControl(
-                        coordinator: voiceCoordinator,
-                        onReturnToVoice: returnToVoice
-                    )
-                }
+            if viewMode == .typing {
+                TypingControlCluster(
+                    coordinator: voiceCoordinator,
+                    onReturnToVoice: returnToVoice
+                )
+            }
 
+            HStack(alignment: .bottom, spacing: 8) {
                 if !promptHistory.isEmpty {
                     recentPromptsMenu
                 }
@@ -663,8 +663,10 @@ struct ContentView: View {
         }
     }
 
-    /// The bottom surface is for typing. Talking, sending, interrupting and
-    /// hands-free live with the voice orb (IOS-UX-F5).
+    /// The bottom surface is for typing. In the voice view, talking,
+    /// interrupting and hands-free live with the voice orb (IOS-UX-F5); in the
+    /// typing view, Talk, Mute and Interrupt sit above the composer
+    /// (IOS-UX-F10).
     private var bottomControls: some View {
         VStack(spacing: 0) {
             composer
@@ -714,8 +716,8 @@ struct ContentView: View {
         }
     }
 
-    /// The small voice control: leave the typing view and put the keyboard
-    /// away before the voice action starts.
+    /// Talk in the typing view: leave the typing view and put the keyboard
+    /// away before any voice action starts.
     private func returnToVoice() {
         applyViewMode(.voiceControlActivated)
         focusedField = nil
