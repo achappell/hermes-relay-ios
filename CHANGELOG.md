@@ -1,5 +1,32 @@
 # Changelog
 
+## 0.8.0 (2026-10-22)
+
+<!-- Release notes generated using configuration in .github/release.yml at main -->
+
+## What's Changed
+### Dependencies
+* chore(deps): bump actions/upload-artifact from 7.0.1 to 7.0.2 by @dependabot[bot] in https://github.com/achappell/hermes-relay-ios/pull/141
+* chore(deps): bump apple-actions/download-provisioning-profiles from 6.1.0 to 7.0.0 by @dependabot[bot] in https://github.com/achappell/hermes-relay-ios/pull/139
+* chore(deps): bump apple-actions/upload-testflight-build from 5.5.0 to 5.6.0 by @dependabot[bot] in https://github.com/achappell/hermes-relay-ios/pull/138
+* chore(deps): bump apple-actions/import-codesign-certs from 7.0.0 to 7.1.0 by @dependabot[bot] in https://github.com/achappell/hermes-relay-ios/pull/140
+### Other Changes
+* fix(ios): VoiceOver transcript labels, light-palette contrast, Keep listening pill; drop VoiceStatusView by @achappell in https://github.com/achappell/hermes-relay-ios/pull/125
+* fix(ios): stop hands-free from submitting Hermes's own reply as the user's turn by @achappell in https://github.com/achappell/hermes-relay-ios/pull/127
+* docs(bmad): feedback parity tickets IOS-UX-F6..F9 by @achappell in https://github.com/achappell/hermes-relay-ios/pull/128
+* fix(ios): settle Home audio-tail interruption (IOS-HOME-08) by @achappell in https://github.com/achappell/hermes-relay-ios/pull/129
+* docs: close 0-I-4 and STD-4 on owner acceptance by @achappell in https://github.com/achappell/hermes-relay-ios/pull/130
+* docs(ios): record Apple review acceptance evidence by @achappell in https://github.com/achappell/hermes-relay-ios/pull/132
+* docs: close IOS-HOME-04, IOS-HOME-05, IOS-HOME-08 and IOS-DIAG-02 on owner acceptance by @achappell in https://github.com/achappell/hermes-relay-ios/pull/133
+* docs(ios): propose large-format whole-screen layout (IOS-UX-F9) by @achappell in https://github.com/achappell/hermes-relay-ios/pull/134
+* feat(ios): mute Hermes's voice without interrupting the reply (IOS-UX-F8) by @achappell in https://github.com/achappell/hermes-relay-ios/pull/135
+* feat(ios): typing-focused view when the composer is focused (IOS-UX-F7) by @achappell in https://github.com/achappell/hermes-relay-ios/pull/136
+* feat(ios): readable thinking text as a transcript row (IOS-UX-F6, experiment) by @achappell in https://github.com/achappell/hermes-relay-ios/pull/137
+* docs(ios): draft IOS-STD-01 readiness review by @achappell in https://github.com/achappell/hermes-relay-ios/pull/131
+
+
+**Full Changelog**: https://github.com/achappell/hermes-relay-ios/compare/v0.7.0...v0.8.0
+
 ## 0.7.0 (2026-10-06)
 
 <!-- Release notes generated using configuration in .github/release.yml at main -->
