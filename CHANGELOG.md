@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.9.0 (2026-10-23)
+
+<!-- Release notes generated using configuration in .github/release.yml at main -->
+
+## What's Changed
+### Other Changes
+* feat(ios): typing-view controls by the composer — Talk, Mute, Interrupt (IOS-UX-F10) by @achappell in https://github.com/achappell/hermes-relay-ios/pull/142
+* docs: 0.8.0 Session 1 device acceptance by @achappell in https://github.com/achappell/hermes-relay-ios/pull/143
+* docs(ios-ux-f6): keep readable thinking text by @achappell in https://github.com/achappell/hermes-relay-ios/pull/145
+
+
+**Full Changelog**: https://github.com/achappell/hermes-relay-ios/compare/v0.8.0...v0.9.0
+
 ## 0.8.0 (2026-10-22)
 
 <!-- Release notes generated using configuration in .github/release.yml at main -->
