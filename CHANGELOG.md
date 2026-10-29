@@ -9,6 +9,23 @@
   direct voice and Home-only controls are unavailable in Standard mode.
 
 
+## 0.9.0 (2026-10-29)
+
+<!-- Release notes generated using configuration in .github/release.yml at main -->
+
+## What's Changed
+### Dependencies
+* chore(deps): bump actions/setup-python from 7.0.0 to 7.1.0 by @dependabot[bot] in https://github.com/achappell/hermes-relay-ios/pull/146
+* chore(deps): bump apple-actions/upload-testflight-build from 5.6.0 to 5.7.0 by @dependabot[bot] in https://github.com/achappell/hermes-relay-ios/pull/147
+### Other Changes
+* feat(ios): typing-view controls by the composer — Talk, Mute, Interrupt (IOS-UX-F10) by @achappell in https://github.com/achappell/hermes-relay-ios/pull/142
+* docs: 0.8.0 Session 1 device acceptance by @achappell in https://github.com/achappell/hermes-relay-ios/pull/143
+* docs(ios-ux-f6): keep readable thinking text by @achappell in https://github.com/achappell/hermes-relay-ios/pull/145
+* feat(ios): add direct Standard text mode (IOS-STD-01) by @achappell in https://github.com/achappell/hermes-relay-ios/pull/148
+
+
+**Full Changelog**: https://github.com/achappell/hermes-relay-ios/compare/v0.8.0...v0.9.0
+
 ## 0.8.0 (2026-10-22)
 
 <!-- Release notes generated using configuration in .github/release.yml at main -->
