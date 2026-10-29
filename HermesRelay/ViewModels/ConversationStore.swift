@@ -1,5 +1,12 @@
 import Foundation
 import Observation
+/// Standard lifecycle operations are deliberate; reconnect never creates a
+/// replacement for a session whose durable reference was already selected.
+protocol StandardConversationSessionClient: HermesSessionClient {
+    func createNewConversation() async throws -> SessionMetadata
+    func leaveConversation() async
+}
+
 
 @MainActor
 @Observable
@@ -11,6 +18,14 @@ final class ConversationStore {
     /// Resolves the conversation store for a profile. Conversations belong to
     /// a relay, so switching profiles switches the file behind them.
     private let makePersistence: (@Sendable (UUID) -> any ConversationPersistence)?
+    private let makeProfilePersistence: (@Sendable (RelayProfile) -> any ConversationPersistence)?
+    private let standardClientFactory: (@Sendable (RelayProfile, String, String?) -> any StandardConversationSessionClient)?
+    private var standardClient: (any StandardConversationSessionClient)?
+    private var standardSessionID: String?
+    private var standardClientGeneration: UInt64 = 0
+    private var standardOperationInProgress = false
+    private var standardIsFinishing = false
+    private(set) var standardNeedsNewConversation = false
     private let now: @Sendable () -> Date
     private let reconnectPolicy: ReconnectPolicy
     private let sleep: @Sendable (UInt64) async -> Void
@@ -125,6 +140,57 @@ final class ConversationStore {
     private(set) var isLifecycleActive = true
 
     var isHomeMode: Bool { transportMode == .home }
+    var isStandardMode: Bool { transportMode == .standard }
+
+    var connectionModeLabel: String {
+        switch transportMode {
+        case .home: "HomeBridge"
+        case .standard: "Standard Hermes"
+        case .legacy: "Legacy relay"
+        }
+    }
+
+    var standardVoiceUnavailableReason: String? {
+        isStandardMode ? "Standard Hermes supports typed conversation only. Voice is unavailable for this connection." : nil
+    }
+
+    private(set) var isReconfiguringConnection = false
+    private var conversationChangeNeedsPersistence = false
+
+    /// Acquired synchronously before setup can suspend or stop native voice.
+    func beginConnectionReconfiguration() -> Bool {
+        guard !isReconfiguringConnection else { return false }
+        if let reason = connectionChangeBlockedReason {
+            transientError = reason
+            return false
+        }
+        isReconfiguringConnection = true
+        return true
+    }
+
+    func endConnectionReconfiguration() {
+        isReconfiguringConnection = false
+    }
+
+    /// Every connection change uses this guard, including Home and Legacy.
+    var connectionChangeBlockedReason: String? {
+        if conversationChangeNeedsPersistence {
+            return "The conversation change could not be saved. Try Leave again or start a new conversation before changing connections."
+        }
+        if standardOperationInProgress {
+            return "Wait for the Standard conversation action to finish before changing connections."
+        }
+        if standardIsFinishing {
+            return "Hermes is finishing the previous response. Start a new conversation or leave this conversation before changing connections."
+        }
+        if isSending || activeTurnText != nil {
+            return "A Hermes turn is active. Finish it or leave this conversation before changing connections."
+        }
+        if unconfirmedTurnText != nil || homeRecovery != nil {
+            return "The previous turn has an uncertain outcome. Resolve it or leave this conversation before changing connections."
+        }
+        return nil
+    }
 
     private var homeAudioHasSettled: Bool {
         homeAudioTerminal && !homeAudioTerminalProcessing
@@ -145,7 +211,9 @@ final class ConversationStore {
     /// handshake. `connectionState` alone is deliberately insufficient: the
     /// metadata is the proof that `hello_ack` was accepted.
     var verifiedTurnBinding: HermesTurnBinding? {
-        guard connectionState.isConnected, !homeOperationsSuppressed else { return nil }
+        guard connectionState.isConnected, !homeOperationsSuppressed,
+              !isReconfiguringConnection, !conversationChangeNeedsPersistence,
+              !standardOperationInProgress else { return nil }
         if transportMode == .home {
             // A Home turn needs the live transport, not just a cached state.
             guard let homeConversationBinding, homeClient != nil else { return nil }
@@ -153,6 +221,18 @@ final class ConversationStore {
                 profileID: activeProfileID,
                 homeConversation: homeConversationBinding,
                 turn: homeTurnBinding
+            )
+        }
+        if isStandardMode {
+            guard !standardNeedsNewConversation,
+                  let sessionMetadata,
+                  case .standard(let sessionID, let storedSessionID) = sessionMetadata.binding else {
+                return nil
+            }
+            return HermesTurnBinding(
+                profileID: activeProfileID,
+                standardSessionID: sessionID,
+                storedSessionID: storedSessionID
             )
         }
         guard let sessionMetadata, let sessionID = sessionMetadata.sessionID else { return nil }
@@ -163,6 +243,9 @@ final class ConversationStore {
     }
 
     var turnUnavailableMessage: String {
+        if isReconfiguringConnection {
+            return "Wait for the connection change to finish before starting a turn."
+        }
         if configurationStore != nil, activeProfileDisplayName == nil {
             return "Select a Hermes Profile before starting a voice turn."
         }
@@ -203,13 +286,17 @@ final class ConversationStore {
         homeClaimProvider: (any HomeConversationClaimProvider)? = nil,
         homeClock: any HomeMonotonicClock = ContinuousHomeMonotonicClock(),
         homeOperationDeadlines: HomeOperationDeadlines = .default,
-        homeTurnAudioDeadlines: HomeTurnAudioDeadlines = .default
+        homeTurnAudioDeadlines: HomeTurnAudioDeadlines = .default,
+        makeProfilePersistence: (@Sendable (RelayProfile) -> any ConversationPersistence)? = nil,
+        standardClientFactory: (@Sendable (RelayProfile, String, String?) -> any StandardConversationSessionClient)? = nil
     ) {
         self.client = client
         self.configurationStore = configurationStore
         self.socketFactory = socketFactory
         self.persistence = persistence
         self.makePersistence = makePersistence
+        self.makeProfilePersistence = makeProfilePersistence
+        self.standardClientFactory = standardClientFactory
         self.now = now
         self.reconnectPolicy = reconnectPolicy
         self.sleep = sleep
@@ -235,7 +322,7 @@ final class ConversationStore {
     }
 
     func loadPersistedConversation() async {
-        guard let persistence else { return }
+        guard !conversationChangeNeedsPersistence, let persistence else { return }
 
         do {
             let conversation = try await persistence.load()
@@ -245,6 +332,16 @@ final class ConversationStore {
             activeThinkingTurnID = nil
             draft = conversation.draft
             unconfirmedTurnText = conversation.unconfirmedTurnText
+            if isStandardMode {
+                standardSessionID = conversation.standardSessionID
+                standardNeedsNewConversation = conversation.standardNeedsNewConversation == true
+                    || (standardSessionID == nil && (!messages.isEmpty || unconfirmedTurnText != nil))
+                if standardNeedsNewConversation {
+                    transientError = "The earlier Standard conversation cannot be resumed. Its last prompt was not resent. Start a new conversation."
+                } else if unconfirmedTurnText != nil {
+                    transientError = "The previous Standard turn has an uncertain outcome. It was not resent. Start a new conversation or leave this conversation."
+                }
+            }
             homeRecovery = restoredRecovery
             if let recovery = restoredRecovery {
                 let recoveryText = conversation.unconfirmedTurnText
@@ -311,6 +408,7 @@ final class ConversationStore {
             activeAssistantID = nil
         } catch {
             transientError = "The saved conversation could not be restored."
+            if isStandardMode { standardNeedsNewConversation = true }
         }
     }
 
@@ -386,7 +484,9 @@ final class ConversationStore {
             let profileGeneration = homeLifecycleGeneration
             activeProfileID = profile.id
             activeProfileDisplayName = profile.displayName
-            if let makePersistence {
+            if let makeProfilePersistence {
+                persistence = makeProfilePersistence(profile)
+            } else if let makePersistence {
                 persistence = makePersistence(profile.id)
             }
 
@@ -478,6 +578,49 @@ final class ConversationStore {
                 didAttemptAutomaticConnection = false
                 return true
             }
+            if isStandardMode {
+                standardClient = nil
+                client = UnavailableHermesSessionClient()
+                standardClientGeneration &+= 1
+                let directGeneration = standardClientGeneration
+                await loadPersistedConversation()
+                let token = try await configurationStore.loadStandardToken(for: profile.id)
+                guard loadGeneration == configurationLoadGeneration,
+                      profileGeneration == homeLifecycleGeneration,
+                      activeProfileID == profile.id else { return false }
+                guard let token else {
+                    transientError = "Add a Standard token before connecting."
+                    return false
+                }
+                let directClient: any StandardConversationSessionClient
+                if let standardClientFactory {
+                    directClient = standardClientFactory(profile, token, standardSessionID)
+                } else {
+                    directClient = StandardSessionClient(
+                        profile: profile,
+                        token: token,
+                        connectionFactory: socketFactory,
+                        storedSessionID: standardSessionID,
+                        onTransportDisconnected: { @MainActor [weak self] in
+                            guard let self,
+                                  self.standardClientGeneration == directGeneration,
+                                  self.activeProfileID == profile.id,
+                                  self.isStandardMode else { return }
+                            self.handleUnexpectedTransportLoss()
+                        }
+                    )
+                }
+                standardClient = directClient
+                client = directClient
+                homeClient = nil
+                homeClaim = nil
+                homeClaimsPerConnect = false
+                homeConversationBinding = nil
+                homeTurnBinding = nil
+                homeBridgeState = .unconfigured
+                return true
+            }
+            standardClient = nil
 
             guard let token = try await configurationStore.loadToken() else {
                 guard loadGeneration == configurationLoadGeneration else { return false }
@@ -508,7 +651,9 @@ final class ConversationStore {
             return true
         } catch {
             guard loadGeneration == configurationLoadGeneration else { return false }
-            transientError = error.localizedDescription
+            transientError = isStandardMode
+                ? "The Standard connection could not be loaded. Check its configuration and token."
+                : error.localizedDescription
             return false
         }
     }
@@ -540,6 +685,7 @@ final class ConversationStore {
     }
 
     private func performConnect() async {
+        guard !standardOperationInProgress, !conversationChangeNeedsPersistence else { return }
         guard isLifecycleActive, !homeOperationsSuppressed else { return }
         while isClosingOpenHomeClaims || homeClaimLifecycleMutationInProgress {
             await withCheckedContinuation { homeClaimMutationWaiters.append($0) }
@@ -556,6 +702,14 @@ final class ConversationStore {
         if transportMode == .home {
             await connectHome(operationGeneration: generation)
         } else {
+            guard !isStandardMode || standardClient != nil else {
+                transientError = "Add a Standard token before connecting."
+                return
+            }
+            guard !isStandardMode || !standardNeedsNewConversation else {
+                transientError = "The earlier Standard conversation cannot be resumed. Its last prompt was not resent. Start a new conversation."
+                return
+            }
             connectionState = .connecting
             do {
                 let metadata = try await client.connect()
@@ -565,14 +719,21 @@ final class ConversationStore {
                 sessionStartedAt = now()
                 connectionState = .connected
                 transientError = nil
+                if isStandardMode {
+                    recordStandardSession(metadata)
+                    await persistConversation()
+                }
             } catch {
                 guard generation == homeLifecycleGeneration,
                       isLifecycleActive, !homeOperationsSuppressed else { return }
-                let message = error.localizedDescription
+                let message = safeConnectionError(error)
                 sessionMetadata = nil
                 sessionStartedAt = nil
                 connectionState = .failed(message)
                 transientError = message
+                if isStandardMode, error as? StandardSessionError == .resumeFailed {
+                    standardNeedsNewConversation = true
+                }
             }
         }
     }
@@ -1613,6 +1774,147 @@ final class ConversationStore {
         return false
     }
 
+    private func recordStandardSession(_ metadata: SessionMetadata) {
+        guard case .standard(_, let storedSessionID) = metadata.binding else { return }
+        standardSessionID = storedSessionID
+        standardNeedsNewConversation = false
+        if unconfirmedTurnText != nil {
+            transientError = "The previous Standard turn has an uncertain outcome. It was not resent. Start a new conversation or leave this conversation."
+        }
+    }
+
+    private func safeConnectionError(_ error: Error) -> String {
+        guard isStandardMode else { return error.localizedDescription }
+        // URLSession failures can carry authenticated URLs. Only typed,
+        // content-free transport failures may cross this boundary.
+        if let error = error as? StandardSessionError { return error.localizedDescription }
+        return "The Standard Hermes connection failed. The last prompt was not resent."
+    }
+
+    func startNewStandardConversation() async {
+        guard isStandardMode, isLifecycleActive, !isReconfiguringConnection, !standardOperationInProgress,
+              let standardClient else { return }
+        standardOperationInProgress = true
+        defer { standardOperationInProgress = false }
+        reconnectTask?.cancel()
+        reconnectTask = nil
+        homeLifecycleGeneration &+= 1
+        let generation = homeLifecycleGeneration
+        // Invalidate the old session before any await. Save that invalidation
+        // before requesting a replacement, including for an empty transcript.
+        sessionMetadata = nil
+        sessionStartedAt = nil
+        standardSessionID = nil
+        standardNeedsNewConversation = true
+        if unconfirmedTurnText == nil { unconfirmedTurnText = activeTurnText }
+        nextTurnGeneration &+= 1
+        activeTurnGeneration = nil
+        activeTurnText = nil
+        isSending = false
+        activeAssistantID = nil
+        activityText = nil
+        endThinkingTurn()
+        // Failure must retain recovery for the conversation being replaced.
+        conversationChangeNeedsPersistence = true
+        guard await persistConversation() else { return }
+        conversationChangeNeedsPersistence = false
+        do {
+            let metadata = try await standardClient.createNewConversation()
+            guard generation == homeLifecycleGeneration, isLifecycleActive else { return }
+            sessionMetadata = metadata
+            recordStandardSession(metadata)
+            sessionStartedAt = now()
+            connectionState = .connected
+            standardIsFinishing = false
+            unconfirmedTurnText = nil
+            interruptedTurnGeneration = nil
+            interruptionConfirmedTurnGeneration = nil
+            turnCompleted = false
+            transientError = nil
+            messages.append(TranscriptMessage(role: .system, text: Self.newHomeConversationDividerText))
+            if await persistConversation() {
+                conversationChangeNeedsPersistence = false
+            } else {
+                standardNeedsNewConversation = true
+                sessionMetadata = nil
+                transientError = "The new Standard conversation could not be saved. Try New conversation again or leave this conversation."
+            }
+        } catch {
+            guard generation == homeLifecycleGeneration else { return }
+            transientError = "A new Standard conversation could not be started. The earlier turn was not resent. Try New conversation again or leave this conversation."
+            await persistConversation()
+        }
+    }
+
+    /// Local escape, not remote cancellation: no turn, interrupt, close-session
+    /// RPC or claim-release request is sent by this action.
+    func leaveCurrentConversation() async {
+        guard !isReconfiguringConnection, !standardOperationInProgress else { return }
+        standardOperationInProgress = true
+        defer { standardOperationInProgress = false }
+        let retainedUnconfirmedText = unconfirmedTurnText ?? activeTurnText
+        let retainedHomeRecovery = homeRecovery
+        let retainedHomeTurnBinding = homeTurnBinding
+        let retainedHomeDeliveryState = homeTurnDeliveryState
+        // A failed durable clear is still recovery, never permission to
+        // reconnect the stale session or switch to a different profile.
+        conversationChangeNeedsPersistence = true
+        homeLifecycleGeneration &+= 1
+        configurationLoadGeneration &+= 1
+        nextTurnGeneration &+= 1
+        activeTurnGeneration = nil
+        reconnectTask?.cancel()
+        reconnectTask = nil
+        cancelHomeConnectRetry()
+        homeEventTask?.cancel()
+        homeEventTask = nil
+        isExpectedDisconnect = true
+        if isStandardMode {
+            await standardClient?.leaveConversation()
+            standardSessionID = nil
+            standardNeedsNewConversation = true
+            standardIsFinishing = false
+        } else if isHomeMode {
+            await closeHomeClient()
+        } else {
+            await client.disconnect()
+        }
+        isExpectedDisconnect = false
+        unconfirmedTurnText = nil
+        homeRecovery = nil
+        homeTurnBinding = nil
+        homeTurnDeliveryState = .idle
+        pendingHomePrompt = nil
+        homeEventHandler = nil
+        homeTurnResult = nil
+        resumeHomeTurnWaiters(returning: false)
+        canContinueWithoutResendingHomeTurn = false
+        homeReconnectConfirmsNoUnresolvedTurn = false
+        activeTurnText = nil
+        activeAssistantID = nil
+        isSending = false
+        interruptedTurnGeneration = nil
+        interruptionConfirmedTurnGeneration = nil
+        turnCompleted = false
+        activityText = nil
+        endThinkingTurn()
+        sessionMetadata = nil
+        sessionStartedAt = nil
+        connectionState = .disconnected
+        didAttemptAutomaticConnection = true
+        transientError = nil
+        guard await persistConversation() else {
+            unconfirmedTurnText = retainedUnconfirmedText
+            homeRecovery = retainedHomeRecovery
+            homeTurnBinding = retainedHomeTurnBinding
+            homeTurnDeliveryState = retainedHomeDeliveryState
+            transientError = "Leaving this conversation could not be saved. Its recovery state is retained; the last prompt was not resent. Try Leave again or start a new conversation."
+            return
+        }
+        conversationChangeNeedsPersistence = false
+        transientError = "You left this conversation. Its transcript is kept on this device; the last prompt was not resent."
+    }
+
     /// Disconnect releases the claim before dropping its handle. An unopened
     /// claim uses HOME-NW-18; an opened claim prefers `conversation.close`.
     func disconnect() async {
@@ -2034,6 +2336,7 @@ final class ConversationStore {
         // fails, restore the original text unless the user has already
         // started editing a new draft.
         let shouldClearDraft = verifiedTurnBinding != nil && !isSending
+            && (!isStandardMode || (!standardIsFinishing && !standardOperationInProgress && unconfirmedTurnText == nil))
         if shouldClearDraft {
             draft = ""
         }
@@ -2054,6 +2357,12 @@ final class ConversationStore {
     ) async -> Bool {
         let text = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !text.isEmpty else { return false }
+        guard !isReconfiguringConnection, !conversationChangeNeedsPersistence else {
+            transientError = isReconfiguringConnection
+                ? "Wait for the connection change to finish before sending."
+                : connectionChangeBlockedReason
+            return false
+        }
         if transportMode == .home {
             return await sendHomeTurn(
                 text: text,
@@ -2061,11 +2370,20 @@ final class ConversationStore {
                 eventHandler: eventHandler
             )
         }
+        if isStandardMode,
+           standardNeedsNewConversation || standardIsFinishing || standardOperationInProgress || unconfirmedTurnText != nil {
+            transientError = standardIsFinishing
+                ? "Hermes is finishing the previous response. Wait for its terminal response, start a new conversation, or leave this conversation."
+                : "The earlier Standard turn cannot be sent again. Start a new conversation or leave this conversation."
+            return false
+        }
         guard let currentBinding = verifiedTurnBinding else {
             if draft.isEmpty {
                 draft = text
             }
-            transientError = "Connect to the Hermes relay before sending."
+            transientError = isStandardMode
+                ? "Connect to Standard Hermes before sending."
+                : "Connect to the Hermes relay before sending."
             await persistConversation()
             return false
         }
@@ -2093,6 +2411,18 @@ final class ConversationStore {
         activeTurnText = text
         messages.append(TranscriptMessage(role: .user, text: text))
         var didComplete = false
+        if isStandardMode {
+            // Write-ahead recovery precedes even calling the transport.
+            unconfirmedTurnText = text
+            guard await persistConversation() else {
+                activeTurnGeneration = nil
+                activeTurnText = nil
+                isSending = false
+                transientError = "The turn was not submitted because its recovery state could not be saved."
+                return false
+            }
+            guard activeTurnGeneration == turnGeneration, isLifecycleActive else { return false }
+        }
 
         do {
             let events = await client.sendTurn(text: text)
@@ -2104,10 +2434,14 @@ final class ConversationStore {
                 }
             }
         } catch {
+            guard nextTurnGeneration == turnGeneration else { return false }
             if interruptedTurnGeneration != turnGeneration {
                 activeTurnGeneration = nil
                 interruptedTurnGeneration = nil
-                let message = error.localizedDescription
+                let message = safeConnectionError(error)
+                if isStandardMode, error as? StandardSessionError == .unsupportedInteraction {
+                    standardIsFinishing = true
+                }
                 if case RelaySessionError.disconnected = error {
                     connectionState = .disconnected
                     sessionMetadata = nil
@@ -2129,7 +2463,9 @@ final class ConversationStore {
                 }
             }
         }
+        guard nextTurnGeneration == turnGeneration else { return false }
         let wasInterrupted = interruptedTurnGeneration == turnGeneration
+        let interruptionWasConfirmed = interruptionConfirmedTurnGeneration == turnGeneration
         interruptedTurnGeneration = nil
         interruptionConfirmedTurnGeneration = nil
         activeTurnGeneration = nil
@@ -2137,6 +2473,10 @@ final class ConversationStore {
         if wasInterrupted {
             isSending = false
             activeAssistantID = nil
+            if isStandardMode, interruptionWasConfirmed {
+                unconfirmedTurnText = nil
+                standardIsFinishing = false
+            }
             await persistConversation()
             return false
         }
@@ -2516,7 +2856,7 @@ final class ConversationStore {
     func respondToHomePrompt(
         _ response: HomePromptResponse
     ) async -> HomeStructuredResponseOutcome {
-        guard let pending = pendingHomePrompt, let homeClient else {
+        guard isHomeMode, let pending = pendingHomePrompt, let homeClient else {
             return .rejected(.home(code: .requestRejected, phase: .structuredResponse))
         }
         let outcome = await homeClient.respond(to: pending.prompt, with: response)
@@ -2531,7 +2871,7 @@ final class ConversationStore {
         name: String,
         argument: String? = nil
     ) async -> HomeCommandOutcome {
-        guard let binding = homeConversationBinding, let homeClient else {
+        guard isHomeMode, let binding = homeConversationBinding, let homeClient else {
             return .rejected(.home(code: .transportUnavailable, phase: .command))
         }
         let command = HomeCommandRequest(binding: binding, name: name, argument: argument)
@@ -2539,7 +2879,7 @@ final class ConversationStore {
     }
 
     func pingHome() async -> HomePingOutcome {
-        guard let binding = homeConversationBinding, let homeClient else {
+        guard isHomeMode, let binding = homeConversationBinding, let homeClient else {
             return .unavailable(.home(code: .transportUnavailable, phase: .ping))
         }
         return await homeClient.ping(binding: binding)
@@ -2602,9 +2942,8 @@ final class ConversationStore {
         return true
     }
 
-    /// Persist the exact local state that crosses a lifecycle boundary. This
-    /// method deliberately does not close a socket; the lifecycle owner does
-    /// that only after the snapshot and native teardown succeed.
+    /// Snapshot local recovery before teardown. Standard always deactivates,
+    /// even if this save fails: submission already wrote recovery ahead.
     func lifecycleWillDeactivate() async -> Bool {
         guard isLifecycleActive else { return true }
 
@@ -2633,15 +2972,25 @@ final class ConversationStore {
             }
         }
 
-        guard await persistConversation() else {
+        let snapshotSucceeded = await persistConversation()
+        if !snapshotSucceeded {
             transientError = "The local conversation could not be saved. Try again before leaving."
-            return false
+            if !isStandardMode { return false }
         }
 
         isLifecycleActive = false
         homeOperationsSuppressed = true
         homeLifecycleGeneration &+= 1
         openHomeClaimsGeneration &+= 1
+        if isStandardMode {
+            nextTurnGeneration &+= 1
+            activeTurnGeneration = nil
+            activeTurnText = nil
+            activeAssistantID = nil
+            isSending = false
+            activityText = nil
+            endThinkingTurn()
+        }
         reconnectTask?.cancel()
         reconnectTask = nil
         cancelHomeConnectRetry()
@@ -2660,7 +3009,7 @@ final class ConversationStore {
         homeTurnResult = (homeTurnBinding, false)
         await waitForHomeConnectOperation()
         await waitForOpenClaimMutation()
-        return true
+        return snapshotSucceeded
     }
 
     func setLifecycleActive(_ active: Bool) {
@@ -2675,6 +3024,16 @@ final class ConversationStore {
         }
     }
 
+    func closeStandardClientForLifecycle() async {
+        guard isStandardMode, connectionState != .disconnected || sessionMetadata != nil else { return }
+        isExpectedDisconnect = true
+        connectionState = .disconnected
+        sessionMetadata = nil
+        sessionStartedAt = nil
+        await client.disconnect()
+        isExpectedDisconnect = false
+    }
+
     /// Clears ownership before awaiting the actor's close. Calling this twice
     /// therefore cannot close the same Home client twice.
     func closeHomeClient() async {
@@ -2685,6 +3044,30 @@ final class ConversationStore {
     @discardableResult
     func interruptActiveTurn() async -> Bool {
         guard isSending else { return false }
+        if isStandardMode {
+            guard let generation = activeTurnGeneration else { return false }
+            let outcome = await client.interruptActiveTurnOutcome()
+            guard activeTurnGeneration == generation else {
+                return outcome == .confirmed
+                    && nextTurnGeneration == generation
+                    && unconfirmedTurnText == nil
+            }
+            if outcome == .confirmed {
+                interruptedTurnGeneration = generation
+                interruptionConfirmedTurnGeneration = generation
+                unconfirmedTurnText = nil
+                standardIsFinishing = false
+                await persistConversation()
+                return true
+            }
+            // Consume the same stream; the Legacy reconnect fallback would
+            // falsely imply Hermes stopped and discard its terminal event.
+            standardIsFinishing = true
+            unconfirmedTurnText = activeTurnText ?? unconfirmedTurnText
+            transientError = "Hermes is finishing the previous response. Remote interruption was not confirmed. Start a new conversation or leave this conversation."
+            await persistConversation()
+            return false
+        }
 
         if transportMode == .home {
             guard let binding = homeConversationBinding,
@@ -2768,10 +3151,18 @@ final class ConversationStore {
     /// back to the previous profile, which would connect the user to a relay
     /// they did not choose.
     func clearSelectedProfile() async {
+        if let reason = connectionChangeBlockedReason {
+            transientError = reason
+            return
+        }
         await resetForProfileChange(clearPersistence: true)
     }
 
     func switchToSelectedProfile() async {
+        if let reason = connectionChangeBlockedReason {
+            transientError = reason
+            return
+        }
         await resetForProfileChange(clearPersistence: false)
 
         guard await loadConfiguredClient() else { return }
@@ -2783,6 +3174,7 @@ final class ConversationStore {
         homeLifecycleGeneration &+= 1
         configurationLoadGeneration &+= 1
         openHomeClaimsGeneration &+= 1
+        nextTurnGeneration &+= 1
         homeOperationsSuppressed = true
         homeClaimLifecycleMutationInProgress = true
         defer { finishHomeClaimLifecycleMutation() }
@@ -2811,6 +3203,10 @@ final class ConversationStore {
         openHomeClaimList = nil
         openHomeClaimTitles = [:]
         openHomeClaimsError = nil
+        standardClient = nil
+        standardSessionID = nil
+        standardNeedsNewConversation = false
+        standardIsFinishing = false
 
         connectionState = .disconnected
         sessionMetadata = nil
@@ -2870,6 +3266,11 @@ final class ConversationStore {
         if transportMode == .home {
             handleUnexpectedHomeTransportLoss()
             return
+        }
+        guard isLifecycleActive, !homeOperationsSuppressed else { return }
+        if isStandardMode, let activeTurnText {
+            unconfirmedTurnText = activeTurnText
+            Task { await persistConversation() }
         }
         sessionMetadata = nil
         sessionStartedAt = nil
@@ -3042,7 +3443,11 @@ final class ConversationStore {
     }
 
     private func runReconnectLoop() async {
-        defer { reconnectTask = nil }
+        let generation = homeLifecycleGeneration
+        defer {
+            if generation == homeLifecycleGeneration { reconnectTask = nil }
+        }
+        guard !Task.isCancelled else { return }
 
         var attempt = 1
         while let delay = reconnectPolicy.delayNanoseconds(forAttempt: attempt) {
@@ -3053,16 +3458,27 @@ final class ConversationStore {
 
             do {
                 let metadata = try await client.connect()
+                guard !Task.isCancelled, isLifecycleActive, !homeOperationsSuppressed else { return }
                 sessionMetadata = metadata
                 sessionStartedAt = now()
                 connectionState = .connected
                 transientError = nil
+                if isStandardMode {
+                    recordStandardSession(metadata)
+                    await persistConversation()
+                }
                 return
             } catch is RelayUnavailableError {
                 // Configuration or credentials are wrong; retrying cannot fix it.
                 fail(with: RelayUnavailableError())
                 return
             } catch {
+                guard !Task.isCancelled, isLifecycleActive, !homeOperationsSuppressed else { return }
+                if isStandardMode, error as? StandardSessionError == .resumeFailed {
+                    standardNeedsNewConversation = true
+                    fail(with: error)
+                    return
+                }
                 if attempt == reconnectPolicy.maxAttempts {
                     fail(with: error)
                     return
@@ -3073,7 +3489,7 @@ final class ConversationStore {
     }
 
     private func fail(with error: Error) {
-        let message = error.localizedDescription
+        let message = safeConnectionError(error)
         sessionMetadata = nil
         sessionStartedAt = nil
         connectionState = .failed(message)
@@ -3122,6 +3538,11 @@ final class ConversationStore {
             activeAssistantID = nil
             activityText = nil
             endThinkingTurn()
+            if isStandardMode {
+                if standardIsFinishing { transientError = nil }
+                standardIsFinishing = false
+                unconfirmedTurnText = nil
+            }
         case .messageComplete(_, let reasoning, let failureReason):
             if !failureReason.isEmpty {
                 transientError = failureReason
@@ -3133,6 +3554,10 @@ final class ConversationStore {
             activityText = nil
             endThinkingTurn()
             unconfirmedTurnText = nil
+            if isStandardMode {
+                if standardIsFinishing { transientError = nil }
+                standardIsFinishing = false
+            }
         case .error(let text):
             transientError = text
             messages.append(TranscriptMessage(role: .error, text: text))
@@ -3191,7 +3616,9 @@ final class ConversationStore {
                     messages: messages,
                     draft: draft,
                     unconfirmedTurnText: unconfirmedTurnText,
-                    homeRecovery: persistableHomeRecovery(homeRecovery)
+                    homeRecovery: persistableHomeRecovery(homeRecovery),
+                    standardSessionID: isStandardMode ? standardSessionID : nil,
+                    standardNeedsNewConversation: isStandardMode ? standardNeedsNewConversation : nil
                 )
             )
             return true

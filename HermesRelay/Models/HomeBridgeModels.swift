@@ -1286,7 +1286,7 @@ struct HomeMigrationJournal: Codable, Equatable, Sendable {
         let phase = schemaVersion == 1
             ? rawPhase.flatMap(HomeMigrationPhase.init(rawValue:)) ?? .rollbackPending
             : .rollbackPending
-        let selectedMode = rawMode.flatMap(AppleTransportMode.init(rawValue:)) ?? .legacy
+        let selectedMode: AppleTransportMode = rawMode == AppleTransportMode.home.rawValue ? .home : .legacy
         self.init(
             schemaVersion: schemaVersion,
             profileID: profileID,
@@ -1350,6 +1350,7 @@ struct PersistedHomeRecovery: Codable, Equatable, Sendable {
 
 enum AppleTransportMode: String, Codable, Sendable {
     case home
+    case standard
     case legacy
 }
 

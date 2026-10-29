@@ -8,6 +8,7 @@ enum RelayConfigurationError: LocalizedError, Equatable, Sendable {
     case emptyToken
     case invalidTokenEncoding
     case invalidProfile
+    case credentialRollbackFailed
 
     var errorDescription: String? {
         switch self {
@@ -17,6 +18,8 @@ enum RelayConfigurationError: LocalizedError, Equatable, Sendable {
             return "The stored relay token is invalid. Replace it in Configure Relay."
         case .invalidProfile:
             return "The saved relay profile is invalid. Open Configure Relay and save it again."
+        case .credentialRollbackFailed:
+            return "Configuration was not saved, and the previous Keychain state could not be restored. Check this connection's credential before trying again."
         }
     }
 }
@@ -24,6 +27,7 @@ enum RelayConfigurationError: LocalizedError, Equatable, Sendable {
 actor RelayConfigurationStore {
     static let keychainService = "com.achappell.HermesRelayIOS.profile"
     static let tokenAccount = "default-token"
+    static let standardKeychainService = "com.achappell.HermesRelayIOS.standard"
 
     private let secureStore: any SecureValueStore
     private let profileURL: URL
@@ -179,6 +183,21 @@ actor RelayConfigurationStore {
 
     func saveProfile(_ profile: RelayProfile) async throws {
         var collection = try await loadCollection()
+        if let previous = collection.profiles.first(where: { $0.id == profile.id }),
+           previous != profile {
+            // Standard identity is immutable. Reconfiguration creates another
+            // saved connection, retaining the original transcript for viewing.
+            if previous.standardProfile != nil || profile.standardProfile != nil {
+                guard previous.endpoint == profile.endpoint,
+                      previous.standardProfile == profile.standardProfile else {
+                    throw RelayConfigurationError.invalidProfile
+                }
+            } else if previous.endpoint != profile.endpoint {
+                // Endpoint changes create a new connection identity. Never
+                // destroy the old bearer or bind it to another host.
+                throw RelayConfigurationError.invalidProfile
+            }
+        }
         collection.upsert(profile)
         if collection.selectedID == nil {
             collection.selectedID = profile.id
@@ -186,12 +205,69 @@ actor RelayConfigurationStore {
         try await saveCollection(collection)
     }
 
+    func saveStandardConnection(_ profile: RelayProfile, token: String) async throws {
+        guard profile.standardProfile != nil else { throw RelayConfigurationError.invalidProfile }
+        try await saveConnection(profile, token: token, service: Self.standardKeychainService)
+    }
+
+    func saveLegacyConnection(_ profile: RelayProfile, token: String) async throws {
+        guard profile.standardProfile == nil else { throw RelayConfigurationError.invalidProfile }
+        try await saveConnection(profile, token: token, service: Self.keychainService)
+    }
+
+    /// Commit profile and selection in one atomic file write. A failed write
+    /// restores the credential snapshot; older connection accounts are untouched.
+    private func saveConnection(_ profile: RelayProfile, token: String, service: String) async throws {
+        let normalized = token.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !normalized.isEmpty else { throw RelayConfigurationError.emptyToken }
+        var collection = try await loadCollection()
+        let previous = collection.profiles.first(where: { $0.id == profile.id })
+        if let previous {
+            guard previous.endpoint == profile.endpoint,
+                  previous.standardProfile == profile.standardProfile else {
+                throw RelayConfigurationError.invalidProfile
+            }
+        }
+        let account = Self.tokenAccount(for: profile.id)
+        let priorCredential = try secureStore.read(service: service, account: account)
+        let credential = Data(normalized.utf8)
+        if profile.standardProfile != nil, previous != nil,
+           let priorCredential, priorCredential != credential {
+            // A different direct bearer is a different authorization identity.
+            throw RelayConfigurationError.invalidProfile
+        }
+        let credentialChanged = priorCredential != credential
+        if credentialChanged {
+            try secureStore.write(credential, service: service, account: account)
+        }
+        collection.upsert(profile)
+        collection.selectedID = profile.id
+        do {
+            try await saveCollection(collection)
+        } catch {
+            if credentialChanged {
+                do {
+                    if let priorCredential {
+                        try secureStore.write(priorCredential, service: service, account: account)
+                    } else {
+                        try secureStore.delete(service: service, account: account)
+                    }
+                } catch {
+                    throw RelayConfigurationError.credentialRollbackFailed
+                }
+            }
+            throw error
+        }
+    }
+
     func deleteProfile(id: UUID) async throws {
         var collection = try await loadCollection()
+        let isStandard = collection.profiles.first(where: { $0.id == id })?.standardProfile != nil
         collection.remove(id: id)
         try await saveCollection(collection)
         try secureStore.delete(
-            service: Self.keychainService, account: Self.tokenAccount(for: id)
+            service: isStandard ? Self.standardKeychainService : Self.keychainService,
+            account: Self.tokenAccount(for: id)
         )
     }
 
@@ -236,6 +312,26 @@ actor RelayConfigurationStore {
     func deleteToken(for id: UUID) async throws {
         try secureStore.delete(
             service: Self.keychainService, account: Self.tokenAccount(for: id)
+        )
+    }
+
+    func loadStandardToken(for id: UUID) async throws -> String? {
+        try normalizedToken(
+            secureStore.read(service: Self.standardKeychainService, account: Self.tokenAccount(for: id))
+        )
+    }
+
+    func saveStandardToken(_ token: String, for id: UUID) async throws {
+        let normalized = token.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !normalized.isEmpty else { throw RelayConfigurationError.emptyToken }
+        try secureStore.write(
+            Data(normalized.utf8), service: Self.standardKeychainService, account: Self.tokenAccount(for: id)
+        )
+    }
+
+    func deleteStandardToken(for id: UUID) async throws {
+        try secureStore.delete(
+            service: Self.standardKeychainService, account: Self.tokenAccount(for: id)
         )
     }
 
@@ -473,7 +569,8 @@ struct RelayConfigurationDraft: Equatable, Sendable {
             }
         } catch let error as RelayProfileError {
             switch error {
-            case .unsupportedEndpointScheme, .invalidEndpoint, .endpointContainsCredentials:
+            case .unsupportedEndpointScheme, .invalidEndpoint, .endpointContainsCredentials,
+                 .standardRequiresTLS, .standardEndpointPath:
                 errors[.endpoint] = error.errorDescription
             case .emptyClientID:
                 errors[.clientID] = error.errorDescription

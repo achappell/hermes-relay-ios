@@ -269,7 +269,16 @@ final class ConversationStoreReconnectTests: XCTestCase {
         XCTAssertFalse(store.messages.isEmpty)
         store.draft = "half typed"
         store.unconfirmedTurnText = "in flight"
+        let originalMessages = store.messages
 
+        await store.switchToSelectedProfile()
+
+        XCTAssertEqual(store.messages, originalMessages)
+        XCTAssertEqual(store.draft, "half typed")
+        XCTAssertEqual(store.unconfirmedTurnText, "in flight")
+        XCTAssertNotNil(store.connectionChangeBlockedReason)
+
+        await store.leaveCurrentConversation()
         await store.switchToSelectedProfile()
 
         XCTAssertTrue(store.messages.isEmpty)

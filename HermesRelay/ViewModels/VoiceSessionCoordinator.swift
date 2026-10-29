@@ -227,6 +227,8 @@ final class VoiceSessionCoordinator {
     private var playbackPositionTask: Task<Void, Never>?
     private var handsFreeTask: Task<Void, Never>?
     private var handsFreeSilenceTask: Task<Void, Never>?
+    private var handsFreeStartsInProgress = 0
+    private var handsFreeStartWaiters: [CheckedContinuation<Void, Never>] = []
     /// A tapped recording sends itself after a pause in recognised speech
     /// (IOS-UX-F5), using the same endpoint as hands-free.
     private let interruptByTalking: @MainActor () -> Bool
@@ -385,8 +387,13 @@ final class VoiceSessionCoordinator {
     }
 
     private func armHandsFree() async {
+        if let reason = store.standardVoiceUnavailableReason {
+            store.transientError = reason
+            setHandsFreeFailure(.message(reason))
+            return
+        }
         // Decision 1: the microphone is never started from the background.
-        guard !isHandsFreeArmed, !isBackgrounded else { return }
+        guard !isHandsFreeArmed, !isBackgrounded, !store.isReconfiguringConnection else { return }
         guard let handsFreeInput else {
             setHandsFreeFailure(.message("Hands-free audio input is unavailable."))
             return
@@ -400,17 +407,37 @@ final class VoiceSessionCoordinator {
             return
         }
 
+        let generation = handsFreeCaptureGeneration
         var authorization = await handsFreeInput.authorization()
         if authorization == .notDetermined {
             authorization = await handsFreeInput.requestAuthorization()
         }
+        guard generation == handsFreeCaptureGeneration, !store.isReconfiguringConnection else { return }
         guard authorization == .authorized else {
             setHandsFreeFailure(.permission(authorization))
             return
         }
+        guard generation == handsFreeCaptureGeneration,
+              !store.isReconfiguringConnection, store.verifiedTurnBinding != nil else { return }
+        if let reason = store.standardVoiceUnavailableReason {
+            store.transientError = reason
+            setHandsFreeFailure(.message(reason))
+            return
+        }
 
         do {
-            let stream = try await handsFreeInput.start()
+            let stream = try await startHandsFreeInput(handsFreeInput)
+            guard generation == handsFreeCaptureGeneration,
+                  !store.isReconfiguringConnection, store.verifiedTurnBinding != nil else {
+                await handsFreeInput.cancel()
+                return
+            }
+            if let reason = store.standardVoiceUnavailableReason {
+                await handsFreeInput.cancel()
+                store.transientError = reason
+                setHandsFreeFailure(.message(reason))
+                return
+            }
             isHandsFreeArmed = true
             handsFreeStatus = .armed
             isHandsFreeCaptureActive = false
@@ -420,6 +447,7 @@ final class VoiceSessionCoordinator {
             handsFreeWakeSuppressed = state.isResponseActive
             startHandsFreeStream(stream)
         } catch let error as SpeechInputError {
+            guard generation == handsFreeCaptureGeneration else { return }
             if error == .notAuthorized {
                 let currentAuthorization = await handsFreeInput.authorization()
                 if currentAuthorization != .authorized {
@@ -429,6 +457,7 @@ final class VoiceSessionCoordinator {
             }
             setHandsFreeFailure(.message(error.localizedDescription))
         } catch {
+            guard generation == handsFreeCaptureGeneration else { return }
             setHandsFreeFailure(.message(error.localizedDescription))
         }
     }
@@ -466,7 +495,7 @@ final class VoiceSessionCoordinator {
     }
 
     private func handleHandsFreeEvent(_ event: HandsFreeInputEvent) async {
-        guard isHandsFreeArmed else { return }
+        guard isHandsFreeArmed, !store.isReconfiguringConnection else { return }
 
         switch event {
         case .activity(let snapshot):
@@ -563,6 +592,7 @@ final class VoiceSessionCoordinator {
 
     private func beginHandsFreeCapture() {
         guard isHandsFreeArmed,
+              !store.isStandardMode,
               !isHandsFreeCaptureActive,
               captureTask == nil,
               responseTask == nil,
@@ -687,15 +717,39 @@ final class VoiceSessionCoordinator {
     }
 
     private func restartHandsFreeStream() async {
-        guard isHandsFreeArmed, let handsFreeInput else { return }
+        let generation = handsFreeCaptureGeneration
+        guard isHandsFreeArmed, !store.isReconfiguringConnection,
+              !store.isStandardMode, let handsFreeInput else { return }
         do {
-            let stream = try await handsFreeInput.start()
+            let stream = try await startHandsFreeInput(handsFreeInput)
+            guard generation == handsFreeCaptureGeneration, isHandsFreeArmed,
+                  !store.isReconfiguringConnection, !store.isStandardMode else {
+                await handsFreeInput.cancel()
+                return
+            }
             startHandsFreeStream(stream)
         } catch let error as SpeechInputError {
+            guard generation == handsFreeCaptureGeneration else { return }
             setHandsFreeFailure(.message(error.localizedDescription))
         } catch {
+            guard generation == handsFreeCaptureGeneration else { return }
             setHandsFreeFailure(.message(error.localizedDescription))
         }
+    }
+
+    private func startHandsFreeInput(
+        _ input: any HandsFreeInput
+    ) async throws -> AsyncThrowingStream<HandsFreeInputEvent, Error> {
+        handsFreeStartsInProgress += 1
+        defer {
+            handsFreeStartsInProgress -= 1
+            if handsFreeStartsInProgress == 0 {
+                let waiters = handsFreeStartWaiters
+                handsFreeStartWaiters.removeAll()
+                for waiter in waiters { waiter.resume() }
+            }
+        }
+        return try await input.start()
     }
 
     private func handleHandsFreeStreamEnded() async {
@@ -788,8 +842,13 @@ final class VoiceSessionCoordinator {
     nonisolated func beginCapture() async {
         // A tapped capture is never started from the background (Decision 1).
         let blocked = await MainActor.run { [weak self] in
+            if let reason = self?.store.standardVoiceUnavailableReason {
+                self?.store.transientError = reason
+                self?.state = .failed(reason)
+                return true
+            }
             guard let self else { return true }
-            return self.isHandsFreeArmed || self.isBackgrounded
+            return self.isHandsFreeArmed || self.isBackgrounded || self.store.isReconfiguringConnection
         }
         guard !blocked else { return }
         await waitForCaptureFinish()
@@ -797,6 +856,11 @@ final class VoiceSessionCoordinator {
         let binding: HermesTurnBinding? = await MainActor.run { [weak self] in
             guard let self else { return nil }
             guard self.captureTask == nil, self.responseTask == nil else { return nil }
+            if let reason = self.store.standardVoiceUnavailableReason {
+                self.store.transientError = reason
+                self.state = .failed(reason)
+                return nil
+            }
             guard let binding = self.store.verifiedTurnBinding else {
                 let message = self.store.turnUnavailableMessage
                 self.store.transientError = message
@@ -878,6 +942,11 @@ final class VoiceSessionCoordinator {
         binding: HermesTurnBinding
     ) async {
         guard responseTask == nil, captureTask == nil else { return }
+        if let reason = store.standardVoiceUnavailableReason {
+            store.transientError = reason
+            state = .failed(reason)
+            return
+        }
         if isHandsFreeArmed {
             handsFreeWakeSuppressed = true
             handsFreeFinalText = nil
@@ -1075,6 +1144,12 @@ final class VoiceSessionCoordinator {
         }
     }
 
+    /// The setup owner holds the store lease until this local teardown and
+    /// the selected-profile commit finish. No remote interrupt is sent.
+    func stopForConnectionChange() async {
+        await stopForLifecycle()
+    }
+
     /// Lifecycle teardown is intentionally local. It cancels recognition and
     /// response work, stops native playback, and never sends an interrupt or
     /// reconnect while the surface is inactive.
@@ -1086,6 +1161,11 @@ final class VoiceSessionCoordinator {
         onBackgroundRetentionEnded = nil
         responseGeneration &+= 1
         handsFreeCaptureGeneration &+= 1
+        isHandsFreeArmed = false
+        isHandsFreeCaptureActive = false
+        handsFreeStatus = .disarmed
+        cancelTappedPause()
+        cancelHandsFreeReplyTail()
         handsFreeSilenceTask?.cancel()
         handsFreeSilenceTask = nil
         captureFinishTask?.cancel()
@@ -1093,11 +1173,17 @@ final class VoiceSessionCoordinator {
 
         await input.cancel()
         await handsFreeInput?.cancel()
+        if handsFreeStartsInProgress > 0 {
+            await withCheckedContinuation { handsFreeStartWaiters.append($0) }
+            // A native start that was already suspended may have completed
+            // after the first cancellation. Stop that input before commit.
+            await handsFreeInput?.cancel()
+        }
         handsFreeTask?.cancel()
         if let handsFreeTask { await handsFreeTask.value }
         self.handsFreeTask = nil
 
-        _ = await captureStartGate.cancel()
+        await captureStartGate.cancelAndWait()
         captureTask?.cancel()
         if let captureTask { await captureTask.value }
         self.captureTask = nil
@@ -1134,6 +1220,11 @@ final class VoiceSessionCoordinator {
     }
 
     func interruptAndBeginCapture() async {
+        if let reason = store.standardVoiceUnavailableReason {
+            store.transientError = reason
+            state = .failed(reason)
+            return
+        }
         guard responseTask != nil else { return }
 
         guard await interruptActiveTurn() else { return }
@@ -1143,6 +1234,14 @@ final class VoiceSessionCoordinator {
     @discardableResult
     func interruptActiveTurn() async -> Bool {
         guard let activeResponseTask = responseTask else { return false }
+        if store.isStandardMode {
+            await output.stop()
+            // A local stop cannot cancel the consumer of the remote terminal.
+            // If interruption is unavailable, keep that consumer alive.
+            let stopped = await store.interruptActiveTurn()
+            if stopped { state = .interrupted }
+            return stopped
+        }
 
         let isHomeTurn = store.isHomeMode
         let homeTurn = store.verifiedTurnBinding?.homeTurn
@@ -1210,7 +1309,7 @@ final class VoiceSessionCoordinator {
     }
 
     func sendDraft() async {
-        guard captureTask == nil, responseTask == nil else { return }
+        guard !store.isReconfiguringConnection, captureTask == nil, responseTask == nil else { return }
         guard !store.draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
 
         playbackFailed = false
@@ -1235,6 +1334,10 @@ final class VoiceSessionCoordinator {
     /// produces the spoken answer and the visible state — sending straight to
     /// the store would deliver a silent, invisible turn.
     func resendUnconfirmedTurn() async {
+        guard !store.isStandardMode else {
+            store.transientError = "A Standard turn with an uncertain outcome cannot be resent. Start a new conversation or leave this conversation."
+            return
+        }
         guard captureTask == nil, responseTask == nil else { return }
         guard let text = store.unconfirmedTurnText?.trimmingCharacters(in: .whitespacesAndNewlines),
               !text.isEmpty else { return }
@@ -1373,6 +1476,11 @@ final class VoiceSessionCoordinator {
         binding: HermesTurnBinding,
         generation: UInt64
     ) async {
+        if let reason = store.standardVoiceUnavailableReason {
+            store.transientError = reason
+            state = .failed(reason)
+            return
+        }
         guard generation == responseGeneration, !Task.isCancelled else { return }
         turnDidComplete = false
         replyTextIsLive = isMuted
@@ -1865,6 +1973,7 @@ final class VoiceSessionCoordinator {
 extension VoiceSessionCoordinator {
     /// The single predicate the lifecycle coordinator asks before teardown.
     var backgroundRetention: VoiceBackgroundRetention {
+        guard !store.isStandardMode else { return .none }
         if isBackgrounded, backgroundWorkEnded { return .none }
         if responseTask != nil { return .reply }
         if isHandsFreeArmed || isHandsFreeCaptureActive || captureTask != nil {
@@ -2239,6 +2348,13 @@ private actor CaptureStartGate {
         activeRequest.task.cancel()
         self.activeRequest = nil
         return true
+    }
+
+    func cancelAndWait() async {
+        guard let activeRequest else { return }
+        self.activeRequest = nil
+        activeRequest.task.cancel()
+        _ = await activeRequest.task.value
     }
 }
 

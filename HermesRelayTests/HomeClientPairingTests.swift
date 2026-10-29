@@ -1407,12 +1407,349 @@ final class HomeClientPairingTests: XCTestCase {
             XCTAssertEqual(summary.activationFailure == nil, openSucceeds)
             XCTAssertEqual(counter.count, openSucceeds ? 1 : 0)
         }
+    }
 
+    @MainActor
+    func testIncomingPairingLinkIsRetainedUntilAnAllowedDeliberateHomeAction() {
         let inbox = HomePairingLinkInbox()
+        let link = URL(string: "hermes-home://pair?home=https%3A%2F%2Fa.example&code=K7Q4MX2PNV")!
         XCTAssertFalse(inbox.receive(URL(string: "https://home.example.ts.net/pair?code=K7Q4MX2PNV")!))
         XCTAssertNil(inbox.pendingLink)
-        XCTAssertTrue(inbox.receive(URL(string: "hermes-home://pair?home=https%3A%2F%2Fa.example&code=K7Q4MX2PNV")!))
-        XCTAssertNotNil(inbox.pendingLink)
+
+        XCTAssertTrue(inbox.receive(link))
+        XCTAssertEqual(inbox.pendingLink, link, "Receiving a link must not consume it or open Home.")
+        XCTAssertNil(inbox.takePendingLink(blockedReason: "A turn is active."))
+        XCTAssertEqual(inbox.pendingLink, link, "Busy refusal must retain the original link.")
+
+        // An explicit Home setup action is allowed even when Standard was
+        // selected; transport mode is not itself an activity blocker.
+        XCTAssertEqual(inbox.takePendingLink(blockedReason: nil), link)
+        XCTAssertNil(inbox.pendingLink)
+        XCTAssertNil(inbox.takePendingLink(blockedReason: nil))
+    }
+
+    @MainActor
+    func testPairingAndRefreshRespectTheConnectionBlockerWithoutAcquiring() async throws {
+        let fixture = try await Self.makeFixture()
+        var acquisitions = 0
+        var releases = 0
+        let model = HomePairingModel(
+            coordinator: fixture.coordinator,
+            beginReconfiguration: { acquisitions += 1; return true },
+            endReconfiguration: { releases += 1 },
+            blockedReason: { "Resolve the uncertain turn first." }
+        )
+
+        model.begin(link: URL(string: "hermes-home://pair?home=https%3A%2F%2Fa.example&code=K7Q4MX2PNV")!)
+        await model.refresh(pairingID: UUID())
+
+        XCTAssertEqual(model.entryError, "Resolve the uncertain turn first.")
+        XCTAssertEqual(model.phase, .entry)
+        XCTAssertFalse(model.isOperating)
+        XCTAssertEqual(acquisitions, 0)
+        XCTAssertEqual(releases, 0)
+        let calls = await fixture.service.calls
+        XCTAssertTrue(calls.isEmpty)
+    }
+
+    @MainActor
+    func testDeniedPairingLeaseDoesNotReleaseAnotherOperationAndKeepsOpenedLinkRetryable() async throws {
+        let fixture = try await Self.makeFixture()
+        var acquisitions = 0
+        var releases = 0
+        let model = HomePairingModel(
+            coordinator: fixture.coordinator,
+            beginReconfiguration: { acquisitions += 1; return false },
+            endReconfiguration: { releases += 1 }
+        )
+        let link = URL(string: "hermes-home://pair?home=https%3A%2F%2Fa.example&code=K7Q4MX2PNV")!
+        model.begin(link: link)
+        for _ in 0..<300 {
+            if !model.isOperating { break }
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        XCTAssertFalse(model.isOperating)
+        XCTAssertEqual(model.phase, .entry)
+        XCTAssertEqual(model.linkText, link.absoluteString)
+        XCTAssertEqual(model.entryError, "Another connection change is already in progress.")
+
+        await model.refresh(pairingID: UUID())
+        XCTAssertEqual(acquisitions, 2)
+        XCTAssertEqual(releases, 0, "An operation that failed to acquire must not release somebody else's lease.")
+        let calls = await fixture.service.calls
+        XCTAssertTrue(calls.isEmpty)
+        let pairings = try await fixture.pairings.pairings()
+        XCTAssertTrue(pairings.isEmpty)
+    }
+
+    @MainActor
+    func testRefreshRechecksBlockerAfterLeaseAcquisitionBeforeReadingOrCommittingHomeState() async throws {
+        let fixture = try await Self.makeFixture()
+        let summary = try await Self.pair(fixture)
+        await fixture.service.resetCalls()
+        let acquisition = PairingTestOperationGate()
+        var blocker: String?
+        var releases = 0
+        let model = HomePairingModel(
+            coordinator: fixture.coordinator,
+            beginReconfiguration: { await acquisition.suspend(); return true },
+            endReconfiguration: { releases += 1 },
+            blockedReason: { blocker }
+        )
+        let refresh = Task { await model.refresh(pairingID: summary.pairingID) }
+        await acquisition.waitUntilSuspended()
+        blocker = "Wait for the conversation action to finish."
+        acquisition.release()
+        await refresh.value
+
+        XCTAssertFalse(model.isOperating)
+        XCTAssertFalse(model.isRefreshing)
+        XCTAssertEqual(model.entryError, blocker)
+        XCTAssertEqual(releases, 1)
+        let calls = await fixture.service.calls
+        XCTAssertTrue(calls.isEmpty)
+    }
+
+    @MainActor
+    func testCancelAndStartAgainDoNotReleaseLeaseWhileCoordinatorCommitIsStillInFlight() async throws {
+        let fixture = try await Self.makeFixture()
+        await fixture.service.setConsumeResults([.success(Self.material(generation: 1))])
+        await fixture.service.holdNextClaim()
+        var acquisitions = 0
+        var releases = 0
+        let model = HomePairingModel(
+            coordinator: fixture.coordinator,
+            beginReconfiguration: { acquisitions += 1; return true },
+            endReconfiguration: { releases += 1 }
+        )
+        let link = URL(string: "hermes-home://pair?home=https%3A%2F%2Fhome.example.ts.net&code=K7Q4MX2PNV")!
+        model.begin(link: link)
+        for _ in 0..<300 {
+            if await fixture.service.isHoldingClaim { break }
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        let isHoldingClaim = await fixture.service.isHoldingClaim
+        XCTAssertTrue(isHoldingClaim, "The coordinator must still be awaiting its activation claim.")
+        let pairingsAtClaim = try await fixture.pairings.pairings()
+        XCTAssertEqual(pairingsAtClaim.count, 1, "Credential/profile commit precedes activation.")
+
+        model.cancel()
+        model.startAgain()
+        model.begin(link: link)
+        await model.refresh(pairingID: UUID())
+        XCTAssertTrue(model.isOperating)
+        XCTAssertEqual(acquisitions, 1)
+        XCTAssertEqual(releases, 0, "Cancellation must not release a coordinator operation that has not returned.")
+        let pendingCalls = await fixture.service.calls
+        XCTAssertEqual(pendingCalls.filter { $0 == .submit }.count, 1)
+
+        await fixture.service.releaseHeldClaim()
+        for _ in 0..<300 {
+            if !model.isOperating { break }
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        XCTAssertFalse(model.isOperating)
+        XCTAssertEqual(releases, 1)
+        let finalCalls = await fixture.service.calls
+        XCTAssertEqual(finalCalls.filter { $0 == .submit }.count, 1)
+        let finalPairings = try await fixture.pairings.pairings()
+        XCTAssertEqual(finalPairings.count, 1)
+    }
+
+    @MainActor
+    func testPairingRechecksBlockerAfterLeaseAcquisitionAndRejectsOverlappingOperations() async throws {
+        let fixture = try await Self.makeFixture()
+        let acquisition = PairingTestOperationGate()
+        var acquisitions = 0
+        var releases = 0
+        var blocker: String?
+        let model = HomePairingModel(
+            coordinator: fixture.coordinator,
+            beginReconfiguration: {
+                acquisitions += 1
+                await acquisition.suspend()
+                return true
+            },
+            endReconfiguration: { releases += 1 },
+            blockedReason: { blocker }
+        )
+        let link = URL(string: "hermes-home://pair?home=https%3A%2F%2Fa.example&code=K7Q4MX2PNV")!
+        model.begin(link: link)
+        await acquisition.waitUntilSuspended()
+        model.begin(link: link)
+        await model.refresh(pairingID: UUID())
+        XCTAssertTrue(model.isOperating)
+        XCTAssertEqual(acquisitions, 1)
+        XCTAssertEqual(releases, 0)
+
+        blocker = "The selected conversation still needs to be saved."
+        acquisition.release()
+        for _ in 0..<300 {
+            if !model.isOperating { break }
+            try await Task.sleep(for: .milliseconds(10))
+        }
+
+        XCTAssertFalse(model.isOperating)
+        XCTAssertEqual(model.entryError, blocker)
+        XCTAssertEqual(model.linkText, link.absoluteString, "A blocked deliberate link remains retryable without redelivery.")
+        XCTAssertEqual(releases, 1)
+        let calls = await fixture.service.calls
+        XCTAssertTrue(calls.isEmpty, "A blocker appearing during teardown must prevent submission and commit.")
+        let pairings = try await fixture.pairings.pairings()
+        XCTAssertTrue(pairings.isEmpty)
+        XCTAssertTrue(fixture.secure.isEmpty)
+    }
+
+    @MainActor
+    func testPairingCancelledDuringLeaseAcquisitionKeepsLeaseUntilAcquisitionReturns() async throws {
+        let fixture = try await Self.makeFixture()
+        let acquisition = PairingTestOperationGate()
+        var acquisitions = 0
+        var releases = 0
+        let model = HomePairingModel(
+            coordinator: fixture.coordinator,
+            beginReconfiguration: {
+                acquisitions += 1
+                await acquisition.suspend()
+                return true
+            },
+            endReconfiguration: { releases += 1 }
+        )
+        let link = URL(string: "hermes-home://pair?home=https%3A%2F%2Fa.example&code=K7Q4MX2PNV")!
+        model.begin(link: link)
+        await acquisition.waitUntilSuspended()
+
+        model.cancel()
+        model.startAgain()
+        model.begin(link: link)
+        await model.refresh(pairingID: UUID())
+        XCTAssertTrue(model.isOperating)
+        XCTAssertEqual(acquisitions, 1)
+        XCTAssertEqual(releases, 0)
+
+        acquisition.release()
+        for _ in 0..<300 {
+            if !model.isOperating { break }
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        XCTAssertFalse(model.isOperating)
+        XCTAssertEqual(releases, 1)
+        let calls = await fixture.service.calls
+        XCTAssertTrue(calls.isEmpty)
+    }
+
+    @MainActor
+    func testPairingKeepsLeaseThroughCommittedPairingAnnouncementDespiteCancelAndStartAgain() async throws {
+        let fixture = try await Self.makeFixture()
+        await fixture.service.setConsumeResults([.success(Self.material(generation: 1))])
+        let announcement = PairingTestOperationGate()
+        var acquisitions = 0
+        var releases = 0
+        var held = false
+        let model = HomePairingModel(
+            coordinator: fixture.coordinator,
+            beginReconfiguration: {
+                XCTAssertFalse(held)
+                held = true
+                acquisitions += 1
+                return true
+            },
+            endReconfiguration: { held = false; releases += 1 },
+            onPaired: {
+                XCTAssertTrue(held, "Reconnecting the committed profile must remain inside the lease.")
+                await announcement.suspend()
+            }
+        )
+        let link = URL(string: "hermes-home://pair?home=https%3A%2F%2Fhome.example.ts.net&code=K7Q4MX2PNV")!
+        model.begin(link: link)
+        await announcement.waitUntilSuspended()
+        let committed = try await fixture.pairings.pairings()
+        XCTAssertEqual(committed.count, 1)
+        let callsAtCommit = await fixture.service.calls
+
+        model.cancel()
+        model.startAgain()
+        model.begin(link: link)
+        await model.refresh(pairingID: committed[0].id)
+        XCTAssertTrue(held)
+        XCTAssertTrue(model.isOperating)
+        XCTAssertEqual(acquisitions, 1)
+        XCTAssertEqual(releases, 0)
+        let overlappingCalls = await fixture.service.calls
+        XCTAssertEqual(overlappingCalls, callsAtCommit)
+
+        announcement.release()
+        for _ in 0..<300 {
+            if !model.isOperating { break }
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        XCTAssertFalse(model.isOperating)
+        XCTAssertFalse(held)
+        XCTAssertEqual(releases, 1)
+        guard case .finished = model.phase else {
+            return XCTFail("A committed pairing must still be announced after cancellation.")
+        }
+    }
+
+    @MainActor
+    func testRefreshKeepsLeaseThroughAnnouncementAndFailureReconciliation() async throws {
+        for shouldFail in [false, true] {
+            let fixture = try await Self.makeFixture()
+            let summary = try await Self.pair(fixture)
+            await fixture.service.resetCalls()
+            if shouldFail {
+                await fixture.service.setConfigurationResults([.failure(.denied(.unauthorized))])
+            }
+            let reconciliation = PairingTestOperationGate()
+            var acquisitions = 0
+            var releases = 0
+            var announcements = 0
+            var failures = 0
+            var held = false
+            let model = HomePairingModel(
+                coordinator: fixture.coordinator,
+                beginReconfiguration: { held = true; acquisitions += 1; return true },
+                endReconfiguration: { held = false; releases += 1 },
+                onReconfigurationFailure: {
+                    XCTAssertTrue(held)
+                    failures += 1
+                    await reconciliation.suspend()
+                },
+                onPaired: {
+                    XCTAssertTrue(held)
+                    announcements += 1
+                    await reconciliation.suspend()
+                }
+            )
+            let refresh = Task { await model.refresh(pairingID: summary.pairingID) }
+            await reconciliation.waitUntilSuspended()
+            let completedCalls = await fixture.service.calls
+            model.cancel()
+            model.startAgain()
+            model.begin(link: URL(string: "hermes-home://pair?home=https%3A%2F%2Fa.example&code=K7Q4MX2PNV")!)
+            await model.refresh(pairingID: summary.pairingID)
+
+            XCTAssertTrue(held)
+            XCTAssertTrue(model.isRefreshing)
+            XCTAssertEqual(acquisitions, 1)
+            XCTAssertEqual(releases, 0)
+            let overlappingCalls = await fixture.service.calls
+            XCTAssertEqual(overlappingCalls, completedCalls)
+            reconciliation.release()
+            await refresh.value
+
+            XCTAssertFalse(model.isOperating)
+            XCTAssertFalse(model.isRefreshing)
+            XCTAssertFalse(held)
+            XCTAssertEqual(releases, 1)
+            XCTAssertEqual(announcements, shouldFail ? 0 : 1)
+            XCTAssertEqual(failures, shouldFail ? 1 : 0)
+            if shouldFail {
+                guard case .failed = model.phase else { return XCTFail("Expected the refresh error.") }
+            } else {
+                guard case .finished = model.phase else { return XCTFail("Expected the refreshed pairing.") }
+            }
+        }
     }
 
     func testADeletedPairedProfileIsNotRecreatedByRefresh() async throws {
@@ -2605,6 +2942,33 @@ private final class PairingTestDirectories: @unchecked Sendable {
 @MainActor
 private final class PairingTestCounter {
     var count = 0
+}
+
+@MainActor
+private final class PairingTestOperationGate {
+    private var entered = false
+    private var continuation: CheckedContinuation<Void, Never>?
+    private var waiters: [CheckedContinuation<Void, Never>] = []
+
+    func suspend() async {
+        await withCheckedContinuation { continuation in
+            self.continuation = continuation
+            entered = true
+            let waiting = waiters
+            waiters.removeAll()
+            waiting.forEach { $0.resume() }
+        }
+    }
+
+    func waitUntilSuspended() async {
+        guard !entered else { return }
+        await withCheckedContinuation { waiters.append($0) }
+    }
+
+    func release() {
+        continuation?.resume()
+        continuation = nil
+    }
 }
 
 private final class PairingTestClock: @unchecked Sendable {

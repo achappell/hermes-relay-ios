@@ -319,6 +319,7 @@ struct HomeDiagnosticSetting: Identifiable, Sendable {
 actor AutomaticDiagnosticsReporter {
     typealias Pairings = @Sendable () async throws -> [HomeClientPairing]
     typealias Upload = @Sendable (HomeClientPairing, ClientDiagnosticReport) async throws -> Void
+    typealias HomeActivityEligibility = @Sendable () async -> Bool
     private struct HomeState: Codable {
         let origin: HomeClientBaseURL
         let deviceID: String
@@ -337,6 +338,9 @@ actor AutomaticDiagnosticsReporter {
     private let fileURL: URL
     private let pairings: Pairings
     private let upload: Upload
+    private let isHomeActivityEligible: HomeActivityEligibility
+    private var homeActivityAllowed = true
+    private var homeActivityGeneration = 0
     private let now: @Sendable () -> Date
     private let launchID: UUID
     private var homes: [UUID: HomeState]
@@ -349,10 +353,12 @@ actor AutomaticDiagnosticsReporter {
     static let retention: TimeInterval = 7 * 86400
 
     init(fileURL: URL, pairings: @escaping Pairings, upload: @escaping Upload,
+         isHomeActivityEligible: @escaping HomeActivityEligibility = { true },
          now: @escaping @Sendable () -> Date = Date.init, launchID: UUID = UUID()) {
         self.fileURL = fileURL
         self.pairings = pairings
         self.upload = upload
+        self.isHomeActivityEligible = isHomeActivityEligible
         self.now = now
         self.launchID = launchID
         var loaded: [UUID: HomeState] = [:]
@@ -366,8 +372,39 @@ actor AutomaticDiagnosticsReporter {
         nextSequence = (loaded.values.flatMap(\.context).filter { $0.launchID == launchID }.map(\.sequence).max() ?? -1) + 1
     }
 
-    func settings() async throws -> [HomeDiagnosticSetting] {
+    /// A mode switch suspends Home diagnostics without changing saved consent or reports.
+    func setHomeActivityAllowed(_ allowed: Bool) {
+        guard homeActivityAllowed != allowed else { return }
+        homeActivityAllowed = allowed
+        homeActivityGeneration &+= 1
+        if !allowed { uploadTask?.cancel() }
+    }
+
+    private func canAccessHome() async -> Bool {
+        guard homeActivityAllowed else {
+            uploadTask?.cancel()
+            return false
+        }
+        guard !Task.isCancelled else { return false }
+        let generation = homeActivityGeneration
+        let eligible = await isHomeActivityEligible()
+        guard homeActivityAllowed, eligible else {
+            uploadTask?.cancel()
+            return false
+        }
+        return !Task.isCancelled && generation == homeActivityGeneration
+    }
+
+    private func eligiblePairings() async throws -> [HomeClientPairing]? {
+        let generation = homeActivityGeneration
+        guard await canAccessHome() else { return nil }
         let paired = try await pairings()
+        guard generation == homeActivityGeneration, await canAccessHome() else { return nil }
+        return paired
+    }
+
+    func settings() async throws -> [HomeDiagnosticSetting] {
+        guard let paired = try await eligiblePairings() else { return [] }
         try reconcile(paired)
         return paired.map { pairing in
             let state = homes[pairing.id]
@@ -378,7 +415,7 @@ actor AutomaticDiagnosticsReporter {
     }
 
     func setEnabled(_ enabled: Bool, pairingID: UUID) async throws {
-        let paired = try await pairings()
+        guard let paired = try await eligiblePairings() else { return }
         guard let pairing = paired.first(where: { $0.id == pairingID }) else { return }
         if enabled {
             guard homes[pairingID] == nil, homes.count < 16 else { return }
@@ -395,7 +432,8 @@ actor AutomaticDiagnosticsReporter {
     }
 
     func connectionResult(ready: Bool, code: HomeFailureCode?, phase: HomeFailurePhase, profileID: UUID) async {
-        guard let pairing = try? await pairings().first(where: { $0.profiles.contains(where: { $0.profileID == profileID }) }),
+        guard let paired = try? await eligiblePairings(),
+              let pairing = paired.first(where: { $0.profiles.contains(where: { $0.profileID == profileID }) }),
               let state = homes[pairing.id], state.origin == pairing.home, state.deviceID == pairing.deviceID else { return }
         let safeCode = code.map { ClientDiagnosticEvent.allowedCodes.contains($0.rawValue) ? $0.rawValue : "unknown" }
         append(.init(time: now().timeIntervalSince1970, name: ready ? .connectionReady : .connectionFailed,
@@ -415,7 +453,8 @@ actor AutomaticDiagnosticsReporter {
         switch diagnostic {
         case .eventReceived: return
         case .reportSchemasAdvertised(let schemas):
-            guard let pairing = try? await pairings().first(where: { $0.profiles.contains(where: { $0.profileID == profileID }) }),
+            guard let paired = try? await eligiblePairings(),
+                  let pairing = paired.first(where: { $0.profiles.contains(where: { $0.profileID == profileID }) }),
                   let state = homes[pairing.id], state.origin == pairing.home, state.deviceID == pairing.deviceID else { return }
             let schema = schemas.contains(2) ? 2 : 1
             guard state.reportSchema ?? 1 != schema else { return }
@@ -439,7 +478,8 @@ actor AutomaticDiagnosticsReporter {
             name = .clientRequestResolved; correlation = value; responseKind = kind
             phase = "response"; pendingState = "response_resolved"
         }
-        guard let pairing = try? await pairings().first(where: { $0.profiles.contains(where: { $0.profileID == profileID }) }),
+        guard let paired = try? await eligiblePairings(),
+              let pairing = paired.first(where: { $0.profiles.contains(where: { $0.profileID == profileID }) }),
               let state = homes[pairing.id], state.origin == pairing.home, state.deviceID == pairing.deviceID else { return }
         var event = ClientDiagnosticEvent(time: now().timeIntervalSince1970, name: name, launchID: launchID,
                                           code: code, durationMS: duration.map { min(86400000, max(0, $0)) },
@@ -464,7 +504,8 @@ actor AutomaticDiagnosticsReporter {
     }
 
     func lifecycle(_ name: ClientDiagnosticEvent.Name) async {
-        guard [.active, .inactive, .background].contains(name), let paired = try? await pairings() else { return }
+        guard [.active, .inactive, .background].contains(name),
+              let paired = try? await eligiblePairings() else { return }
         try? reconcile(paired)
         for id in Array(homes.keys) {
             if homes[id]?.context.last?.launchID != launchID {
@@ -527,18 +568,27 @@ actor AutomaticDiagnosticsReporter {
         guard !flushing else { return }
         flushing = true
         defer { flushing = false; uploadTask = nil; uploadingHome = nil }
-        guard let paired = try? await pairings() else { return }
+        guard let paired = try? await eligiblePairings() else { return }
         do { try reconcile(paired) } catch { return }
         for pairing in paired {
+            guard await canAccessHome() else { return }
             guard !Task.isCancelled, pairing.credentialUsable,
                   pairing.credentialExpiresAt > now(),
                   let report = homes[pairing.id]?.reports.first else { continue }
             uploadingHome = pairing.id
-            let task = Task { try await upload(pairing, report) }
+            let generation = homeActivityGeneration
+            let task = Task {
+                guard generation == homeActivityGeneration, await canAccessHome() else {
+                    throw CancellationError()
+                }
+                try Task.checkCancellation()
+                try await upload(pairing, report)
+            }
             uploadTask = task
             do {
                 try await withTaskCancellationHandler { try await task.value } onCancel: { task.cancel() }
-                guard !Task.isCancelled, !task.isCancelled, homes[pairing.id] != nil else { continue }
+                guard !Task.isCancelled, !task.isCancelled, generation == homeActivityGeneration,
+                      await canAccessHome(), homes[pairing.id] != nil else { continue }
                 homes[pairing.id]?.reports.removeAll { $0.id == report.id }
                 homes[pairing.id]?.lastSent = now()
                 try persist()

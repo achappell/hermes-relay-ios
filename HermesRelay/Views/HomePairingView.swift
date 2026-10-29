@@ -16,6 +16,14 @@ final class HomePairingLinkInbox {
         pendingLink = url
         return true
     }
+
+    /// Only an explicit Home setup action consumes a received link. A busy
+    /// connection keeps it available for that action to be retried.
+    func takePendingLink(blockedReason: String? = nil) -> URL? {
+        guard blockedReason == nil else { return nil }
+        defer { pendingLink = nil }
+        return pendingLink
+    }
 }
 
 /// One presentation of the pairing sheet for an opened link.
@@ -42,16 +50,29 @@ final class HomePairingModel {
     private(set) var entryError: String?
     private(set) var pairings: [HomeClientPairing] = []
     private(set) var isRefreshing = false
+    private(set) var isOperating = false
 
     private let coordinator: HomeClientPairingCoordinator
+    private let beginReconfiguration: @MainActor () async -> Bool
+    private let endReconfiguration: @MainActor () -> Void
+    private let blockedReason: @MainActor () -> String?
+    private let onReconfigurationFailure: @MainActor () async -> Void
     private let onPaired: @MainActor () async -> Void
     private var task: Task<Void, Never>?
 
     init(
         coordinator: HomeClientPairingCoordinator,
+        beginReconfiguration: @escaping @MainActor () async -> Bool = { true },
+        endReconfiguration: @escaping @MainActor () -> Void = {},
+        blockedReason: @escaping @MainActor () -> String? = { nil },
+        onReconfigurationFailure: @escaping @MainActor () async -> Void = {},
         onPaired: @escaping @MainActor () async -> Void = {}
     ) {
         self.coordinator = coordinator
+        self.beginReconfiguration = beginReconfiguration
+        self.endReconfiguration = endReconfiguration
+        self.blockedReason = blockedReason
+        self.onReconfigurationFailure = onReconfigurationFailure
         self.onPaired = onPaired
     }
 
@@ -60,6 +81,10 @@ final class HomePairingModel {
     }
 
     func begin(link: URL) {
+        guard !isOperating else { return }
+        // A deliberately opened link must remain retryable if the
+        // connection becomes busy before its operation acquires the lease.
+        linkText = link.absoluteString
         do {
             begin(try HomePairingInvitation(link: link))
         } catch {
@@ -68,6 +93,7 @@ final class HomePairingModel {
     }
 
     func beginFromLinkText() {
+        guard !isOperating else { return }
         do {
             begin(try HomePairingInvitation(linkText: linkText))
         } catch {
@@ -76,6 +102,7 @@ final class HomePairingModel {
     }
 
     func beginFromCode() {
+        guard !isOperating else { return }
         do {
             begin(try HomePairingInvitation(code: code, homeAddress: homeAddress))
         } catch {
@@ -86,30 +113,50 @@ final class HomePairingModel {
     /// Nothing is submitted for malformed input; the message names the
     /// problem.
     func fail(entry error: Error) {
+        guard !isOperating else { return }
         entryError = error.localizedDescription
         phase = .entry
     }
 
     func cancel() {
         task?.cancel()
-        task = nil
         phase = .entry
     }
 
     func startAgain() {
-        task?.cancel()
-        task = nil
+        cancel()
         entryError = nil
         phase = .entry
     }
 
     func refresh(pairingID: UUID) async {
+        guard !isOperating else { return }
+        if let reason = blockedReason() {
+            entryError = reason
+            return
+        }
+        isOperating = true
         isRefreshing = true
-        defer { isRefreshing = false }
+        defer {
+            isRefreshing = false
+            isOperating = false
+        }
+        guard await beginReconfiguration() else {
+            entryError = blockedReason() ?? "Another connection change is already in progress."
+            return
+        }
+        defer { endReconfiguration() }
+        guard !Task.isCancelled else { return }
+        if let reason = blockedReason() {
+            entryError = reason
+            return
+        }
         do {
             let summary = try await coordinator.refresh(pairingID: pairingID)
             await finish(summary)
         } catch {
+            await loadPairings()
+            await onReconfigurationFailure()
             phase = .failed(error.localizedDescription)
         }
     }
@@ -119,6 +166,8 @@ final class HomePairingModel {
         if summary.activationFailure == nil,
            summary.grants.contains(where: { $0.profileName != nil }) {
             await onPaired()
+        } else if summary.activationFailure != nil {
+            await onReconfigurationFailure()
         }
         // Published last, so anything observing `.finished` sees the pairing
         // list and the activation announcement already settled.
@@ -126,19 +175,46 @@ final class HomePairingModel {
     }
 
     private func begin(_ invitation: HomePairingInvitation) {
+        guard !isOperating else { return }
+        if let reason = blockedReason() {
+            entryError = reason
+            return
+        }
+        isOperating = true
         entryError = nil
-        code = ""
-        linkText = ""
-        task?.cancel()
         task = Task { [weak self] in
             await self?.run(invitation)
         }
     }
 
     private func run(_ invitation: HomePairingInvitation) async {
+        defer {
+            task = nil
+            isOperating = false
+        }
+        guard await beginReconfiguration() else {
+            entryError = blockedReason() ?? "Another connection change is already in progress."
+            phase = .entry
+            return
+        }
+        defer { endReconfiguration() }
+        guard !Task.isCancelled else { return }
+        if let reason = blockedReason() {
+            entryError = reason
+            phase = .entry
+            return
+        }
+        code = ""
+        linkText = ""
         phase = .submitting
         do {
             let request = try await coordinator.submit(invitation)
+            try Task.checkCancellation()
+            if let reason = blockedReason() {
+                entryError = reason
+                phase = .entry
+                return
+            }
             phase = .waiting(
                 confirmationCode: request.displayConfirmationCode,
                 home: invitation.home.displayName
@@ -148,8 +224,12 @@ final class HomePairingModel {
             // sheet was cancelled meanwhile; the credential is already stored.
             await finish(summary)
         } catch is CancellationError {
+            await loadPairings()
+            await onReconfigurationFailure()
             phase = .entry
         } catch {
+            await loadPairings()
+            await onReconfigurationFailure()
             guard !Task.isCancelled else { return }
             phase = .failed(error.localizedDescription)
         }
@@ -166,9 +246,20 @@ struct HomePairingView: View {
     init(
         coordinator: HomeClientPairingCoordinator,
         initialLink: URL? = nil,
+        beginReconfiguration: @escaping @MainActor () async -> Bool = { true },
+        endReconfiguration: @escaping @MainActor () -> Void = {},
+        blockedReason: @escaping @MainActor () -> String? = { nil },
+        onReconfigurationFailure: @escaping @MainActor () async -> Void = {},
         onPaired: @escaping @MainActor () async -> Void = {}
     ) {
-        _model = State(initialValue: HomePairingModel(coordinator: coordinator, onPaired: onPaired))
+        _model = State(initialValue: HomePairingModel(
+            coordinator: coordinator,
+            beginReconfiguration: beginReconfiguration,
+            endReconfiguration: endReconfiguration,
+            blockedReason: blockedReason,
+            onReconfigurationFailure: onReconfigurationFailure,
+            onPaired: onPaired
+        ))
         self.initialLink = initialLink
     }
 
@@ -266,6 +357,7 @@ struct HomePairingView: View {
                 #endif
             Button("Pair from link") { model.beginFromLinkText() }
                 .disabled(model.linkText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                .disabled(model.isOperating)
         } header: {
             Text("Pairing link")
         } footer: {
@@ -290,6 +382,7 @@ struct HomePairingView: View {
                     model.code.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
                         || model.homeAddress.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
                 )
+                .disabled(model.isOperating)
         } header: {
             Text("Short code")
         } footer: {
@@ -310,7 +403,7 @@ struct HomePairingView: View {
                         Button("Refresh") {
                             Task { await model.refresh(pairingID: pairing.id) }
                         }
-                        .disabled(model.isRefreshing || !pairing.credentialUsable)
+                        .disabled(model.isOperating || !pairing.credentialUsable)
                     }
                 }
             } header: {
@@ -375,7 +468,7 @@ struct HomePairingView: View {
             Button("Refresh") {
                 Task { await model.refresh(pairingID: summary.pairingID) }
             }
-            .disabled(model.isRefreshing)
+            .disabled(model.isOperating)
             .accessibilityIdentifier("home-pairing-refresh")
         } footer: {
             Text("A waiting Profile is approved from a device already using it, in Settings → Home pairing. Refresh afterwards.")

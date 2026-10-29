@@ -53,6 +53,116 @@ final class VoiceSessionCoordinatorTests: XCTestCase {
         XCTAssertTrue(store.messages.isEmpty)
     }
 
+    @MainActor
+    func testConnectionLeaseBlocksLegacyTypedSpokenAndMicrophoneStarts() async {
+        let input = CoordinatorSpeechInput()
+        let handsFree = CoordinatorHandsFreeInput()
+        let client = CoordinatorHermesSessionClient()
+        let store = await connectedStore(client)
+        let coordinator = VoiceSessionCoordinator(store: store, input: input, output: CoordinatorAudioOutput(), handsFreeInput: handsFree)
+        store.draft = "keep this typed prompt"
+        XCTAssertTrue(store.beginConnectionReconfiguration())
+        defer { store.endConnectionReconfiguration() }
+
+        XCTAssertNil(store.verifiedTurnBinding)
+        XCTAssertNil(store.connectionChangeBlockedReason, "The lease owner must still be able to commit a profile switch")
+        await coordinator.beginCapture()
+        await coordinator.toggleHandsFree()
+        await coordinator.sendDraft()
+        let sent = await store.sendTurn(text: "spoken prompt", expectedBinding: HermesTurnBinding(profileID: nil, sessionID: "test-session"))
+
+        XCTAssertFalse(sent)
+        XCTAssertFalse(coordinator.isHandsFreeArmed)
+        let tappedStarts = await input.startCount()
+        let handsFreeStarts = await handsFree.startCount()
+        XCTAssertEqual(tappedStarts, 0)
+        XCTAssertEqual(handsFreeStarts, 0)
+        XCTAssertEqual(client.sentTurns, [])
+        XCTAssertEqual(store.draft, "keep this typed prompt")
+    }
+
+    @MainActor
+    func testConnectionLeaseRejectsRecognitionFromAnEarlierCapture() async {
+        let input = CoordinatorSpeechInput(finalUpdate: SpeechRecognitionUpdate(text: "do not send this recognition", isFinal: true))
+        let client = CoordinatorHermesSessionClient()
+        let store = await connectedStore(client)
+        let coordinator = VoiceSessionCoordinator(store: store, input: input, output: CoordinatorAudioOutput())
+        await coordinator.beginCapture()
+        XCTAssertTrue(store.beginConnectionReconfiguration())
+        defer { store.endConnectionReconfiguration() }
+
+        await coordinator.endCaptureAndSend()
+        XCTAssertEqual(client.sentTurns, [])
+        XCTAssertTrue(store.messages.isEmpty)
+    }
+
+    @MainActor
+    func testConnectionChangeTeardownDisarmsHandsFreeBeforeCommitAndCannotRearmDuringLease() async {
+        let handsFree = CoordinatorHandsFreeInput()
+        let client = CoordinatorHermesSessionClient()
+        let store = await connectedStore(client)
+        let output = CoordinatorAudioOutput()
+        let coordinator = VoiceSessionCoordinator(store: store, input: CoordinatorSpeechInput(), output: output, handsFreeInput: handsFree)
+        await coordinator.toggleHandsFree()
+        XCTAssertTrue(coordinator.isHandsFreeArmed)
+        XCTAssertTrue(store.beginConnectionReconfiguration())
+
+        await coordinator.stopForConnectionChange()
+        XCTAssertFalse(coordinator.isHandsFreeArmed)
+        XCTAssertFalse(coordinator.isHandsFreeCaptureActive)
+        XCTAssertEqual(coordinator.handsFreeStatus, .disarmed)
+        XCTAssertEqual(coordinator.state, .idle)
+        let cancellations = await handsFree.cancelCount()
+        XCTAssertGreaterThan(cancellations, 0)
+        await coordinator.toggleHandsFree()
+        let starts = await handsFree.startCount()
+        XCTAssertEqual(starts, 1)
+        XCTAssertEqual(client.sentTurns, [])
+
+        store.endConnectionReconfiguration()
+        await coordinator.toggleHandsFree()
+        XCTAssertTrue(coordinator.isHandsFreeArmed)
+        await coordinator.disableHandsFree()
+    }
+
+    @MainActor
+    func testConnectionChangeTeardownCancelsPendingTappedStartBeforeReturning() async {
+        let input = DelayedStartCoordinatorSpeechInput(finalUpdate: SpeechRecognitionUpdate(text: "never submit", isFinal: true))
+        let client = CoordinatorHermesSessionClient()
+        let store = await connectedStore(client)
+        let coordinator = VoiceSessionCoordinator(store: store, input: input, output: CoordinatorAudioOutput())
+        let capture = Task { await coordinator.beginCapture() }
+        await input.waitUntilStartRequested()
+        XCTAssertTrue(store.beginConnectionReconfiguration())
+        await coordinator.stopForConnectionChange()
+        await capture.value
+        let cancelled = await input.wasCancelled()
+        XCTAssertTrue(cancelled)
+        XCTAssertEqual(coordinator.state, .idle)
+        XCTAssertEqual(client.sentTurns, [])
+        store.endConnectionReconfiguration()
+    }
+
+    @MainActor
+    func testConnectionChangeWaitsForPendingHandsFreeNativeStartAndStopsIt() async {
+        let handsFree = CoordinatorHandsFreeInput(waitsForStart: true)
+        let client = CoordinatorHermesSessionClient()
+        let store = await connectedStore(client)
+        let coordinator = VoiceSessionCoordinator(store: store, input: CoordinatorSpeechInput(), output: CoordinatorAudioOutput(), handsFreeInput: handsFree)
+        let arming = Task { await coordinator.toggleHandsFree() }
+        await handsFree.waitUntilStartCount(1)
+        XCTAssertTrue(store.beginConnectionReconfiguration())
+
+        await coordinator.stopForConnectionChange()
+        await arming.value
+        XCTAssertFalse(coordinator.isHandsFreeArmed)
+        XCTAssertEqual(coordinator.state, .idle)
+        XCTAssertEqual(client.sentTurns, [])
+        let cancellations = await handsFree.cancelCount()
+        XCTAssertGreaterThanOrEqual(cancellations, 2, "A late native start must be cancelled before setup commits")
+        store.endConnectionReconfiguration()
+    }
+
     func testVoiceControlRemainsEnabledToInterruptAfterCaptureActionStarted() {
         XCTAssertTrue(
             VoiceControlInteractionPolicy.isDisabled(
@@ -5012,13 +5122,17 @@ private actor CoordinatorHandsFreeInput: HandsFreeInput {
     private var startCountWaiters: [(Int, CheckedContinuation<Void, Never>)] = []
     private var finishes = 0
     private var cancels = 0
+    private let waitsForStart: Bool
+    private var startContinuation: CheckedContinuation<Void, Never>?
 
     init(
         authorization: SpeechAuthorization = .authorized,
-        finishUpdate: SpeechRecognitionUpdate? = nil
+        finishUpdate: SpeechRecognitionUpdate? = nil,
+        waitsForStart: Bool = false
     ) {
         authorizationResult = authorization
         self.finishUpdate = finishUpdate
+        self.waitsForStart = waitsForStart
     }
 
     func authorization() async -> SpeechAuthorization {
@@ -5034,6 +5148,9 @@ private actor CoordinatorHandsFreeInput: HandsFreeInput {
         let readyWaiters = startCountWaiters.filter { $0.0 <= starts }
         startCountWaiters.removeAll { $0.0 <= starts }
         readyWaiters.forEach { $0.1.resume() }
+        if waitsForStart {
+            await withCheckedContinuation { startContinuation = $0 }
+        }
         let (stream, continuation) = AsyncThrowingStream<HandsFreeInputEvent, Error>.makeStream()
         self.continuation = continuation
         return stream
@@ -5069,6 +5186,8 @@ private actor CoordinatorHandsFreeInput: HandsFreeInput {
 
     func cancel() async {
         cancels += 1
+        startContinuation?.resume()
+        startContinuation = nil
         continuation?.finish(throwing: SpeechInputError.cancelled)
         continuation = nil
     }

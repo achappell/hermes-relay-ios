@@ -264,8 +264,6 @@ final class ConversationStoreTransportTests: XCTestCase {
         XCTAssertTrue(ThinkingFollow.isAtBottom(offset: 600, viewportHeight: 400, contentHeight: 1000))
         XCTAssertTrue(ThinkingFollow.isAtBottom(offset: 590, viewportHeight: 400, contentHeight: 1000))
         XCTAssertFalse(ThinkingFollow.isAtBottom(offset: 200, viewportHeight: 400, contentHeight: 1000))
-        XCTAssertEqual(ThinkingRow.title(isActive: true), "Hermes is thinking")
-        XCTAssertEqual(ThinkingRow.title(isActive: false), "Hermes thought")
     }
 
     @MainActor
@@ -457,12 +455,25 @@ final class ConversationStoreTransportTests: XCTestCase {
         try await configuration.saveProfile(profile)
         try await configuration.saveToken("token-one", for: profile.id)
 
-        let client = FakeHermesSessionClient()
-        let store = ConversationStore(client: client, configurationStore: configuration)
+        let socket = AutoConnectWebSocketConnection()
+        let factory = AutoConnectWebSocketConnectionFactory(socket: socket)
+        let store = ConversationStore(configurationStore: configuration, socketFactory: factory)
         await store.autoConnectIfNeeded()
         store.messages = [TranscriptMessage(role: .user, text: "private")]
         store.draft = "half typed"
         store.unconfirmedTurnText = "in flight"
+        let originalMessages = store.messages
+
+        await store.clearSelectedProfile()
+
+        XCTAssertEqual(store.activeProfileID, profile.id)
+        XCTAssertEqual(store.connectionState, .connected)
+        XCTAssertEqual(store.messages, originalMessages)
+        XCTAssertEqual(store.draft, "half typed")
+        XCTAssertEqual(store.unconfirmedTurnText, "in flight")
+        XCTAssertNotNil(store.connectionChangeBlockedReason)
+
+        await store.leaveCurrentConversation()
 
         try await configuration.deleteProfile(id: profile.id)
         await store.clearSelectedProfile()

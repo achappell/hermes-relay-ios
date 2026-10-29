@@ -25,18 +25,30 @@ struct RelayProfileCollection: Codable, Equatable, Sendable {
     }
 
     private enum CodingKeys: String, CodingKey {
-        case schemaVersion, profiles, selectedID, homeMigrations
+        case schemaVersion, profiles, selectedID, homeMigrations, standardProfiles
     }
 
     init(from decoder: Decoder) throws {
         let values = try decoder.container(keyedBy: CodingKeys.self)
         schemaVersion = try values.decode(Int.self, forKey: .schemaVersion)
         profiles = try values.decode([RelayProfile].self, forKey: .profiles)
+        // Keep direct entries out of the legacy array: older builds ignore
+        // them instead of treating an upstream endpoint as a fork relay.
+        profiles += try values.decodeIfPresent([RelayProfile].self, forKey: .standardProfiles) ?? []
         selectedID = try values.decodeIfPresent(UUID.self, forKey: .selectedID)
         homeMigrations = try values.decodeIfPresent(
             [UUID: HomeMigrationJournal].self,
             forKey: .homeMigrations
         ) ?? [:]
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var values = encoder.container(keyedBy: CodingKeys.self)
+        try values.encode(schemaVersion, forKey: .schemaVersion)
+        try values.encode(profiles.filter { $0.standardProfile == nil }, forKey: .profiles)
+        try values.encode(profiles.filter { $0.standardProfile != nil }, forKey: .standardProfiles)
+        try values.encodeIfPresent(selectedID, forKey: .selectedID)
+        try values.encode(homeMigrations, forKey: .homeMigrations)
     }
 
     var selectedProfile: RelayProfile? {
@@ -63,6 +75,7 @@ struct RelayProfileCollection: Codable, Equatable, Sendable {
     }
 
     func transportMode(for profileID: UUID) -> AppleTransportMode {
-        homeMigrations[profileID]?.selectedMode ?? .legacy
+        if profiles.first(where: { $0.id == profileID })?.standardProfile != nil { return .standard }
+        return homeMigrations[profileID]?.selectedMode == .home ? .home : .legacy
     }
 }

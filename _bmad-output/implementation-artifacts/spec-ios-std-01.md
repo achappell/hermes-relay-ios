@@ -1,6 +1,6 @@
 ---
 id: IOS-STD-01
-status: backlog
+status: review
 product_epic: 2
 created: 2026-09-23
 ---
@@ -24,11 +24,23 @@ Offer HomeBridge/Standard setup; authenticate directly to supported unmodified S
 
 ## Readiness
 
-Approved backlog scope. Owning BMAD specification/readiness review must settle API details and a bounded execution plan before implementation. No implementation or runtime acceptance is claimed.
+Required typed Slice 1 execution is authorized. The execution disposition below supersedes the historical draft; current implementation and verification are recorded in [IOS-STD-01 validation](validation-ios-std-01.md). Implementation, merge, synthetic runtime proof and physical/live acceptance remain separate gates. Optional voice is not implemented.
 
-## Readiness review — DRAFT, awaiting Amanda's approval
+### Execution disposition — 2026-10-29
 
-Drafted 2026-10-07 against `origin/main` `9a7c53fda18aa9cf3c80e8900ab1ba1f77ca741b`. Modeled on the merged TUI-STD-01 spec (`hermes-relay-tui` `spec-tui-std-01.md`, #219) and the approved ANDROID-STD-01 readiness review (`hermes-relay-android` PR #66). **This story is not `ready-for-dev`:** `sprint-status.yaml` stays `backlog` until Amanda answers the decisions below and approves. Android's 2026-10-03 decisions are carried as *proposed defaults for Apple*, not as approved Apple decisions. No implementation or runtime acceptance is claimed. Citations are `file:line` at the revision above, under `HermesRelay/` unless stated.
+The owner authorized proceeding with the required direct text-mode capability in this conversation. Implement the bounded Slice 1 below; this is not approval of Slice 2 voice or migration closure. Preserve the older review as dated design evidence, not current implementation acceptance.
+
+- Use an exact isolated clean upstream `83bde48a4d9760d84220a9b29094a1ad86410f6e` source baseline for the native `/api/ws` JSON-RPC probe, not the household's patched checkout or the draft's unverified historical pin. Verify authentication, readiness, durable resume, text events and interruption through actual upstream handlers before claiming support.
+- Conservative setup: WSS-only canonical `/api/ws`, no embedded/query credentials in saved URLs, a separate Standard Keychain service, optional Hermes Profile defaulting to `default`, existing Legacy profiles preserved, and HomeBridge/Standard offered for new setup. Compose any supported query token only inside the transport; never persist/log authenticated URLs or raw transport errors.
+- Preserve identity-scoped full-transcript history and uncertainty. Endpoint/identity changes cannot inherit credentials, transcripts or remote session references. Block reconfiguration while active/uncertain unless the user explicitly leaves. No automatic fallback or replay.
+- New conversation and Leave remain available when continuity is unavailable. Persist/resume only verified durable references; use a non-creating authenticated readiness check when supported. Background teardown marks in-flight work uncertain; Standard does not inherit Home background retention.
+- Direct voice controls are unavailable with an explanation. No new Home voice behavior, Legacy retirement, production endpoint/model use or physical acceptance is authorized by this slice.
+- Verify focused XCTest, iOS Simulator build/test, macOS build, actual native UI surfaces and an isolated real-agent/loopback-model smoke. Record implementation, merge, synthetic runtime proof and physical/live acceptance separately.
+
+
+## Historical readiness review — 2026-10-07
+
+The following is the historical, pre-implementation review against `origin/main` `9a7c53fda18aa9cf3c80e8900ab1ba1f77ca741b`, modeled on TUI-STD-01 and ANDROID-STD-01. Its draft decisions, proposed baseline and backlog disposition are superseded by the execution disposition above. Preserve it as design provenance, not current runtime or approval evidence. Citations are `file:line` at that historical revision, under `HermesRelay/` unless stated.
 
 ### Facts that shape this story
 

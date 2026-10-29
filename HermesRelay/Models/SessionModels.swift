@@ -153,12 +153,13 @@ enum VoiceState: Equatable, Sendable {
 enum HermesSessionBindingIdentity: Equatable, Sendable {
     case legacy(sessionID: String)
     case home(conversation: HomeConversationBinding, turn: HomeTurnBinding?)
+    case standard(sessionID: String, storedSessionID: String)
 }
 
 struct SessionMetadata: Equatable, Sendable {
-    /// Legacy clients expose their fork session ID here. Home metadata keeps
-    /// this nil: its conversation and turn handles belong to the typed
-    /// binding identity below and are never smuggled through this field.
+    /// Fork session ID only. Home and Standard keep this nil and use the
+    /// typed binding identity, never treating upstream or Home handles as
+    /// protocol-v1 relay session IDs.
     let sessionID: String?
     let model: String?
     let capabilities: [String]
@@ -182,6 +183,18 @@ struct SessionMetadata: Equatable, Sendable {
         self.binding = .home(conversation: homeConversation, turn: nil)
     }
 
+    init(
+        standardSessionID: String,
+        storedSessionID: String,
+        model: String? = nil,
+        capabilities: [String] = []
+    ) {
+        self.sessionID = nil
+        self.model = model
+        self.capabilities = capabilities
+        self.binding = .standard(sessionID: standardSessionID, storedSessionID: storedSessionID)
+    }
+
     var supportsInterrupt: Bool {
         capabilities.contains("interrupt")
     }
@@ -194,7 +207,7 @@ struct SessionMetadata: Equatable, Sendable {
 /// the same binding rule without inventing configuration state.
 struct HermesTurnBinding: Equatable, Sendable {
     let profileID: UUID?
-    /// Non-nil only for the legacy fork binding. Home uses `identity`.
+    /// Non-nil only for the legacy fork binding; all other modes use `identity`.
     let sessionID: String?
     let identity: HermesSessionBindingIdentity
 
@@ -212,6 +225,12 @@ struct HermesTurnBinding: Equatable, Sendable {
         self.profileID = profileID
         self.sessionID = nil
         self.identity = .home(conversation: homeConversation, turn: turn)
+    }
+
+    init(profileID: UUID?, standardSessionID: String, storedSessionID: String) {
+        self.profileID = profileID
+        self.sessionID = nil
+        self.identity = .standard(sessionID: standardSessionID, storedSessionID: storedSessionID)
     }
 
     var homeConversation: HomeConversationBinding? {

@@ -58,10 +58,11 @@ The current voice slice provides:
 - Swift 6.3 or newer
 - iOS 26 or newer for the iOS target
 - macOS 26 or newer for the macOS target
-- An Hermes voice-session endpoint and bearer token for future live testing
+- For direct Standard mode: an unmodified Hermes native session server supporting
+  the canonical `/api/ws` session authority (verified at upstream commit
+  `83bde48a4d9760d84220a9b29094a1ad86410f6e`), a WSS endpoint and its Standard token
 
-No live endpoint or token is required to build the foundation or run unit
-tests.
+No live endpoint or credential is required to build or run unit tests.
 
 ## Open the app
 
@@ -70,14 +71,49 @@ open "Hermes Relay.xcodeproj"
 ```
 
 Select the `HermesRelay` scheme and either an iPhone simulator or `My Mac`.
-Tap the gear button to open Configure Relay. Enter the `ws://` or `wss://`
-endpoint, client ID, device ID, display name, and bearer token, then choose
-Save configuration. The token is stored in Keychain; the other fields are
-stored in the application-support profile. When no configuration exists,
-the app stays disconnected and displays setup guidance. When a valid profile
-and token already exist, the app attempts one connection on launch or
-foreground activation; a failed attempt remains visible and can be retried
-with the Connect/Retry button.
+Open **Connection settings** with the gear button. New setup offers
+**HomeBridge** (Home enrollment) or **Standard Hermes** (direct connection).
+Standard takes a `wss://host/api/ws` endpoint, a Standard token, and an optional
+Hermes target profile (blank means `default`). It does not ask for a Home
+pairing code or fork client/device IDs. An authenticated, non-creating
+readiness check must succeed before saving. Older servers without the
+supported native session authority are reported unsupported, not retried
+through the legacy relay.
+
+The selected mode stays visible. Existing HomeBridge and Legacy profiles
+remain available; an outage never switches mode or suggests a fallback.
+Standard credentials use a separate Keychain service, not Home or Legacy
+credentials. Do not put credentials in endpoint URLs. Changing an endpoint
+requires a newly entered token and saves a new connection identity; the
+earlier connection, credential and local history remain intact.
+
+Direct Standard currently supports **typed streaming only**. Microphone,
+hands-free and audio controls are unavailable with an explanation. Home
+pairing, approvals, room/device administration and Home diagnostics controls
+are not Standard features. Home diagnostics uploads are paused while
+Standard is active; existing Home consent is preserved.
+
+Use **New conversation** deliberately to start another remote session.
+Reconnect/relaunch resumes only a verified durable reference, without
+resending local messages. If continuity is unavailable, the app explains
+that and requires New conversation; failed New never silently replaces
+the old session. **Leave this conversation** sends no prompt or interrupt,
+keeps its transcript, and releases the local recovery guard. Active or
+uncertain turns otherwise block connection changes. Standard closes on
+background and marks in-flight delivery uncertain. If Leave cannot be saved,
+the recovery guard stays in place: retry Leave or complete a successful New
+conversation before changing connections.
+
+Standard transcript/draft files are scoped by local connection, mode,
+endpoint and Hermes target profile; credentials never enter those files.
+New identities never import another connection's transcript or session.
+Select an earlier saved connection to view its retained local history.
+Deleting a connection removes its own credential and history only.
+
+Older app builds can safely load the connection collection without treating
+Standard as Legacy, but **saving settings in an older build drops Standard
+entries it does not understand**. Do not edit/save connection settings after
+downgrading; keep a recoverable configuration copy before a downgrade.
 
 To inspect playback timing in a Debug build, add
 `--hermes-audio-debug` under the scheme's **Arguments Passed On Launch**. The

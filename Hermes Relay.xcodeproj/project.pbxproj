@@ -84,6 +84,12 @@
 		D1A800000000000000000001 /* AutomaticDiagnostics.swift in Sources */ = {isa = PBXBuildFile; fileRef = D1A700000000000000000001 /* AutomaticDiagnostics.swift */; };
 		D1A800000000000000000002 /* AutomaticDiagnosticsSettings.swift in Sources */ = {isa = PBXBuildFile; fileRef = D1A700000000000000000002 /* AutomaticDiagnosticsSettings.swift */; };
 		D1A800000000000000000003 /* AutomaticDiagnosticsTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D1A700000000000000000003 /* AutomaticDiagnosticsTests.swift */; };
+		57D010000000000000000001 /* StandardSessionClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = 57D020000000000000000001 /* StandardSessionClient.swift */; };
+		57D010000000000000000002 /* StandardSetupSection.swift in Sources */ = {isa = PBXBuildFile; fileRef = 57D020000000000000000002 /* StandardSetupSection.swift */; };
+		57D010000000000000000003 /* StandardSessionClientTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 57D020000000000000000003 /* StandardSessionClientTests.swift */; };
+		57D010000000000000000004 /* StandardConfigurationTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 57D020000000000000000004 /* StandardConfigurationTests.swift */; };
+		57D010000000000000000005 /* StandardConversationStoreTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 57D020000000000000000005 /* StandardConversationStoreTests.swift */; };
+		57D010000000000000000006 /* StandardSetupTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 57D020000000000000000006 /* StandardSetupTests.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -179,6 +185,12 @@
 		D1A700000000000000000001 /* AutomaticDiagnostics.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AutomaticDiagnostics.swift; sourceTree = "<group>"; };
 		D1A700000000000000000002 /* AutomaticDiagnosticsSettings.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AutomaticDiagnosticsSettings.swift; sourceTree = "<group>"; };
 		D1A700000000000000000003 /* AutomaticDiagnosticsTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AutomaticDiagnosticsTests.swift; sourceTree = "<group>"; };
+		57D020000000000000000001 /* StandardSessionClient.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StandardSessionClient.swift; sourceTree = "<group>"; };
+		57D020000000000000000002 /* StandardSetupSection.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StandardSetupSection.swift; sourceTree = "<group>"; };
+		57D020000000000000000003 /* StandardSessionClientTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StandardSessionClientTests.swift; sourceTree = "<group>"; };
+		57D020000000000000000004 /* StandardConfigurationTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StandardConfigurationTests.swift; sourceTree = "<group>"; };
+		57D020000000000000000005 /* StandardConversationStoreTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StandardConversationStoreTests.swift; sourceTree = "<group>"; };
+		57D020000000000000000006 /* StandardSetupTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StandardSetupTests.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -249,6 +261,10 @@
 				A1000000000000000000009A /* ConversationPersistenceTests.swift */,
 				A1000000000000000000009B /* RecoveryTests.swift */,
 				A100000000000000000000C1 /* DeviceDiscoveryTests.swift */,
+				57D020000000000000000003 /* StandardSessionClientTests.swift */,
+				57D020000000000000000004 /* StandardConfigurationTests.swift */,
+				57D020000000000000000005 /* StandardConversationStoreTests.swift */,
+				57D020000000000000000006 /* StandardSetupTests.swift */,
 			);
 			path = HermesRelayTests;
 			sourceTree = "<group>";
@@ -293,6 +309,7 @@
 				A100000000000000000000A7 /* ReconnectPolicy.swift */,
 				A1000000000000000000003A /* WebSocketConnection.swift */,
 				A1000000000000000000003B /* URLSessionHermesSessionClient.swift */,
+				57D020000000000000000001 /* StandardSessionClient.swift */,
 				A1000000000000000000003E /* SpeechInput.swift */,
 				A1000000000000000000003F /* AppleSpeechInput.swift */,
 				A1000000000000000000008C /* AudioOutput.swift */,
@@ -325,6 +342,7 @@
 			children = (
 				A100000000000000000000C9 /* DeviceDiscoveryView.swift */,
 				A100000000000000000000B3 /* RelayConfigurationView.swift */,
+				57D020000000000000000002 /* StandardSetupSection.swift */,
 				D1A700000000000000000002 /* AutomaticDiagnosticsSettings.swift */,
 				A10000000000000000000107 /* HomePairingView.swift */,
 				A10000000000000000000111 /* HomeSessionsView.swift */,
@@ -521,6 +539,8 @@
 				A10000000000000000000112 /* HomeOwnerAdministrationView.swift in Sources */,
 				A10000000000000000000108 /* HomePairingScannerView.swift in Sources */,
 				A100000000000000000000F0 /* AppleLifecycleCoordinator.swift in Sources */,
+				57D010000000000000000001 /* StandardSessionClient.swift in Sources */,
+				57D010000000000000000002 /* StandardSetupSection.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -550,6 +570,10 @@
 				A100000000000000000000FA /* HomeConfigurationMigrationTests.swift in Sources */,
 				A1000000000000000000010A /* HomeClientPairingTests.swift in Sources */,
 				A100000000000000000000FC /* AppleLifecycleTests.swift in Sources */,
+				57D010000000000000000003 /* StandardSessionClientTests.swift in Sources */,
+				57D010000000000000000004 /* StandardConfigurationTests.swift in Sources */,
+				57D010000000000000000005 /* StandardConversationStoreTests.swift in Sources */,
+				57D010000000000000000006 /* StandardSetupTests.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
