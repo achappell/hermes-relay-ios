@@ -230,6 +230,7 @@ stories:
     tracker_key: ios-std-01
     release_scope: migration
     spec: _bmad-output/implementation-artifacts/spec-ios-std-01.md
+    validation: _bmad-output/implementation-artifacts/validation-ios-std-01.md
     depends_on:
       - ios:IOS-HOME-02
     github_issue: https://github.com/achappell/hermes-relay-ios/issues/92

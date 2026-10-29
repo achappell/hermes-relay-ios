@@ -21,6 +21,11 @@ struct HermesRelayIOSApp: App {
     private let homePairingCoordinator: HomeClientPairingCoordinator
     @State private var pairingInbox = HomePairingLinkInbox()
 
+    private struct DiagnosticsTaskID: Equatable {
+        let scenePhase: ScenePhase
+        let homeActivityAllowed: Bool
+    }
+
     init() {
         let applicationSupport = FileManager.default.urls(
             for: .applicationSupportDirectory,
@@ -61,7 +66,17 @@ struct HermesRelayIOSApp: App {
         let automaticDiagnostics = AutomaticDiagnosticsReporter(
             fileURL: appDirectory.appendingPathComponent("Diagnostics/automatic-reports.json"),
             pairings: { try await homePairingStore.pairings() },
-            upload: { pairing, report in try await uploader.send(pairing: pairing, report: report) }
+            upload: { pairing, report in try await uploader.send(pairing: pairing, report: report) },
+            isHomeActivityEligible: {
+                do {
+                    // Read the saved selection before ConversationStore has loaded its mode.
+                    let collection = try await configuration.loadCollection()
+                    guard let profile = collection.selectedProfile else { return true }
+                    return collection.transportMode(for: profile.id) != .standard
+                } catch {
+                    return false
+                }
+            }
         )
         self.automaticDiagnostics = automaticDiagnostics
         let liveHomeFactory = DefaultHomeBridgeSessionClientFactory(
@@ -99,8 +114,7 @@ struct HermesRelayIOSApp: App {
             homeClientFactory: homeClientFactory,
             identity: RelayDeviceIdentity.current()
         )
-        // One conversation per relay profile. The store swaps to the selected
-        // profile's file when the client is configured.
+        // History follows the exact saved connection, not just its display name.
         let conversationStore = ConversationStore(
             configurationStore: configuration,
             makePersistence: { profileID in
@@ -111,7 +125,12 @@ struct HermesRelayIOSApp: App {
                 )
             },
             homeClientFactory: homeClientFactory,
-            homeClaimProvider: homeClaimProvider
+            homeClaimProvider: homeClaimProvider,
+            makeProfilePersistence: { profile in
+                JSONConversationPersistence(
+                    fileURL: ConversationPersistenceFile.url(in: appDirectory, for: profile)
+                )
+            }
         )
         #if DEBUG
         conversationStore.configureDebugHomeClaims(enabled: homeFakeEnabled)
@@ -136,6 +155,10 @@ struct HermesRelayIOSApp: App {
     }
 
     var body: some Scene {
+        let diagnosticsTaskID = DiagnosticsTaskID(
+            scenePhase: scenePhase,
+            homeActivityAllowed: !store.isStandardMode && !store.isReconfiguringConnection
+        )
         WindowGroup {
             ContentView(
                 store: store,
@@ -155,10 +178,13 @@ struct HermesRelayIOSApp: App {
                 pairingInbox: pairingInbox
             )
             .environment(\.automaticDiagnostics, automaticDiagnostics)
-            .task(id: scenePhase) {
-                let phase: ClientDiagnosticEvent.Name = scenePhase == .active ? .active : (scenePhase == .background ? .background : .inactive)
+            .task(id: diagnosticsTaskID) {
+                guard !Task.isCancelled else { return }
+                await automaticDiagnostics.setHomeActivityAllowed(diagnosticsTaskID.homeActivityAllowed)
+                guard diagnosticsTaskID.homeActivityAllowed, !Task.isCancelled else { return }
+                let phase: ClientDiagnosticEvent.Name = diagnosticsTaskID.scenePhase == .active ? .active : (diagnosticsTaskID.scenePhase == .background ? .background : .inactive)
                 await automaticDiagnostics.lifecycle(phase)
-                guard scenePhase == .active else { return }
+                guard diagnosticsTaskID.scenePhase == .active else { return }
                 while !Task.isCancelled {
                     await automaticDiagnostics.flush()
                     do { try await Task.sleep(for: .seconds(30)) } catch { return }

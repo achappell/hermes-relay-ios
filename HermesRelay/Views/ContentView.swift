@@ -200,6 +200,8 @@ struct ContentView: View {
     private var canSend: Bool {
         store.connectionState.isConnected
             && !store.isSending
+            && !store.isReconfiguringConnection
+            && (!store.isStandardMode || (!store.standardNeedsNewConversation && store.connectionChangeBlockedReason == nil))
             && !store.draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
     }
 
@@ -271,7 +273,11 @@ struct ContentView: View {
                 ScrollViewReader { reader in
                     ScrollView {
                         ViewportFillLayout(viewportHeight: proxy.size.height) {
-                            ambientHUD
+                            if store.isStandardMode {
+                                standardConversation
+                            } else {
+                                ambientHUD
+                            }
                         }
                     }
                     .scrollBounceBehavior(.basedOnSize)
@@ -313,6 +319,9 @@ struct ContentView: View {
             .onChange(of: voiceCoordinator.state) { _, newState in
                 applyViewMode(.voiceStateChanged(newState))
             }
+            .onChange(of: store.isStandardMode, initial: true) { _, isStandard in
+                if isStandard { viewMode = .typing }
+            }
             .task {
                 try? await Task.sleep(for: .milliseconds(500))
                 launchSettled = true
@@ -335,10 +344,11 @@ struct ContentView: View {
             .task {
                 hudModel.start(observing: activityStore)
                 if let conversationDirectory,
-                   let activeID = try? await configurationStore?.loadProfile()?.id {
+                   let profile = try? await configurationStore?.loadProfile(),
+                   profile.standardProfile == nil {
                     ConversationPersistenceMigrator.migrateLegacyConversation(
                         in: conversationDirectory,
-                        to: activeID
+                        to: profile.id
                     )
                 }
                 _ = await lifecycleCoordinator.handle(.relaunch)
@@ -368,6 +378,7 @@ struct ContentView: View {
                 RelayConfigurationView(
                     configurationStore: configurationStore,
                     connectionState: store.connectionState,
+                    isStandardMode: store.isStandardMode,
                     conversationDirectory: conversationDirectory,
                     deviceDiscoveryClient: deviceDiscoveryClient,
                     deviceAdministrationClient: deviceAdministrationClient,
@@ -378,7 +389,11 @@ struct ContentView: View {
                     homeCredentialStore: homeCredentialStore,
                     homeAdminCredentialStore: homeAdminCredentialStore,
                     homeClientFactory: homeClientFactory,
-                    homePairingCoordinator: homePairingCoordinator
+                    homePairingCoordinator: homePairingCoordinator,
+                    connectionChangeBlockedReason: store.connectionChangeBlockedReason,
+                    reconfigurationBlockedReason: { store.connectionChangeBlockedReason },
+                    beginReconfiguration: beginConnectionReconfiguration,
+                    endReconfiguration: { store.endConnectionReconfiguration() }
                 ) {
                     // The selected profile may have changed, so reconnect to
                     // whichever relay is now active rather than only reloading
@@ -404,26 +419,29 @@ struct ContentView: View {
             AccessibilityNotification.Announcement("Hermes is thinking").post()
         }
         .sheet(isPresented: $showingHomeSessions) {
-            HomeSessionsView(
-                store: store,
-                scrollToOpenClaims: scrollToOpenHomeClaimsOnPresent
-            )
-            .onDisappear { scrollToOpenHomeClaimsOnPresent = false }
+            if store.isHomeMode {
+                HomeSessionsView(
+                    store: store,
+                    scrollToOpenClaims: scrollToOpenHomeClaimsOnPresent
+                )
+                .onDisappear { scrollToOpenHomeClaimsOnPresent = false }
+            }
         }
         .onChange(of: store.activeProfileID) {
             // Recent prompts belong to the Profile they were typed in.
             promptHistory = PromptHistory()
-        }
-        .onChange(of: pairingInbox?.pendingLink, initial: true) { _, link in
-            guard let link else { return }
-            pairingInbox?.pendingLink = nil
-            pairingLinkRequest = HomePairingLinkRequest(url: link)
         }
         .sheet(item: $pairingLinkRequest) { request in
             if let homePairingCoordinator {
                 HomePairingView(
                     coordinator: homePairingCoordinator,
                     initialLink: request.url,
+                    beginReconfiguration: beginConnectionReconfiguration,
+                    endReconfiguration: { store.endConnectionReconfiguration() },
+                    blockedReason: { store.connectionChangeBlockedReason },
+                    onReconfigurationFailure: {
+                        await store.switchToSelectedProfile()
+                    },
                     onPaired: {
                         await store.switchToSelectedProfile()
                     }
@@ -433,6 +451,93 @@ struct ContentView: View {
                     .padding()
             }
         }
+    }
+
+    private func beginConnectionReconfiguration() async -> Bool {
+        guard store.beginConnectionReconfiguration() else { return false }
+        await voiceCoordinator.stopForConnectionChange()
+        return true
+    }
+
+    private func reviewPendingHomePairing() async {
+        guard await beginConnectionReconfiguration() else { return }
+        defer { store.endConnectionReconfiguration() }
+        guard let link = pairingInbox?.takePendingLink(blockedReason: store.connectionChangeBlockedReason) else { return }
+        pairingLinkRequest = HomePairingLinkRequest(url: link)
+    }
+
+
+    /// Standard has no voice orb, live Home conversation routes, or replay action.
+    /// Home setup is reachable only through an explicit connection setup action.
+    private var standardConversation: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            HStack {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(store.activeProfileDisplayName ?? "Standard Hermes")
+                        .font(.headline)
+                    Text("\(store.connectionModeLabel) · \(store.connectionState.label)")
+                        .font(.subheadline)
+                        .accessibilityIdentifier("standard-connection-status")
+                }
+                Spacer()
+                if configurationStore != nil {
+                    Button { showingConfiguration = true } label: {
+                        Label("Connection settings", systemImage: "gearshape")
+                    }
+                    .labelStyle(.iconOnly)
+                    .accessibilityLabel("Connection settings")
+                }
+            }
+            if let reason = store.standardVoiceUnavailableReason {
+                Text(reason).font(.footnote)
+            }
+            Text("Home pairing, household administration, and Home session browsing are unavailable in direct Standard mode.")
+                .font(.footnote)
+                .foregroundStyle(HermesVisualTokens.secondaryInk)
+            if store.standardNeedsNewConversation {
+                Text("Start a new conversation to continue. Earlier local history stays visible; the last prompt has not been resent.")
+                    .accessibilityIdentifier("standard-new-conversation-notice")
+            }
+            if store.unresolvedTurnTextForDisplay != nil {
+                Label("The last turn may have reached Hermes. It will not be replayed. Start a new conversation or explicitly leave this one.", systemImage: "exclamationmark.triangle")
+                    .accessibilityIdentifier("standard-uncertain-turn")
+            }
+            if let reason = store.connectionChangeBlockedReason {
+                Text(reason).font(.footnote)
+            }
+            HStack {
+                Button("New conversation") {
+                    Task { await store.startNewStandardConversation() }
+                }
+                .accessibilityIdentifier("standard-new-conversation")
+                Button("Leave this conversation") {
+                    Task { await store.leaveCurrentConversation() }
+                }
+                .accessibilityIdentifier("standard-leave-conversation")
+                if store.isSending {
+                    Button("Stop response") {
+                        Task { _ = await store.interruptActiveTurn() }
+                    }
+                    .accessibilityIdentifier("standard-stop-response")
+                }
+            }
+            Text("Leave sends nothing to Hermes and keeps this transcript on this device.")
+                .font(.footnote)
+                .foregroundStyle(HermesVisualTokens.secondaryInk)
+            if !store.connectionState.isConnected {
+                Button("Reconnect Standard") {
+                    Task { await store.connect() }
+                }
+                .accessibilityIdentifier("standard-reconnect")
+            }
+            TypingTranscriptView(
+                messages: store.messages,
+                thinkingTurns: store.thinkingTurns,
+                onOpenThinking: { openThinkingID = $0 }
+            )
+        }
+        .padding()
+        .frame(maxWidth: 760, alignment: .leading)
     }
 
     private var ambientHUD: some View {
@@ -524,6 +629,27 @@ struct ContentView: View {
 
     private var composer: some View {
         VStack(spacing: 8) {
+            if pairingInbox?.pendingLink != nil {
+                VStack(alignment: .leading, spacing: 6) {
+                    Text("A Home pairing link is waiting. Review it only if you want to set up a Home connection.")
+                        .font(.footnote)
+                    Button("Review link and set up Home") {
+                        Task { await reviewPendingHomePairing() }
+                    }
+                    .disabled(homePairingCoordinator == nil || store.connectionChangeBlockedReason != nil || store.isReconfiguringConnection)
+                    .accessibilityIdentifier("review-pending-home-pairing")
+                    if let reason = store.connectionChangeBlockedReason {
+                        Text(reason).font(.footnote)
+                    }
+                }
+            }
+            if !store.isStandardMode, let reason = store.connectionChangeBlockedReason {
+                Text(reason).font(.footnote)
+                Button("Leave this conversation") {
+                    Task { await store.leaveCurrentConversation() }
+                }
+                .accessibilityIdentifier("leave-current-conversation")
+            }
             if showsCachedDraftNotice {
                 HStack(spacing: 8) {
                     Image(systemName: "doc.text")
@@ -573,7 +699,7 @@ struct ContentView: View {
                     Image(systemName: "info.circle")
                     Text(transientError)
                         .font(.footnote)
-                        .lineLimit(2)
+                        .lineLimit(store.isStandardMode ? nil : 2)
                     Spacer()
                     Button {
                         store.clearTransientError()
@@ -586,7 +712,7 @@ struct ContentView: View {
                 .foregroundStyle(HermesVisualTokens.secondaryInk)
             }
 
-            if viewMode == .typing {
+            if viewMode == .typing && !store.isStandardMode {
                 TypingControlCluster(
                     coordinator: voiceCoordinator,
                     onReturnToVoice: returnToVoice
@@ -601,6 +727,7 @@ struct ContentView: View {
                 TextField("Message Hermes…", text: $store.draft, axis: .vertical)
                     .focused($focusedField, equals: .composer)
                     .accessibilityFocused($composerAccessibilityFocused)
+                    .accessibilityIdentifier("message-composer")
                     .textFieldStyle(.plain)
                     .foregroundStyle(HermesVisualTokens.primaryInk)
                     .lineLimit(1...3)
@@ -627,6 +754,7 @@ struct ContentView: View {
                 .controlSize(.large)
                 .disabled(!canSend)
                 .accessibilityLabel("Send message")
+                .accessibilityIdentifier("send-message")
             }
         }
         .padding(.horizontal, 12)
@@ -703,6 +831,10 @@ struct ContentView: View {
     /// Applies a view-mode event. Screen-reader focus follows a switch and
     /// nothing else is announced. With Reduce Motion the switch is instant.
     private func applyViewMode(_ event: ConversationViewModeEvent) {
+        if store.isStandardMode {
+            viewMode = .typing
+            return
+        }
         let next = ConversationViewModeReducer.reduce(viewMode, event)
         guard next != viewMode else { return }
         withAnimation(reduceMotion ? nil : .easeInOut(duration: 0.2)) {
@@ -719,6 +851,7 @@ struct ContentView: View {
     /// Talk in the typing view: leave the typing view and put the keyboard
     /// away before any voice action starts.
     private func returnToVoice() {
+        guard !store.isStandardMode else { return }
         applyViewMode(.voiceControlActivated)
         focusedField = nil
     }

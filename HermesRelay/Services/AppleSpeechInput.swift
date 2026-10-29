@@ -14,6 +14,7 @@ actor AppleSpeechInput: SpeechInput {
     private let finalResultGraceNanoseconds: UInt64
     private var configurationObserver: AudioEngineConfigurationObserver?
     private var interruptionObserver: AudioInterruptionObserver?
+    private var inputNodeWithTap: AVAudioInputNode?
 
     init(
         locale: Locale = Locale(identifier: "en-US"),
@@ -90,6 +91,7 @@ actor AppleSpeechInput: SpeechInput {
                 }
                 request.append(buffer)
             }
+            inputNodeWithTap = inputNode
             audioEngine.prepare()
             try audioEngine.start()
 
@@ -135,7 +137,8 @@ actor AppleSpeechInput: SpeechInput {
     func finish() async {
         guard let session = recognitionSession,
               await session.isActive() else { return }
-        audioEngine.inputNode.removeTap(onBus: 0)
+        inputNodeWithTap?.removeTap(onBus: 0)
+        inputNodeWithTap = nil
         if audioEngine.isRunning {
             audioEngine.stop()
         }
@@ -203,7 +206,10 @@ actor AppleSpeechInput: SpeechInput {
     }
 
     private func stopResources() async {
-        audioEngine.inputNode.removeTap(onBus: 0)
+        // Accessing audioEngine.inputNode here initializes microphone hardware
+        // even for an idle cancellation (including text-only connection setup).
+        inputNodeWithTap?.removeTap(onBus: 0)
+        inputNodeWithTap = nil
         if audioEngine.isRunning {
             audioEngine.stop()
         }

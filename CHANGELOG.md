@@ -1,5 +1,14 @@
 # Changelog
 
+## Unreleased
+
+- Add explicit, text-only direct Standard Hermes setup on iOS and macOS using
+  the supported canonical native session interface, separate Keychain
+  credentials, identity-scoped local history, and durable recovery without
+  prompt replay. HomeBridge and existing Legacy connections remain separate;
+  direct voice and Home-only controls are unavailable in Standard mode.
+
+
 ## 0.8.0 (2026-10-22)
 
 <!-- Release notes generated using configuration in .github/release.yml at main -->

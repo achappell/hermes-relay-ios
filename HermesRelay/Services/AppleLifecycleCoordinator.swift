@@ -213,15 +213,18 @@ final class AppleLifecycleCoordinator {
             "lifecycle deactivate trigger=\(trigger) reply=\(voice.backgroundRetention.journalName)"
         )
         let snapshotSucceeded = await store.lifecycleWillDeactivate()
-        guard snapshotSucceeded else {
+        guard snapshotSucceeded || store.isStandardMode else {
             deactivationPending = true
             return .persistenceFailed
         }
 
         isRetainingBackgroundWork = false
-        deactivationPending = false
+        deactivationPending = !snapshotSucceeded
         generation &+= 1
         isActive = false
+        // Direct Standard never inherits Home's background retention. Close
+        // first so any typed stream consumer can finish native teardown.
+        await store.closeStandardClientForLifecycle()
         await voice.stopForLifecycle()
 
         // Clear the store's ownership before awaiting the actor. Repeated
@@ -233,7 +236,7 @@ final class AppleLifecycleCoordinator {
             journal.record("lifecycle closing Home client trigger=\(trigger)")
         }
         await client?.close()
-        return .completed
+        return snapshotSucceeded ? .completed : .persistenceFailed
     }
 }
 

@@ -125,6 +125,146 @@ final class AutomaticDiagnosticsTests: XCTestCase {
         XCTAssertEqual(settings.first?.lastSent, nil)
     }
 
+    func testSelectedStandardModeNeverReadsHomeAndPreservesConsentAndQueuedReports() async throws {
+        let fixture = try Fixture()
+        defer { fixture.remove() }
+        let original = fixture.reporter()
+        try await original.setEnabled(true, pairingID: fixture.pairing.id)
+        await original.record(.transportLost, profileID: fixture.profileID)
+        await original.flush()
+        let originalReports = await fixture.sink.reports
+        let queuedReport = try XCTUnwrap(originalReports.first)
+        let fileURL = fixture.directory.appendingPathComponent("reports.json")
+        let saved = try Data(contentsOf: fileURL)
+        let access = DiagnosticsModeAccess(pairing: fixture.pairing, eligible: false)
+        let date = fixture.date
+        // The selected-mode gate must protect startup before the root learns its active mode.
+        let reporter = AutomaticDiagnosticsReporter(
+            fileURL: fileURL,
+            pairings: { try await access.pairedHomes() },
+            upload: { _, report in try await access.send(report) },
+            isHomeActivityEligible: { await access.isEligible() },
+            now: { date }
+        )
+        let hiddenSettings = try await reporter.settings()
+        XCTAssertTrue(hiddenSettings.isEmpty)
+        try await reporter.setEnabled(false, pairingID: fixture.pairing.id)
+        try await reporter.setEnabled(true, pairingID: fixture.pairing.id)
+        await reporter.record(.transportLost, profileID: fixture.profileID)
+        await reporter.record(.reportSchemasAdvertised([1, 2]), profileID: fixture.profileID)
+        await reporter.connectionResult(ready: false, code: .hermesUnavailable, phase: .open, profileID: fixture.profileID)
+        await reporter.connectionResult(ready: true, code: nil, phase: .open, profileID: fixture.profileID)
+        await reporter.lifecycle(.active)
+        await reporter.lifecycle(.inactive)
+        await reporter.lifecycle(.background)
+        await reporter.flush()
+        let pairingReads = await access.pairingReads
+        let uploadCalls = await access.uploadCalls
+        XCTAssertEqual(pairingReads, 0)
+        XCTAssertEqual(uploadCalls, 0)
+        XCTAssertEqual(try Data(contentsOf: fileURL), saved)
+
+        await access.setEligible(true)
+        var settings = try await reporter.settings()
+        XCTAssertEqual(settings.first?.enabled, true)
+        XCTAssertEqual(settings.first?.pending, 1)
+        await reporter.flush()
+        let resumedReports = await access.reports
+        XCTAssertEqual(resumedReports.map(\.id), [queuedReport.id])
+        settings = try await reporter.settings()
+        XCTAssertEqual(settings.first?.enabled, true)
+        XCTAssertEqual(settings.first?.pending, 0)
+        XCTAssertNotNil(settings.first?.lastSent)
+    }
+
+    func testEnteringStandardCancelsInFlightUploadWithoutDisablingConsentOrRemovingQueue() async throws {
+        let fixture = try Fixture()
+        defer { fixture.remove() }
+        let started = expectation(description: "Home upload started")
+        let cancelled = expectation(description: "Mode switch cancelled Home upload")
+        let access = DiagnosticsModeAccess(pairing: fixture.pairing, eligible: true)
+        let date = fixture.date
+        let reporter = AutomaticDiagnosticsReporter(
+            fileURL: fixture.directory.appendingPathComponent("reports.json"),
+            pairings: { try await access.pairedHomes() },
+            upload: { _, _ in
+                started.fulfill()
+                do {
+                    try await Task.sleep(for: .seconds(60))
+                } catch {
+                    cancelled.fulfill()
+                    throw error
+                }
+            },
+            isHomeActivityEligible: { await access.isEligible() },
+            now: { date }
+        )
+        try await reporter.setEnabled(true, pairingID: fixture.pairing.id)
+        await reporter.record(.transportLost, profileID: fixture.profileID)
+        let flushing = Task { await reporter.flush() }
+        await fulfillment(of: [started], timeout: 2)
+        await access.setEligible(false)
+        await reporter.setHomeActivityAllowed(false)
+        await fulfillment(of: [cancelled], timeout: 2)
+        await flushing.value
+        let readsAtSwitch = await access.pairingReads
+        await reporter.record(.transportLost, profileID: fixture.profileID)
+        await reporter.flush()
+        let hiddenSettings = try await reporter.settings()
+        XCTAssertTrue(hiddenSettings.isEmpty)
+        let readsInStandard = await access.pairingReads
+        XCTAssertEqual(readsInStandard, readsAtSwitch)
+
+        // A selected Home profile must not override an active Standard-mode gate.
+        await access.setEligible(true)
+        let stillHiddenSettings = try await reporter.settings()
+        XCTAssertTrue(stillHiddenSettings.isEmpty)
+        await reporter.setHomeActivityAllowed(true)
+        let resumedSettings = try await reporter.settings()
+        XCTAssertEqual(resumedSettings.first?.enabled, true)
+        XCTAssertEqual(resumedSettings.first?.pending, 1)
+        XCTAssertNil(resumedSettings.first?.lastSent)
+    }
+
+    func testSelectedModeIsRecheckedAfterSuspendedPairingReadBeforeReconciliation() async throws {
+        let fixture = try Fixture()
+        defer { fixture.remove() }
+        let original = fixture.reporter()
+        try await original.setEnabled(true, pairingID: fixture.pairing.id)
+        await original.record(.transportLost, profileID: fixture.profileID)
+        let fileURL = fixture.directory.appendingPathComponent("reports.json")
+        let saved = try Data(contentsOf: fileURL)
+        let started = expectation(description: "Home pairing read started")
+        let pause = DiagnosticsPairingsPause()
+        let access = DiagnosticsModeAccess(pairing: fixture.pairing, eligible: true)
+        let date = fixture.date
+        let reporter = AutomaticDiagnosticsReporter(
+            fileURL: fileURL,
+            pairings: {
+                _ = try await access.pairedHomes()
+                started.fulfill()
+                await pause.wait()
+                // A stale empty result must not purge opted-in Home state after cutover.
+                return []
+            },
+            upload: { _, report in try await access.send(report) },
+            isHomeActivityEligible: { await access.isEligible() },
+            now: { date }
+        )
+        let flushing = Task { await reporter.flush() }
+        await fulfillment(of: [started], timeout: 2)
+        await access.setEligible(false)
+        await pause.resume()
+        await flushing.value
+        let uploads = await access.uploadCalls
+        XCTAssertEqual(uploads, 0)
+        XCTAssertEqual(try Data(contentsOf: fileURL), saved)
+        let resumed = fixture.reporter()
+        let settings = try await resumed.settings()
+        XCTAssertEqual(settings.first?.enabled, true)
+        XCTAssertEqual(settings.first?.pending, 1)
+    }
+
     func testQueueAndContextRemainBoundedAcrossManyLaunches() async throws {
         let fixture = try Fixture()
         defer { fixture.remove() }
@@ -304,6 +444,51 @@ private actor ReportSink {
     func send(_ report: ClientDiagnosticReport) throws {
         reports.append(report)
         if offline { throw URLError(.notConnectedToInternet) }
+    }
+}
+
+private actor DiagnosticsModeAccess {
+    private enum AccessError: Error { case homeAccessInStandard }
+    private let pairing: HomeClientPairing
+    private var eligible: Bool
+    private(set) var pairingReads = 0
+    private(set) var uploadCalls = 0
+    private(set) var reports: [ClientDiagnosticReport] = []
+
+    init(pairing: HomeClientPairing, eligible: Bool) {
+        self.pairing = pairing
+        self.eligible = eligible
+    }
+
+    func isEligible() -> Bool { eligible }
+    func setEligible(_ value: Bool) { eligible = value }
+
+    func pairedHomes() throws -> [HomeClientPairing] {
+        pairingReads += 1
+        guard eligible else { throw AccessError.homeAccessInStandard }
+        return [pairing]
+    }
+
+    func send(_ report: ClientDiagnosticReport) throws {
+        uploadCalls += 1
+        guard eligible else { throw AccessError.homeAccessInStandard }
+        reports.append(report)
+    }
+}
+
+private actor DiagnosticsPairingsPause {
+    private var released = false
+    private var continuation: CheckedContinuation<Void, Never>?
+
+    func wait() async {
+        guard !released else { return }
+        await withCheckedContinuation { continuation = $0 }
+    }
+
+    func resume() {
+        released = true
+        continuation?.resume()
+        continuation = nil
     }
 }
 

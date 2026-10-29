@@ -1,6 +1,19 @@
 import SwiftUI
 import Observation
 
+extension RelayConfigurationDraft {
+    /// Endpoint changes are new local connections, never credential moves.
+    func legacyConnection(
+        original: RelayProfile?, storedToken: String?
+    ) throws -> (profile: RelayProfile, token: String) {
+        let candidate = try makeProfile(id: original?.id)
+        let endpointChanged = original.map { $0.endpoint != candidate.endpoint } ?? true
+        let token = try tokenToSave(existingToken: endpointChanged ? nil : storedToken)
+        let profile = endpointChanged && original != nil ? try makeProfile() : candidate
+        return (profile, token)
+    }
+}
+
 /// The profile list's state. The view stays a thin shell over this so the
 /// select and delete behaviour is assertable without driving SwiftUI.
 @MainActor
@@ -38,7 +51,8 @@ final class RelayProfileListModel {
         } catch {
             errorMessage = error.localizedDescription
         }
-        if let homePairingCoordinator,
+        if collection.selectedProfile?.standardProfile == nil,
+           let homePairingCoordinator,
            let pairings = try? await homePairingCoordinator.allPairings() {
             self.pairings = pairings
             pairedProfileIDs = Set(pairings.flatMap { $0.profiles.map(\.profileID) })
@@ -60,6 +74,14 @@ final class RelayProfileListModel {
     @discardableResult
     func delete(id: UUID) async -> Bool {
         do {
+            if collection.profiles.first(where: { $0.id == id })?.standardProfile != nil {
+                try await configurationStore.deleteProfile(id: id)
+                if let conversationDirectory {
+                    try ConversationPersistenceFile.delete(in: conversationDirectory, for: id)
+                }
+                await load()
+                return true
+            }
             try await configurationStore.deleteProfile(id: id)
             var pairingCleanupFailed = false
             do {
@@ -73,22 +95,14 @@ final class RelayProfileListModel {
                 try await homeAdminCredentialStore?.delete(for: id)
             } catch {
                 if let conversationDirectory {
-                    try? FileManager.default.removeItem(
-                        at: ConversationPersistenceFile.url(
-                            in: conversationDirectory, for: id
-                        )
-                    )
+                    try? ConversationPersistenceFile.delete(in: conversationDirectory, for: id)
                 }
                 await load()
                 errorMessage = "The Profile was deleted, but its Home admin credential could not be removed. Remove it from Keychain before reusing this device."
                 return true
             }
             if let conversationDirectory {
-                try? FileManager.default.removeItem(
-                    at: ConversationPersistenceFile.url(
-                        in: conversationDirectory, for: id
-                    )
-                )
+                try? ConversationPersistenceFile.delete(in: conversationDirectory, for: id)
             }
             await load()
             if pairingCleanupFailed {
@@ -122,9 +136,7 @@ final class RelayProfileListModel {
                 adminCleanupFailed = true
             }
             if let conversationDirectory {
-                try? FileManager.default.removeItem(
-                    at: ConversationPersistenceFile.url(in: conversationDirectory, for: profileID)
-                )
+                try? ConversationPersistenceFile.delete(in: conversationDirectory, for: profileID)
             }
         }
         do {
@@ -148,6 +160,9 @@ struct HomeLiveSetupView: View {
     let liveConfigurationStore: any HomeLiveConfigurationStore
     let homeClientFactory: any HomeBridgeSessionClientFactory
     let onActivated: @MainActor () async -> Void
+    let reconfigurationBlockedReason: @MainActor () -> String?
+    let beginReconfiguration: @MainActor () async -> Bool
+    let endReconfiguration: @MainActor () -> Void
 
     @Environment(\.dismiss) private var dismiss
     @State private var profile: RelayProfile?
@@ -167,12 +182,18 @@ struct HomeLiveSetupView: View {
         credentialStore: any HomeCredentialProvisioningStore,
         liveConfigurationStore: any HomeLiveConfigurationStore,
         homeClientFactory: any HomeBridgeSessionClientFactory,
+        reconfigurationBlockedReason: @escaping @MainActor () -> String? = { nil },
+        beginReconfiguration: @escaping @MainActor () async -> Bool = { true },
+        endReconfiguration: @escaping @MainActor () -> Void = {},
         onActivated: @escaping @MainActor () async -> Void = {}
     ) {
         self.configurationStore = configurationStore
         self.credentialStore = credentialStore
         self.liveConfigurationStore = liveConfigurationStore
         self.homeClientFactory = homeClientFactory
+        self.reconfigurationBlockedReason = reconfigurationBlockedReason
+        self.beginReconfiguration = beginReconfiguration
+        self.endReconfiguration = endReconfiguration
         self.onActivated = onActivated
     }
 
@@ -329,6 +350,11 @@ struct HomeLiveSetupView: View {
     }
 
     private func activate() async {
+        guard !isActivating else { return }
+        if let reason = reconfigurationBlockedReason() {
+            errorMessage = reason
+            return
+        }
         guard let profile else {
             errorMessage = "Select a Hermes Profile before activating Home."
             return
@@ -341,6 +367,13 @@ struct HomeLiveSetupView: View {
             errorMessage = "Enter the approved Home wss:// bridge route."
             return
         }
+        isActivating = true
+        defer { isActivating = false }
+        guard await beginReconfiguration() else {
+            errorMessage = reconfigurationBlockedReason() ?? "Another connection change is already in progress."
+            return
+        }
+        defer { endReconfiguration() }
 
         do {
             let route = HomeApprovedRoute(
@@ -356,7 +389,6 @@ struct HomeLiveSetupView: View {
                 conversationHandle: conversationHandle,
                 approvedRoute: route
             )
-            isActivating = true
             errorMessage = nil
             statusMessage = nil
             let activation = HomeLiveActivation(
@@ -380,9 +412,9 @@ struct HomeLiveSetupView: View {
             await onActivated()
         } catch {
             errorMessage = error.localizedDescription
+            await onActivated()
         }
 
-        isActivating = false
     }
 }
 
@@ -395,6 +427,7 @@ struct RelayConfigurationView: View {
     /// Live connection state, so the list can show which profile is actually
     /// connected rather than only which one is selected.
     let connectionState: ConnectionState
+    let isStandardMode: Bool
     let conversationDirectory: URL?
     let deviceDiscoveryClient: any DeviceDiscoveryClient
     let deviceAdministrationClient: any DeviceAdministrationClient
@@ -406,6 +439,10 @@ struct RelayConfigurationView: View {
     let homeAdminCredentialStore: (any HomeAdminCredentialStore)?
     let homeClientFactory: (any HomeBridgeSessionClientFactory)?
     let homePairingCoordinator: HomeClientPairingCoordinator?
+    let connectionChangeBlockedReason: String?
+    let reconfigurationBlockedReason: @MainActor () -> String?
+    let beginReconfiguration: @MainActor () async -> Bool
+    let endReconfiguration: @MainActor () -> Void
     let onSaved: @MainActor () async -> Void
     let onSelectedProfileDeleted: @MainActor () async -> Void
 
@@ -413,6 +450,7 @@ struct RelayConfigurationView: View {
     @State private var draft: RelayConfigurationDraft
     @State private var isLoading = false
     @State private var isSaving = false
+    @State private var isReconfiguring = false
     @State private var errorMessage: String?
     @State private var statusMessage: String?
     @State private var didLoad = false
@@ -431,10 +469,33 @@ struct RelayConfigurationView: View {
     /// Which saved profile the form is editing. Nil means the form is
     /// composing a new one, so saving must not overwrite the active profile.
     @State private var editingProfileID: UUID?
+    @State private var setupChoice: NewConnectionChoice?
+
+    private enum NewConnectionChoice {
+        case home, standard
+    }
+
+    private var editingProfile: RelayProfile? {
+        listModel.collection.profiles.first { $0.id == editingProfileID }
+    }
+
+    private var isStandardSetup: Bool {
+        setupChoice == .standard || editingProfile?.standardProfile != nil
+    }
+
+    private var showsHomeSettings: Bool {
+        !isStandardSetup && (editingProfileID != nil || setupChoice == .home)
+    }
+
+    private var isLegacyEditor: Bool {
+        guard let editingProfileID else { return false }
+        return listModel.collection.transportMode(for: editingProfileID) == .legacy
+    }
 
     init(
         configurationStore: RelayConfigurationStore,
         connectionState: ConnectionState = .disconnected,
+        isStandardMode: Bool = false,
         conversationDirectory: URL? = nil,
         deviceDiscoveryClient: any DeviceDiscoveryClient = UnavailableDeviceDiscoveryClient(),
         deviceAdministrationClient: any DeviceAdministrationClient = UnavailableDeviceAdministrationClient(),
@@ -446,11 +507,16 @@ struct RelayConfigurationView: View {
         homeAdminCredentialStore: (any HomeAdminCredentialStore)? = nil,
         homeClientFactory: (any HomeBridgeSessionClientFactory)? = nil,
         homePairingCoordinator: HomeClientPairingCoordinator? = nil,
+        connectionChangeBlockedReason: String? = nil,
+        reconfigurationBlockedReason: @escaping @MainActor () -> String? = { nil },
+        beginReconfiguration: @escaping @MainActor () async -> Bool = { true },
+        endReconfiguration: @escaping @MainActor () -> Void = {},
         onSaved: @escaping @MainActor () async -> Void = {},
         onSelectedProfileDeleted: @escaping @MainActor () async -> Void = {}
     ) {
         self.configurationStore = configurationStore
         self.connectionState = connectionState
+        self.isStandardMode = isStandardMode
         self.conversationDirectory = conversationDirectory
         self.deviceDiscoveryClient = deviceDiscoveryClient
         self.deviceAdministrationClient = deviceAdministrationClient
@@ -462,6 +528,10 @@ struct RelayConfigurationView: View {
         self.homeAdminCredentialStore = homeAdminCredentialStore
         self.homeClientFactory = homeClientFactory
         self.homePairingCoordinator = homePairingCoordinator
+        self.connectionChangeBlockedReason = connectionChangeBlockedReason
+        self.reconfigurationBlockedReason = reconfigurationBlockedReason
+        self.beginReconfiguration = beginReconfiguration
+        self.endReconfiguration = endReconfiguration
         self.onSaved = onSaved
         self.onSelectedProfileDeleted = onSelectedProfileDeleted
         _draft = State(initialValue: RelayConfigurationDraft(identity: .current()))
@@ -478,6 +548,15 @@ struct RelayConfigurationView: View {
     var body: some View {
         NavigationStack {
             Form {
+                if let connectionChangeBlockedReason {
+                    Section {
+                        Label(connectionChangeBlockedReason, systemImage: "lock")
+                        Text("Resolve the turn or use Leave this conversation on the conversation screen before changing connections.")
+                            .font(.footnote)
+                    } header: {
+                        Text("Connection changes unavailable")
+                    }
+                }
                 if !listModel.collection.profiles.isEmpty {
                     Section {
                         ForEach(listModel.collection.profiles, id: \.id) { profile in
@@ -488,9 +567,7 @@ struct RelayConfigurationView: View {
                                     VStack(alignment: .leading, spacing: 2) {
                                         Text(profile.displayName)
                                         Text(
-                                            listModel.pairedProfileIDs.contains(profile.id)
-                                                ? "Paired with Home"
-                                                : profile.endpoint.absoluteString
+                                            "\(modeLabel(for: profile)) · \(profile.endpoint.host ?? "Saved connection")\(profile.standardProfile.map { " · \($0) · \(profile.id.uuidString.prefix(8))" } ?? "")"
                                         )
                                             .font(.caption)
                                             .foregroundStyle(HermesVisualTokens.secondaryInk)
@@ -530,17 +607,64 @@ struct RelayConfigurationView: View {
                         Button("Add profile") {
                             addProfile()
                         }
-                        .disabled(isLoading || isSaving)
+                        .disabled(isLoading || isSaving || connectionChangeBlockedReason != nil)
                     } header: {
                         Text("Saved profiles")
                     } footer: {
                         Text("The checked profile is the one Connect uses.")
                     }
                 }
+                if editingProfileID == nil {
+                    Section {
+                        Button("HomeBridge — pair with Home") {
+                            Task { await chooseConnection(.home) }
+                        }
+                        .accessibilityIdentifier("choose-homebridge")
+                        Button("Standard Hermes — connect directly") {
+                            Task { await chooseConnection(.standard) }
+                        }
+                        .accessibilityIdentifier("choose-standard")
+                        if setupChoice == .home, homePairingCoordinator == nil {
+                            Text("Home pairing is unavailable in this installation.")
+                        }
+                    } header: {
+                        Text("Choose a connection")
+                    } footer: {
+                        Text("HomeBridge uses Home enrollment. Standard connects directly with a Standard token. Existing Legacy connections remain available in Saved profiles.")
+                    }
+                    .disabled(connectionChangeBlockedReason != nil || isSaving)
+                }
 
+                if isStandardSetup {
+                    StandardSetupSection(
+                        profile: editingProfile,
+                        configurationStore: configurationStore,
+                        connectionChangeBlockedReason: connectionChangeBlockedReason,
+                        reconfigurationBlockedReason: currentBlockedReason,
+                        beginReconfiguration: beginConnectionChange,
+                        endReconfiguration: endConnectionChange,
+                        onSaved: {
+                            await listModel.load()
+                            editingProfileID = listModel.collection.selectedID
+                            setupChoice = nil
+                            statusMessage = "Standard connection saved. Earlier connections and their history remain on this device; select a saved connection to view its transcript. Nothing was copied or resent."
+                            await onSaved()
+                        }
+                    )
+                    .id(editingProfileID?.uuidString ?? "new-standard")
+                }
+
+                if showsHomeSettings {
+
+                if let editingProfile, !isLegacyEditor {
+                    Section {
+                        LabeledContent("Connection mode", value: modeLabel(for: editingProfile))
+                    }
+                }
                 #if os(iOS)
                 Section {
                     Button {
+                        guard allowReconfiguration() else { return }
                         showingDeviceDiscovery = true
                     } label: {
                         Label(
@@ -600,6 +724,7 @@ struct RelayConfigurationView: View {
                             }
                         }
                         Button {
+                            guard allowReconfiguration() else { return }
                             showingHomePairing = true
                         } label: {
                             Label("Pair with Home", systemImage: "house.and.flag.fill")
@@ -615,11 +740,13 @@ struct RelayConfigurationView: View {
                     }
                 }
 
-                if homeLiveConfigurationStore != nil,
+                if editingProfileID != nil,
+                   homeLiveConfigurationStore != nil,
                    homeCredentialStore != nil,
                    homeClientFactory != nil {
                     Section {
                         Button {
+                            guard allowReconfiguration() else { return }
                             showingHomeSetup = true
                         } label: {
                             Label(
@@ -694,6 +821,14 @@ struct RelayConfigurationView: View {
                         Text("This bearer is distinct from the relay token and every per-Device credential. It is sent only to the approved Home configuration route.")
                     }
                 }
+                }
+
+                if isLegacyEditor {
+                Section {
+                    LabeledContent("Connection mode", value: "Legacy relay")
+                    Text("This existing fork-relay connection remains editable. Use Add profile for a separate HomeBridge or Standard connection.")
+                        .font(.footnote)
+                }
 
                 Section {
                     TextField("Endpoint", text: $draft.endpoint)
@@ -765,6 +900,7 @@ struct RelayConfigurationView: View {
                 } header: {
                     Text("Credentials")
                 }
+                }
 
                 if let errorMessage {
                     Section {
@@ -780,6 +916,7 @@ struct RelayConfigurationView: View {
                     }
                 }
 
+                if isLegacyEditor {
                 Section {
                     Button("Save configuration") {
                         Task { await save() }
@@ -793,8 +930,10 @@ struct RelayConfigurationView: View {
                         .disabled(isLoading || isSaving)
                     }
                 }
+                }
 
                 #if os(iOS)
+                if !isStandardMode, !isStandardSetup, listModel.collection.selectedProfile?.standardProfile == nil {
                 Section {
                     Toggle(
                         "Interrupt Hermes by talking (headphones only)",
@@ -806,8 +945,10 @@ struct RelayConfigurationView: View {
                 } footer: {
                     Text("With Keep listening on, speaking while Hermes answers stops it, but only on headphones. Off: tap the orb to interrupt, so the TV or other people can't cut Hermes off.")
                 }
+                }
                 #endif
-                if let automaticDiagnostics {
+                if !isStandardMode, !isStandardSetup, listModel.collection.selectedProfile?.standardProfile == nil,
+                   let automaticDiagnostics {
                     AutomaticDiagnosticsSettings(reporter: automaticDiagnostics)
                 }
 
@@ -826,7 +967,11 @@ struct RelayConfigurationView: View {
                 } footer: {
                     Text("Connection events only: no messages, voice, or passwords. Send it to whoever is helping you.")
                 }
+                if let message = listModel.errorMessage {
+                    Section { Text(message).foregroundStyle(HermesVisualTokens.unavailable) }
+                }
             }
+            .disabled(connectionChangeBlockedReason != nil || isReconfiguring)
             #if os(macOS)
             // The automatic macOS Form is an intrinsically sized column layout,
             // not a scrolling settings surface.
@@ -863,6 +1008,9 @@ struct RelayConfigurationView: View {
                         credentialStore: homeCredentialStore,
                         liveConfigurationStore: homeLiveConfigurationStore,
                         homeClientFactory: homeClientFactory,
+                        reconfigurationBlockedReason: currentBlockedReason,
+                        beginReconfiguration: beginConnectionChange,
+                        endReconfiguration: endConnectionChange,
                         onActivated: {
                             await onSaved()
                             if let editingProfileID {
@@ -879,11 +1027,19 @@ struct RelayConfigurationView: View {
                 if let homePairingCoordinator {
                     HomePairingView(
                         coordinator: homePairingCoordinator,
+                        beginReconfiguration: beginConnectionChange,
+                        endReconfiguration: endConnectionChange,
+                        blockedReason: currentBlockedReason,
+                        onReconfigurationFailure: {
+                            await listModel.load()
+                            await onSaved()
+                        },
                         onPaired: {
                             await listModel.load()
                             await onSaved()
                         }
                     )
+                    .disabled(connectionChangeBlockedReason != nil)
                 }
             }
             .overlay {
@@ -921,16 +1077,63 @@ struct RelayConfigurationView: View {
         }
     }
 
+    private func modeLabel(for profile: RelayProfile) -> String {
+        switch listModel.collection.transportMode(for: profile.id) {
+        case .home: "HomeBridge"
+        case .standard: "Standard Hermes"
+        case .legacy: "Legacy relay"
+        }
+    }
+
+    private func currentBlockedReason() -> String? {
+        reconfigurationBlockedReason() ?? connectionChangeBlockedReason
+    }
+
+    @discardableResult
+    private func allowReconfiguration() -> Bool {
+        guard let reason = currentBlockedReason() else { return true }
+        errorMessage = reason
+        return false
+    }
+
+    private func beginConnectionChange() async -> Bool {
+        guard allowReconfiguration(), !isReconfiguring else { return false }
+        isReconfiguring = true
+        guard await beginReconfiguration() else {
+            isReconfiguring = false
+            errorMessage = currentBlockedReason() ?? "Another connection change is already in progress."
+            return false
+        }
+        return true
+    }
+
+    private func endConnectionChange() {
+        endReconfiguration()
+        isReconfiguring = false
+    }
+
+    private func chooseConnection(_ choice: NewConnectionChoice) async {
+        guard await beginConnectionChange() else { return }
+        defer { endConnectionChange() }
+        setupChoice = choice
+        showingHomePairing = choice == .home && homePairingCoordinator != nil
+    }
+
     private func select(_ profile: RelayProfile) async {
+        guard await beginConnectionChange() else { return }
+        defer { endConnectionChange() }
         await listModel.select(id: profile.id)
+        guard listModel.collection.selectedID == profile.id else { return }
         editingProfileID = profile.id
-        await loadHomeAdminCredential(for: profile.id)
-        let token = try? await configurationStore.loadToken(for: profile.id)
-        draft = RelayConfigurationDraft(
-            profile: profile,
-            hasStoredToken: token != nil,
-            identity: .current()
-        )
+        setupChoice = nil
+        if profile.standardProfile == nil {
+            await loadHomeAdminCredential(for: profile.id)
+            let token = try? await configurationStore.loadToken(for: profile.id)
+            draft = RelayConfigurationDraft(profile: profile, hasStoredToken: token != nil, identity: .current())
+        } else {
+            homeAdminCredential = ""
+            hasStoredHomeAdminCredential = false
+        }
         didAttemptValidation = false
         focusedField = nil
         statusMessage = "\(profile.displayName) is now the active profile."
@@ -940,6 +1143,8 @@ struct RelayConfigurationView: View {
     }
 
     private func refreshHomeProfiles(pairingID: UUID) async {
+        guard await beginConnectionChange() else { return }
+        defer { endConnectionChange() }
         guard let homePairingCoordinator, refreshingHomeID == nil else { return }
         refreshingHomeID = pairingID
         homeRefreshMessages[pairingID] = nil
@@ -951,24 +1156,45 @@ struct RelayConfigurationView: View {
             homeRefreshMessages[pairingID] = summary.activationFailure ?? "Profiles updated."
         } catch {
             homeRefreshMessages[pairingID] = error.localizedDescription
+            await listModel.load()
+            await onSaved()
         }
     }
 
     private func unpair(pairingID: UUID) async throws {
+        guard await beginConnectionChange() else {
+            let reason = currentBlockedReason() ?? "Another connection change is already in progress."
+            throw NSError(domain: "ConnectionChangeBlocked", code: 1, userInfo: [NSLocalizedDescriptionKey: reason])
+        }
+        defer { endConnectionChange() }
         let removedProfileIDs = Set(listModel.pairings.first { $0.id == pairingID }?.profiles.map(\.profileID) ?? [])
-        let removedSelected = try await listModel.unpair(pairingID: pairingID)
+        let selectedBefore = listModel.collection.selectedID
+        do {
+            _ = try await listModel.unpair(pairingID: pairingID)
+        } catch {
+            await listModel.load()
+            if let selectedBefore, !listModel.collection.profiles.contains(where: { $0.id == selectedBefore }) {
+                await onSelectedProfileDeleted()
+            } else {
+                await onSaved()
+            }
+            throw error
+        }
         if let editingProfileID, removedProfileIDs.contains(editingProfileID) {
             addProfile()
         }
-        if removedSelected {
+        if let selectedBefore, removedProfileIDs.contains(selectedBefore) {
             await onSelectedProfileDeleted()
         }
     }
 
     private func delete(_ profile: RelayProfile) async {
+        guard await beginConnectionChange() else { return }
+        defer { endConnectionChange() }
         let wasSelected = listModel.collection.selectedID == profile.id
         let didDelete = await listModel.delete(id: profile.id)
-        guard didDelete else { return }
+        await listModel.load()
+        guard didDelete || !listModel.collection.profiles.contains(where: { $0.id == profile.id }) else { return }
         if editingProfileID == profile.id {
             addProfile()
         }
@@ -979,6 +1205,8 @@ struct RelayConfigurationView: View {
 
     /// Compose a new profile rather than editing the active one.
     private func addProfile() {
+        guard allowReconfiguration() else { return }
+        setupChoice = nil
         editingProfileID = nil
         draft = RelayConfigurationDraft(identity: .current())
         didAttemptValidation = false
@@ -997,9 +1225,14 @@ struct RelayConfigurationView: View {
 
         do {
             let profile = try await configurationStore.loadProfile()
-            let token = try await configurationStore.loadToken()
+            let token: String?
+            if let profile, profile.standardProfile == nil {
+                token = try await configurationStore.loadToken(for: profile.id)
+            } else {
+                token = nil
+            }
             editingProfileID = profile?.id
-            if let profile {
+            if let profile, profile.standardProfile == nil {
                 await loadHomeAdminCredential(for: profile.id)
             } else {
                 homeAdminCredential = ""
@@ -1022,6 +1255,8 @@ struct RelayConfigurationView: View {
     }
 
     private func save() async {
+        guard isLegacyEditor, await beginConnectionChange() else { return }
+        defer { endConnectionChange() }
         didAttemptValidation = true
         isSaving = true
         errorMessage = nil
@@ -1039,25 +1274,35 @@ struct RelayConfigurationView: View {
         focusedField = nil
 
         do {
-            // Editing a saved profile keeps its identity so saving updates it;
-            // composing a new one mints a fresh identity instead of
-            // overwriting whichever profile happens to be active.
-            let profile = try draft.makeProfile(id: editingProfileID)
-            let existingToken = try await configurationStore.loadToken()
-            let token = try draft.tokenToSave(existingToken: existingToken)
+            let original = listModel.collection.profiles.first { $0.id == editingProfileID }
+            let candidate = try draft.makeProfile(id: original?.id)
+            let endpointChanged = original.map { $0.endpoint != candidate.endpoint } ?? true
+            if endpointChanged && draft.token.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                errorMessage = "Enter a new token when changing the endpoint. The old token will not be sent to a different endpoint."
+                focusedField = .token
+                isSaving = false
+                return
+            }
+            let existingToken: String?
+            if endpointChanged {
+                existingToken = nil
+            } else {
+                existingToken = try await configurationStore.loadToken(for: candidate.id)
+            }
+            let connection = try draft.legacyConnection(original: original, storedToken: existingToken)
 
-            try await configurationStore.saveProfile(profile)
-            if !draft.token.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                try await configurationStore.saveToken(token, for: profile.id)
-            }
+            guard allowReconfiguration() else { isSaving = false; return }
+            try await configurationStore.saveLegacyConnection(connection.profile, token: connection.token)
             draft.hasStoredToken = true
-            if editingProfileID == nil {
-                try await configurationStore.selectProfile(id: profile.id)
-            }
-            editingProfileID = profile.id
+            draft.token = ""
+            editingProfileID = connection.profile.id
             await listModel.load()
             await onSaved()
-            dismiss()
+            if original != nil && endpointChanged {
+                statusMessage = "Saved as a new legacy connection. The earlier connection, credential, and history remain on this device; select it to view its transcript. Nothing was copied."
+            } else {
+                dismiss()
+            }
         } catch let error as RelayConfigurationFormError {
             if case .tokenRequired = error {
                 // The profile said a token existed, but Keychain no longer
@@ -1076,6 +1321,8 @@ struct RelayConfigurationView: View {
     }
 
     private func removeToken() async {
+        guard isLegacyEditor, await beginConnectionChange() else { return }
+        defer { endConnectionChange() }
         isSaving = true
         errorMessage = nil
         statusMessage = nil
@@ -1125,6 +1372,7 @@ struct RelayConfigurationView: View {
     }
 
     private func saveHomeAdminCredential() async {
+        guard allowReconfiguration(), !isStandardSetup else { return }
         guard let homeAdminCredentialStore,
               let profileID = editingProfileID else {
             errorMessage = "Save a Hermes Profile before adding the Home admin credential."
@@ -1174,6 +1422,7 @@ struct RelayConfigurationView: View {
     }
 
     private func removeHomeAdminCredential() async {
+        guard allowReconfiguration(), !isStandardSetup else { return }
         guard let homeAdminCredentialStore,
               let profileID = editingProfileID else { return }
 
