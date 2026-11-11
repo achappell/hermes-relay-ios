@@ -3,6 +3,260 @@ import SwiftUI
 @testable import HermesRelayIOS
 
 final class HermesRelayIOSTests: XCTestCase {
+    func testAmbientHUDLayoutModeAdaptsAcrossDuoDisplayWidthsAndTransitions() {
+        XCTAssertEqual(AmbientHUDLayoutMode.mode(for: 466), .compact)
+        XCTAssertEqual(AmbientHUDLayoutMode.mode(for: 669), .expanded)
+
+        let resizedWidths: [CGFloat] = [466, 669, 466]
+        XCTAssertEqual(
+            resizedWidths.map(AmbientHUDLayoutMode.mode(for:)),
+            [.compact, .expanded, .compact]
+        )
+    }
+
+    func testDuoTranscriptShowsFullHistoryDuringLiveCapture() {
+        let messages = (0..<9).map {
+            TranscriptMessage(role: .user, text: "Message \($0)")
+        }
+        let regular = RecentTranscriptProjection(
+            messages: messages, provisionalText: "Speaking now",
+            isResponseActive: false, activeAssistantID: nil
+        )
+        let duo = RecentTranscriptProjection(
+            messages: messages, provisionalText: "Speaking now",
+            isResponseActive: false, activeAssistantID: nil, includeFullHistory: true
+        )
+        XCTAssertEqual(regular.entries.count, 6)
+        XCTAssertEqual(duo.entries.count, 10)
+        XCTAssertEqual(duo.entries.first?.text, "Message 0")
+        XCTAssertEqual(duo.entries.last?.text, "Speaking now")
+        XCTAssertTrue(duo.entries.last?.isLive == true)
+    }
+
+    #if os(iOS)
+    /// A display switch must re-place the voice stage and transcript, not
+    /// rebuild them: a rebuild would reset the transcript's follow/reveal
+    /// state and restart whatever the stage owns.
+    @MainActor
+    func testAdaptiveVoiceLayoutReplacesViewsWithoutRecreatingThemAcrossDisplaySwitch() {
+        let recorder = LayoutProbeRecorder()
+        // The HUD's width is the display width less its 16 pt side padding.
+        let outerDisplayWidth: CGFloat = 466 - 32
+        let innerDisplayWidth: CGFloat = 669 - 32
+
+        func root(width: CGFloat) -> some View {
+            AdaptiveVoiceLayout {
+                LayoutProbe(name: "stage", recorder: recorder)
+                LayoutProbe(name: "transcript", recorder: recorder)
+            }
+            .frame(width: width, height: 600)
+        }
+
+        let window = UIWindow(frame: CGRect(x: 0, y: 0, width: 700, height: 700))
+        let controller = UIHostingController(rootView: root(width: outerDisplayWidth))
+        window.rootViewController = controller
+        window.makeKeyAndVisible()
+
+        func settle() {
+            controller.view.layoutIfNeeded()
+            RunLoop.current.run(until: Date().addingTimeInterval(0.15))
+        }
+
+        settle()
+        XCTAssertTrue(
+            recorder.isStacked,
+            "outer display: stage above transcript, \(recorder.frames)"
+        )
+
+        controller.rootView = root(width: innerDisplayWidth)
+        settle()
+        XCTAssertTrue(
+            recorder.isSideBySide,
+            "inner display: stage beside transcript, \(recorder.frames)"
+        )
+
+        controller.rootView = root(width: outerDisplayWidth)
+        settle()
+        XCTAssertTrue(recorder.isStacked, "back on the outer display, \(recorder.frames)")
+
+        XCTAssertEqual(
+            recorder.appearances,
+            ["stage": 1, "transcript": 1],
+            "views were recreated by a display switch"
+        )
+        window.isHidden = true
+    }
+    @MainActor
+    func testDuoWorkspaceMovesExistingControlsAroundActiveDivision() {
+        let recorder = LayoutProbeRecorder()
+        func root(screen: DuoScreen, division: CGRect, rtl: Bool = false) -> some View {
+            DuoWorkspaceLayout(
+                screen: screen, division: division,
+                primaryGuide: .zero, secondaryGuide: .zero, composerIdealHeight: 80, hasTranscriptContent: true
+            ) {
+                LayoutProbe(name: "stage", recorder: recorder)
+                LayoutProbe(name: "transcript", recorder: recorder)
+                LayoutProbe(name: "composer", recorder: recorder)
+                LayoutProbe(name: "action", recorder: recorder)
+                LayoutProbe(name: "toggle", recorder: recorder)
+            }
+            .frame(width: 600, height: 600)
+            .environment(\.layoutDirection, rtl ? .rightToLeft : .leftToRight)
+        }
+        let window = UIWindow(frame: CGRect(x: 0, y: 0, width: 600, height: 600))
+        let controller = UIHostingController(rootView: root(screen: .outer, division: .zero))
+        window.rootViewController = controller
+        window.makeKeyAndVisible()
+        func settle() {
+            controller.view.layoutIfNeeded()
+            RunLoop.current.run(until: Date().addingTimeInterval(0.15))
+        }
+        settle()
+        controller.rootView = root(screen: .inner, division: .zero)
+        settle()
+        XCTAssertLessThan(recorder.frames["stage"]!.minX, recorder.frames["transcript"]!.minX)
+        XCTAssertEqual(recorder.frames["composer"]!.minX, recorder.frames["transcript"]!.minX, accuracy: 1)
+        controller.rootView = root(screen: .inner, division: CGRect(x: 280, y: 0, width: 40, height: 600))
+        settle()
+        XCTAssertLessThan(recorder.frames["stage"]!.minX, recorder.frames["transcript"]!.minX)
+        XCTAssertLessThan(recorder.frames["composer"]!.minX, recorder.frames["transcript"]!.minX)
+        controller.rootView = root(screen: .inner, division: CGRect(x: 280, y: 0, width: 40, height: 600), rtl: true)
+        settle()
+        XCTAssertGreaterThan(recorder.frames["stage"]!.minX, recorder.frames["transcript"]!.minX)
+        controller.rootView = root(screen: .inner, division: CGRect(x: 0, y: 280, width: 600, height: 40))
+        settle()
+        XCTAssertLessThan(recorder.frames["transcript"]!.minY, recorder.frames["stage"]!.minY)
+        XCTAssertLessThan(recorder.frames["composer"]!.minY, recorder.frames["stage"]!.minY)
+        XCTAssertTrue(DuoWorkspaceLayout.needsCompactVoice(
+            screen: .inner, division: CGRect(x: 0, y: 280, width: 600, height: 40), height: 400
+        ))
+        controller.rootView = root(screen: .outer, division: .zero)
+        settle()
+        XCTAssertEqual(recorder.appearances, [
+            "stage": 1, "transcript": 1, "composer": 1, "action": 1, "toggle": 1
+        ])
+        window.isHidden = true
+    }
+    @MainActor
+    func testFullyOpenChromeSharesTopRowAndPreservesWorkspaceAcrossPostures() {
+        let recorder = LayoutProbeRecorder()
+        func root(open: Bool, rtl: Bool = false) -> some View {
+            let chrome = open ? AnyLayout(DuoOpenChromeLayout()) : AnyLayout(VStackLayout(spacing: 0))
+            return chrome {
+                LayoutProbe(name: "header", recorder: recorder)
+                DuoWorkspaceLayout(
+                    screen: .inner, division: .zero, primaryGuide: .zero, secondaryGuide: .zero,
+                    composerIdealHeight: 80, hasTranscriptContent: true,
+                    openHeaderHeight: open ? 88 : 0, openTrailingHeight: open ? 52 : 0
+                ) {
+                    LayoutProbe(name: "stage", recorder: recorder)
+                    LayoutProbe(name: "transcript", recorder: recorder)
+                    LayoutProbe(name: "composer", recorder: recorder)
+                    LayoutProbe(name: "action", recorder: recorder)
+                    LayoutProbe(name: "toggle", recorder: recorder)
+                }
+                .frame(height: open ? 500 : 420)
+            }
+            .frame(width: 600, height: 500)
+            .environment(\.layoutDirection, rtl ? .rightToLeft : .leftToRight)
+        }
+        let window = UIWindow(frame: CGRect(x: 0, y: 0, width: 600, height: 500))
+        let controller = UIHostingController(rootView: root(open: false))
+        window.rootViewController = controller
+        window.makeKeyAndVisible()
+        func settle() {
+            controller.view.layoutIfNeeded()
+            RunLoop.current.run(until: Date().addingTimeInterval(0.15))
+        }
+        settle()
+        controller.rootView = root(open: true)
+        settle()
+        let header = recorder.frames["header"]!
+        let stage = recorder.frames["stage"]!
+        let transcript = recorder.frames["transcript"]!
+        XCTAssertEqual(header.width, DuoOpenChromeLayout.headerWidth(for: 600), accuracy: 1)
+        XCTAssertGreaterThanOrEqual(stage.minY, header.maxY + 7)
+        XCTAssertEqual(transcript.minY, header.minY + 52, accuracy: 1)
+        XCTAssertGreaterThan(transcript.minX, header.maxX)
+        controller.rootView = root(open: true, rtl: true)
+        settle()
+        XCTAssertLessThan(recorder.frames["transcript"]!.maxX, recorder.frames["header"]!.minX)
+        controller.rootView = root(open: false)
+        settle()
+        XCTAssertEqual(recorder.appearances, [
+            "header": 1, "stage": 1, "transcript": 1, "composer": 1, "action": 1, "toggle": 1
+        ])
+        window.isHidden = true
+    }
+    @MainActor
+    func testDuoLaptopKeepsOversizedComposerInsideItsPanel() {
+        let recorder = LayoutProbeRecorder()
+        let root = DuoWorkspaceLayout(
+            screen: .inner, division: CGRect(x: 0, y: 280, width: 600, height: 40),
+            primaryGuide: .zero, secondaryGuide: .zero, composerIdealHeight: 900, hasTranscriptContent: true
+        ) {
+            LayoutProbe(name: "stage", recorder: recorder)
+            Color.clear
+                .onGeometryChange(for: CGRect.self) { $0.frame(in: .global) } action: {
+                    recorder.frames["transcript"] = $0
+                }
+            ScrollView {
+                Color.clear.frame(height: 900)
+            }
+            .onGeometryChange(for: CGRect.self) { $0.frame(in: .global) } action: {
+                recorder.frames["composer"] = $0
+            }
+            LayoutProbe(name: "action", recorder: recorder)
+            LayoutProbe(name: "toggle", recorder: recorder)
+        }
+        .frame(width: 600, height: 600)
+        let window = UIWindow(frame: CGRect(x: 0, y: 0, width: 600, height: 600))
+        let controller = UIHostingController(rootView: root)
+        window.rootViewController = controller
+        window.makeKeyAndVisible()
+        controller.view.layoutIfNeeded()
+        RunLoop.current.run(until: Date().addingTimeInterval(0.15))
+        let transcript = recorder.frames["transcript"]!
+        let composer = recorder.frames["composer"]!
+        let stage = recorder.frames["stage"]!
+        XCTAssertLessThanOrEqual(transcript.maxY, composer.minY)
+        XCTAssertLessThanOrEqual(composer.maxY, stage.minY)
+        XCTAssertLessThanOrEqual(composer.height, 196.5)
+        window.isHidden = true
+    }
+    @MainActor
+    func testDuoLaptopUsesEmptyTranscriptSpaceForLongNotice() {
+        let recorder = LayoutProbeRecorder()
+        let root = DuoWorkspaceLayout(
+            screen: .inner, division: CGRect(x: 0, y: 280, width: 600, height: 40),
+            primaryGuide: .zero, secondaryGuide: .zero, composerIdealHeight: 900, hasTranscriptContent: false
+        ) {
+            LayoutProbe(name: "stage", recorder: recorder)
+            Color.clear
+                .onGeometryChange(for: CGRect.self) { $0.frame(in: .global) } action: {
+                    recorder.frames["transcript"] = $0
+                }
+            ScrollView { Color.clear.frame(height: 900) }
+                .onGeometryChange(for: CGRect.self) { $0.frame(in: .global) } action: {
+                    recorder.frames["composer"] = $0
+                }
+            LayoutProbe(name: "action", recorder: recorder)
+            LayoutProbe(name: "toggle", recorder: recorder)
+        }
+        .frame(width: 600, height: 600)
+        let window = UIWindow(frame: CGRect(x: 0, y: 0, width: 600, height: 600))
+        let controller = UIHostingController(rootView: root)
+        window.rootViewController = controller
+        window.makeKeyAndVisible()
+        controller.view.layoutIfNeeded()
+        RunLoop.current.run(until: Date().addingTimeInterval(0.15))
+        XCTAssertEqual(recorder.frames["transcript"]!.height, 0, accuracy: 0.5)
+        XCTAssertEqual(recorder.frames["composer"]!.height, 280, accuracy: 0.5)
+        XCTAssertLessThanOrEqual(recorder.frames["composer"]!.maxY, recorder.frames["stage"]!.minY)
+        window.isHidden = true
+    }
+    #endif
+
     func testTranscriptExportPreservesRolesAndTimestampsInPlainTextAndMarkdown() {
         let firstDate = Date(timeIntervalSince1970: 1_704_110_400)
         let secondDate = firstDate.addingTimeInterval(61)
@@ -1431,3 +1685,37 @@ final class HermesRelayIOSTests: XCTestCase {
 private final class OpenURLRecorder: @unchecked Sendable {
     var openedURL: URL?
 }
+
+#if os(iOS)
+/// Records what a probe view saw, so a test can tell a re-placed view from a
+/// rebuilt one.
+@MainActor
+private final class LayoutProbeRecorder {
+    var appearances: [String: Int] = [:]
+    var frames: [String: CGRect] = [:]
+
+    var isStacked: Bool {
+        guard let stage = frames["stage"], let transcript = frames["transcript"] else { return false }
+        return transcript.minY >= stage.maxY - 0.5 && abs(stage.minX - transcript.minX) < 0.5
+    }
+
+    var isSideBySide: Bool {
+        guard let stage = frames["stage"], let transcript = frames["transcript"] else { return false }
+        return transcript.minX >= stage.maxX - 0.5 && abs(stage.minY - transcript.minY) < 0.5
+    }
+}
+
+private struct LayoutProbe: View {
+    let name: String
+    let recorder: LayoutProbeRecorder
+
+    var body: some View {
+        Color.clear
+            .frame(maxWidth: .infinity, minHeight: 80, maxHeight: 80)
+            .onAppear { recorder.appearances[name, default: 0] += 1 }
+            .onGeometryChange(for: CGRect.self) { $0.frame(in: .global) } action: {
+                recorder.frames[name] = $0
+            }
+    }
+}
+#endif

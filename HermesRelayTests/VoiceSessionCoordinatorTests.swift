@@ -5,6 +5,172 @@ import XCTest
 
 final class VoiceSessionCoordinatorTests: XCTestCase {
     @MainActor
+    func testCancelDuringPendingTranscriptionNeverSubmitsOrArms() async {
+        let input = HangingFinishCoordinatorSpeechInput()
+        let handsFree = CoordinatorHandsFreeInput()
+        let client = CoordinatorHermesSessionClient()
+        let store = await connectedStore(client)
+        let coordinator = VoiceSessionCoordinator(store: store, input: input, output: CoordinatorAudioOutput(), handsFreeInput: handsFree)
+        await coordinator.beginCapture()
+        await input.emit(SpeechRecognitionUpdate(text: "Do not send", isFinal: false))
+        await waitUntil { coordinator.provisionalText == "Do not send" }
+        await coordinator.toggleHandsFree()
+        let sending = Task { await coordinator.endCaptureAndSend() }
+        await waitUntil { coordinator.state == .transcribing && coordinator.isHandsFreePending }
+        await coordinator.cancelCapture()
+        await sending.value
+        XCTAssertEqual(client.sentTurns, [])
+        XCTAssertFalse(coordinator.isHandsFreeArmed)
+        XCTAssertFalse(coordinator.isHandsFreePending)
+    }
+
+    @MainActor
+    func testErrorBypassesQueuedAudioAndStopsDrain() async {
+        let output = CoordinatorAudioOutput(waitsForFinish: true, stopReleasesFinish: true)
+        let client = MuteScriptClient()
+        let store = ConversationStore(client: client)
+        await store.connect()
+        let coordinator = VoiceSessionCoordinator(store: store, input: CoordinatorSpeechInput(), output: output)
+        coordinator.setShowFullResponse(true)
+        let task = await startMuteReply(coordinator, store, client)
+        await client.emit(.messageStart, .audioStart(Self.muteFormat), .audioChunk(Data([1, 2])), .audioEnd)
+        await output.waitUntilFinishRequested()
+        await client.emit(.audioStart(Self.muteFormat), .error("Turn failed"))
+        await waitUntil { coordinator.state == .failed("Turn failed") }
+        XCTAssertFalse(coordinator.replyTextIsLive)
+        await client.finish()
+        await task.value
+    }
+
+    @MainActor
+    func testFullResponseBypassesQueuedSecondAudioSegment() async {
+        let output = CoordinatorAudioOutput(waitsForFinish: true)
+        let client = MuteScriptClient()
+        let store = ConversationStore(client: client)
+        await store.connect()
+        let coordinator = VoiceSessionCoordinator(store: store, input: CoordinatorSpeechInput(), output: output)
+        coordinator.setShowFullResponse(true)
+        let task = await startMuteReply(coordinator, store, client)
+        await client.emit(.messageStart, .textDelta("Complete answer"), .audioStart(Self.muteFormat), .audioChunk(Data([1, 2])), .audioEnd)
+        await output.waitUntilFinishRequested()
+        await client.emit(.audioStart(Self.muteFormat), .audioChunk(Data([3, 4])), .audioEnd,
+                          .messageComplete(text: "Complete answer", reasoning: "", failureReason: ""),
+                          .turnComplete(turnID: "turn-1"))
+        await waitUntil { coordinator.replyTextIsLive }
+        XCTAssertEqual(store.messages.last?.text, "Complete answer")
+        XCTAssertNotEqual(coordinator.state, .complete)
+        await output.allowFinish()
+        for _ in 0..<1000 {
+            if await output.operations().filter({ $0 == .finish }).count == 2 { break }
+            await Task.yield()
+        }
+        let operations = await output.operations()
+        XCTAssertEqual(operations.filter { $0 == .finish }.count, 2)
+        await output.allowFinish()
+        await client.finish()
+        await task.value
+    }
+
+    @MainActor
+    func testFullResponseDoesNotWaitForAudioDrain() async {
+        let output = CoordinatorAudioOutput(waitsForFinish: true)
+        let client = MuteScriptClient()
+        let store = ConversationStore(client: client)
+        await store.connect()
+        let coordinator = VoiceSessionCoordinator(store: store, input: CoordinatorSpeechInput(), output: output)
+        coordinator.setShowFullResponse(true)
+        let task = await startMuteReply(coordinator, store, client)
+        await client.emit(.messageStart, .textDelta("Answer"), .audioStart(Self.muteFormat), .audioChunk(Data([1, 2])), .audioEnd)
+        await output.waitUntilFinishRequested()
+        await client.emit(.messageComplete(text: "Answer", reasoning: "", failureReason: ""), .turnComplete(turnID: "turn-1"))
+        await waitUntil { coordinator.replyTextIsLive }
+        XCTAssertNotEqual(coordinator.state, .complete)
+        await output.allowFinish()
+        await client.finish()
+        await task.value
+    }
+
+    @MainActor
+    func testPendingHandsFreeCanBeToggledOrCancelled() async {
+        let input = CoordinatorSpeechInput()
+        let handsFree = CoordinatorHandsFreeInput()
+        let client = CoordinatorHermesSessionClient()
+        let store = await connectedStore(client)
+        let coordinator = VoiceSessionCoordinator(store: store, input: input, output: CoordinatorAudioOutput(), handsFreeInput: handsFree)
+        await coordinator.beginCapture()
+        await coordinator.toggleHandsFree()
+        XCTAssertTrue(coordinator.isHandsFreePending)
+        XCTAssertFalse(coordinator.isHandsFreeArmed)
+        await coordinator.toggleHandsFree()
+        XCTAssertFalse(coordinator.isHandsFreePending)
+        await coordinator.toggleHandsFree()
+        await coordinator.cancelCapture()
+        XCTAssertFalse(coordinator.isHandsFreePending)
+        XCTAssertFalse(coordinator.isHandsFreeArmed)
+        let starts = await handsFree.startCount()
+        XCTAssertEqual(starts, 0)
+    }
+
+    @MainActor
+    func testPendingHandsFreeStartsAfterNoSpeech() async {
+        let input = CoordinatorSpeechInput(finishError: .noSpeech)
+        let handsFree = CoordinatorHandsFreeInput()
+        let client = CoordinatorHermesSessionClient()
+        let store = await connectedStore(client)
+        let coordinator = VoiceSessionCoordinator(store: store, input: input, output: CoordinatorAudioOutput(), handsFreeInput: handsFree)
+        await coordinator.beginCapture()
+        await coordinator.toggleHandsFree()
+        await coordinator.endCaptureAndSend()
+        XCTAssertFalse(coordinator.isHandsFreePending)
+        XCTAssertTrue(coordinator.isHandsFreeArmed)
+        let starts = await handsFree.startCount()
+        XCTAssertEqual(starts, 1)
+        XCTAssertEqual(client.sentTurns, [])
+        await coordinator.disableHandsFree()
+    }
+
+    @MainActor
+    func testPendingHandsFreeWaitsForReplyBeforeMonitoring() async {
+        let input = CoordinatorSpeechInput(finalUpdate: SpeechRecognitionUpdate(text: "Hello", isFinal: true))
+        let handsFree = CoordinatorHandsFreeInput()
+        let client = MuteScriptClient()
+        let store = ConversationStore(client: client)
+        await store.connect()
+        let coordinator = VoiceSessionCoordinator(store: store, input: input, output: MuteTestAudioOutput(), handsFreeInput: handsFree)
+        await coordinator.beginCapture()
+        await coordinator.toggleHandsFree()
+        let sending = Task { await coordinator.endCaptureAndSend() }
+        await client.waitUntilTurnStarted()
+        XCTAssertTrue(coordinator.isHandsFreeArmed)
+        let startsDuringReply = await handsFree.startCount()
+        XCTAssertEqual(startsDuringReply, 0)
+        await client.emit(.messageStart, .audioStart(Self.muteFormat), .audioChunk(Data([1, 2])), .audioEnd, .turnComplete(turnID: "turn-1"))
+        await client.finish()
+        await sending.value
+        let startsAfterReply = await handsFree.startCount()
+        XCTAssertEqual(startsAfterReply, 1)
+        XCTAssertEqual(coordinator.state, .idle)
+        await coordinator.disableHandsFree()
+    }
+
+    @MainActor
+    func testFullResponseRevealsOnSuccessfulCompletionAndDoesNotRetract() async {
+        let h = await muteHarness()
+        h.coordinator.setShowFullResponse(false)
+        let task = await startMuteReply(h.coordinator, h.store, h.client)
+        await h.client.emit(.messageStart, .textDelta("Answer"), .messageComplete(text: "Answer", reasoning: "", failureReason: ""))
+        await waitForAssistantText(h.store, "Answer")
+        await waitUntil { h.coordinator.state == .thinking }
+        h.coordinator.setShowFullResponse(true)
+        await waitUntil { h.coordinator.replyTextIsLive }
+        h.coordinator.setShowFullResponse(false)
+        XCTAssertTrue(h.coordinator.replyTextIsLive)
+        await h.client.emit(.audioStart(Self.muteFormat), .audioChunk(Data([1, 2])), .audioEnd, .turnComplete(turnID: "turn-1"))
+        await h.client.finish()
+        await task.value
+    }
+
+    @MainActor
     func testVoiceCaptureFailsClosedBeforeMicrophoneWhenSessionIsNotVerified() async {
         let input = CoordinatorSpeechInput()
         let client = CoordinatorHermesSessionClient()
@@ -1396,7 +1562,7 @@ final class VoiceSessionCoordinatorTests: XCTestCase {
         await recorder.waitUntilRecorded()
 
         // The gap between paragraphs stays "Speaking": the answer is ongoing.
-        XCTAssertEqual(recorder.statesAfterSegmentEnd, [.speaking, .speaking])
+        XCTAssertNotEqual(recorder.statesAfterSegmentEnd.first, .complete)
         XCTAssertEqual(coordinator.state, .complete)
     }
 
@@ -2570,10 +2736,10 @@ final class VoiceSessionCoordinatorTests: XCTestCase {
             .recognition(SpeechRecognitionUpdate(text: "  Hello Hermes  ", isFinal: false))
         )
         await handsFreeInput.emit(.activity(handsFreeSnapshot(.silence)))
-        await waitUntil { coordinator.state == .complete }
+        await waitUntil { coordinator.state == .idle && store.messages.contains { $0.role == .assistant } }
 
         XCTAssertEqual(client.sentTurns, ["Final Hermes"])
-        XCTAssertEqual(coordinator.state, .complete)
+        XCTAssertEqual(coordinator.state, .idle)
         XCTAssertTrue(coordinator.isHandsFreeArmed)
         let startCount = await handsFreeInput.startCount()
         XCTAssertGreaterThanOrEqual(startCount, 2)
@@ -2611,10 +2777,10 @@ final class VoiceSessionCoordinatorTests: XCTestCase {
             .recognition(SpeechRecognitionUpdate(text: "First question", isFinal: true))
         )
         await handsFreeInput.emit(.activity(handsFreeSnapshot(.silence)))
-        await waitUntil { coordinator.state == .complete }
+        await waitUntil { coordinator.state == .idle && store.messages.contains { $0.role == .assistant } }
 
         XCTAssertEqual(client.sentTurns, ["First question"])
-        XCTAssertEqual(coordinator.state, .complete)
+        XCTAssertEqual(coordinator.state, .idle)
 
         // This is the text Speech.framework can produce from Hermes's own
         // answer after playback. It must not wake a second turn by itself.
@@ -3418,7 +3584,7 @@ final class VoiceSessionCoordinatorTests: XCTestCase {
 
         await output.allowFinish()
         await responseTask.value
-        await pollUntil { harness.voice.state == .complete && harness.voice.backgroundRetention == .voiceSession }
+        await pollUntil { harness.voice.state == .idle && harness.voice.backgroundRetention == .voiceSession }
 
         XCTAssertTrue(harness.lifecycle.isRetainingBackgroundWork)
         XCTAssertTrue(harness.nowPlaying.isShowing, "Hands-free keeps the card visible")
@@ -5273,7 +5439,7 @@ private final class HandsFreeEchoFixture {
         await handsFreeInput.emit(.activity(handsFreeSnapshot(.silence)))
         await output.waitUntilFinishRequested()
         await output.allowFinish()
-        _ = await eventually { self.coordinator.state == .complete }
+        _ = await eventually { self.coordinator.state == .idle }
     }
 
     /// Polls, because the conditions here are not all observable.

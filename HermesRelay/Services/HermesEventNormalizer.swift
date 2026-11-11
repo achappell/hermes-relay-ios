@@ -63,6 +63,11 @@ struct HermesEventNormalizer: Sendable {
                 ?? stringValue(for: "rendered", in: payload)
                 ?? ""
             let update = normalizeFinalText(finalText)
+            let status = stringValue(for: "status", in: payload)?.lowercased()
+            if let status, status != "complete", status != "completed",
+               (stringValue(for: "failure_reason", in: payload) ?? stringValue(for: "failureReason", in: payload) ?? "").isEmpty {
+                return update
+            }
             let completion = HermesEvent.messageComplete(
                 text: finalText,
                 reasoning: stringValue(for: "reasoning", in: payload) ?? "",
@@ -181,6 +186,9 @@ struct HermesEventNormalizer: Sendable {
             guard case .final(let rendered, let text, let status, let reasoning, let failureReason) = event.payload else { return [] }
             let finalText = text ?? rendered ?? ""
             let update = normalizeFinalText(finalText)
+            if let status, !["complete", "completed"].contains(status.lowercased()), failureReason == nil {
+                return update + homeTerminalEvents(status: status, failureReason: failureReason, turnID: event.scope.turnID)
+            }
             let completion = HermesEvent.messageComplete(
                 text: finalText,
                 reasoning: reasoning ?? "",

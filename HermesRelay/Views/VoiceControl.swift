@@ -92,13 +92,14 @@ struct HandsFreePill: View {
     @State private var isActionInFlight = false
 
     private var isOn: Bool { coordinator.isHandsFreeArmed }
+    private var isPending: Bool { coordinator.isHandsFreePending }
 
     var body: some View {
         Button(action: toggle) {
             HStack(spacing: 6) {
                 Image(systemName: "arrow.triangle.2.circlepath")
                     .imageScale(.small)
-                Text("Keep listening")
+                Text(isPending ? "Keep listening · Pending" : isOn ? "Keep listening · On" : "Keep listening")
             }
             .font(.caption.weight(.medium))
             .foregroundStyle(isOn ? HermesVisualTokens.onIdentity : HermesVisualTokens.secondaryInk)
@@ -118,13 +119,10 @@ struct HandsFreePill: View {
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
-        .disabled(
-            isActionInFlight
-                || (coordinator.state.isCaptureActive && !coordinator.isHandsFreeCaptureActive)
-        )
+        .disabled(isActionInFlight)
         .accessibilityLabel("Keep listening")
-        .accessibilityValue(isOn ? "On" : "Off")
-        .accessibilityHint(Self.explanation)
+        .accessibilityValue(isPending ? "Pending" : isOn ? "On" : "Off")
+        .accessibilityHint(isPending ? "Tap again to cancel the request." : Self.explanation)
         .accessibilityAddTraits(.isToggle)
         .accessibilityIdentifier("keep-listening")
     }

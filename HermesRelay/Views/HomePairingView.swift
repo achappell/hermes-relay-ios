@@ -47,6 +47,7 @@ final class HomePairingModel {
     var linkText = ""
     var code = ""
     var homeAddress = ""
+    var deviceLabel = RelayDeviceIdentity.current().displayName
     private(set) var entryError: String?
     private(set) var pairings: [HomeClientPairing] = []
     private(set) var isRefreshing = false
@@ -175,6 +176,12 @@ final class HomePairingModel {
     }
 
     private func begin(_ invitation: HomePairingInvitation) {
+        do {
+            _ = try HomePairingLabelError.normalized(deviceLabel)
+        } catch {
+            fail(entry: error)
+            return
+        }
         guard !isOperating else { return }
         if let reason = blockedReason() {
             entryError = reason
@@ -208,7 +215,7 @@ final class HomePairingModel {
         linkText = ""
         phase = .submitting
         do {
-            let request = try await coordinator.submit(invitation)
+            let request = try await coordinator.submit(invitation, label: deviceLabel)
             try Task.checkCancellation()
             if let reason = blockedReason() {
                 entryError = reason
@@ -303,7 +310,7 @@ struct HomePairingView: View {
                 HomePairingScannerView(
                     onLink: { url in
                         showingScanner = false
-                        model.begin(link: url)
+                        model.linkText = url.absoluteString
                     },
                     onUnavailable: { message in
                         showingScanner = false
@@ -320,7 +327,7 @@ struct HomePairingView: View {
             .task {
                 await model.loadPairings()
                 if let initialLink, model.phase == .entry {
-                    model.begin(link: initialLink)
+                    model.linkText = initialLink.absoluteString
                 }
             }
         }
@@ -334,6 +341,15 @@ struct HomePairingView: View {
                     .foregroundStyle(HermesVisualTokens.unavailable)
                     .accessibilityIdentifier("home-pairing-entry-error")
             }
+        }
+
+        Section {
+            TextField("Device name", text: $model.deviceLabel)
+                .accessibilityIdentifier("home-pairing-device-name")
+        } header: {
+            Text("Name on Home")
+        } footer: {
+            Text("Choose a name that identifies this device on the Home pairing page.")
         }
 
         #if os(iOS)

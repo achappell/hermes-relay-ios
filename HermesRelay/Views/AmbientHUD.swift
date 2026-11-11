@@ -1,6 +1,58 @@
 import Foundation
 import Observation
 import SwiftUI
+#if os(iOS)
+import UIKit
+#endif
+
+enum DuoScreen: Equatable {
+    case unavailable, outer, inner
+}
+
+struct DuoHingeObserver: ViewModifier {
+    @Binding var screen: DuoScreen
+    @Binding var fullyOpen: Bool
+
+    @ViewBuilder
+    func body(content: Content) -> some View {
+        #if os(iOS)
+        if #available(iOS 27.1, *) {
+            content.onHingeChange { _, context in
+                guard let hinge = context.hinge else {
+                    fullyOpen = false
+                    screen = .unavailable
+                    return
+                }
+                screen = hinge.status == .closed ? .outer : .inner
+                fullyOpen = hinge.status == .fullyOpen
+            }
+        } else {
+            content
+        }
+        #else
+        content
+        #endif
+    }
+}
+private struct DuoDivisionObserver: ViewModifier {
+    @Binding var division: CGRect
+
+    @ViewBuilder
+    func body(content: Content) -> some View {
+        #if os(iOS)
+        if #available(iOS 27.1, *) {
+            content.onGeometryChange(for: CGRect.self) { proxy in
+                proxy.reservedRegions(kind: .division).first(where: \.isActive)?.frame ?? .zero
+            } action: { division = $0 }
+        } else {
+            content
+        }
+        #else
+        content
+        #endif
+    }
+}
+
 
 enum AmbientHUDMode: Equatable, Sendable {
     case idle
@@ -374,9 +426,227 @@ struct ViewportFillLayout: Layout {
         )
     }
 }
+/// Width-driven layout for regular devices and the iOS 26 fallback. On a
+/// detected hinge, iOS 27.1+ instead uses the Duo workspace below.
+enum AmbientHUDLayoutMode: Equatable {
+    case compact
+    case expanded
+
+    static let expandedMinimumWidth: CGFloat = 600
+
+    static func mode(for width: CGFloat) -> Self {
+        width >= expandedMinimumWidth ? .expanded : .compact
+    }
+}
+
+/// Places the voice stage and the transcript card: stacked when compact,
+/// side by side when expanded. Both are the same two subviews in one layout
+/// container, so a resize re-places them rather than rebuilding them, and the
+/// transcript's follow/reveal state survives. Because it is a `Layout` and not
+/// a `GeometryReader`, it still reports a real minimum height to
+/// `ViewportFillLayout`, so large type scrolls instead of clipping.
+struct AdaptiveVoiceLayout: Layout {
+    private static let columnSpacing: CGFloat = 24
+
+    private func arrangement(forWidth width: CGFloat?) -> AnyLayout {
+        guard let width, AmbientHUDLayoutMode.mode(for: width) == .expanded else {
+            return AnyLayout(VStackLayout(spacing: 0))
+        }
+        return AnyLayout(HStackLayout(alignment: .center, spacing: Self.columnSpacing))
+    }
+
+    func sizeThatFits(
+        proposal: ProposedViewSize,
+        subviews: Subviews,
+        cache: inout ()
+    ) -> CGSize {
+        let layout = arrangement(forWidth: proposal.width)
+        var layoutCache = layout.makeCache(subviews: subviews)
+        return layout.sizeThatFits(proposal: proposal, subviews: subviews, cache: &layoutCache)
+    }
+
+    func placeSubviews(
+        in bounds: CGRect,
+        proposal: ProposedViewSize,
+        subviews: Subviews,
+        cache: inout ()
+    ) {
+        let layout = arrangement(forWidth: bounds.width)
+        var layoutCache = layout.makeCache(subviews: subviews)
+        layout.placeSubviews(in: bounds, proposal: proposal, subviews: subviews, cache: &layoutCache)
+    }
+}
+
+
+/// Shares the top row between the compact header and the full workspace
+/// without replacing either subtree as the hinge changes posture.
+struct DuoOpenChromeLayout: Layout {
+    static let gap: CGFloat = 8
+
+    static func headerWidth(for width: CGFloat) -> CGFloat {
+        max(0, width * 0.44 - gap / 2)
+    }
+
+    func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
+        guard subviews.count == 2 else { return .zero }
+        let width = proposal.width ?? 0
+        let header = subviews[0].sizeThatFits(.init(width: Self.headerWidth(for: width), height: nil))
+        let workspace = subviews[1].sizeThatFits(.init(width: width, height: proposal.height))
+        return CGSize(width: width, height: max(header.height, workspace.height))
+    }
+
+    func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) {
+        guard subviews.count == 2 else { return }
+        subviews[0].place(at: bounds.origin, anchor: .topLeading,
+                          proposal: .init(width: Self.headerWidth(for: bounds.width), height: nil))
+        subviews[1].place(at: bounds.origin, anchor: .topLeading,
+                          proposal: .init(width: bounds.width, height: bounds.height))
+    }
+}
+
+/// Places the same five state-bearing children in every Duo posture.
+/// Moving the composer or transcript preserves their focus and follow state.
+struct DuoWorkspaceLayout: Layout {
+    let screen: DuoScreen
+    let division: CGRect
+    let primaryGuide: CGRect
+    let secondaryGuide: CGRect
+    let composerIdealHeight: CGFloat
+    let hasTranscriptContent: Bool
+    var openHeaderHeight: CGFloat = 0
+    var openTrailingHeight: CGFloat = 0
+
+    static func needsCompactVoice(screen: DuoScreen, division: CGRect, height: CGFloat) -> Bool {
+        screen == .inner && !division.isEmpty && division.width >= division.height
+            && height - division.maxY < 160
+    }
+
+    func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
+        CGSize(width: proposal.width ?? 0, height: proposal.height ?? 480)
+    }
+
+    func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) {
+        guard subviews.count == 5 else { return }
+        let width = bounds.width
+        let height = bounds.height
+        let gap: CGFloat = 8
+        let toggleHeight: CGFloat = 48
+        let composerHeight = min(height * (hasTranscriptContent ? 0.45 : 0.8), composerIdealHeight)
+        let actionHeight = min(height, subviews[3].sizeThatFits(.init(width: width, height: nil)).height)
+        var voice = CGRect(x: 0, y: 0, width: width, height: height)
+        var transcript = voice
+        var composer = CGRect.zero
+        var action = CGRect.zero
+        let toggle = CGRect(x: 0, y: max(0, height - toggleHeight), width: width, height: toggleHeight)
+
+        if screen == .outer {
+            let bottom = max(0, toggle.minY - gap)
+            voice.size.height = bottom
+            action = CGRect(x: 0, y: max(0, bottom - actionHeight), width: width, height: actionHeight)
+            composer = CGRect(x: 0, y: max(0, action.minY - composerHeight), width: width, height: composerHeight)
+            transcript.size.height = max(0, composer.minY - gap)
+        } else {
+            let active = !division.isEmpty
+            let vertical = active && division.height > division.width
+            let horizontal = active && !vertical
+            if vertical {
+                let left = CGRect(x: 0, y: 0, width: max(0, division.minX), height: height)
+                let right = CGRect(x: min(width, division.maxX), y: 0, width: max(0, width - division.maxX), height: height)
+                // Layout coordinates mirror automatically in RTL.
+                voice = left
+                transcript = right
+            } else if horizontal {
+                transcript = CGRect(x: 0, y: 0, width: width, height: max(0, division.minY))
+                voice = CGRect(x: 0, y: min(height, division.maxY), width: width, height: max(0, height - division.maxY))
+            } else {
+                let voiceWidth = max(0, width * 0.44 - gap / 2)
+                let transcriptWidth = max(0, width - voiceWidth - gap)
+                let voiceTop = min(height, openHeaderHeight)
+                let transcriptTop = min(height, openTrailingHeight)
+                voice = CGRect(x: 0, y: voiceTop, width: voiceWidth, height: max(0, height - voiceTop))
+                transcript = CGRect(x: voiceWidth + gap, y: transcriptTop, width: transcriptWidth, height: max(0, height - transcriptTop))
+            }
+            // ArrangementView provides the system's actual panel bounds when
+            // it has resolved the active division. Ignore stale measurements
+            // while a fold/rotation is in flight.
+            if active, !primaryGuide.isEmpty, !secondaryGuide.isEmpty {
+                let guides = [primaryGuide, secondaryGuide]
+                let container = CGRect(x: 0, y: 0, width: width, height: height)
+                if vertical {
+                    let ordered = guides.sorted { $0.minX < $1.minX }
+                    if ordered[0].maxX <= division.minX + 1, ordered[1].minX >= division.maxX - 1,
+                       guides.allSatisfy({ container.contains($0) }) {
+                        voice = ordered[0]
+                        transcript = ordered[1]
+                    }
+                } else if horizontal {
+                    let ordered = guides.sorted { $0.minY < $1.minY }
+                    if ordered[0].maxY <= division.minY + 1, ordered[1].minY >= division.maxY - 1,
+                       guides.allSatisfy({ container.contains($0) }) {
+                        transcript = ordered[0]
+                        voice = ordered[1]
+                    }
+                }
+            }
+            let composerPanel = vertical ? voice : transcript
+            let composerFraction: CGFloat = vertical || hasTranscriptContent ? 0.7 : 1
+            let measured = min(composerPanel.height * composerFraction, composerIdealHeight)
+            composer = CGRect(x: composerPanel.minX, y: max(composerPanel.minY, composerPanel.maxY - measured), width: composerPanel.width, height: measured)
+            if vertical {
+                voice.size.height = max(0, composer.minY - voice.minY - gap)
+            } else {
+                if Self.needsCompactVoice(screen: screen, division: division, height: height) {
+                    action = CGRect(x: transcript.minX, y: max(transcript.minY, composer.minY - actionHeight), width: transcript.width, height: actionHeight)
+                    transcript.size.height = max(0, action.minY - transcript.minY - gap)
+                } else {
+                    transcript.size.height = max(0, composer.minY - transcript.minY - gap)
+                }
+            }
+        }
+
+        for (index, rect) in [voice, transcript, composer, action, toggle].enumerated() {
+            subviews[index].place(
+                at: CGPoint(x: bounds.minX + rect.minX, y: bounds.minY + rect.minY),
+                anchor: .topLeading,
+                proposal: ProposedViewSize(width: max(0, rect.width), height: max(0, rect.height))
+            )
+        }
+    }
+}
+
+#if os(iOS)
+@available(iOS 27.1, *)
+private struct DuoArrangementGuide: View {
+    @Binding var primary: CGRect
+    @Binding var secondary: CGRect
+
+    var body: some View {
+        ArrangementView {
+            Color.clear.onGeometryChange(for: CGRect.self) {
+                $0.frame(in: .named("duo-workspace"))
+            } action: { primary = $0 }
+        } secondary: {
+            Color.clear.onGeometryChange(for: CGRect.self) {
+                $0.frame(in: .named("duo-workspace"))
+            } action: { secondary = $0 }
+        }
+        .arrangementViewStyle(.split)
+        .allowsHitTesting(false)
+        .accessibilityHidden(true)
+    }
+}
+#endif
 
 struct AmbientHUDView: View {
     @Environment(\.openURL) private var openURL
+    @State private var outerTranscript = false
+    @State private var division: CGRect = .zero
+    @State private var guidePrimary: CGRect = .zero
+    @State private var guideSecondary: CGRect = .zero
+    @State private var duoComposerHeight: CGFloat = 100
+    @State private var duoHeaderHeight: CGFloat = 82
+    @State private var duoDisconnectHeight: CGFloat = 44
+    @AccessibilityFocusState private var outerToggleFocused: Bool
     let presentation: AmbientHUDPresentation
     let connectionState: ConnectionState
     let sessionStartedAt: Date?
@@ -419,6 +689,13 @@ struct AmbientHUDView: View {
     let orbAccessibilityFocus: AccessibilityFocusState<Bool>.Binding?
     /// Thinking text per turn (IOS-UX-F6) and how to open one.
     let thinkingTurns: [ThinkingTurn]
+    let duoScreen: DuoScreen
+    let duoFullyOpen: Bool
+    let onDuoDisconnect: (() -> Void)?
+    let isDuoDisconnectDisabled: Bool
+    let duoViewportHeight: CGFloat
+    let duoComposer: AnyView
+    let onDuoTalkSelected: () -> Void
     let onOpenThinking: (UUID) -> Void
 
     init(
@@ -457,6 +734,13 @@ struct AmbientHUDView: View {
         viewMode: ConversationViewMode = .voice,
         orbAccessibilityFocus: AccessibilityFocusState<Bool>.Binding? = nil,
         thinkingTurns: [ThinkingTurn] = [],
+        duoScreen: DuoScreen = .unavailable,
+        duoFullyOpen: Bool = false,
+        onDuoDisconnect: (() -> Void)? = nil,
+        isDuoDisconnectDisabled: Bool = false,
+        duoViewportHeight: CGFloat = 600,
+        duoComposer: AnyView = AnyView(EmptyView()),
+        onDuoTalkSelected: @escaping () -> Void = {},
         onOpenThinking: @escaping (UUID) -> Void = { _ in }
     ) {
         self.presentation = presentation
@@ -494,6 +778,13 @@ struct AmbientHUDView: View {
         self.viewMode = viewMode
         self.orbAccessibilityFocus = orbAccessibilityFocus
         self.thinkingTurns = thinkingTurns
+        self.duoScreen = duoScreen
+        self.duoFullyOpen = duoFullyOpen
+        self.onDuoDisconnect = onDuoDisconnect
+        self.isDuoDisconnectDisabled = isDuoDisconnectDisabled
+        self.duoViewportHeight = duoViewportHeight
+        self.duoComposer = duoComposer
+        self.onDuoTalkSelected = onDuoTalkSelected
         self.onOpenThinking = onOpenThinking
     }
 
@@ -518,6 +809,10 @@ struct AmbientHUDView: View {
     /// While muted, "Muted" follows the state: "Speaking · Muted · Tap to interrupt".
     private var orbStatusLine: String {
         guard let orbCoordinator else { return doorwayStatusLabel }
+        if duoScreen != .unavailable, orbCoordinator.isHandsFreeArmed,
+           !orbCoordinator.state.isResponseActive {
+            return doorwayStatusLabel
+        }
         let action = VoiceControlInteractionPolicy.orbAction(
             state: orbCoordinator.state,
             isHandsFreeArmed: orbCoordinator.isHandsFreeArmed,
@@ -581,28 +876,51 @@ struct AmbientHUDView: View {
     }
 
     var body: some View {
-        VStack(spacing: 0) {
-            sessionHeader
+        let layout = duoFullyOpen ? AnyLayout(DuoOpenChromeLayout()) : AnyLayout(VStackLayout(spacing: 0))
+        layout {
+            VStack(spacing: 0) {
+                sessionHeader
 
-            if showsCachedContextNotice {
-                cachedContextNotice
+                if showsCachedContextNotice {
+                    cachedContextNotice
+                }
+
+                if let unconfirmedTurnText {
+                    unconfirmedTurnNotice(
+                        text: unconfirmedTurnText,
+                        canContinueWithoutResending: canContinueWithoutResendingHomeTurn
+                    )
+                }
+
+                if let homeBridgeState {
+                    homeStatusNotice(bridge: homeBridgeState)
+                }
             }
-
-            if let unconfirmedTurnText {
-                unconfirmedTurnNotice(
-                    text: unconfirmedTurnText,
-                    canContinueWithoutResending: canContinueWithoutResendingHomeTurn
-                )
+            .onGeometryChange(for: CGFloat.self) { $0.size.height } action: {
+                duoHeaderHeight = $0
             }
+            .zIndex(1)
 
-            if let homeBridgeState {
-                homeStatusNotice(bridge: homeBridgeState)
-            }
-
-            if viewMode == .typing {
+            if duoScreen != .unavailable {
+                duoContent
+            } else if viewMode == .typing {
                 typingContent
             } else {
                 voiceContent
+            }
+        }
+        .overlay(alignment: .topTrailing) {
+            if duoFullyOpen, let onDuoDisconnect {
+                Button(action: onDuoDisconnect) {
+                    Text("Disconnect")
+                        .frame(minWidth: 44, minHeight: 44)
+                        .contentShape(Rectangle())
+                }
+                .disabled(isDuoDisconnectDisabled)
+                .accessibilityIdentifier("home-disconnect")
+                .onGeometryChange(for: CGFloat.self) { $0.size.height } action: {
+                    duoDisconnectHeight = max(44, $0)
+                }
             }
         }
         .padding(.horizontal, 16)
@@ -613,27 +931,150 @@ struct AmbientHUDView: View {
         .accessibilityElement(children: .contain)
     }
 
-    @ViewBuilder
-    private var voiceContent: some View {
-        Spacer(minLength: 20)
+    private var duoContent: some View {
+        let hasTranscriptContent = !transcriptMessages.isEmpty || !liveProvisionalText.isEmpty
+        let workspaceHeight = duoFullyOpen
+            ? max(duoViewportHeight - 28, duoHeaderHeight + 160)
+            : max(160, duoViewportHeight - duoHeaderHeight - 28)
+        let compactVoice = DuoWorkspaceLayout.needsCompactVoice(
+            screen: duoScreen, division: division, height: workspaceHeight
+        )
+        return DuoWorkspaceLayout(
+            screen: duoScreen,
+            division: division,
+            primaryGuide: guidePrimary,
+            secondaryGuide: guideSecondary,
+            composerIdealHeight: duoComposerHeight,
+            hasTranscriptContent: hasTranscriptContent,
+            openHeaderHeight: duoFullyOpen ? duoHeaderHeight + 8 : 0,
+            openTrailingHeight: duoFullyOpen && onDuoDisconnect != nil ? duoDisconnectHeight + 8 : 0
+        ) {
+            ScrollView {
+                VStack(spacing: 0) {
+                    CompressibleOrb {
+                        if let orbCoordinator {
+                            VoiceOrbButton(
+                                coordinator: orbCoordinator,
+                                presentation: presentation,
+                                doorwayState: doorwayState,
+                                statusLabel: doorwayStatusLabel,
+                                accessibilityFocus: orbAccessibilityFocus
+                            )
+                        } else {
+                            AmbientVisualizer(presentation: presentation, doorwayState: doorwayState)
+                        }
+                    }
+                    voiceControls
+                }
+                .frame(maxWidth: .infinity)
+            }
+            .defaultScrollAnchor(doorwayState == .connected ? .top : .bottom)
+            .opacity((duoScreen == .outer && outerTranscript) || compactVoice ? 0 : 1)
+            .allowsHitTesting(!(duoScreen == .outer && outerTranscript) && !compactVoice)
+            .accessibilityHidden((duoScreen == .outer && outerTranscript) || compactVoice)
 
-        CompressibleOrb {
-            if let orbCoordinator {
-                VoiceOrbButton(
-                    coordinator: orbCoordinator,
-                    presentation: presentation,
-                    doorwayState: doorwayState,
-                    statusLabel: doorwayStatusLabel,
-                    accessibilityFocus: orbAccessibilityFocus
-                )
+            GeometryReader { proxy in
+                captionArea
+                    .frame(width: proxy.size.width, height: proxy.size.height, alignment: .top)
+                    .clipped()
+            }
+            .opacity(!hasTranscriptContent || (duoScreen == .outer && !outerTranscript) ? 0 : 1)
+            .allowsHitTesting(hasTranscriptContent && (duoScreen != .outer || outerTranscript))
+            .accessibilityHidden(!hasTranscriptContent || (duoScreen == .outer && !outerTranscript))
+
+            GeometryReader { proxy in
+                ScrollView {
+                    duoComposer
+                        .onGeometryChange(for: CGFloat.self) { $0.size.height } action: {
+                            duoComposerHeight = max(44, $0)
+                        }
+                }
+                .scrollBounceBehavior(.basedOnSize)
+                .defaultScrollAnchor(.top)
+                .frame(width: proxy.size.width, height: proxy.size.height)
+                .clipped()
+            }
+            .opacity(duoScreen == .outer && !outerTranscript ? 0 : 1)
+            .allowsHitTesting(duoScreen != .outer || outerTranscript)
+            .accessibilityHidden(duoScreen == .outer && !outerTranscript)
+
+            DuoTranscriptVoiceAction(coordinator: orbCoordinator, statusLabel: doorwayStatusLabel)
+                .opacity((duoScreen == .outer && outerTranscript) || compactVoice ? 1 : 0)
+                .allowsHitTesting((duoScreen == .outer && outerTranscript) || compactVoice)
+                .accessibilityHidden(!(duoScreen == .outer && outerTranscript) && !compactVoice)
+
+            if duoScreen == .outer {
+                Picker("Conversation view", selection: $outerTranscript) {
+                    Text("Talk").tag(false)
+                    Text("Transcript").tag(true)
+                }
+                .pickerStyle(.segmented)
+                .frame(minHeight: 44)
+                .accessibilityFocused($outerToggleFocused)
+                .accessibilityIdentifier("duo-view-toggle")
             } else {
-                AmbientVisualizer(
-                    presentation: presentation,
-                    doorwayState: doorwayState
-                )
+                Color.clear
+                    .allowsHitTesting(false)
+                    .accessibilityHidden(true)
             }
         }
+        .modifier(DuoDivisionObserver(division: $division))
+        .background {
+            #if os(iOS)
+            if #available(iOS 27.1, *) {
+                DuoArrangementGuide(primary: $guidePrimary, secondary: $guideSecondary)
+            }
+            #endif
+        }
+        .coordinateSpace(name: "duo-workspace")
+        .frame(height: workspaceHeight)
+        .onChange(of: outerTranscript) { _, selected in
+            if !selected { onDuoTalkSelected() }
+            outerToggleFocused = true
+            #if os(iOS)
+            UIAccessibility.post(notification: .announcement, argument: selected ? "Transcript view" : "Talk view")
+            #endif
+        }
+        .onChange(of: duoScreen) { _, screen in
+            if screen == .outer && !outerTranscript { onDuoTalkSelected() }
+        }
+    }
 
+    @ViewBuilder
+    private var voiceContent: some View {
+        AdaptiveVoiceLayout {
+            VStack(spacing: 0) {
+                Spacer(minLength: 20)
+
+                CompressibleOrb {
+                    if let orbCoordinator {
+                        VoiceOrbButton(
+                            coordinator: orbCoordinator,
+                            presentation: presentation,
+                            doorwayState: doorwayState,
+                            statusLabel: doorwayStatusLabel,
+                            accessibilityFocus: orbAccessibilityFocus
+                        )
+                    } else {
+                        AmbientVisualizer(
+                            presentation: presentation,
+                            doorwayState: doorwayState
+                        )
+                    }
+                }
+
+                voiceControls
+
+                Spacer(minLength: 20)
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+
+            captionArea
+                .frame(maxWidth: .infinity)
+        }
+    }
+
+    private var voiceControls: some View {
         VStack(spacing: 8) {
             Text(orbStatusLine)
                 .font(.headline.weight(.semibold))
@@ -667,10 +1108,6 @@ struct AmbientHUDView: View {
                 failureNotice(message: failureMessage)
             }
         }
-
-        Spacer(minLength: 20)
-
-        captionArea
     }
 
     /// The typing view: the transcript sits above the composer with the
@@ -931,7 +1368,7 @@ struct AmbientHUDView: View {
             .frame(maxWidth: .infinity, alignment: .leading)
             .relayPanel(cornerRadius: 16, fill: HermesVisualTokens.consoleSurface)
             .modifier(SessionHeaderAccessibility(
-                combines: onShowSessions == nil,
+                combines: onShowSessions == nil && duoScreen == .unavailable,
                 label: "Hermes Profile \(profileName ?? "not selected"), \(doorwayState.statusLabel), session duration \(SessionDurationFormatter.string(startedAt: sessionStartedAt, now: context.date))"
             ))
         }
@@ -990,15 +1427,70 @@ struct AmbientHUDView: View {
                     playbackPosition: playbackPosition,
                     isPlaybackDurationFinal: isPlaybackDurationFinal,
                     showsStreamedReply: voiceCoordinator?.replyTextIsLive ?? false,
+                    expandsToAvailableHeight: duoScreen != .unavailable,
                     onShowHistory: onShowHistory
                 )
             }
         }
-        .frame(maxWidth: .infinity)
+        .frame(maxWidth: .infinity, maxHeight: duoScreen != .unavailable ? .infinity : nil)
         .padding(.horizontal, 18)
         .padding(.vertical, 14)
         .relayPanel(cornerRadius: 16, fill: HermesVisualTokens.panel)
         .accessibilityElement(children: .contain)
+    }
+}
+
+private struct DuoTranscriptVoiceAction: View {
+    let coordinator: VoiceSessionCoordinator?
+    let statusLabel: String
+    @State private var inFlight = false
+
+    var body: some View {
+        VStack(spacing: 0) {
+            if let coordinator {
+                let action = VoiceControlInteractionPolicy.orbAction(
+                    state: coordinator.state,
+                    isHandsFreeArmed: coordinator.isHandsFreeArmed,
+                    isHandsFreeCaptureActive: coordinator.isHandsFreeCaptureActive
+                )
+                let label = coordinator.state.isResponseActive
+                    ? "Interrupt" : coordinator.state.isCaptureActive && !coordinator.isHandsFreeArmed
+                    ? "Send early" : coordinator.isHandsFreeArmed ? statusLabel : "Start talking"
+                Button {
+                    inFlight = true
+                    Task { @MainActor in
+                        await VoiceControlInteractionPolicy.performPrimaryAction(on: coordinator)
+                        inFlight = false
+                    }
+                } label: {
+                    Label(label, systemImage: action.systemImage).frame(minHeight: 44)
+                }
+                .disabled(VoiceControlInteractionPolicy.isDisabled(
+                    isActionInFlight: inFlight,
+                    state: coordinator.state,
+                    isHandsFreeArmed: coordinator.isHandsFreeArmed
+                ))
+                .accessibilityLabel(label)
+                .accessibilityValue(statusLabel)
+                .accessibilityHint(action.accessibilityHint)
+                .accessibilityIdentifier("duo-transcript-voice-action")
+                if coordinator.state.isCaptureActive && !coordinator.isHandsFreeArmed {
+                    Button("Cancel") {
+                        Task { await coordinator.cancelCapture() }
+                    }
+                    .frame(minHeight: 44)
+                    .accessibilityHint("Discards the recording without sending.")
+                }
+                #if os(iOS)
+                if coordinator.isHandsFreeArmed || coordinator.isHandsFreePending {
+                    HandsFreePill(coordinator: coordinator)
+                }
+                #endif
+            } else {
+                Text(statusLabel).frame(minHeight: 44)
+            }
+        }
+        .frame(maxWidth: .infinity)
     }
 }
 

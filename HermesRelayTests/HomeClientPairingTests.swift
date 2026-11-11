@@ -291,6 +291,24 @@ final class HomeClientPairingTests: XCTestCase {
         XCTAssertEqual(submissions[0].type, HomeClientEndpointType.current)
     }
 
+    func testPairingLabelIsEditableAndValidatedBeforeSubmission() async throws {
+        let fixture = try await Self.makeFixture()
+        let invitation = try HomePairingInvitation(code: Self.pairingCode, homeAddress: Self.home)
+        _ = try await fixture.coordinator.submit(invitation, label: "  Amanda's Duo  ")
+        let submissions = await fixture.service.submissions
+        XCTAssertEqual(submissions.last?.label, "Amanda's Duo")
+        for invalid in ["  ", String(repeating: "x", count: 129), "one\ntwo"] {
+            do {
+                _ = try await fixture.coordinator.submit(invitation, label: invalid)
+                XCTFail("Invalid device label must not be submitted")
+            } catch {
+                XCTAssertTrue(error is HomePairingLabelError)
+            }
+        }
+        let afterInvalid = await fixture.service.submissions
+        XCTAssertEqual(afterInvalid.count, 1)
+    }
+
     // MARK: Waiting / rejected / expired
 
     func testWaitingPollsAboutEveryTwoSecondsUntilApproval() async throws {

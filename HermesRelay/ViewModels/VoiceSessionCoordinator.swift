@@ -4,6 +4,7 @@ import Observation
 /// Local voice preferences. Stored on this device only; content-free.
 enum VoicePreferences {
     static let interruptByTalkingKey = "voice.interruptByTalking"
+    static let fullResponseKey = "voice.showFullResponse"
 
     /// "Interrupt Hermes by talking (headphones only)". Off by default: with
     /// it off, interrupting a reply is tap-only on every route (IOS-UX-F5).
@@ -183,6 +184,8 @@ final class VoiceSessionCoordinator {
     private(set) var state: VoiceState = .idle
     private(set) var provisionalText = ""
     private(set) var isHandsFreeArmed = false
+    private(set) var isHandsFreePending = false
+    private var waitsForReplyBeforeMonitoring = false
     private(set) var handsFreeStatus: HandsFreeStatus = .disarmed
     private(set) var isHandsFreeCaptureActive = false
     // The relay emits audio_start/audio_end per segment, so a drained audio
@@ -204,6 +207,10 @@ final class VoiceSessionCoordinator {
     private var captureTask: Task<Void, Never>?
     private var captureFinishTask: Task<Void, Never>?
     private var responseTask: Task<Void, Never>?
+    private var audioDrainTask: Task<Void, Never>?
+    private var responseEventTask: Task<Void, Never>?
+    private var hasQueuedResponseEvents = false
+    private var queuedResponseFailed = false
     private var playbackFailed = false
     private var audioStreamActive = false
     private var audioFileStreamActive = false
@@ -219,6 +226,13 @@ final class VoiceSessionCoordinator {
     /// shows streamed text instead of text paced by playback, which cannot
     /// follow audio that was dropped (and stays that way if the user unmutes).
     private(set) var replyTextIsLive = false
+    private var successfulFinalTextAvailable = false
+    private var showFullResponse = UserDefaults.standard.bool(forKey: VoicePreferences.fullResponseKey)
+
+    func setShowFullResponse(_ enabled: Bool) {
+        showFullResponse = enabled
+        if enabled && successfulFinalTextAvailable { replyTextIsLive = true }
+    }
     /// True from the moment this coordinator asks `output` to start a stream
     /// until it finishes or mute stops it.
     private var isOutputLive = false
@@ -238,6 +252,7 @@ final class VoiceSessionCoordinator {
     /// pause timer can both ask to end the same recording; only the first
     /// may, or the second resets state in the middle of the reply.
     private var isEndingTappedCapture = false
+    private var tappedCaptureGeneration: UInt64 = 0
     private var handsFreeCaptureGeneration: UInt64 = 0
     private var handsFreeFinalText: String?
     private var isFinishingHandsFreeInput = false
@@ -347,7 +362,11 @@ final class VoiceSessionCoordinator {
     }
 
     func toggleHandsFree() async {
-        if isHandsFreeArmed {
+        if isHandsFreePending {
+            isHandsFreePending = false
+        } else if captureTask != nil && !isHandsFreeCaptureActive {
+            isHandsFreePending = true
+        } else if isHandsFreeArmed {
             await disableHandsFree()
         } else {
             await armHandsFree()
@@ -356,6 +375,8 @@ final class VoiceSessionCoordinator {
 
     func disableHandsFree() async {
         let wasCapturing = isHandsFreeCaptureActive
+        isHandsFreePending = false
+        waitsForReplyBeforeMonitoring = false
         isHandsFreeArmed = false
         isHandsFreeCaptureActive = false
         handsFreeStatus = .disarmed
@@ -386,7 +407,7 @@ final class VoiceSessionCoordinator {
         }
     }
 
-    private func armHandsFree() async {
+    private func armHandsFree(waitForReply: Bool = false) async {
         if let reason = store.standardVoiceUnavailableReason {
             store.transientError = reason
             setHandsFreeFailure(.message(reason))
@@ -422,6 +443,14 @@ final class VoiceSessionCoordinator {
         if let reason = store.standardVoiceUnavailableReason {
             store.transientError = reason
             setHandsFreeFailure(.message(reason))
+            return
+        }
+
+        if waitForReply {
+            isHandsFreeArmed = true
+            handsFreeStatus = .armed
+            waitsForReplyBeforeMonitoring = true
+            handsFreeWakeSuppressed = true
             return
         }
 
@@ -895,6 +924,7 @@ final class VoiceSessionCoordinator {
             await captureStartGate.clear(id: pendingStart.id)
         }
         guard let captureTask, !isEndingTappedCapture else { return }
+        let captureGeneration = tappedCaptureGeneration
         isEndingTappedCapture = true
         state = .transcribing
         requestInputFinish()
@@ -903,8 +933,10 @@ final class VoiceSessionCoordinator {
         // With the recording task cleared, a late second call finds nothing
         // to end; the guard only needs to cover the wait above.
         isEndingTappedCapture = false
+        guard captureGeneration == tappedCaptureGeneration else { return }
 
         if let captureFailureMessage {
+            isHandsFreePending = false
             provisionalText = ""
             finalText = nil
             captureBinding = nil
@@ -921,18 +953,37 @@ final class VoiceSessionCoordinator {
         guard !text.isEmpty else {
             captureBinding = nil
             state = .idle
+            if isHandsFreePending {
+                await waitForCaptureFinish()
+                guard captureGeneration == tappedCaptureGeneration else { return }
+                if isHandsFreePending {
+                    isHandsFreePending = false
+                    await armHandsFree()
+                }
+            }
             return
         }
 
         guard let binding = captureBinding,
               store.isCurrentTurnBinding(binding) else {
             captureBinding = nil
+            isHandsFreePending = false
             let message = "The selected Hermes Profile changed. Start a new turn."
             store.transientError = message
             state = .failed(message)
             return
         }
         captureBinding = nil
+        if isHandsFreePending {
+            await waitForCaptureFinish()
+            guard captureGeneration == tappedCaptureGeneration else { return }
+            if isHandsFreePending {
+                isHandsFreePending = false
+                await armHandsFree(waitForReply: true)
+            }
+        }
+
+        guard captureGeneration == tappedCaptureGeneration else { return }
 
         await startVoiceResponse(text: text, binding: binding)
     }
@@ -971,6 +1022,14 @@ final class VoiceSessionCoordinator {
             responseTask = nil
         }
         journalResponseEnded(path: "voice")
+        if waitsForReplyBeforeMonitoring {
+            waitsForReplyBeforeMonitoring = false
+            if isHandsFreeArmed && !isFailed && store.verifiedTurnBinding != nil {
+                await restartHandsFreeStream()
+            } else if isHandsFreeArmed {
+                await disableHandsFree()
+            }
+        }
         beginHandsFreeReplyTail()
     }
 
@@ -1091,6 +1150,9 @@ final class VoiceSessionCoordinator {
     }
 
     func cancelCapture() async {
+        handsFreeCaptureGeneration &+= 1
+        tappedCaptureGeneration &+= 1
+        isHandsFreePending = false
         cancelTappedPause()
         if isHandsFreeCaptureActive {
             isHandsFreeCaptureActive = false
@@ -1154,6 +1216,7 @@ final class VoiceSessionCoordinator {
     /// response work, stops native playback, and never sends an interrupt or
     /// reconnect while the surface is inactive.
     func stopForLifecycle() async {
+        tappedCaptureGeneration &+= 1
         journal.record(
             "voice stopForLifecycle reply=\(responseTask != nil) hands_free=\(isHandsFreeArmed) backgrounded=\(isBackgrounded)"
         )
@@ -1161,6 +1224,8 @@ final class VoiceSessionCoordinator {
         onBackgroundRetentionEnded = nil
         responseGeneration &+= 1
         handsFreeCaptureGeneration &+= 1
+        isHandsFreePending = false
+        waitsForReplyBeforeMonitoring = false
         isHandsFreeArmed = false
         isHandsFreeCaptureActive = false
         handsFreeStatus = .disarmed
@@ -1444,19 +1509,12 @@ final class VoiceSessionCoordinator {
             case .cancelled:
                 return
             case .noSpeech:
-                await MainActor.run { [weak self] in
-                    guard let self else { return }
-                    self.captureTask = nil
-                    self.captureBinding = nil
-                    self.provisionalText = ""
-                    self.finalText = nil
-                    self.captureFailureMessage = nil
-                    self.state = .idle
-                }
+                await self.handleTappedNoSpeech()
             default:
                 let message = error.localizedDescription
                 await MainActor.run { [weak self] in
                     self?.captureTask = nil
+                    self?.isHandsFreePending = false
                     self?.captureFailureMessage = message
                     self?.state = .failed(message)
                 }
@@ -1465,9 +1523,24 @@ final class VoiceSessionCoordinator {
             let message = error.localizedDescription
             await MainActor.run { [weak self] in
                 self?.captureTask = nil
+                self?.isHandsFreePending = false
                 self?.captureFailureMessage = message
                 self?.state = .failed(message)
             }
+        }
+    }
+
+    private func handleTappedNoSpeech() async {
+        provisionalText = ""
+        finalText = nil
+        captureFailureMessage = nil
+        guard !isEndingTappedCapture else { return }
+        captureTask = nil
+        captureBinding = nil
+        state = .idle
+        if isHandsFreePending {
+            isHandsFreePending = false
+            await armHandsFree()
         }
     }
 
@@ -1483,12 +1556,17 @@ final class VoiceSessionCoordinator {
         }
         guard generation == responseGeneration, !Task.isCancelled else { return }
         turnDidComplete = false
+        successfulFinalTextAvailable = false
+        responseEventTask = nil
+        hasQueuedResponseEvents = false
+        queuedResponseFailed = false
         replyTextIsLive = isMuted
         audioSegmentIndex = 0
         state = .thinking
         let completed = await store.sendTurn(text: text, expectedBinding: binding) { [weak self] event in
-            await self?.handle(event, generation: generation)
+            await self?.dispatchResponseEvent(event, generation: generation)
         }
+        await responseEventTask?.value
         guard generation == responseGeneration, !Task.isCancelled else { return }
         if !completed, !isFailed, state != .interrupted {
             state = .failed(store.transientError ?? "The voice turn could not be completed.")
@@ -1502,6 +1580,40 @@ final class VoiceSessionCoordinator {
         }
     }
 
+    private func dispatchResponseEvent(_ event: HermesEvent, generation: UInt64) async {
+        guard generation == responseGeneration, !Task.isCancelled else { return }
+        if case .audioStart = event, audioDrainTask != nil, audioStreamActive || audioFileStreamActive {
+            hasQueuedResponseEvents = true
+        }
+        if case .audioFileStart = event, audioDrainTask != nil, audioStreamActive || audioFileStreamActive {
+            hasQueuedResponseEvents = true
+        }
+        guard hasQueuedResponseEvents else {
+            await handle(event, generation: generation)
+            return
+        }
+        switch event {
+        case .error, .turnInterrupted, .audioAbort:
+            queuedResponseFailed = true
+            await handle(event, generation: generation)
+            return
+        case .messageComplete(_, _, let reason) where !reason.isEmpty:
+            queuedResponseFailed = true
+            await handle(event, generation: generation)
+            return
+        case .messageComplete(_, _, let reason) where reason.isEmpty && !queuedResponseFailed:
+            await handle(event, generation: generation)
+            return
+        default:
+            break
+        }
+        let previous = responseEventTask
+        responseEventTask = Task { @MainActor [weak self] in
+            await previous?.value
+            await self?.handle(event, generation: generation)
+        }
+    }
+
     private func handle(_ event: HermesEvent, generation: UInt64) async {
         guard generation == responseGeneration, !Task.isCancelled else { return }
         switch event {
@@ -1509,6 +1621,7 @@ final class VoiceSessionCoordinator {
             guard !playbackFailed, !state.isTerminal, !state.isOutputActive else { return }
             state = .thinking
         case .audioStart(let format):
+            await audioDrainTask?.value
             guard !playbackFailed, !state.isTerminal else { return }
             await diagnostics.record(
                 .segmentBoundary(
@@ -1607,25 +1720,9 @@ final class VoiceSessionCoordinator {
                 )
             )
             audioSegmentIndex += 1
-            do {
-                if isOutputLive {
-                    try await output.finish()
-                    isOutputLive = false
-                }
-                guard isCurrentResponse(generation) else { return }
-                audioStreamActive = false
-                finalizePlaybackDuration()
-                if turnDidComplete {
-                    if audioDeliveryStarted {
-                        endResponse()
-                    } else {
-                        await handlePlaybackFailure(generation: generation)
-                    }
-                }
-            } catch {
-                await handlePlaybackFailure(generation: generation)
-            }
+            scheduleAudioDrain(generation: generation, file: false)
         case .audioFileStart:
+            await audioDrainTask?.value
             guard !playbackFailed, !state.isTerminal else { return }
             audioFileBuffer.removeAll(keepingCapacity: true)
             audioFileStreamActive = true
@@ -1678,13 +1775,7 @@ final class VoiceSessionCoordinator {
                     state = .speaking
                     updateNowPlayingPlaybackState()
                 }
-                try await output.finish()
-                isOutputLive = false
-                guard isCurrentResponse(generation) else { return }
-                audioFileStreamActive = false
-                if turnDidComplete {
-                    endResponse()
-                }
+                scheduleAudioDrain(generation: generation, file: true)
             } catch {
                 if isMuted {
                     isOutputLive = false
@@ -1760,9 +1851,13 @@ final class VoiceSessionCoordinator {
                 }
                 return lhs.audioOffset < rhs.audioOffset
             }
-        case .messageComplete(_, _, let failureReason):
-            guard !state.isTerminal else { return }
+        case .messageComplete(let text, _, let failureReason):
             let reason = failureReason.trimmingCharacters(in: .whitespacesAndNewlines)
+            if reason.isEmpty, !text.isEmpty {
+                successfulFinalTextAvailable = true
+                if showFullResponse { replyTextIsLive = true }
+            }
+            guard !state.isTerminal else { return }
             guard !reason.isEmpty else { return }
             playbackFailed = true
             audioStreamActive = false
@@ -1796,12 +1891,17 @@ final class VoiceSessionCoordinator {
     private func submitDraft(generation: UInt64) async {
         guard generation == responseGeneration, !Task.isCancelled else { return }
         turnDidComplete = false
+        successfulFinalTextAvailable = false
+        responseEventTask = nil
+        hasQueuedResponseEvents = false
+        queuedResponseFailed = false
         replyTextIsLive = isMuted
         audioSegmentIndex = 0
         state = .thinking
         let completed = await store.sendDraft { [weak self] event in
-            await self?.handle(event, generation: generation)
+            await self?.dispatchResponseEvent(event, generation: generation)
         }
+        await responseEventTask?.value
         guard generation == responseGeneration, !Task.isCancelled else { return }
         if !completed, !isFailed, state != .interrupted {
             state = .failed(store.transientError ?? "The text turn could not be completed.")
@@ -1814,12 +1914,47 @@ final class VoiceSessionCoordinator {
         }
     }
 
+    private func scheduleAudioDrain(generation: UInt64, file: Bool) {
+        audioDrainTask = Task { @MainActor [weak self] in
+            guard let self else { return }
+            do {
+                if self.isOutputLive {
+                    try await self.output.finish()
+                    self.isOutputLive = false
+                }
+                guard self.isCurrentResponse(generation) else { return }
+                if file {
+                    self.audioFileStreamActive = false
+                } else {
+                    self.audioStreamActive = false
+                    self.finalizePlaybackDuration()
+                }
+                if self.turnDidComplete {
+                    if self.audioDeliveryStarted {
+                        self.endResponse()
+                    } else {
+                        await self.handlePlaybackFailure(generation: generation)
+                    }
+                }
+            } catch {
+                if self.isMuted {
+                    self.isOutputLive = false
+                    if file { self.audioFileStreamActive = false } else { self.audioStreamActive = false }
+                    if self.isCurrentResponse(generation) { self.noteDroppedAudio() }
+                } else {
+                    await self.handlePlaybackFailure(generation: generation)
+                }
+            }
+        }
+    }
+
     /// The relay delivers audio far faster than it plays: a minute of speech
     /// can arrive in seconds. A closed event stream therefore means no more
     /// audio is *coming*, not that the answer has been *heard*. Drain what is
     /// already scheduled before going quiet — `finish()` returns once the
     /// buffers have actually played out.
     private func finishPlaybackAndEndResponse(generation: UInt64) async {
+        await audioDrainTask?.value
         let homeTurn = store.verifiedTurnBinding?.homeTurn
         await playRemainingAudioAndEndResponse(generation: generation)
         // Home control delivery is already known here. Every exit, including
@@ -1922,7 +2057,7 @@ final class VoiceSessionCoordinator {
     private func endResponse() {
         guard !isFailed, state != .interrupted else { return }
         stopPlaybackPositionObservation()
-        state = .complete
+        state = isHandsFreeArmed ? .idle : .complete
         updateNowPlayingPlaybackState()
         store.settleActiveAssistantPresentation()
     }
