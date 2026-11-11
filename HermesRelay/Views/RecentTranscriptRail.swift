@@ -31,7 +31,8 @@ struct RecentTranscriptProjection: Equatable, Sendable {
         messages: [TranscriptMessage],
         provisionalText: String,
         isResponseActive: Bool,
-        activeAssistantID: UUID?
+        activeAssistantID: UUID?,
+        includeFullHistory: Bool = false
     ) {
         var entries = messages.compactMap { message -> RecentTranscriptEntry? in
             guard message.role == .user || message.role == .assistant else { return nil }
@@ -72,7 +73,7 @@ struct RecentTranscriptProjection: Equatable, Sendable {
             }
         }
 
-        self.entries = Array(entries.suffix(Self.maximumEntryCount))
+        self.entries = includeFullHistory ? entries : Array(entries.suffix(Self.maximumEntryCount))
     }
 
     var latestEntryID: String? {
@@ -565,6 +566,7 @@ struct RecentTranscriptRail: View {
     let isPlaybackDurationFinal: Bool
     /// True once the reply was muted: text shows as it streams.
     var showsStreamedReply = false
+    var expandsToAvailableHeight = false
     let onShowHistory: () -> Void
 
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
@@ -590,7 +592,8 @@ struct RecentTranscriptRail: View {
             messages: messages,
             provisionalText: provisionalText,
             isResponseActive: isResponseActive,
-            activeAssistantID: activeAssistantID
+            activeAssistantID: activeAssistantID,
+            includeFullHistory: expandsToAvailableHeight
         )
     }
 
@@ -650,7 +653,7 @@ struct RecentTranscriptRail: View {
                     .accessibilityAddTraits(.updatesFrequently)
             }
 
-            if liveEntry == nil {
+            if liveEntry == nil || expandsToAvailableHeight {
                 ScrollViewReader { proxy in
                     ScrollView(.vertical, showsIndicators: false) {
                         LazyVStack(alignment: .leading, spacing: 9) {
@@ -668,7 +671,7 @@ struct RecentTranscriptRail: View {
                         }
                         .padding(.vertical, 4)
                     }
-                    .frame(minHeight: 52, maxHeight: 152)
+                    .frame(minHeight: 52, maxHeight: expandsToAvailableHeight ? .infinity : 152)
                     .contentShape(Rectangle())
                     .simultaneousGesture(
                         DragGesture(minimumDistance: 3)
@@ -680,6 +683,7 @@ struct RecentTranscriptRail: View {
                         followState.pauseFollowing()
                     }
                     .onAppear {
+                        guard followState.isFollowingLatest else { return }
                         scrollToLatest(using: proxy, animated: false)
                     }
                     .onChange(of: displayedEntries) { _, _ in
@@ -738,7 +742,7 @@ struct RecentTranscriptRail: View {
                 }
             }
         }
-        .frame(maxWidth: 680)
+        .frame(maxWidth: 680, maxHeight: expandsToAvailableHeight ? .infinity : nil)
         .accessibilityElement(children: .contain)
     }
 

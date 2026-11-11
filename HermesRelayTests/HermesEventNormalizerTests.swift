@@ -3,6 +3,15 @@ import XCTest
 @testable import HermesRelayIOS
 
 final class HermesEventNormalizerTests: XCTestCase {
+    func testInterruptedMessageIsNotSuccessfulCompletion() throws {
+        var normalizer = HermesEventNormalizer()
+        let events = try normalizer.normalizeJSON(
+            json(["type": "message.complete", "payload": ["status": "interrupted", "text": "partial"]]),
+            turnID: "turn-1"
+        )
+        XCTAssertEqual(events, [.textDelta("partial")])
+    }
+
     func testTextDeltaUsesOnlyTheUnseenCumulativeSuffix() throws {
         var normalizer = HermesEventNormalizer()
 

@@ -422,6 +422,7 @@ struct HomeLiveSetupView: View {
 struct RelayConfigurationView: View {
     /// Voice interruption opt-in (IOS-UX-F5); read by the voice coordinator.
     @AppStorage(VoicePreferences.interruptByTalkingKey) private var interruptByTalking = false
+    @AppStorage(VoicePreferences.fullResponseKey) private var showFullResponse = false
     @Environment(\.automaticDiagnostics) private var automaticDiagnostics
     let configurationStore: RelayConfigurationStore
     /// Live connection state, so the list can show which profile is actually
@@ -947,6 +948,12 @@ struct RelayConfigurationView: View {
                 }
                 }
                 #endif
+                if !isStandardMode, !isStandardSetup, listModel.collection.selectedProfile?.standardProfile == nil {
+                    Section("Accessibility") {
+                        Toggle("Show complete response when available", isOn: $showFullResponse)
+                            .accessibilityIdentifier("show-complete-response")
+                    }
+                }
                 if !isStandardMode, !isStandardSetup, listModel.collection.selectedProfile?.standardProfile == nil,
                    let automaticDiagnostics {
                     AutomaticDiagnosticsSettings(reporter: automaticDiagnostics)

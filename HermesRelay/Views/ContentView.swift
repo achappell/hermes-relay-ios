@@ -111,6 +111,9 @@ struct ContentView: View {
     @State private var scrollToOpenHomeClaimsOnPresent = false
     @State private var promptHistory = PromptHistory()
     @State private var hudModel: AmbientHUDModel
+    @AppStorage(VoicePreferences.fullResponseKey) private var showFullResponse = false
+    @State private var duoScreen: DuoScreen = .unavailable
+    @State private var duoFullyOpen = false
     @State private var pairingLinkRequest: HomePairingLinkRequest?
     @Environment(\.scenePhase) private var scenePhase
     @FocusState private var focusedField: FocusField?
@@ -276,7 +279,7 @@ struct ContentView: View {
                             if store.isStandardMode {
                                 standardConversation
                             } else {
-                                ambientHUD
+                                ambientHUD(viewportHeight: proxy.size.height)
                             }
                         }
                     }
@@ -286,7 +289,7 @@ struct ContentView: View {
                     // the keyboard away (swiping down and sending also do).
                     .simultaneousGesture(
                         TapGesture().onEnded {
-                            if isComposing { focusedField = nil }
+                            if isComposing && duoScreen == .unavailable { focusedField = nil }
                         },
                         including: isComposing ? .all : .subviews
                     )
@@ -297,6 +300,7 @@ struct ContentView: View {
                     }
                 }
             }
+            .modifier(DuoHingeObserver(screen: $duoScreen, fullyOpen: $duoFullyOpen))
             .background {
                 AmbientHUDBackdrop(
                     doorwayState: ConversationDoorwayState(
@@ -306,7 +310,9 @@ struct ContentView: View {
                 )
             }
             .safeAreaInset(edge: .bottom, spacing: 0) {
-                bottomSurface
+                if duoScreen == .unavailable || store.isStandardMode {
+                    bottomSurface
+                }
             }
             .scrollDismissesKeyboard(.interactively)
             .onChange(of: focusedField) { _, newValue in
@@ -314,10 +320,17 @@ struct ContentView: View {
                     if newValue != nil { focusedField = nil }
                     return
                 }
-                applyViewMode(.composerFocusChanged(isFocused: newValue == .composer))
+                if duoScreen == .unavailable {
+                    applyViewMode(.composerFocusChanged(isFocused: newValue == .composer))
+                }
             }
             .onChange(of: voiceCoordinator.state) { _, newState in
-                applyViewMode(.voiceStateChanged(newState))
+                if duoScreen == .unavailable {
+                    applyViewMode(.voiceStateChanged(newState))
+                }
+            }
+            .onChange(of: showFullResponse, initial: true) { _, value in
+                voiceCoordinator.setShowFullResponse(value)
             }
             .onChange(of: store.isStandardMode, initial: true) { _, isStandard in
                 if isStandard { viewMode = .typing }
@@ -329,9 +342,10 @@ struct ContentView: View {
             .navigationTitle("")
             #if os(iOS)
             .navigationBarTitleDisplayMode(.inline)
+            .toolbar(duoFullyOpen && !store.isStandardMode ? .hidden : .automatic, for: .navigationBar)
             #endif
             .toolbar {
-                if store.isHomeMode, store.connectionState.isConnected {
+                if store.isHomeMode, store.connectionState.isConnected, !duoFullyOpen {
                     ToolbarItem(placement: .primaryAction) {
                         Button("Disconnect") {
                             Task { await store.disconnect() }
@@ -540,7 +554,7 @@ struct ContentView: View {
         .frame(maxWidth: 760, alignment: .leading)
     }
 
-    private var ambientHUD: some View {
+    private func ambientHUD(viewportHeight: CGFloat) -> some View {
         AmbientHUDView(
             presentation: AmbientHUDPresentation(
                 voiceState: voiceCoordinator.state,
@@ -598,6 +612,15 @@ struct ContentView: View {
             viewMode: viewMode,
             orbAccessibilityFocus: $orbAccessibilityFocused,
             thinkingTurns: store.thinkingTurns,
+            duoScreen: duoScreen,
+            duoFullyOpen: duoFullyOpen,
+            onDuoDisconnect: store.isHomeMode && store.connectionState.isConnected
+                ? { Task { await store.disconnect() } }
+                : nil,
+            isDuoDisconnectDisabled: store.isSending,
+            duoViewportHeight: viewportHeight,
+            duoComposer: AnyView(composer),
+            onDuoTalkSelected: { focusedField = nil },
             onOpenThinking: { openThinkingID = $0 }
         )
     }
@@ -699,7 +722,7 @@ struct ContentView: View {
                     Image(systemName: "info.circle")
                     Text(transientError)
                         .font(.footnote)
-                        .lineLimit(store.isStandardMode ? nil : 2)
+                        .lineLimit(duoScreen == .unavailable && !store.isStandardMode ? 2 : nil)
                     Spacer()
                     Button {
                         store.clearTransientError()
@@ -712,7 +735,7 @@ struct ContentView: View {
                 .foregroundStyle(HermesVisualTokens.secondaryInk)
             }
 
-            if viewMode == .typing && !store.isStandardMode {
+            if viewMode == .typing && !store.isStandardMode && duoScreen == .unavailable {
                 TypingControlCluster(
                     coordinator: voiceCoordinator,
                     onReturnToVoice: returnToVoice

@@ -827,6 +827,23 @@ struct HomeClientPairingSummary: Equatable, Sendable {
     let activationFailure: String?
 }
 
+enum HomePairingLabelError: LocalizedError {
+    case invalid
+
+    static func normalized(_ label: String) throws -> String {
+        let name = label.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !name.isEmpty, name.unicodeScalars.count <= 128,
+              !name.unicodeScalars.contains(where: { CharacterSet.newlines.contains($0) }) else {
+            throw Self.invalid
+        }
+        return name
+    }
+
+    var errorDescription: String? {
+        "Enter a device name of 1–128 characters without line breaks."
+    }
+}
+
 /// submit → poll consume → Keychain provision → save pairing → one profile
 /// per active grant → first live `ready` (route pin) → journal `homeSelected`.
 actor HomeClientPairingCoordinator {
@@ -867,12 +884,13 @@ actor HomeClientPairingCoordinator {
         self.sleep = sleep
     }
 
-    func submit(_ invitation: HomePairingInvitation) async throws -> HomeEnrollmentPendingRequest {
+    func submit(_ invitation: HomePairingInvitation, label: String? = nil) async throws -> HomeEnrollmentPendingRequest {
+        let name = try HomePairingLabelError.normalized(label ?? identity.displayName)
         let endpointID = try await pairings.endpointID(for: invitation.home)
         let submission = HomeEnrollmentSubmission(
             enrollmentCode: invitation.code,
             endpointID: endpointID,
-            label: identity.displayName,
+            label: name,
             type: endpointType
         )
         do {

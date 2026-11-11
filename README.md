@@ -12,6 +12,20 @@ The current voice slice provides:
 - A SwiftUI ambient HUD with minimal connection/session status, an
   audio-reactive visualizer, a readable recent-transcript rail with live
   follow/pause behavior, and an intentional full transcript history sheet.
+- Adaptive layout for resizable scenes and iPhone Duo (IOS-UX-F11, in
+  progress). iOS 26 retains the 600 pt HUD-width fallback; on iOS 27.1 and
+  later a detected hinge enables session-local outer Talk/Transcript modes and
+  uses the active system division and split arrangement for book and laptop
+  postures. Fully open, the transcript and composer sit beside the voice
+  controls. The layout is designed to keep the same runtime and workspace
+  children across these changes. Simulator checks exercised the outer toggle
+  and retained the draft, transcript and playback position in separate
+  synthetic fake-relay runs for folding and reopening, not one round trip.
+  The runs used an in-process fake and silent PCM, not a network relay or
+  audible playback. A separate synthetic-input test retained listening state
+  and the paused-follow control across a fold. Real microphone capture,
+  VoiceOver, keyboard placement and held postures need further validation.
+  The keyboard panel is system-controlled.
 - An in-app Configure Relay screen for endpoint and client metadata, with
   bearer-token entry backed by Keychain.
 - Keychain-backed bearer-token storage and an application-support relay profile.
@@ -27,12 +41,15 @@ The current voice slice provides:
   events. The rail follows the actual audio playback position and uses the
   received PCM/WAV duration for an overall-cadence fallback when word timing
   metadata is absent or invalid.
+- A device-wide Settings option can show successful final response text as
+  soon as it is available, rather than waiting for speech-timed reveal.
 - Content-safe microphone and inbound-playback activity signals with normalized
   levels, silence/noise/speech classification, throttling, and explicit safe
   unavailable states. On iOS, the user may explicitly arm hands-free mode;
-  speech boundaries submit one turn at a time and never arm at launch;
-  background noise cannot end an active capture, and Hermes playback cannot
-  wake a follow-up turn.
+  speech boundaries submit one turn at a time and never arm at launch.
+  A request made during tapped capture is pending until capture ends; after a
+  submitted turn, monitoring waits for the reply. Background noise cannot
+  end an active capture.
 - Server-confirmed interruption for relays that advertise the `interrupt`
   capability. The voice control sends one protocol-v1 interrupt for the active
   turn, stops queued playback on `audio_abort`, and waits for
@@ -41,10 +58,10 @@ The current voice slice provides:
 - The HUD consumes those activity signals to show live state and transcript
   transitions. The recent transcript rail follows streaming text until the
   user reads backward, then offers an explicit resume-live action. Hands-free
-  mode remains visibly armed across response phases, but automatic barge-in is
-  enabled only on an echo-safe headphone route; the built-in speaker stays
-  protected from self-triggering. Push-to-talk remains available as the
-  explicit capture path when hands-free is disarmed.
+  mode remains visibly armed across response phases. Automatic barge-in is
+  opt-in and, during audio output, limited to echo-safe headphone routes;
+  speaker routes use tap interruption.
+  Push-to-talk remains available when hands-free is disarmed.
 - Opt-in, content-safe playback diagnostics for comparing stream arrival with
   first-buffer scheduling.
 - Local transcript/draft persistence and an explicit unconfirmed-turn marker;
@@ -79,6 +96,10 @@ pairing code or fork client/device IDs. An authenticated, non-creating
 readiness check must succeed before saving. Older servers without the
 supported native session authority are reported unsupported, not retried
 through the legacy relay.
+
+Before submitting a Home pairing request, edit **Name on Home** to distinguish
+the device; the suggested system name may be generic. Scanned or opened links
+are filled in for review rather than submitted immediately.
 
 The selected mode stays visible. Existing HomeBridge and Legacy profiles
 remain available; an outage never switches mode or suggests a fallback.

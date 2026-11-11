@@ -2,11 +2,25 @@
 
 ## Unreleased
 
+- Choose an editable device name when pairing with Home; the device name is
+  only a suggestion and may be generic on iOS.
+
+- Align the fully open iPhone Duo session and Home bridge headers with the
+  Disconnect control, leaving the transcript beside the voice workspace.
+- Keep listening can be requested during a tapped recording, with monitoring
+  deferred until the reply ends; cancellation clears the request.
+- Add a device-wide accessibility setting to show a successful complete
+  response as soon as it is available, without waiting for audio playback.
+
 - Add explicit, text-only direct Standard Hermes setup on iOS and macOS using
   the supported canonical native session interface, separate Keychain
   credentials, identity-scoped local history, and durable recovery without
   prompt replay. HomeBridge and existing Legacy connections remain separate;
   direct voice and Home-only controls are unavailable in Standard mode.
+- Adapt the conversation layout to iPhone Duo's outer and inner displays and
+  active fold divisions on iOS 27.1 and later, with Talk and Transcript modes
+  on the outer display. iOS 26 retains the size-based fallback. Live fold
+  continuity and VoiceOver behavior of this implementation remain unverified.
 
 
 ## 0.8.0 (2026-10-22)
